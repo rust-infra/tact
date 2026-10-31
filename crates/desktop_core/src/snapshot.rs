@@ -22,6 +22,11 @@ pub struct ProjectView {
     pub id: Option<ProjectId>,
     pub root: Option<PathBuf>,
     pub display_name: Arc<str>,
+    /// Checked-out branch (or the short commit when detached), when the
+    /// project is a git repository.
+    pub branch: Option<Arc<str>>,
+    /// `owner/repo` from the origin remote, when the project is a clone.
+    pub repository: Option<Arc<str>>,
     pub available: bool,
 }
 

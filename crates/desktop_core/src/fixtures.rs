@@ -13,10 +13,10 @@ use tact_protocol::{
 use crate::snapshot::InspectorView;
 use crate::transcript::{
     AssistantRow, BackgroundTaskView, DiffRow, ErrorRow, GateCard, GateKind, GateOrigin,
-    GateSelection, GateState, HookContextRow, HookStatusRow, LoopId, NoticeRow, RequestId, RowBody,
-    RowId, RowStatus, SessionEpoch, SubagentView, TaskView, ThinkingRow, ToolBody, ToolGroupItem,
-    ToolGroupRow, ToolMetaView, ToolOutputView, ToolRow, TranscriptRow, TranscriptView, UsageView,
-    UserRow,
+    GateSelection, GateState, HookContextRow, HookStatusRow, LoopId, NoticeRow, PlanRow, PlanStep,
+    RequestId, RowBody, RowId, RowStatus, SessionEpoch, SubagentView, TaskView, ThinkingRow,
+    ToolBody, ToolGroupItem, ToolGroupRow, ToolMetaView, ToolOutputView, ToolRow, TranscriptRow,
+    TranscriptView, UsageView, UserRow,
 };
 
 const SESSION_EPOCH: u64 = 7;
@@ -136,6 +136,34 @@ pub fn demo_transcript() -> TranscriptView {
                 suggestions: Arc::from([
                     Arc::from("Explain the migration"),
                     Arc::from("Write a test"),
+                ]),
+            }),
+        ),
+        row(
+            13,
+            RowBody::Plan(PlanRow {
+                title: Arc::from("Desktop kernel first"),
+                steps: Arc::from([
+                    PlanStep {
+                        label: Arc::from("Pin the transcript model"),
+                        status: RowStatus::Success,
+                        detail: None,
+                    },
+                    PlanStep {
+                        label: Arc::from("Wire the run inspector"),
+                        status: RowStatus::Success,
+                        detail: None,
+                    },
+                    PlanStep {
+                        label: Arc::from("Attach permissions, Goals and subagent state"),
+                        status: RowStatus::Running,
+                        detail: None,
+                    },
+                    PlanStep {
+                        label: Arc::from("Verify the desktop shell"),
+                        status: RowStatus::Pending,
+                        detail: None,
+                    },
                 ]),
             }),
         ),

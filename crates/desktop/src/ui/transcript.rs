@@ -11,6 +11,7 @@ pub fn row_kind(row: &TranscriptRow) -> TranscriptRowKind {
         tact_desktop_core::RowBody::User(_) => TranscriptRowKind::User,
         tact_desktop_core::RowBody::Assistant(_) => TranscriptRowKind::Assistant,
         tact_desktop_core::RowBody::Thinking(_) => TranscriptRowKind::Thinking,
+        tact_desktop_core::RowBody::Plan(_) => TranscriptRowKind::Plan,
         tact_desktop_core::RowBody::ToolGroup(_) => TranscriptRowKind::ToolGroup,
         tact_desktop_core::RowBody::Diff(_) => TranscriptRowKind::Diff,
         tact_desktop_core::RowBody::Gate(_) => TranscriptRowKind::Gate,

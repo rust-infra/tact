@@ -29,7 +29,7 @@ pub use config::{
     Appearance, DesktopConfig, HostLaunchOptions, InitialSession, PermissionModeView,
     ReducedMotion, app_support_dir,
 };
-pub use controller::{DesktopController, DesktopEvents, tact_ui_binary_path};
+pub use controller::{DesktopController, DesktopEvents, help_reader, tact_ui_binary_path};
 pub use effect::{DesktopEffect, DesktopEvent};
 pub use error::{DesktopClosed, DesktopShutdownError, DesktopStartError, FailureKind, FailureView};
 pub use intent::{DesktopIntent, GateResponse, ReaderRef, ReaderRequest, SettingValue, Submission};
@@ -46,13 +46,13 @@ pub use tact::store::ArchiveFilter;
 pub use tact_catalog::{CatalogLocale, CommandCatalog, CommandId, LocalizedText};
 pub use tact_protocol::{
     BackgroundTaskStatusSnapshot, GoalCriterionStatusSnapshot, GoalPhaseSnapshot,
-    GoalStatusSnapshot, McpServerStatusSnapshot, SubagentStatusSnapshot, SurfaceSnapshot,
-    TaskStatusSnapshot, UiRequestPurpose,
+    GoalStatusSnapshot, HookItemSnapshot, HookSnapshot, McpServerStatusSnapshot,
+    SubagentStatusSnapshot, SurfaceSnapshot, TaskStatusSnapshot, UiRequestPurpose,
 };
 pub use transcript::{
     BackgroundTaskView, GateCard, GateKind, GateOrigin, GateSelection, GateState, GoalView, LoopId,
-    RequestId, RowBody, RowId, RowStatus, SessionEpoch, SubagentView, TaskView, ToolBody,
-    ToolGroupItem, ToolGroupRow, ToolMetaView, ToolOutputView, ToolRow, TranscriptRow,
+    PlanRow, PlanStep, RequestId, RowBody, RowId, RowStatus, SessionEpoch, SubagentView, TaskView,
+    ToolBody, ToolGroupItem, ToolGroupRow, ToolMetaView, ToolOutputView, ToolRow, TranscriptRow,
     TranscriptView, UsageView,
 };
 pub(crate) use transcript::{ReduceContext, TranscriptReducer};

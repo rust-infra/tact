@@ -9174,6 +9174,7 @@ dependencies = [
  "tact_agent_api",
  "tact_catalog",
  "tact_host",
+ "tact_llm",
  "tact_protocol",
  "tempfile",
  "tokio",

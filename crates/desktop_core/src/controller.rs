@@ -212,6 +212,12 @@ enum ControllerMessage {
     Intent(DesktopIntent),
     WaitIdle(oneshot::Sender<()>),
     Shutdown(oneshot::Sender<Result<(), DesktopShutdownError>>),
+    /// Model ids the provider's own index reported, delivered off the actor's
+    /// critical path so startup never waits on the network.
+    ModelsDiscovered {
+        main: Vec<String>,
+        subagent: Vec<String>,
+    },
 }
 
 impl DesktopController {
@@ -232,6 +238,10 @@ impl DesktopController {
             urgent: urgent_tx,
         };
         let (intents, intent_rx) = mpsc::unbounded_channel();
+        // The actor keeps a sender of its own: model discovery finishes after
+        // startup and re-enters the loop as a message rather than mutating
+        // state from a background task.
+        let actor_intents = intents.clone();
         let actor_snapshot = snapshot.clone();
         let (startup_tx, startup_rx) = std::sync::mpsc::sync_channel(1);
         let thread = std::thread::spawn(move || {
@@ -246,8 +256,15 @@ impl DesktopController {
                 }
             };
             let actor = runtime.block_on(async move {
-                let mut actor =
-                    DesktopActor::new(config, factory, intent_rx, events, actor_snapshot).await?;
+                let mut actor = DesktopActor::new(
+                    config,
+                    factory,
+                    intent_rx,
+                    actor_intents,
+                    events,
+                    actor_snapshot,
+                )
+                .await?;
                 actor.publish(true);
                 Ok::<_, DesktopStartError>(actor)
             });
@@ -345,6 +362,9 @@ struct DesktopActor {
     config: DesktopConfig,
     factory: Arc<dyn HostFactory>,
     intents: mpsc::UnboundedReceiver<ControllerMessage>,
+    /// Sender side of `intents`, for work that finishes later and must come
+    /// back through the actor's own loop.
+    intents_tx: mpsc::UnboundedSender<ControllerMessage>,
     events: DesktopEventSink,
     snapshot: Arc<RwLock<Arc<DesktopSnapshot>>>,
     state: DesktopState,
@@ -358,11 +378,42 @@ struct DesktopActor {
     restore_failure: Option<FailureView>,
 }
 
+/// The keyboard-shortcut reader shown by `/help`.
+///
+/// It is a free function so the shell's off-screen harness can render the same
+/// content without going through the actor's effect channel.
+pub fn help_reader(language: CatalogLocale) -> ReaderRequest {
+    let primary = if cfg!(target_os = "macos") {
+        "Cmd"
+    } else {
+        "Ctrl"
+    };
+    let option = if cfg!(target_os = "macos") {
+        "Option"
+    } else {
+        "Alt"
+    };
+    let title = localized(language, "Keyboard Shortcuts", "键盘快捷键");
+    let markdown = match language {
+        CatalogLocale::En => format!(
+            "# Keyboard Shortcuts\n\n- {primary}+K Command Center\n- {primary}+B Toggle sessions\n- {primary}+Alt+B Toggle inspector\n- {primary}+Enter Send\n- Esc Close/cancel\n- {primary}+. Stop\n- {primary}+1..4 Inspector tabs\n- {option}+Up/Down Queue navigation\n- Space Toggle multi-select\n- Enter Activate focused control\n- Tab / Shift+Tab Traverse controls"
+        ),
+        CatalogLocale::Zh => format!(
+            "# 键盘快捷键\n\n- {primary}+K 命令中心\n- {primary}+B 切换会话栏\n- {primary}+Alt+B 切换检查器\n- {primary}+Enter 发送\n- Esc 关闭/取消\n- {primary}+. 停止\n- {primary}+1..4 检查器标签\n- {option}+Up/Down 队列导航\n- Space 切换多选项\n- Enter 激活当前控件\n- Tab / Shift+Tab 遍历控件"
+        ),
+    };
+    ReaderRequest {
+        title: Arc::from(title),
+        markdown: Arc::from(markdown),
+    }
+}
+
 impl DesktopActor {
     async fn new(
         config: DesktopConfig,
         factory: Arc<dyn HostFactory>,
         intents: mpsc::UnboundedReceiver<ControllerMessage>,
+        intents_tx: mpsc::UnboundedSender<ControllerMessage>,
         events: DesktopEventSink,
         snapshot: Arc<RwLock<Arc<DesktopSnapshot>>>,
     ) -> Result<Self, DesktopStartError> {
@@ -373,6 +424,7 @@ impl DesktopActor {
             config,
             factory,
             intents,
+            intents_tx,
             events,
             snapshot,
             registry,
@@ -385,6 +437,7 @@ impl DesktopActor {
             restore_failure: None,
         };
         actor.state.set_projects(actor.registry.records());
+        actor.spawn_model_discovery();
         if let Some(root) = actor.config.initial_project.clone()
             && let Err(error) = actor
                 .open_project(root, actor.config.initial_session.clone())
@@ -393,6 +446,48 @@ impl DesktopActor {
             actor.set_failure(start_error_message(error), true);
         }
         Ok(actor)
+    }
+
+    /// Asks the provider for its model index and feeds the result back through
+    /// the actor loop.
+    ///
+    /// A provider entry carries `models = [...]` only when the user wrote one,
+    /// so pickers built from configuration alone can end up with a single row:
+    /// the model already selected. The TUI fills that gap from `GET /models`;
+    /// the desktop runs the same query here, off the startup path, because it
+    /// is network I/O and a slow endpoint must not delay the first frame.
+    /// Soft failures are expected — an endpoint that serves no index, or has
+    /// no key, reports nothing and leaves the configured list untouched.
+    fn spawn_model_discovery(&self) {
+        let Some(settings) = tact::config::try_settings() else {
+            return;
+        };
+        // `ensure_api_model_ids` reads the process-global provider and panics
+        // when none was installed, so check first: a shell running without one
+        // keeps configuration-only lists.
+        if tact_llm::try_get_provider().is_none() {
+            return;
+        }
+        let subagent_provider = settings
+            .agent
+            .subagent
+            .as_ref()
+            .map(|subagent| subagent.provider.clone());
+        let intents = self.intents_tx.clone();
+        tokio::spawn(async move {
+            // Both endpoints are independent; querying them together keeps a
+            // slow provider from doubling the time the picker stays short.
+            let (main, subagent) = tokio::join!(tact_llm::ensure_api_model_ids(), async move {
+                match subagent_provider {
+                    Some(provider) => tact_llm::ensure_api_model_ids_for_provider(&provider).await,
+                    None => Vec::new(),
+                }
+            });
+            if main.is_empty() && subagent.is_empty() {
+                return;
+            }
+            let _ = intents.send(ControllerMessage::ModelsDiscovered { main, subagent });
+        });
     }
 
     async fn run(mut self) {
@@ -428,6 +523,15 @@ impl DesktopActor {
             ControllerMessage::Intent(intent) => {
                 if let Err(message) = self.handle_intent(intent).await {
                     self.set_failure(message, false);
+                }
+                false
+            }
+            ControllerMessage::ModelsDiscovered { main, subagent } => {
+                // The composer is part of every snapshot, so an empty section
+                // mask is enough: the shell re-syncs the pickers from the
+                // snapshot on every commit.
+                if self.state.merge_discovered_models(&main, &subagent) {
+                    self.publish(false);
                 }
                 false
             }
@@ -470,13 +574,47 @@ impl DesktopActor {
                 }
             }
             DesktopIntent::NewSession => {
+                if self.session_switch_in_flight() {
+                    return Ok(());
+                }
                 self.start_session(InitialSession::New).await?;
             }
             DesktopIntent::ResumeSession { session_id } => {
+                // Re-opening the session that is already open tears down a
+                // healthy host and waits for its driver to drain so the same
+                // session can come straight back. Clicking a row in the
+                // manager more than once used to queue exactly that, one
+                // teardown per click, and the app spent the whole time
+                // closing nothing. There is nothing to resume: the session is
+                // already there.
+                if self.host.is_some()
+                    && self
+                        .state
+                        .session
+                        .id
+                        .as_ref()
+                        .is_some_and(|current| current.0 == session_id.0)
+                    && matches!(
+                        self.state.session.phase,
+                        SessionPhase::Ready | SessionPhase::Running
+                    )
+                {
+                    return Ok(());
+                }
+                // A click that lands mid-switch is dropped rather than queued:
+                // the next switch would begin by closing a host that is still
+                // starting, which is how a few fast clicks turned into a
+                // minute of "Closing".
+                if self.session_switch_in_flight() {
+                    return Ok(());
+                }
                 self.start_session(InitialSession::Resume(session_id.0))
                     .await?;
             }
             DesktopIntent::ResumeLast => {
+                if self.session_switch_in_flight() {
+                    return Ok(());
+                }
                 self.start_session(InitialSession::ResumeLast).await?;
             }
             DesktopIntent::Submit(submission) | DesktopIntent::Queue(submission) => {
@@ -735,6 +873,23 @@ impl DesktopActor {
         self.start_host(&project, initial).await?;
         self.publish(true);
         Ok(())
+    }
+
+    /// Whether a session start is still running.
+    ///
+    /// A switch begins by closing the host that is already up, so one that
+    /// arrives while another is starting would close a session that is still
+    /// coming up — and each queued click adds another drain wait. The actor
+    /// drops those instead of queueing them; one deliberate switch is quick,
+    /// and a queue of them looks exactly like a freeze. A teardown that is
+    /// already underway is deliberately not covered: closing is retryable,
+    /// and another switch is the only way out of a close that is taking too
+    /// long.
+    fn session_switch_in_flight(&self) -> bool {
+        matches!(
+            self.state.session.phase,
+            SessionPhase::Opening | SessionPhase::Starting | SessionPhase::Switching
+        )
     }
 
     async fn start_session(&mut self, initial: InitialSession) -> Result<(), String> {
@@ -1496,7 +1651,11 @@ impl DesktopActor {
             .send(DesktopEvent::Effect(DesktopEffect::OpenReader(request)));
     }
 
-    fn reader_request(&self, reader: ReaderRef) -> ReaderRequest {
+    /// Builds the reader payload without sending it through the effect channel.
+    ///
+    /// The off-screen harness uses this to render a reader whose content is
+    /// controller-owned (for example the keyboard-shortcut help).
+    pub fn reader_request(&self, reader: ReaderRef) -> ReaderRequest {
         let view = self.state.reducer.view();
         match reader {
             ReaderRef::ToolOutput(row) | ReaderRef::Diff(row) | ReaderRef::Thinking(row) => {
@@ -1545,31 +1704,7 @@ impl DesktopActor {
                     )),
                 }
             }
-            ReaderRef::Help => {
-                let primary = if cfg!(target_os = "macos") {
-                    "Cmd"
-                } else {
-                    "Ctrl"
-                };
-                let option = if cfg!(target_os = "macos") {
-                    "Option"
-                } else {
-                    "Alt"
-                };
-                let title = localized(self.state.language, "Keyboard Shortcuts", "键盘快捷键");
-                let markdown = match self.state.language {
-                    CatalogLocale::En => format!(
-                        "# Keyboard Shortcuts\n\n- {primary}+K Command Center\n- {primary}+B Toggle sessions\n- {primary}+Alt+B Toggle inspector\n- {primary}+Enter Send\n- Esc Close/cancel\n- {primary}+. Stop\n- {primary}+1..4 Inspector tabs\n- {option}+Up/Down Queue navigation\n- Space Toggle multi-select\n- Enter Activate focused control\n- Tab / Shift+Tab Traverse controls"
-                    ),
-                    CatalogLocale::Zh => format!(
-                        "# 键盘快捷键\n\n- {primary}+K 命令中心\n- {primary}+B 切换会话栏\n- {primary}+Alt+B 切换检查器\n- {primary}+Enter 发送\n- Esc 关闭/取消\n- {primary}+. 停止\n- {primary}+1..4 检查器标签\n- {option}+Up/Down 队列导航\n- Space 切换多选项\n- Enter 激活当前控件\n- Tab / Shift+Tab 遍历控件"
-                    ),
-                };
-                ReaderRequest {
-                    title: Arc::from(title),
-                    markdown: Arc::from(markdown),
-                }
-            }
+            ReaderRef::Help => help_reader(self.state.language),
             ReaderRef::Stats => ReaderRequest {
                 title: Arc::from(localized(
                     self.state.language,
@@ -2191,6 +2326,18 @@ mod tests {
     use super::*;
     use crate::{GateResponse, InitialSession, SettingValue, Submission};
 
+    #[test]
+    fn help_reader_lists_the_primary_shortcuts() {
+        let english = help_reader(CatalogLocale::En);
+        assert_eq!(english.title.as_ref(), "Keyboard Shortcuts");
+        assert!(english.markdown.contains("Command Center"));
+        assert!(english.markdown.contains("Inspector tabs"));
+
+        let chinese = help_reader(CatalogLocale::Zh);
+        assert_eq!(chinese.title.as_ref(), "键盘快捷键");
+        assert!(chinese.markdown.contains("命令中心"));
+    }
+
     struct FakeFactory {
         log: Arc<Mutex<Vec<String>>>,
         commands: Arc<Mutex<Vec<UserCommand>>>,
@@ -2476,6 +2623,50 @@ mod tests {
         controller.when_idle().await.unwrap();
         wait_ready(&controller).await;
         assert!(controller.snapshot().session.epoch > epoch);
+    }
+
+    #[tokio::test]
+    async fn resuming_the_open_session_does_not_rebuild_its_host() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_project(tmp.path());
+        let factory = FakeFactory::new();
+        let (controller, _events) =
+            DesktopController::start_with_factory(config(tmp.path()), factory.clone()).unwrap();
+        wait_ready(&controller).await;
+        let session = controller
+            .snapshot()
+            .session
+            .id
+            .clone()
+            .expect("an open session");
+        let before = factory.log.lock().unwrap().len();
+
+        // A list row can deliver the click more than once. Every one of them
+        // used to close a healthy host and wait for it to drain so the same
+        // session could be reopened, which a few fast clicks turned into a
+        // stalled app.
+        for _ in 0..3 {
+            controller
+                .dispatch(DesktopIntent::ResumeSession {
+                    session_id: session.clone(),
+                })
+                .unwrap();
+        }
+        controller.when_idle().await.unwrap();
+
+        let log = factory.log.lock().unwrap().clone();
+        assert_eq!(
+            log.len(),
+            before,
+            "resuming the open session touched the host: {log:?}"
+        );
+        assert_eq!(
+            log.iter()
+                .filter(|entry| entry.starts_with("open:"))
+                .count(),
+            1,
+            "the session was reopened: {log:?}"
+        );
     }
 
     #[tokio::test]

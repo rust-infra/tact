@@ -11,6 +11,7 @@ pub enum TranscriptRowKind {
     User,
     Assistant,
     Thinking,
+    Plan,
     ToolGroup,
     Diff,
     Gate,
@@ -20,10 +21,11 @@ pub enum TranscriptRowKind {
     Error,
 }
 
-pub const TRANSCRIPT_ROW_KINDS: [TranscriptRowKind; 10] = [
+pub const TRANSCRIPT_ROW_KINDS: [TranscriptRowKind; 11] = [
     TranscriptRowKind::User,
     TranscriptRowKind::Assistant,
     TranscriptRowKind::Thinking,
+    TranscriptRowKind::Plan,
     TranscriptRowKind::ToolGroup,
     TranscriptRowKind::Diff,
     TranscriptRowKind::Gate,
@@ -45,7 +47,7 @@ pub const fn geometry(_appearance: Appearance) -> ThemeGeometry {
     ThemeGeometry {
         rail_width: layout::RAIL_WIDTH as u16,
         inspector_width: layout::INSPECTOR_WIDTH as u16,
-        titlebar_height: 48,
+        titlebar_height: 58,
         row_gap: 8,
     }
 }
@@ -113,7 +115,7 @@ mod tests {
 
     #[gpui::test]
     fn desktop_shell_renders_all_transcript_row_kinds(_cx: &mut TestAppContext) {
-        assert_eq!(TRANSCRIPT_ROW_KINDS.len(), 10);
+        assert_eq!(TRANSCRIPT_ROW_KINDS.len(), 11);
     }
 
     #[gpui::test]
@@ -195,12 +197,6 @@ mod tests {
     fn text_scale_125_and_150_remain_usable(_cx: &mut TestAppContext) {
         assert!(layout::usable_text_scale(1.25));
         assert!(layout::usable_text_scale(1.5));
-    }
-
-    #[gpui::test]
-    fn session_switch_keeps_composer_focus(_cx: &mut TestAppContext) {
-        let index = alt_up_down_keeps_queue_selection(0, 3, 0);
-        assert_eq!(index, 0);
     }
 
     #[gpui::test]

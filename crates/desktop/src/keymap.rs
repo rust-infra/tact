@@ -24,6 +24,7 @@ actions!(
         SlashComplete,
         SlashExecute,
         SlashDismiss,
+        NewSession,
         GateNext,
         GatePrevious,
         ToggleGateOption,
@@ -53,6 +54,7 @@ pub const SHORTCUTS: &[&str] = &[
     "tab",
     "shift-tab",
     "secondary-shift-l",
+    "secondary-n",
 ];
 
 #[cfg(test)]
@@ -82,12 +84,14 @@ const BOUND_SHORTCUTS: &[&str] = &[
     "space",
     "secondary-shift-l",
     "secondary-.",
+    "secondary-n",
 ];
 
 pub fn bindings() -> Vec<gpui::KeyBinding> {
     vec![
         gpui::KeyBinding::new("secondary-k", CommandCenter, None),
         gpui::KeyBinding::new("secondary-b", ToggleLeft, None),
+        gpui::KeyBinding::new("secondary-n", NewSession, None),
         gpui::KeyBinding::new("secondary-alt-b", ToggleRight, None),
         gpui::KeyBinding::new("secondary-enter", SubmitComposer, None),
         gpui::KeyBinding::new("secondary-,", OpenSettings, None),
@@ -119,6 +123,14 @@ pub const fn command_center_hint() -> &'static str {
         "⌘K"
     } else {
         "Ctrl+K"
+    }
+}
+
+pub const fn new_session_hint() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "⌘N"
+    } else {
+        "Ctrl+N"
     }
 }
 

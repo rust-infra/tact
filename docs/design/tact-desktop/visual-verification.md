@@ -13,8 +13,16 @@ window through `gpui_platform::current_platform(true)` and
 PNG is what the compositor would show. Scripted entrances are skipped
 (reduced-motion path) so every surface is captured in its settled state.
 
+The harness runs against a disposable project with four fixed session rows; it
+does not read the checkout's `.tact` store. Captures are therefore reproducible
+and contain no developer session data. See
+[`visual-baseline.md`](visual-baseline.md) for the review protocol and the
+prototype-vs-implementation comparison script.
+
 ```bash
 cargo run -p tact-desktop --example ui_capture --features ui-capture -- target/ui-capture
+python3 scripts/ui-parity.py target/ui-capture target/ui-parity
+scripts/check-ui.sh   # capture + prototype render + pixel anchors + overlay
 ```
 
 On Linux or Windows this command exits with an explanatory message rather than
@@ -26,12 +34,12 @@ writes one PNG per surface:
 
 | File | Surface |
 |---|---|
-| `01-shell-light`, `02-shell-dark` | Empty shell in both appearances |
+| `01-shell-light`, `02-shell-dark` | Shell with the seeded session rows in both appearances |
 | `03-command-center` | Flat Command Center over the dimmed shell |
 | `04-slash-overlay` | Nested slash overlay over the composer |
 | `05-settings` | Settings with startup/live mode labels |
 | `06-session-manager` | Project chips, filters, rename/archive rows |
-| `07`–`10` | Extensions MCP / Skills / Plugins / Hooks tabs |
+| `07`–`10`, `10b`, `10c` | Extensions MCP / Skills / Plugins / Hooks tabs, the manager, and the hooks sheet |
 | `11-background` | Background task list |
 | `12`–`15` | Run / Goals / Subagents / Context inspector tabs |
 | `16`–`20` | Typed readers (system prompt, stats, history, task DAG, balance) |
@@ -39,11 +47,12 @@ writes one PNG per surface:
 | `23-narrow-window` | 900×700 layout |
 | `24-text-scale-150` | 150% text scale |
 | `25-chinese` | Chinese catalog |
-| `26`–`27` | Seeded transcript, light and dark |
+| `26a`–`26c`, `27` | Seeded transcript top, tail, tool cards, and dark |
 | `28`–`31` | Populated inspector tabs |
 | `32`–`33` | Populated background list and a permission gate |
 | `34`–`37` | Tall transcript: bottom, top, and middle in both appearances |
 | `38` | Populated task-dependency reader |
+| `40` | Keyboard-shortcuts help reader |
 | `39` | Focus-visible tint after one Tab |
 
 `crates/desktop_core/src/fixtures.rs` supplies the representative transcript
@@ -142,3 +151,10 @@ Session-dependent readers (`history`, `stats` payload, `balance`) and run
 controls (`compact`, `cancel`, `save`, `subagent_cancel`) still show their
 loading/disabled state because the walkthrough host has no configured model
 provider; they are covered by the seeded off-screen captures in section 1.
+
+## Manual test and review records
+
+- `docs/design/tact-desktop/manual-test-report.md` maps every PRD flow and
+  entry-matrix item to a capture or test.
+- `docs/reviews/2026-10-31-tact-desktop-final-review.md` records the final
+  review verdict, findings, and residual follow-ups.

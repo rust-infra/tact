@@ -42,7 +42,7 @@ Status values:
 | `FilterTable` | Compose | Extensions Manager rows and filters. |
 | `ComparisonTable` | N/A | No bounded feature-matrix workflow in Tact. |
 | `ApprovalCard` | Direct | Permission and destructive-action gates. |
-| `PlanCard` | Direct | Proposed execution steps. |
+| `PlanCard` | Compose | Goals criteria use the plan-step grammar; the transcript plan card is Tact-owned so it can carry row identity. |
 | `RecommendationCard` | Deferred | No current recommendation decision workflow. |
 | `ContextCard` | Deferred | Could render retained evidence in a future compact evidence panel. |
 | `InsightCard` | Compose | Stats and balance summaries. |

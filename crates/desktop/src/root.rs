@@ -7,9 +7,9 @@ use std::{
 
 use gpui::{
     Anchor, Animation, AnimationExt as _, AnyElement, AppContext as _, ClickEvent, Context, Entity,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, Role, SharedString,
-    StatefulInteractiveElement as _, Styled, Task, WeakEntity, Window, div,
-    prelude::FluentBuilder as _, px,
+    InteractiveElement as _, IntoElement, ParentElement as _, PathBuilder, Render, Role,
+    ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled, Task, WeakEntity, Window,
+    canvas, div, point, prelude::FluentBuilder as _, px,
 };
 use gpui_ai::prelude::*;
 use gpui_base::FocusTrapElement as _;
@@ -17,8 +17,8 @@ use gpui_component::message_scroller::{MessageScroller, MessageScrollerState};
 use gpui_component::popover::Popover;
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::{
-    ActiveTheme as _, Icon, IconName, StyledExt as _, TitleBar, h_flex, input::Input,
-    text::TextView, v_flex,
+    ActiveTheme as _, Icon, IconName, IconNamed as _, StyledExt as _, TitleBar, h_flex,
+    input::Input, text::TextView, v_flex,
 };
 use tact_catalog::{
     ArgumentValue, BuiltinCommand, ChoiceSource, CommandArguments, CommandDescriptor, CommandId,
@@ -28,12 +28,17 @@ use tact_desktop_core::{
     Appearance, ArchiveFilter, CommandAvailability, CommandForm, DesktopController, DesktopEffect,
     DesktopEvent, DesktopIntent, DesktopSnapshot, ExtensionsTab, GateCard, GateKind, GateResponse,
     GateSelection, GateState, InspectorTab, PermissionModeView, ProjectId, ReaderRef, RowBody,
-    RowId, RowStatus, RunPhase, SectionMask, SessionId, SessionPhase, SettingValue, Submission,
+    RowId, RowStatus, SectionMask, SessionId, SessionPhase, SettingValue, Submission,
     SurfaceSnapshot, ToolGroupItem, ToolRow, TranscriptRow, TranscriptView, is_enabled,
 };
 
 use crate::i18n::{self, TextKey};
 use crate::{keymap, theme};
+
+/// One row of a picker menu, in pixels.
+const MODEL_PICKER_ROW_HEIGHT: f32 = 30.;
+/// Rows a model picker shows before it scrolls.
+const MODEL_PICKER_VISIBLE_ROWS: usize = 8;
 
 #[derive(Clone)]
 struct Toast {
@@ -105,6 +110,7 @@ enum Overlay {
     ModelPicker(SettingId),
     Gate(GateCard),
     Extensions(ExtensionsTab),
+    Hooks,
     SessionManager,
     Background,
 }
@@ -140,6 +146,8 @@ pub(crate) struct DesktopRoot {
     pending_row_updates: HashSet<RowId>,
     command_search: Entity<CommandSearch>,
     command_scope: Option<CommandId>,
+    command_hit_count: usize,
+    command_query: String,
     form_input: Entity<gpui_component::input::InputState>,
     criteria_input: Entity<gpui_component::input::InputState>,
     session_search: Entity<gpui_component::input::InputState>,
@@ -164,6 +172,17 @@ pub(crate) struct DesktopRoot {
     gate_keyboard_cursor: usize,
     permission_picker_open: bool,
     model_picker_cursor: usize,
+    /// Quick filter for the model pickers. A provider's index can hold dozens
+    /// of ids, so the list is searchable and navigable rather than scrolled
+    /// by hand.
+    model_search: Entity<gpui_component::input::InputState>,
+    model_picker_query: String,
+    /// Scroll owner for the model rows, so keyboard selection can bring the
+    /// highlighted row into view.
+    model_picker_scroll: ScrollHandle,
+    /// Bumped whenever an overlay opens, so the entrance animation plays for
+    /// each one instead of only for the first.
+    overlay_epoch: u64,
     submitted_gates: HashSet<u64>,
     queue_cursor: usize,
     queue_expanded: bool,
@@ -180,6 +199,7 @@ pub(crate) struct DesktopRoot {
     mentions_root: Option<PathBuf>,
     prompt_mentions: Vec<PromptMention>,
     sidebar_query: String,
+    rail_search: Entity<gpui_component::input::InputState>,
     _subscriptions: Vec<gpui::Subscription>,
     attachments: Vec<PathBuf>,
 }
@@ -213,6 +233,30 @@ impl DesktopRoot {
         let initial_language = snapshot.language;
         let scroller = cx.new(|cx| MessageScrollerState::new(snapshot.transcript.len(), cx));
         let prompt = cx.new(|cx| PromptBar::new("tact-composer", window, cx));
+        let root_weak = cx.weak_entity();
+        let trailing_weak = root_weak.clone();
+        prompt.update(cx, |prompt, cx| {
+            prompt.set_leading_controls(
+                move |window, cx| {
+                    let Some(root) = root_weak.upgrade() else {
+                        return Vec::new();
+                    };
+                    root.update(cx, |root, cx| root.render_composer_leading(window, cx))
+                },
+                cx,
+            );
+            prompt.set_trailing_controls(
+                move |window, cx| {
+                    let Some(root) = trailing_weak.upgrade() else {
+                        return Vec::new();
+                    };
+                    root.update(cx, |root, cx| root.render_composer_trailing(window, cx))
+                },
+                cx,
+            );
+            prompt.set_attach_visible(false, cx);
+            prompt.set_enhance_visible(false, cx);
+        });
         let sidebar_nav = cx.new(|cx| {
             SidebarNav::new("tact-session-nav", window, cx)
                 .with_presentation(SidebarNavPresentation::Embedded)
@@ -235,6 +279,18 @@ impl DesktopRoot {
         let extension_search = cx.new(|cx| {
             gpui_component::input::InputState::new(window, cx)
                 .placeholder(i18n::text(snapshot.language, TextKey::SearchExtensions))
+        });
+        let rail_search = cx.new(|cx| {
+            gpui_component::input::InputState::new(window, cx).placeholder(
+                match snapshot.language {
+                    tact_catalog::CatalogLocale::En => "Find a session",
+                    tact_catalog::CatalogLocale::Zh => "查找会话",
+                },
+            )
+        });
+        let model_search = cx.new(|cx| {
+            gpui_component::input::InputState::new(window, cx)
+                .placeholder(i18n::text(snapshot.language, TextKey::SearchModels))
         });
         let gate_confirm_focus = cx.focus_handle();
         let gate_primary_focus = cx.focus_handle();
@@ -272,6 +328,20 @@ impl DesktopRoot {
                     cx.notify();
                 }
                 SidebarNavEvent::CollapsedChanged { .. } => {}
+            },
+        );
+        let rail_search_subscription = cx.subscribe_in(
+            &rail_search,
+            window,
+            |this, _, event: &gpui_component::input::InputEvent, window, cx| {
+                if matches!(event, gpui_component::input::InputEvent::Change) {
+                    let query = this.rail_search.read(cx).value().to_string();
+                    this.sidebar_query = query.clone();
+                    this.sidebar_nav.update(cx, |nav, cx| {
+                        nav.set_query(query, window, cx);
+                    });
+                    cx.notify();
+                }
             },
         );
         let extensions_table_subscription = cx.subscribe_in(
@@ -380,6 +450,20 @@ impl DesktopRoot {
                 }
             },
         );
+        let model_search_subscription = cx.subscribe_in(
+            &model_search,
+            window,
+            |this, _, event: &gpui_component::input::InputEvent, _, cx| {
+                if matches!(event, gpui_component::input::InputEvent::Change) {
+                    this.model_picker_query = this.model_search.read(cx).value().to_string();
+                    // A query change reorders nothing but rebuilds the visible
+                    // set, so the old cursor would point at a different model.
+                    this.model_picker_cursor = 0;
+                    this.model_picker_scroll.set_offset(point(px(0.), px(0.)));
+                    cx.notify();
+                }
+            },
+        );
 
         let events_task = events.map(|events| {
             cx.spawn(async move |this: WeakEntity<Self>, cx| {
@@ -407,6 +491,8 @@ impl DesktopRoot {
             pending_row_updates: HashSet::new(),
             command_search,
             command_scope: None,
+            command_hit_count: 0,
+            command_query: String::new(),
             form_input,
             criteria_input,
             session_search,
@@ -431,6 +517,10 @@ impl DesktopRoot {
             gate_keyboard_cursor: 0,
             permission_picker_open: false,
             model_picker_cursor: 0,
+            model_search,
+            model_picker_query: String::new(),
+            model_picker_scroll: ScrollHandle::new(),
+            overlay_epoch: 0,
             submitted_gates: HashSet::new(),
             queue_cursor: 0,
             queue_expanded: false,
@@ -447,13 +537,16 @@ impl DesktopRoot {
             mentions_root: None,
             prompt_mentions: Vec::new(),
             sidebar_query: String::new(),
+            rail_search,
             _subscriptions: vec![
                 editor_subscription,
                 search_subscription,
                 sidebar_subscription,
+                rail_search_subscription,
                 extensions_table_subscription,
                 session_search_subscription,
                 extension_search_subscription,
+                model_search_subscription,
             ],
             attachments: Vec::new(),
         };
@@ -510,33 +603,76 @@ impl DesktopRoot {
     }
 
     fn sync_sidebar_nav(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let items = self
-            .snapshot
-            .sessions
-            .items
-            .iter()
-            .map(|session| {
-                let title = self.session_title(session);
-                let locked = session.locked
-                    && self.snapshot.session.id.as_ref() != Some(&SessionId(session.id.clone()));
-                let badge = if locked {
-                    self.text(TextKey::Locked).to_string()
-                } else if self.snapshot.language == tact_catalog::CatalogLocale::Zh {
-                    format!("{} 条", session.message_count)
-                } else {
-                    session.message_count.to_string()
-                };
-                SidebarNavItem::new(session.id.clone(), title)
-                    .badge(badge)
-                    .disabled(locked)
-            })
-            .collect::<Vec<_>>();
-        let section = SidebarSection::new("sessions", self.text(TextKey::Sessions)).items(items);
-        let active = self.snapshot.session.id.as_ref().map(|id| id.0.clone());
-        let labels = sidebar_nav_labels(self.snapshot.language);
+        let today = chrono::Local::now().date_naive();
+        let yesterday = today - chrono::Duration::days(1);
+        let mut buckets: [Vec<SidebarNavItem>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+        for session in &self.snapshot.sessions.items {
+            let title = self.session_title(session);
+            let locked = session.locked
+                && self.snapshot.session.id.as_ref() != Some(&SessionId(session.id.clone()));
+            let detail = crate::ui::session_rail::session_detail(
+                session,
+                chrono::Utc::now(),
+                self.snapshot.language,
+            );
+            let updated = session.updated_at.with_timezone(&chrono::Local);
+            let day = updated.date_naive();
+            let bucket = if day >= today {
+                0
+            } else if day == yesterday {
+                1
+            } else {
+                2
+            };
+            let trailing = if bucket == 0 {
+                updated.format("%H:%M").to_string()
+            } else {
+                updated.format("%b %-d").to_string()
+            };
+            let item = SidebarNavItem::new(session.id.clone(), title)
+                .detail(detail)
+                .trailing(trailing)
+                .disabled(locked);
+            let item = if locked {
+                item.badge(self.text(TextKey::Locked).to_string())
+            } else {
+                item
+            };
+            buckets[bucket].push(item);
+        }
+        let (labels, active) = (
+            sidebar_nav_labels(self.snapshot.language),
+            self.snapshot.session.id.as_ref().map(|id| id.0.clone()),
+        );
+        let (today_label, yesterday_label, earlier_label) = match self.snapshot.language {
+            tact_catalog::CatalogLocale::En => ("TODAY", "YESTERDAY", "EARLIER"),
+            tact_catalog::CatalogLocale::Zh => ("今天", "昨天", "更早"),
+        };
+        let mut sections = Vec::new();
+        for (index, label) in [today_label, yesterday_label, earlier_label]
+            .into_iter()
+            .enumerate()
+        {
+            if buckets[index].is_empty() {
+                continue;
+            }
+            sections.push(
+                SidebarSection::new(
+                    SharedString::from(format!("sessions-{index}")),
+                    SharedString::from(label),
+                )
+                .items(std::mem::take(&mut buckets[index])),
+            );
+        }
+        if sections.is_empty() {
+            sections.push(
+                SidebarSection::new("sessions", self.text(TextKey::Sessions)).items(Vec::new()),
+            );
+        }
         self.sidebar_nav.update(cx, |nav, cx| {
             nav.set_labels(labels, window, cx);
-            nav.set_sections([section], cx);
+            nav.set_chrome_visible(false, cx);
+            nav.set_sections(sections, cx);
             if let Some(active) = active {
                 nav.set_active_item(active, cx);
             }
@@ -722,11 +858,36 @@ impl DesktopRoot {
             self.overlay_stack.push(current);
         }
         self.overlay = Some(overlay);
+        // Keys the entrance animation, so every opening plays it once
+        // instead of only the first one for the lifetime of the element.
+        self.overlay_epoch = self.overlay_epoch.wrapping_add(1);
         self.overlay_focus_pending = true;
     }
 
     fn close_overlay(&mut self) {
         self.overlay = self.overlay_stack.pop();
+    }
+
+    /// The overlay's variant as a comparable label.
+    ///
+    /// `Overlay` carries state that is not `PartialEq`, and a test that asks
+    /// "did this command open, switch, or close a surface?" only needs the
+    /// shape of the overlay, not its payload.
+    #[cfg(test)]
+    fn overlay_kind(&self) -> Option<&'static str> {
+        self.overlay.as_ref().map(|overlay| match overlay {
+            Overlay::CommandCenter => "command-center",
+            Overlay::Settings => "settings",
+            Overlay::Form(_) => "form",
+            Overlay::Reader(_) => "reader",
+            Overlay::Subagent(_) => "subagent",
+            Overlay::ModelPicker(_) => "model-picker",
+            Overlay::Gate(_) => "gate",
+            Overlay::Extensions(_) => "extensions",
+            Overlay::Hooks => "hooks",
+            Overlay::SessionManager => "session-manager",
+            Overlay::Background => "background",
+        })
     }
 
     fn clear_overlays(&mut self) {
@@ -915,7 +1076,7 @@ impl DesktopRoot {
         self.snapshot.clone()
     }
 
-    #[cfg(feature = "ui-capture")]
+    #[cfg(any(test, feature = "ui-capture"))]
     pub(crate) fn set_snapshot_for_capture(
         &mut self,
         snapshot: Arc<DesktopSnapshot>,
@@ -958,6 +1119,31 @@ impl DesktopRoot {
         self.scroller
             .update(cx, |state, cx| state.scroll_to_item(index, cx));
         cx.notify();
+    }
+
+    #[cfg(feature = "ui-capture")]
+    pub(crate) fn capture_show_reader(
+        &mut self,
+        request: tact_desktop_core::ReaderRequest,
+        cx: &mut Context<Self>,
+    ) {
+        self.handle_effect(DesktopEffect::OpenReader(request), cx);
+    }
+
+    #[cfg(feature = "ui-capture")]
+    pub(crate) fn capture_open_hooks(&mut self) {
+        self.open_overlay(Overlay::Hooks);
+    }
+
+    #[cfg(feature = "ui-capture")]
+    pub(crate) fn capture_open_subagent(&mut self, id: &str) {
+        self.open_overlay(Overlay::Subagent(id.to_string()));
+    }
+
+    #[cfg(feature = "ui-capture")]
+    pub(crate) fn capture_open_extensions_manager(&mut self, tab: ExtensionsTab) {
+        self.open_overlay(Overlay::Extensions(tab));
+        self.extension_manage = true;
     }
 
     #[cfg(feature = "ui-capture")]
@@ -1065,15 +1251,21 @@ impl DesktopRoot {
                 .context_window(self.snapshot.runtime.usage.context_window.unwrap_or(0) as u64)
         })
         .collect();
+        let running = matches!(
+            self.snapshot.session.phase,
+            SessionPhase::Running | SessionPhase::Starting | SessionPhase::Opening
+        );
+        let footer_status: Option<SharedString> = running.then(|| {
+            SharedString::from(match self.snapshot.language {
+                tact_catalog::CatalogLocale::En => "Running · Esc interrupts",
+                tact_catalog::CatalogLocale::Zh => "运行中 · Esc 中断",
+            })
+        });
         self.prompt.update(cx, |prompt, cx| {
             prompt.set_models(models, cx);
             if !current_model.is_empty() {
                 prompt.set_selected_model(current_model.to_string(), cx);
             }
-            let running = matches!(
-                self.snapshot.session.phase,
-                SessionPhase::Running | SessionPhase::Starting | SessionPhase::Opening
-            );
             prompt.set_progress(
                 if running {
                     ProgressState::Running
@@ -1082,6 +1274,8 @@ impl DesktopRoot {
                 },
                 cx,
             );
+            prompt.set_progress_visible(false, cx);
+            prompt.set_footer_status(footer_status, cx);
             prompt.set_submit(PromptSubmit::Glyph, cx);
             prompt.set_mentions(mentions, cx);
         });
@@ -1492,6 +1686,7 @@ impl DesktopRoot {
                     let count = self.model_picker_len();
                     if count > 0 {
                         self.model_picker_cursor = (self.model_picker_cursor + 1) % count;
+                        self.reveal_model_cursor(cx);
                         cx.notify();
                     }
                     return true;
@@ -1501,6 +1696,7 @@ impl DesktopRoot {
                     if count > 0 {
                         self.model_picker_cursor =
                             self.model_picker_cursor.checked_sub(1).unwrap_or(count - 1);
+                        self.reveal_model_cursor(cx);
                         cx.notify();
                     }
                     return true;
@@ -1732,13 +1928,23 @@ impl DesktopRoot {
                 | BuiltinCommand::Plugin
                 | BuiltinCommand::Hooks),
             ) => {
-                self.open_overlay(Overlay::Extensions(match command {
-                    BuiltinCommand::Mcp => ExtensionsTab::Mcp,
-                    BuiltinCommand::Skill => ExtensionsTab::Skills,
-                    BuiltinCommand::Plugin => ExtensionsTab::Plugins,
-                    BuiltinCommand::Hooks => ExtensionsTab::Hooks,
-                    _ => ExtensionsTab::Mcp,
-                }));
+                if matches!(command, BuiltinCommand::Hooks) {
+                    self.open_overlay(Overlay::Hooks);
+                    self.dispatch(DesktopIntent::InvokeCommand {
+                        id: id.clone(),
+                        args: args.clone(),
+                    });
+                    self.refresh_hooks_surface();
+                    cx.notify();
+                    return;
+                } else {
+                    self.open_overlay(Overlay::Extensions(match command {
+                        BuiltinCommand::Mcp => ExtensionsTab::Mcp,
+                        BuiltinCommand::Skill => ExtensionsTab::Skills,
+                        BuiltinCommand::Plugin => ExtensionsTab::Plugins,
+                        _ => ExtensionsTab::Mcp,
+                    }));
+                }
                 self.dispatch(DesktopIntent::InvokeCommand { id, args });
             }
             CommandId::Setting(id) => {
@@ -1842,8 +2048,9 @@ impl DesktopRoot {
                 | tact_catalog::CliEntry::HooksTrust
                 | tact_catalog::CliEntry::HooksForget,
             ) => {
-                self.open_overlay(Overlay::Extensions(ExtensionsTab::Hooks));
+                self.open_overlay(Overlay::Hooks);
                 self.dispatch(DesktopIntent::InvokeCommand { id, args });
+                self.refresh_hooks_surface();
             }
             CommandId::BuiltinPath {
                 root: BuiltinCommand::Goal,
@@ -1914,7 +2121,7 @@ impl DesktopRoot {
                 root: BuiltinCommand::Hooks,
                 ref path,
             } => {
-                self.open_overlay(Overlay::Extensions(ExtensionsTab::Hooks));
+                self.open_overlay(Overlay::Hooks);
                 self.dispatch(DesktopIntent::InvokeCommand {
                     id: if matches!(path.as_slice(), ["hooks", "trust" | "forget"]) {
                         CommandId::BuiltinPath {
@@ -1948,6 +2155,16 @@ impl DesktopRoot {
         cx.notify();
     }
 
+    fn refresh_hooks_surface(&mut self) {
+        self.dispatch(DesktopIntent::InvokeCommand {
+            id: CommandId::BuiltinPath {
+                root: BuiltinCommand::Hooks,
+                path: vec!["hooks", "list"],
+            },
+            args: CommandArguments::default(),
+        });
+    }
+
     fn open_model_picker(&mut self, id: SettingId, cx: &mut Context<Self>) {
         let (models, selected) = if id == SettingId::SubagentModel {
             (
@@ -1960,21 +2177,67 @@ impl DesktopRoot {
                 self.snapshot.composer.model.as_ref(),
             )
         };
+        // Each opening starts from the unfiltered list, at the selected model.
+        self.model_picker_query.clear();
+        self.model_picker_scroll.set_offset(point(px(0.), px(0.)));
         self.model_picker_cursor = models
             .iter()
             .position(|model| model.as_ref() == selected)
             .unwrap_or(0);
         self.open_overlay(Overlay::ModelPicker(id));
+        // The selected model can sit past the first screenful; open with it in
+        // view rather than at the top of an unfiltered index.
+        self.reveal_model_cursor(cx);
         cx.notify();
     }
 
     fn model_picker_len(&self) -> usize {
-        match self.overlay {
+        self.model_picker_models().len()
+    }
+
+    /// The models the open picker can offer right now, in configuration order.
+    fn model_picker_models(&self) -> Vec<Arc<str>> {
+        let models: &[Arc<str>] = match self.overlay {
             Some(Overlay::ModelPicker(SettingId::SubagentModel)) => {
-                self.snapshot.composer.subagent_models.len()
+                &self.snapshot.composer.subagent_models
             }
-            Some(Overlay::ModelPicker(_)) => self.snapshot.composer.models.len(),
-            _ => 0,
+            Some(Overlay::ModelPicker(_)) => &self.snapshot.composer.models,
+            _ => return Vec::new(),
+        };
+        let query = self.model_picker_query.trim().to_lowercase();
+        models
+            .iter()
+            .filter(|model| query.is_empty() || model.to_lowercase().contains(&query))
+            .cloned()
+            .collect()
+    }
+
+    /// Keeps the keyboard cursor on screen after it moves.
+    ///
+    /// Rows are a fixed height, so the visible band is arithmetic rather than
+    /// a query to the scroll view. The scroll offset is read back on every
+    /// move, which is what lets the pointer and the keyboard share the list:
+    /// a wheel scroll is respected, not undone by the next arrow key.
+    fn reveal_model_cursor(&self, cx: &mut Context<Self>) {
+        let count = self.model_picker_len();
+        if count == 0 {
+            return;
+        }
+        let row = px(MODEL_PICKER_ROW_HEIGHT);
+        let visible = px(MODEL_PICKER_ROW_HEIGHT * MODEL_PICKER_VISIBLE_ROWS as f32);
+        let top = self.model_picker_scroll.offset().y;
+        let cursor_top = row * self.model_picker_cursor as f32;
+        let cursor_bottom = cursor_top + row;
+        let offset = if cursor_top < top {
+            Some(cursor_top)
+        } else if cursor_bottom > top + visible {
+            Some(cursor_bottom - visible)
+        } else {
+            None
+        };
+        if let Some(offset) = offset {
+            self.model_picker_scroll.set_offset(point(px(0.), offset));
+            cx.notify();
         }
     }
 
@@ -1982,12 +2245,8 @@ impl DesktopRoot {
         let Some(Overlay::ModelPicker(target)) = self.overlay.clone() else {
             return;
         };
-        let models = if target == SettingId::SubagentModel {
-            &self.snapshot.composer.subagent_models
-        } else {
-            &self.snapshot.composer.models
-        };
-        let Some(value) = models
+        let Some(value) = self
+            .model_picker_models()
             .get(self.model_picker_cursor)
             .map(ToString::to_string)
         else {
@@ -2032,12 +2291,19 @@ impl DesktopRoot {
         }
         self.last_surface_revision = Some(key);
         if kind == ReaderKind::TasksDag {
-            reader.markdown = crate::ui::task_dag::dependency_lines(
+            let lines = crate::ui::task_dag::dependency_lines(
                 &self.snapshot.inspector.tasks,
                 self.snapshot.language,
-            )
-            .join("\n")
-            .into();
+            );
+            reader.markdown = if lines.is_empty() {
+                match self.snapshot.language {
+                    tact_catalog::CatalogLocale::En => "No tasks yet.",
+                    tact_catalog::CatalogLocale::Zh => "还没有任务。",
+                }
+                .into()
+            } else {
+                lines.join("\n").into()
+            };
             return;
         }
         if kind == ReaderKind::Balance {
@@ -2510,6 +2776,7 @@ impl DesktopRoot {
     }
 
     fn rebuild_command_search(&mut self, window: &mut Window, cx: &mut Context<Self>, query: &str) {
+        self.command_query = query.to_string();
         let mut entries = if let Some(parent) = self.command_scope.as_ref() {
             let catalog = tact_catalog::builtins();
             let parent_path = catalog
@@ -2573,20 +2840,50 @@ impl DesktopRoot {
             entries.truncate(8);
         }
         let availability = self.command_availability();
+        let locale = self.snapshot.language;
         let items = entries
             .into_iter()
             .map(|entry| {
                 let mut keywords = entry.aliases.clone();
                 keywords.push(entry.path.join(" "));
-                CommandSearchItem::new(
-                    command_key(&entry.id),
-                    entry.label.get(self.snapshot.language),
-                )
-                .subtitle(entry.description.get(self.snapshot.language).to_string())
-                .keywords(keywords)
-                .disabled(!is_enabled(entry, availability))
+                // The prototype's rows read "GROUP · description" and carry
+                // the invocation on the right, so the palette teaches the
+                // command instead of only naming it.
+                let group = entry.group.label().get(locale);
+                let subtitle = format!(
+                    "{} · {}",
+                    group.to_uppercase(),
+                    entry.description.get(locale)
+                );
+                let hint = match &entry.id {
+                    CommandId::Builtin(_) | CommandId::BuiltinPath { .. } => {
+                        format!("/{}", entry.path.join(" "))
+                    }
+                    CommandId::Setting(_) => "setting".to_string(),
+                    CommandId::Cli(_) => format!("tact {}", entry.path.join(" ")),
+                    CommandId::Composer(_) => "composer".to_string(),
+                    CommandId::DynamicSkill(_) => "skill".to_string(),
+                };
+                let icon = match entry.group {
+                    tact_catalog::CommandGroup::Session => IconName::PanelLeft,
+                    tact_catalog::CommandGroup::Run => IconName::Play,
+                    tact_catalog::CommandGroup::Appearance => IconName::Palette,
+                    tact_catalog::CommandGroup::Account => IconName::CircleUser,
+                    tact_catalog::CommandGroup::Goals => IconName::CircleCheck,
+                    tact_catalog::CommandGroup::Extensions => IconName::LayoutDashboard,
+                    tact_catalog::CommandGroup::Readers => IconName::BookOpen,
+                    tact_catalog::CommandGroup::Composer => IconName::PanelRight,
+                    tact_catalog::CommandGroup::Cli => IconName::Settings,
+                };
+                CommandSearchItem::new(command_key(&entry.id), entry.label.get(locale))
+                    .icon(icon.path())
+                    .subtitle(subtitle)
+                    .shortcut(hint)
+                    .keywords(keywords)
+                    .disabled(!is_enabled(entry, availability))
             })
             .collect::<Vec<_>>();
+        self.command_hit_count = items.len();
         let locale = self.snapshot.language;
         self.command_search.update(cx, |search, cx| {
             search.set_labels(command_search_labels(locale), cx);
@@ -2671,10 +2968,37 @@ impl DesktopRoot {
     }
 
     fn dismiss_topmost(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A pending gate ignores Esc unless it denies the request: closing the
+        // dialog silently would leave the run blocked behind a hidden gate.
+        if let Some(Overlay::Gate(gate)) = self.overlay.clone() {
+            if gate.status == GateState::Pending {
+                self.dispatch(DesktopIntent::RespondGate {
+                    session_epoch: gate.session_epoch,
+                    request_id: gate.request_id.0,
+                    response: match gate.kind {
+                        GateKind::Select => GateResponse::Select(None),
+                        GateKind::MultiSelect => GateResponse::MultiSelect(None),
+                    },
+                });
+                self.submitted_gates.insert(gate.request_id.0);
+            }
+            self.close_overlay();
+            self.restore_focus(window, cx);
+            cx.notify();
+            return;
+        }
         if self.overlay.is_some() {
             self.close_overlay();
             self.restore_focus(window, cx);
             cx.notify();
+            return;
+        }
+        // Esc interrupts a live run before it hides navigation chrome.
+        if matches!(
+            self.snapshot.session.phase,
+            SessionPhase::Running | SessionPhase::Starting | SessionPhase::Opening
+        ) {
+            self.request_cancel_run(window, cx);
             return;
         }
         let layout = crate::ui::layout::layout(
@@ -2767,21 +3091,12 @@ impl DesktopRoot {
     }
 
     fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let project = self.snapshot.project.display_name.clone();
-        let phase =
-            crate::ui::title_bar::status_text(&self.snapshot.session, self.snapshot.language);
-        let tone = match self.snapshot.session.phase {
-            SessionPhase::Ready | SessionPhase::Running => StatusTone::Success,
-            SessionPhase::Opening | SessionPhase::Starting | SessionPhase::Switching => {
-                StatusTone::Info
-            }
-            SessionPhase::Disconnected { .. } | SessionPhase::Failed { .. } => StatusTone::Danger,
-            SessionPhase::Empty | SessionPhase::Closing => StatusTone::Neutral,
-        };
-        let active = matches!(
-            self.snapshot.session.phase,
-            SessionPhase::Opening | SessionPhase::Starting | SessionPhase::Switching
-        );
+        let project = self
+            .snapshot
+            .project
+            .repository
+            .clone()
+            .unwrap_or_else(|| self.snapshot.project.display_name.clone());
         let session_label = self
             .snapshot
             .session
@@ -2789,7 +3104,8 @@ impl DesktopRoot {
             .as_ref()
             .map(|id| {
                 let raw = id.0.to_string();
-                format!("session {}", &raw[..raw.len().min(4)])
+                let short = raw.rsplit('-').next().unwrap_or(&raw);
+                format!("session {}", &short[..short.len().min(4)])
             })
             .unwrap_or_else(|| self.text(TextKey::NoSession).to_string());
         let appearance_label = match self.snapshot.appearance {
@@ -2810,9 +3126,10 @@ impl DesktopRoot {
                     .role(Role::Toolbar)
                     .aria_label(self.text(TextKey::TitleBar))
                     .size_full()
-                    .gap_2()
+                    .gap(px(10.))
                     .items_center()
-                    .px_3()
+                    .pl(px(0.))
+                    .pr(px(18.))
                     .font_family(theme::native_font_family())
                     .border_b(px(theme::border_width()))
                     .border_color(cx.theme().border)
@@ -2849,11 +3166,11 @@ impl DesktopRoot {
                             .child(
                                 div()
                                     .flex_none()
-                                    .size(px(24.))
-                                    .rounded_md()
+                                    .size(px(27.))
+                                    .rounded(px(7.))
                                     .bg(cx.theme().primary)
                                     .text_color(cx.theme().primary_foreground)
-                                    .text_sm()
+                                    .text_size(px(18.))
                                     .font_bold()
                                     .flex()
                                     .items_center()
@@ -2865,17 +3182,20 @@ impl DesktopRoot {
                                     .gap_0()
                                     .child(
                                         div()
-                                            .text_sm()
+                                            .text_size(px(17.))
                                             .font_semibold()
-                                            .line_height(px(16.))
+                                            .line_height(px(17.))
                                             .child("tact"),
                                     )
                                     .child(
                                         div()
-                                            .text_xs()
+                                            .text_size(px(10.))
+                                            .font_family("Lilex")
                                             .text_color(cx.theme().muted_foreground)
                                             .line_height(px(12.))
-                                            .child(self.text(TextKey::DesktopPreview)),
+                                            .child(
+                                                self.text(TextKey::DesktopPreview).to_uppercase(),
+                                            ),
                                     ),
                             ),
                     )
@@ -2889,15 +3209,13 @@ impl DesktopRoot {
                             .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
                             .aria_label(self.text(TextKey::OpenProject))
                             .cursor_pointer()
-                            .gap_2()
+                            .gap(px(9.))
                             .items_center()
-                            .rounded_lg()
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .bg(cx.theme().popover)
-                            .px_3()
-                            .py_1()
-                            .hover(|style| style.bg(cx.theme().muted))
+                            .rounded(px(8.))
+                            .bg(cx.theme().muted)
+                            .px(px(10.))
+                            .py(px(7.))
+                            .hover(|style| style.bg(cx.theme().border))
                             .child(
                                 Icon::new(IconName::Folder)
                                     .size(px(13.))
@@ -2911,6 +3229,19 @@ impl DesktopRoot {
                                     .font_semibold()
                                     .child(project.to_string()),
                             )
+                            .when_some(self.snapshot.project.branch.clone(), |switcher, branch| {
+                                switcher
+                                    .child(div().h(px(12.)).w(px(1.)).bg(cx.theme().border))
+                                    .child(
+                                        div()
+                                            .max_w(px(150.))
+                                            .truncate()
+                                            .text_xs()
+                                            .font_family("Lilex")
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(branch.to_string()),
+                                    )
+                            })
                             .child(div().h(px(12.)).w(px(1.)).bg(cx.theme().border))
                             .child(
                                 div()
@@ -2930,11 +3261,6 @@ impl DesktopRoot {
                             })),
                     )
                     .child(div().flex_1())
-                    .child(
-                        StatusBadge::new("tact-title-status", phase)
-                            .tone(tone)
-                            .active(active),
-                    )
                     .child(
                         h_flex()
                             .id("appearance-toggle")
@@ -3009,6 +3335,27 @@ impl DesktopRoot {
                             })),
                     )
                     .child(
+                        // UI-parity placeholder until account identity is wired.
+                        div()
+                            .id("account-avatar")
+                            .role(Role::Button)
+                            .focusable()
+                            .tab_stop(true)
+                            .aria_label("Account")
+                            .cursor_pointer()
+                            .flex_none()
+                            .size(px(31.))
+                            .rounded(px(8.))
+                            .bg(cx.theme().foreground)
+                            .text_color(cx.theme().background)
+                            .text_size(px(10.))
+                            .font_semibold()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(local_user_initials()),
+                    )
+                    .child(
                         div()
                             .id("toggle-inspector")
                             .debug_selector(|| "toggle-inspector".into())
@@ -3043,17 +3390,39 @@ impl DesktopRoot {
 
     fn render_session_rail(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let geometry = crate::ui::shell::geometry(self.snapshot.appearance);
-        let project = self.snapshot.project.display_name.clone();
+        let project = self
+            .snapshot
+            .project
+            .repository
+            .clone()
+            .unwrap_or_else(|| self.snapshot.project.display_name.clone());
+        let session_count = self.snapshot.sessions.items.len();
+        let project_meta = match (
+            self.snapshot.project.branch.as_deref(),
+            self.snapshot.language,
+        ) {
+            (Some(branch), tact_catalog::CatalogLocale::En) => {
+                format!("{session_count} sessions · {branch}")
+            }
+            (Some(branch), tact_catalog::CatalogLocale::Zh) => {
+                format!("{session_count} 个会话 · {branch}")
+            }
+            (None, tact_catalog::CatalogLocale::En) => format!("{session_count} sessions"),
+            (None, tact_catalog::CatalogLocale::Zh) => format!("{session_count} 个会话"),
+        };
         self.sync_sidebar_nav(window, cx);
 
         v_flex()
             .id("session-rail")
+            .debug_selector(|| "session-rail".into())
             .role(Role::Navigation)
             .aria_label(self.text(TextKey::ProjectsAndSessions))
             .w(px(f32::from(geometry.rail_width) * self.snapshot.text_scale))
             .h_full()
             .flex_none()
-            .p_2()
+            .pt(px(14.))
+            .px(px(12.))
+            .pb(px(12.))
             .gap_2()
             .font_family(theme::native_font_family())
             .border_r(px(theme::border_width()))
@@ -3106,11 +3475,7 @@ impl DesktopRoot {
                                     .truncate()
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child(format!(
-                                        "{} · {}",
-                                        self.text(TextKey::Sessions),
-                                        self.snapshot.sessions.items.len()
-                                    )),
+                                    .child(project_meta.clone()),
                             ),
                     )
                     .when(!self.snapshot.project.available, |row| {
@@ -3137,74 +3502,125 @@ impl DesktopRoot {
             )
             .child(
                 h_flex()
-                    .gap_1()
-                    .items_center()
-                    .child(filter_button(
-                        self.text(TextKey::Active),
-                        self.snapshot.sessions.filter == ArchiveFilter::Active,
-                        ArchiveFilter::Active,
-                        cx,
-                    ))
-                    .child(filter_button(
-                        self.text(TextKey::Archived),
-                        self.snapshot.sessions.filter == ArchiveFilter::Archived,
-                        ArchiveFilter::Archived,
-                        cx,
-                    ))
-                    .child(filter_button(
-                        self.text(TextKey::All),
-                        self.snapshot.sessions.filter == ArchiveFilter::All,
-                        ArchiveFilter::All,
-                        cx,
-                    ))
-                    .child(div().flex_1())
-                    .child(
-                        div()
-                            .id("resume-last")
-                            .role(Role::Button)
-                            .focusable()
-                            .tab_stop(true)
-                            .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
-                            .aria_label(self.text(TextKey::Resume))
-                            .cursor_pointer()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .size(px(22.))
-                            .rounded_md()
-                            .text_color(cx.theme().muted_foreground)
-                            .hover(|style| style.bg(cx.theme().muted))
-                            .child(
-                                Icon::new(IconName::RotateCw)
-                                    .size(px(13.))
-                                    .text_color(cx.theme().muted_foreground),
-                            )
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, _| {
-                                this.dispatch(DesktopIntent::ResumeLast);
-                            })),
-                    ),
-            )
-            .child(
-                div()
-                    .id("manage-sessions")
+                    .id("new-run")
+                    .debug_selector(|| "new-run".into())
                     .role(Role::Button)
                     .focusable()
                     .tab_stop(true)
                     .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
-                    .aria_label(self.text(TextKey::ManageSessions))
+                    .aria_label(self.text(TextKey::NewSession))
                     .cursor_pointer()
-                    .text_xs()
-                    .text_color(cx.theme().link)
-                    .child(self.text(TextKey::ManageSessions))
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                        this.remember_focus(window, cx);
-                        this.session_project_filter = this.snapshot.project.id.clone();
-                        this.session_search.update(cx, |input, cx| {
-                            input.focus(window, cx);
-                        });
-                        this.open_overlay(Overlay::SessionManager);
-                        this.overlay_focus_pending = false;
+                    .w_full()
+                    .h(px(37.))
+                    .mt(px(8.))
+                    .rounded(px(7.))
+                    .bg(cx.theme().primary)
+                    .text_color(cx.theme().primary_foreground)
+                    .px(px(10.))
+                    .gap(px(9.))
+                    .items_center()
+                    .child(Icon::new(IconName::Plus).size(px(15.)))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .whitespace_nowrap()
+                            .text_sm()
+                            .font_semibold()
+                            .child(self.text(TextKey::NewRun)),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .rounded(px(5.))
+                            .bg(gpui::rgba(0xffffff33))
+                            .px(px(5.))
+                            .py(px(1.))
+                            .text_size(px(10.))
+                            .font_family("Lilex")
+                            .child(keymap::new_session_hint()),
+                    )
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.dispatch(DesktopIntent::NewSession);
+                        cx.notify();
                     })),
+            )
+            .child(
+                h_flex()
+                    .id("rail-search")
+                    .debug_selector(|| "rail-search".into())
+                    .w_full()
+                    .h(px(33.))
+                    .mt(px(8.))
+                    .gap(px(8.))
+                    .items_center()
+                    .rounded(px(7.))
+                    .border_1()
+                    .border_color(cx.theme().sidebar_border)
+                    .bg(cx.theme().popover)
+                    .px(px(10.))
+                    .child(
+                        Icon::new(IconName::Search)
+                            .size(px(13.))
+                            .text_color(cx.theme().muted_foreground),
+                    )
+                    .child(
+                        div().flex_1().min_w_0().child(
+                            Input::new(&self.rail_search)
+                                .aria_label(self.text(TextKey::SearchSessions)),
+                        ),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .rounded(px(5.))
+                            .bg(cx.theme().muted)
+                            .px(px(5.))
+                            .py(px(1.))
+                            .text_size(px(10.))
+                            .font_family("Lilex")
+                            .text_color(cx.theme().muted_foreground)
+                            .child("/"),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .id("rail-sessions-header")
+                    .w_full()
+                    .mt(px(10.))
+                    .items_center()
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(10.))
+                            .font_family("Lilex")
+                            .text_color(cx.theme().muted_foreground)
+                            .child(self.text(TextKey::Sessions).to_uppercase()),
+                    )
+                    .child(
+                        div()
+                            .id("manage-sessions")
+                            .role(Role::Button)
+                            .focusable()
+                            .tab_stop(true)
+                            .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
+                            .aria_label(self.text(TextKey::ManageSessions))
+                            .cursor_pointer()
+                            .text_size(px(11.))
+                            .text_color(cx.theme().muted_foreground)
+                            .hover(|style| style.text_color(cx.theme().foreground))
+                            .child(self.text(TextKey::Manage))
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                this.remember_focus(window, cx);
+                                this.session_project_filter = this.snapshot.project.id.clone();
+                                this.session_search.update(cx, |input, cx| {
+                                    input.focus(window, cx);
+                                });
+                                this.open_overlay(Overlay::SessionManager);
+                                this.overlay_focus_pending = false;
+                            })),
+                    ),
             )
             .when_some(self.snapshot.sessions.error.clone(), |rail, failure| {
                 rail.child(
@@ -3245,13 +3661,39 @@ impl DesktopRoot {
             .child(
                 div()
                     .id("session-list")
+                    .debug_selector(|| "session-list".into())
                     .min_h_0()
                     .flex_1()
+                    .mt(px(6.))
                     .child(self.sidebar_nav.clone()),
             )
-            .child(div().flex_1())
+            .child(
+                h_flex()
+                    .id("view-all-sessions")
+                    .debug_selector(|| "view-all-sessions".into())
+                    .w_full()
+                    .items_center()
+                    .cursor_pointer()
+                    .text_size(px(11.))
+                    .text_color(cx.theme().muted_foreground)
+                    .child(div().flex_1().child(self.text(TextKey::ViewAllSessions)))
+                    .child(
+                        div()
+                            .font_family("Lilex")
+                            .child(self.snapshot.sessions.items.len().to_string()),
+                    )
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.remember_focus(window, cx);
+                        this.session_project_filter = this.snapshot.project.id.clone();
+                        this.open_overlay(Overlay::SessionManager);
+                        this.overlay_focus_pending = false;
+                        cx.notify();
+                    })),
+            )
             .child(
                 v_flex()
+                    .id("rail-extensions")
+                    .debug_selector(|| "rail-extensions".into())
                     .gap_1()
                     .child(
                         div()
@@ -3326,45 +3768,63 @@ impl DesktopRoot {
                         )),
                     ),
             )
-            .when_some(self.account_summary(), |rail, (label, detail, ratio)| {
-                rail.child(
-                    v_flex()
-                        .gap_1()
-                        .rounded_lg()
-                        .border_1()
-                        .border_color(cx.theme().sidebar_border)
-                        .bg(cx.theme().popover)
-                        .p_2()
-                        .child(
-                            h_flex()
-                                .items_center()
-                                .child(div().flex_1().text_xs().font_semibold().child(label))
-                                .child(
+            .when_some(
+                self.account_summary(),
+                |rail, (label, detail, ratio, resets)| {
+                    rail.child(
+                        v_flex()
+                            .gap_1()
+                            .rounded_lg()
+                            .border_1()
+                            .border_color(cx.theme().sidebar_border)
+                            .bg(cx.theme().popover)
+                            .p_2()
+                            .child(
+                                h_flex()
+                                    .items_center()
+                                    .child(div().flex_1().text_xs().font_semibold().child(label))
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_family("Lilex")
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(detail),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .h(px(4.))
+                                    .w_full()
+                                    .rounded_full()
+                                    .bg(cx.theme().muted)
+                                    .child(
+                                        div()
+                                            .h_full()
+                                            .w(px((f32::from(geometry.rail_width) - 36.0)
+                                                * self.snapshot.text_scale
+                                                * ratio.clamp(0.0, 1.0)))
+                                            .rounded_full()
+                                            .bg(cx.theme().success),
+                                    ),
+                            )
+                            .when_some(resets, |card, resets| {
+                                card.child(
                                     div()
-                                        .text_xs()
-                                        .font_family("Lilex")
+                                        .text_size(px(10.))
                                         .text_color(cx.theme().muted_foreground)
-                                        .child(detail),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .h(px(4.))
-                                .w_full()
-                                .rounded_full()
-                                .bg(cx.theme().muted)
-                                .child(
-                                    div()
-                                        .h_full()
-                                        .w(px((f32::from(geometry.rail_width) - 36.0)
-                                            * self.snapshot.text_scale
-                                            * ratio.clamp(0.0, 1.0)))
-                                        .rounded_full()
-                                        .bg(cx.theme().success),
-                                ),
-                        ),
-                )
-            })
+                                        .child(match self.snapshot.language {
+                                            tact_catalog::CatalogLocale::En => {
+                                                format!("Quota resets {resets}")
+                                            }
+                                            tact_catalog::CatalogLocale::Zh => {
+                                                format!("配额将在 {resets} 重置")
+                                            }
+                                        }),
+                                )
+                            }),
+                    )
+                },
+            )
             .child(
                 h_flex()
                     .id("open-settings")
@@ -3400,7 +3860,7 @@ impl DesktopRoot {
             )
     }
 
-    fn account_summary(&self) -> Option<(String, String, f32)> {
+    fn account_summary(&self) -> Option<(String, String, f32, Option<String>)> {
         match self.snapshot.account.as_ref()? {
             tact_desktop_core::AccountView::UsageQuota {
                 plan,
@@ -3416,16 +3876,19 @@ impl DesktopRoot {
                     .as_deref()
                     .map(str::to_string)
                     .unwrap_or_else(|| self.text(TextKey::Quota).to_string());
-                let detail = match (used, limit) {
-                    (Some(used), Some(limit)) => format!("{used}/{limit}"),
-                    _ => resets_at.as_deref().unwrap_or("").to_string(),
-                };
-                Some((label, detail, ratio))
+                let detail = format!("{:.0}%", ratio.clamp(0.0, 1.0) * 100.0);
+                Some((
+                    label,
+                    detail,
+                    ratio,
+                    resets_at.as_deref().map(str::to_string),
+                ))
             }
             tact_desktop_core::AccountView::Balance { total, .. } => Some((
                 self.text(TextKey::Balance).to_string(),
                 total.to_string(),
                 1.0,
+                None,
             )),
             tact_desktop_core::AccountView::Error(_) => None,
         }
@@ -3573,13 +4036,14 @@ impl DesktopRoot {
             &assistant_selections,
             cx,
         );
-        let title = transcript
+        let run_text = transcript
             .iter()
             .find_map(|row| match &row.body {
-                RowBody::User(user) => Some(user.text.to_string()),
+                RowBody::User(user) => Some(strip_leading_url(&user.text)),
                 _ => None,
             })
             .unwrap_or_else(|| self.snapshot.session.title.to_string());
+        let (title, subtitle) = split_run_text(run_text);
         let session_label = self
             .snapshot
             .session
@@ -3587,7 +4051,8 @@ impl DesktopRoot {
             .as_ref()
             .map(|id| {
                 let raw = id.0.to_string();
-                raw[..raw.len().min(4)].to_uppercase()
+                let short = raw.rsplit('-').next().unwrap_or(&raw);
+                short[..short.len().min(4)].to_uppercase()
             })
             .unwrap_or_else(|| "—".to_string());
         let elapsed = self
@@ -3617,24 +4082,30 @@ impl DesktopRoot {
         )
         .scrollbar(true)
         .jump_button(false)
-        .p_5();
+        .p_0()
+        .with_row_style(full_width_row_style());
         v_flex()
             .id("transcript-column")
             .flex_1()
             .min_w_0()
             .h_full()
+            .w_full()
+            .max_w(px(900.))
+            .mx_auto()
             .child(
                 v_flex()
                     .flex_none()
                     .gap_2()
-                    .px_8()
-                    .pt_6()
-                    .pb_2()
+                    .px_0()
+                    .pt(px(50.))
+                    .pb(px(28.))
+                    .border_b_1()
+                    .border_color(cx.theme().border)
                     .child(
                         h_flex()
                             .gap_2()
                             .items_center()
-                            .text_xs()
+                            .text_size(px(10.))
                             .font_semibold()
                             .text_color(cx.theme().muted_foreground)
                             .child(div().size(px(6.)).rounded_full().bg(if running {
@@ -3665,10 +4136,25 @@ impl DesktopRoot {
                         let cjk_title = is_cjk_title(self.snapshot.language, &title);
                         div()
                             .max_w(px(900.))
+                            .font_family("SF Pro Display")
                             .font_semibold()
-                            .when(cjk_title, |title| title.text_xl().line_height(px(22.4)))
-                            .when(!cjk_title, |title| title.text_2xl().line_height(px(34.)))
+                            .when(cjk_title, |title| {
+                                title.text_size(px(32.)).line_height(px(39.7))
+                            })
+                            .when(!cjk_title, |title| {
+                                title.text_size(px(40.)).line_height(px(43.2))
+                            })
                             .child(title)
+                    })
+                    .when_some(subtitle, |column, subtitle| {
+                        column.child(
+                            div()
+                                .max_w(px(900.))
+                                .text_size(px(16.))
+                                .line_height(px(24.))
+                                .text_color(cx.theme().muted_foreground)
+                                .child(subtitle),
+                        )
                     }),
             )
             .child(div().flex_1().min_h_0().child(scroller))
@@ -3723,37 +4209,54 @@ impl DesktopRoot {
 
     fn render_inspector(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let geometry = crate::ui::shell::geometry(self.snapshot.appearance);
+        let goals = self.snapshot.inspector.goals.len();
+        let agents = self.snapshot.inspector.subagents.len();
         let tabs = [
-            (InspectorTab::Run, self.text(TextKey::Run)),
-            (InspectorTab::Goals, self.text(TextKey::Goals)),
-            (InspectorTab::Subagents, self.text(TextKey::Subagents)),
-            (InspectorTab::Context, self.text(TextKey::Context)),
-        ];
-        let tab_buttons = tabs
-            .into_iter()
-            .enumerate()
-            .map(|(index, (tab, label))| {
-                let selected = self.snapshot.inspector.tab == tab;
-                div()
-                    .id(SharedString::from(format!("inspector-tab-{index}")))
-                    .debug_selector(move || format!("inspector-tab-{index}"))
-                    .role(Role::Tab)
-                    .focusable()
-                    .tab_stop(true)
-                    .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
-                    .aria_selected(selected)
-                    .aria_label(label)
-                    .cursor_pointer()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .when(selected, |tab| tab.bg(cx.theme().accent))
-                    .child(label)
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.select_inspector(tab, cx);
-                    }))
-            })
-            .collect::<Vec<_>>();
+            (InspectorTab::Run, self.text(TextKey::Run).to_string()),
+            (
+                InspectorTab::Goals,
+                format!("{} {goals}", self.text(TextKey::Goals)),
+            ),
+            (
+                InspectorTab::Subagents,
+                format!("{} {agents}", self.text(TextKey::Subagents)),
+            ),
+            (
+                InspectorTab::Context,
+                self.text(TextKey::Context).to_string(),
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (tab, label))| {
+            let selected = self.snapshot.inspector.tab == tab;
+            div()
+                .id(SharedString::from(format!("inspector-tab-{index}")))
+                .debug_selector(move || format!("inspector-tab-{index}"))
+                .role(Role::Tab)
+                .focusable()
+                .tab_stop(true)
+                .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
+                .aria_selected(selected)
+                .aria_label(label.clone())
+                .cursor_pointer()
+                .px(px(10.))
+                .pt(px(8.))
+                .pb(px(7.))
+                .text_size(px(12.))
+                .when(selected, |tab| {
+                    tab.text_color(cx.theme().foreground)
+                        .border_b_2()
+                        .border_color(cx.theme().primary)
+                })
+                .when(!selected, |tab| tab.text_color(cx.theme().muted_foreground))
+                .child(label)
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.select_inspector(tab, cx);
+                }))
+        })
+        .collect::<Vec<_>>();
+        let tab_buttons = tabs;
         let content = match self.snapshot.inspector.tab {
             InspectorTab::Run => self.render_run_inspector(cx),
             InspectorTab::Goals => self.render_goals_inspector(cx),
@@ -3783,6 +4286,7 @@ impl DesktopRoot {
         };
         v_flex()
             .id("run-inspector")
+            .debug_selector(|| "run-inspector".into())
             .role(Role::Complementary)
             .aria_label(self.text(TextKey::RunInspector))
             .w(px(
@@ -3790,148 +4294,406 @@ impl DesktopRoot {
             ))
             .h_full()
             .flex_none()
-            .p_3()
-            .gap_3()
+            .p(px(16.))
+            .gap(px(14.))
             .font_family(theme::native_font_family())
             .border_l(px(theme::border_width()))
             .border_color(cx.theme().border)
             .bg(cx.theme().sidebar)
             .child(
+                v_flex()
+                    .gap(px(2.))
+                    .child(
+                        div()
+                            .text_size(px(10.))
+                            .font_family("Lilex")
+                            .text_color(cx.theme().muted_foreground)
+                            .child(match self.snapshot.language {
+                                tact_catalog::CatalogLocale::En => "INSPECTOR",
+                                tact_catalog::CatalogLocale::Zh => "检查器",
+                            }),
+                    )
+                    .child(div().text_size(px(24.)).font_semibold().child(
+                        match self.snapshot.language {
+                            tact_catalog::CatalogLocale::En => "Run map",
+                            tact_catalog::CatalogLocale::Zh => "运行图",
+                        },
+                    )),
+            )
+            .child(
                 h_flex()
                     .id("inspector-tabs")
                     .role(Role::TabList)
                     .aria_label(self.text(TextKey::RunInspector))
-                    .gap_1()
+                    .w_full()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
                     .children(tab_buttons),
             )
             .child(
                 div()
                     .id("inspector-content")
                     .flex_1()
+                    .w_full()
                     .min_h_0()
+                    .min_w_0()
+                    // The vertical scrollbar overlays the content edge; keep
+                    // right-aligned values clear of it.
+                    .pr(px(14.))
                     .overflow_y_scrollbar()
                     .child(content),
             )
     }
 
+    fn kicker(text: impl Into<SharedString>, cx: &mut Context<DesktopRoot>) -> impl IntoElement {
+        div()
+            .text_size(px(10.))
+            .font_family("Lilex")
+            .text_color(cx.theme().muted_foreground)
+            .child(text.into())
+    }
+
+    fn activity_line(
+        text: String,
+        accent: bool,
+        cx: &mut Context<DesktopRoot>,
+    ) -> impl IntoElement {
+        div()
+            .text_size(px(11.))
+            .font_family("Lilex")
+            .when(accent, |line| line.text_color(cx.theme().primary))
+            .when(!accent, |line| line.text_color(cx.theme().muted_foreground))
+            .truncate()
+            .child(text)
+    }
+
+    fn context_gauge(ratio: f32, percent: u32, cx: &mut Context<DesktopRoot>) -> AnyElement {
+        let track = cx.theme().muted;
+        let fill = cx.theme().primary;
+        let label = percent.to_string();
+        div()
+            .relative()
+            .flex_none()
+            .size(px(68.))
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    move |bounds, _, window, _| {
+                        let center = bounds.center();
+                        let radius = bounds.size.width.min(bounds.size.height) / 2. - px(4.);
+                        let mut ring = PathBuilder::stroke(px(4.));
+                        ring.move_to(center + point(radius, px(0.)));
+                        ring.arc_to(
+                            point(radius, radius),
+                            px(0.),
+                            false,
+                            true,
+                            center + point(-radius, px(0.)),
+                        );
+                        ring.arc_to(
+                            point(radius, radius),
+                            px(0.),
+                            false,
+                            true,
+                            center + point(radius, px(0.)),
+                        );
+                        if let Ok(path) = ring.build() {
+                            window.paint_path(path, track);
+                        }
+                        if ratio > 0.0 {
+                            let start = -std::f32::consts::FRAC_PI_2;
+                            let end = start + std::f32::consts::TAU * ratio;
+                            let from = center + point(radius * start.cos(), radius * start.sin());
+                            let to = center + point(radius * end.cos(), radius * end.sin());
+                            let mut arc = PathBuilder::stroke(px(5.));
+                            arc.move_to(from);
+                            arc.arc_to(point(radius, radius), px(0.), ratio > 0.5, true, to);
+                            if let Ok(path) = arc.build() {
+                                window.paint_path(path, fill);
+                            }
+                        }
+                    },
+                )
+                .absolute()
+                .inset_0(),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(15.))
+                    .font_semibold()
+                    .child(label),
+            )
+            .into_any_element()
+    }
+
     fn render_run_inspector(&self, cx: &mut Context<Self>) -> AnyElement {
         let runtime = &self.snapshot.runtime;
-        let tasks = self
+        let phase = run_phase_label(runtime.current_phase, self.snapshot.language);
+        let total = runtime.usage.total_tokens;
+        let window = self
             .snapshot
-            .inspector
-            .tasks
+            .runtime
+            .usage
+            .context_window
+            .filter(|window| *window > 0)
+            .unwrap_or(200_000);
+        let ratio = (total as f32 / window as f32).clamp(0.0, 1.0);
+        let percent = (ratio * 100.0).round() as u32;
+        let pending = self.snapshot.pending_gates.len();
+        let title = self.snapshot.session.title.to_string();
+        let tasks = &self.snapshot.inspector.tasks;
+        let current = tasks.iter().position(|task| {
+            matches!(
+                task.status,
+                tact_desktop_core::TaskStatusSnapshot::InProgress
+            )
+        });
+        let agents = self.snapshot.inspector.subagents.len();
+        let background = &self.snapshot.inspector.background;
+
+        let activity_rows = background
             .iter()
-            .map(|task| {
-                let status = match task.status {
-                    tact_desktop_core::TaskStatusSnapshot::Pending => TodoStatus::Pending,
-                    tact_desktop_core::TaskStatusSnapshot::InProgress => TodoStatus::Active,
-                    tact_desktop_core::TaskStatusSnapshot::Completed => TodoStatus::Done,
-                };
-                TodoItem::new(
-                    SharedString::from(format!("inspector-task-{}", task.id)),
-                    task.subject.to_string(),
-                )
-                .status(status)
-            })
+            .take(2)
+            .map(|task| Self::activity_line(task.command.to_string(), false, cx).into_any_element())
             .collect::<Vec<_>>();
-        let background = self.background_task_rows(cx);
+
         v_flex()
             .id("run-inspector-content")
             .role(Role::Region)
             .aria_label(self.text(TextKey::Run))
-            .gap_3()
+            .w_full()
+            .min_w_0()
+            .gap(px(14.))
             .child(
                 v_flex()
-                    .gap_1()
-                    .child(section_label(self.text(TextKey::Run), cx))
-                    .child(metric(
-                        self.text(TextKey::Phase),
-                        run_phase_label(runtime.current_phase, self.snapshot.language),
-                        cx,
-                    ))
-                    .child(metric(
-                        self.text(TextKey::Session),
-                        crate::ui::title_bar::status_text(
-                            &self.snapshot.session,
-                            self.snapshot.language,
-                        ),
-                        cx,
-                    ))
-                    .child(metric(
-                        self.text(TextKey::Turns),
-                        &runtime.turns_taken.to_string(),
-                        cx,
-                    ))
-                    .child(metric(
-                        self.text(TextKey::LatestTool),
-                        runtime.latest_tool.as_deref().unwrap_or("—"),
-                        cx,
-                    ))
-                    .child(metric(
-                        self.text(TextKey::Tokens),
-                        &runtime.usage.total_tokens.to_string(),
-                        cx,
-                    ))
-                    .child(metric(
-                        self.text(TextKey::Model),
-                        runtime.model.as_deref().unwrap_or("—"),
-                        cx,
-                    ))
-                    .child(metric(
-                        self.text(TextKey::Elapsed),
-                        &runtime
-                            .run_started_at
-                            .map(|started| {
-                                chrono::Utc::now()
-                                    .signed_duration_since(started)
-                                    .num_milliseconds()
-                                    .max(0)
-                                    .to_string()
-                            })
-                            .unwrap_or_else(|| "0".into()),
-                        cx,
-                    ))
-                    .child(metric(
-                        self.text(TextKey::CacheRate),
-                        &cache_rate(&runtime.usage),
-                        cx,
-                    ))
-                    .when_some(runtime.latest_tool.as_ref(), |column, tool| {
-                        column.child(
-                            ToolChip::new("inspector-latest-tool", tool.to_string()).status(
-                                match runtime.current_phase {
-                                    RunPhase::Idle | RunPhase::Complete => ToolStatus::Success,
-                                    RunPhase::Failed => ToolStatus::Failed,
-                                    RunPhase::Waiting
-                                    | RunPhase::Thinking
-                                    | RunPhase::Streaming
-                                    | RunPhase::RunningTools
-                                    | RunPhase::WaitingForGate
-                                    | RunPhase::Cancelling => ToolStatus::Running,
-                                },
-                            ),
-                        )
-                    }),
-            )
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(section_label(self.text(TextKey::Tasks), cx))
+                    .rounded(px(10.))
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().popover)
+                    .p(px(14.))
+                    .gap(px(10.))
                     .child(
-                        TodoList::new("inspector-todos")
-                            .title(self.text(TextKey::Tasks))
-                            .completion_label(match self.snapshot.language {
-                                tact_catalog::CatalogLocale::En => "complete",
-                                tact_catalog::CatalogLocale::Zh => "已完成",
-                            })
-                            .items(tasks),
+                        h_flex()
+                            .gap(px(12.))
+                            .items_center()
+                            .child(Self::context_gauge(ratio, percent, cx))
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .gap(px(3.))
+                                    .child(Self::kicker(
+                                        match self.snapshot.language {
+                                            tact_catalog::CatalogLocale::En => "ACTIVE RUN",
+                                            tact_catalog::CatalogLocale::Zh => "活动运行",
+                                        },
+                                        cx,
+                                    ))
+                                    .child(
+                                        div()
+                                            .text_size(px(16.))
+                                            .font_semibold()
+                                            .truncate()
+                                            .child(title),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .gap(px(6.))
+                                            .items_center()
+                                            .child(div().size(px(6.)).rounded_full().bg(
+                                                if pending > 0 {
+                                                    cx.theme().warning
+                                                } else {
+                                                    cx.theme().success
+                                                },
+                                            ))
+                                            .child(
+                                                div()
+                                                    .text_size(px(11.))
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(if pending > 0 {
+                                                        match self.snapshot.language {
+                                                            tact_catalog::CatalogLocale::En => {
+                                                                "Waiting on permission"
+                                                            }
+                                                            tact_catalog::CatalogLocale::Zh => {
+                                                                "等待权限"
+                                                            }
+                                                        }
+                                                    } else {
+                                                        phase
+                                                    }),
+                                            ),
+                                    ),
+                            ),
                     ),
             )
+            .when_some(current, |column, index| {
+                let task = &tasks[index];
+                column.child(
+                    v_flex()
+                        .gap(px(6.))
+                        .child(
+                            h_flex()
+                                .justify_between()
+                                .child(Self::kicker(
+                                    match self.snapshot.language {
+                                        tact_catalog::CatalogLocale::En => "CURRENT STEP",
+                                        tact_catalog::CatalogLocale::Zh => "当前步骤",
+                                    },
+                                    cx,
+                                ))
+                                .child(Self::kicker(
+                                    format!("{:02} / {:02}", index + 1, tasks.len()),
+                                    cx,
+                                )),
+                        )
+                        .child(
+                            v_flex()
+                                .rounded(px(8.))
+                                .border_1()
+                                .border_color(cx.theme().primary)
+                                .bg(cx.theme().accent)
+                                .p(px(10.))
+                                .gap(px(3.))
+                                .child(
+                                    h_flex()
+                                        .gap(px(8.))
+                                        .items_center()
+                                        .child(
+                                            div()
+                                                .flex_none()
+                                                .size(px(22.))
+                                                .rounded_full()
+                                                .border_1()
+                                                .border_color(cx.theme().primary)
+                                                .text_size(px(10.))
+                                                .font_family("Lilex")
+                                                .text_color(cx.theme().link)
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .child(format!("{:02}", index + 1)),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .truncate()
+                                                .text_size(px(13.))
+                                                .font_semibold()
+                                                .child(task.subject.to_string()),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .pl(px(30.))
+                                        .text_size(px(11.))
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(task.owner.to_string()),
+                                ),
+                        ),
+                )
+            })
             .child(
                 v_flex()
-                    .gap_1()
-                    .child(section_label(self.text(TextKey::Background), cx))
-                    .children(background),
+                    .gap(px(6.))
+                    .child(
+                        h_flex()
+                            .justify_between()
+                            .child(Self::kicker(
+                                match self.snapshot.language {
+                                    tact_catalog::CatalogLocale::En => "THREAD SIGNALS",
+                                    tact_catalog::CatalogLocale::Zh => "线程信号",
+                                },
+                                cx,
+                            ))
+                            .child(Self::kicker("LIVE", cx)),
+                    )
+                    .child(signal_row(
+                        match self.snapshot.language {
+                            tact_catalog::CatalogLocale::En => "Main agent",
+                            tact_catalog::CatalogLocale::Zh => "主代理",
+                        },
+                        phase.to_string(),
+                        cx.theme().success,
+                        cx,
+                    ))
+                    .child(signal_row(
+                        match self.snapshot.language {
+                            tact_catalog::CatalogLocale::En => "Permission gate",
+                            tact_catalog::CatalogLocale::Zh => "权限门",
+                        },
+                        if pending > 0 {
+                            match self.snapshot.language {
+                                tact_catalog::CatalogLocale::En => "waiting",
+                                tact_catalog::CatalogLocale::Zh => "等待中",
+                            }
+                            .to_string()
+                        } else {
+                            match self.snapshot.language {
+                                tact_catalog::CatalogLocale::En => "clear",
+                                tact_catalog::CatalogLocale::Zh => "无",
+                            }
+                            .to_string()
+                        },
+                        if pending > 0 {
+                            cx.theme().warning
+                        } else {
+                            cx.theme().success
+                        },
+                        cx,
+                    ))
+                    .child(signal_row(
+                        self.text(TextKey::Subagents),
+                        agents.to_string(),
+                        cx.theme().info,
+                        cx,
+                    ))
+                    .child(signal_row(
+                        self.text(TextKey::Background),
+                        background.len().to_string(),
+                        cx.theme().muted_foreground,
+                        cx,
+                    )),
+            )
+            .child(
+                v_flex()
+                    .gap(px(4.))
+                    .child(
+                        h_flex()
+                            .justify_between()
+                            .child(Self::kicker(
+                                match self.snapshot.language {
+                                    tact_catalog::CatalogLocale::En => "LATEST ACTIVITY",
+                                    tact_catalog::CatalogLocale::Zh => "最近活动",
+                                },
+                                cx,
+                            ))
+                            .child(Self::kicker("LIVE", cx)),
+                    )
+                    .when_some(runtime.latest_tool.clone(), |column, tool| {
+                        column.child(Self::activity_line(tool.to_string(), true, cx))
+                    })
+                    .children(activity_rows),
+            )
+            .child(
+                div()
+                    .pt(px(4.))
+                    .text_size(px(10.))
+                    .font_family("Lilex")
+                    .text_color(cx.theme().muted_foreground)
+                    .child(match self.snapshot.language {
+                        tact_catalog::CatalogLocale::En => {
+                            "Ctrl 1-4 · Inspect without losing the run"
+                        }
+                        tact_catalog::CatalogLocale::Zh => "Ctrl 1-4 · 检查而不离开运行",
+                    }),
             )
             .into_any_element()
     }
@@ -3959,7 +4721,16 @@ impl DesktopRoot {
                         elapsed
                     ))
                     .gap_1()
-                    .child(div().truncate().text_sm().child(task.command.to_string()))
+                    .w_full()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .w_full()
+                            .min_w_0()
+                            .truncate()
+                            .text_sm()
+                            .child(task.command.to_string()),
+                    )
                     .child(
                         h_flex()
                             .gap_1()
@@ -4512,10 +5283,123 @@ impl DesktopRoot {
             .into_any_element()
     }
 
+    fn render_gate_banner(
+        &self,
+        gate: tact_desktop_core::GateCard,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let gate_for_open = gate.clone();
+        h_flex()
+            .w_full()
+            .min_w_0()
+            .gap_2()
+            .rounded_md()
+            .border_1()
+            .border_color(cx.theme().warning)
+            .bg(cx.theme().warning.opacity(0.08))
+            .px_3()
+            .py_2()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_sm()
+                    .child(gate.prompt.to_string()),
+            )
+            .child(
+                div()
+                    .id("review-gate")
+                    .role(Role::Button)
+                    .focusable()
+                    .tab_stop(true)
+                    .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
+                    .aria_label(self.text(TextKey::Review))
+                    .cursor_pointer()
+                    .text_xs()
+                    .text_color(cx.theme().warning)
+                    .child(self.text(TextKey::Review))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        this.remember_focus(window, cx);
+                        let group = this.snapshot.transcript.iter().find_map(|row| {
+                            let RowBody::ToolGroup(group) = &row.body else {
+                                return None;
+                            };
+                            group
+                                .items
+                                .iter()
+                                .any(|item| {
+                                    matches!(
+                                        item,
+                                        ToolGroupItem::Gate(candidate)
+                                            if candidate.request_id == gate.request_id
+                                    )
+                                })
+                                .then(|| {
+                                    let tool_to_expand = match &gate.origin {
+                                        tact_desktop_core::GateOrigin::Tool { tool_id }
+                                        | tact_desktop_core::GateOrigin::Subagent {
+                                            tool_id: Some(tool_id),
+                                            ..
+                                        } => group.items.iter().find_map(|item| {
+                                            let ToolGroupItem::Tool(tool) = item else {
+                                                return None;
+                                            };
+                                            (tool.tool_id == *tool_id && !tool.expanded)
+                                                .then_some(tool.id)
+                                        }),
+                                        _ => None,
+                                    };
+                                    (row.id, group.collapsed, tool_to_expand)
+                                })
+                        });
+                        if let Some(index) = this.snapshot.transcript.iter().position(|row| {
+                            matches!(
+                                &row.body,
+                                RowBody::Gate(candidate)
+                                    if candidate.request_id == gate.request_id
+                            ) || matches!(
+                                &row.body,
+                                RowBody::ToolGroup(group)
+                                    if group.items.iter().any(|item| matches!(
+                                        item,
+                                        ToolGroupItem::Gate(candidate)
+                                            if candidate.request_id
+                                                == gate.request_id
+                                    ))
+                            )
+                        }) {
+                            this.scroller.update(cx, |state, cx| {
+                                state.scroll_to_item(index, cx);
+                            });
+                        }
+                        let selected = match &gate.selection {
+                            GateSelection::Single(index) => index.iter().copied().collect(),
+                            GateSelection::Multiple(indexes) => indexes.clone(),
+                        };
+                        this.gate_choices.insert(gate.request_id.0, selected);
+                        this.gate_keyboard_cursor = 0;
+                        if let Some((group_id, collapsed, tool_to_expand)) = group {
+                            if let Some(tool_id) = tool_to_expand {
+                                this.dispatch(DesktopIntent::ToggleTool {
+                                    group: group_id,
+                                    tool: tool_id,
+                                });
+                            }
+                            if collapsed {
+                                this.dispatch(DesktopIntent::ToggleGroup { id: group_id });
+                            }
+                        }
+                        this.open_overlay(Overlay::Gate(gate_for_open.clone()));
+                        this.gate_primary_focus.focus(window, cx);
+                        this.overlay_focus_pending = false;
+                    })),
+            )
+            .into_any_element()
+    }
+
     fn render_sticky(&self, cx: &mut Context<Self>) -> AnyElement {
         let pending = crate::ui::sticky::pending_gate(&self.snapshot.pending_gates).cloned();
-        // The counter always describes the whole plan; collapsing only hides
-        // rows, it does not make the plan smaller.
         let all_tasks = &self.snapshot.inspector.tasks;
         let completed = all_tasks
             .iter()
@@ -4527,254 +5411,212 @@ impl DesktopRoot {
             })
             .count();
         let task_total = all_tasks.len();
-        let tasks = if self.sticky_tasks_collapsed {
-            crate::ui::sticky::active_task(&self.snapshot.inspector)
-                .into_iter()
-                .collect::<Vec<_>>()
+        let current = crate::ui::sticky::active_task(&self.snapshot.inspector);
+        let tasks: Vec<&tact_desktop_core::TaskView> = if self.sticky_tasks_collapsed {
+            current.into_iter().collect()
         } else {
-            all_tasks.iter().collect::<Vec<_>>()
+            all_tasks.iter().collect()
         };
-        let task_rows = tasks
+        let rows = tasks
             .into_iter()
-            .map(|task| {
-                let snapshot =
-                    TaskSnapshot::new(format!("sticky-task-{}", task.id), task.subject.to_string())
-                        .detail(task_status_label(task.status, self.snapshot.language));
-                let progressive = match task.status {
-                    tact_desktop_core::TaskStatusSnapshot::Pending => {
-                        Progressive::pending(snapshot)
-                    }
+            .enumerate()
+            .map(|(index, task)| {
+                let marker = match task.status {
+                    tact_desktop_core::TaskStatusSnapshot::Pending => div()
+                        .flex_none()
+                        .size(px(12.))
+                        .rounded_full()
+                        .border_1()
+                        .border_color(cx.theme().muted_foreground)
+                        .into_any_element(),
                     tact_desktop_core::TaskStatusSnapshot::InProgress => {
-                        Progressive::running(snapshot)
+                        Icon::new(IconName::LoaderCircle)
+                            .size(px(13.))
+                            .text_color(cx.theme().info)
+                            .into_any_element()
                     }
                     tact_desktop_core::TaskStatusSnapshot::Completed => {
-                        Progressive::complete(snapshot)
+                        Icon::new(IconName::CircleCheck)
+                            .size(px(13.))
+                            .text_color(cx.theme().success)
+                            .into_any_element()
                     }
                 };
-                TaskRow::new(&progressive)
-                    .max_w(px(220.))
+                let muted = task.status == tact_desktop_core::TaskStatusSnapshot::Completed;
+                h_flex()
+                    .id(SharedString::from(format!("sticky-task-{}", task.id)))
+                    .role(Role::Status)
+                    .aria_label(task.subject.to_string())
+                    .w_full()
+                    .min_w_0()
+                    .items_center()
+                    .gap_2()
+                    .child(marker)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_sm()
+                            .when(muted, |text| text.text_color(cx.theme().muted_foreground))
+                            .child(task.subject.to_string()),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_xs()
+                            .font_family("Lilex")
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("{:02}", index + 1)),
+                    )
                     .into_any_element()
             })
             .collect::<Vec<_>>();
-        h_flex()
+        let progress = if task_total == 0 {
+            0.0
+        } else {
+            completed as f32 / task_total as f32
+        };
+        let goals = self.snapshot.inspector.goals.len();
+        let agents = self.snapshot.inspector.subagents.len();
+        let background = self.snapshot.inspector.background.len();
+        let chevron = if self.sticky_tasks_collapsed {
+            IconName::ChevronUp
+        } else {
+            IconName::ChevronDown
+        };
+
+        v_flex()
             .id("sticky-strip")
             .debug_selector(|| "sticky-strip".into())
             .role(Role::Status)
             .aria_label(self.text(TextKey::RunStatus))
             .w_full()
+            .max_w(px(900.))
+            .mx_auto()
             .gap_2()
-            .px_3()
-            .py_2()
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().background)
+            .pt_2()
+            .pb(px(6.))
+            .when_some(pending, |strip, gate| {
+                strip.child(self.render_gate_banner(gate, cx))
+            })
             .when(task_total > 0, |strip| {
                 strip.child(
-                    h_flex()
+                    v_flex()
+                        .id("sticky-task-card")
+                        .debug_selector(|| "sticky-task-card".into())
+                        .w_full()
+                        .min_w_0()
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().popover)
+                        .p_3()
                         .gap_2()
-                        .items_center()
                         .child(
-                            div()
-                                .text_xs()
-                                .font_semibold()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(format!(
-                                    "{} {completed}/{task_total}",
-                                    self.text(TextKey::Tasks).to_uppercase()
-                                )),
+                            h_flex()
+                                .w_full()
+                                .min_w_0()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_xs()
+                                        .font_semibold()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!(
+                                            "{} {completed}/{task_total}",
+                                            self.text(TextKey::Tasks).to_uppercase()
+                                        )),
+                                )
+                                .when_some(current, |header, task| {
+                                    header.child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_sm()
+                                            .font_semibold()
+                                            .child(task.subject.to_string()),
+                                    )
+                                })
+                                .when(current.is_none(), |header| header.child(div().flex_1()))
+                                .child(sticky_count(
+                                    self.text(TextKey::Goals),
+                                    goals,
+                                    InspectorTab::Goals,
+                                    false,
+                                    cx,
+                                ))
+                                .child(sticky_count(
+                                    self.text(TextKey::Subagents),
+                                    agents,
+                                    InspectorTab::Subagents,
+                                    false,
+                                    cx,
+                                ))
+                                .when(background > 0, |header| {
+                                    header.child(sticky_count(
+                                        self.text(TextKey::Background),
+                                        background,
+                                        InspectorTab::Run,
+                                        true,
+                                        cx,
+                                    ))
+                                })
+                                .child(
+                                    div()
+                                        .id("toggle-sticky-tasks")
+                                        .debug_selector(|| "toggle-sticky-tasks".into())
+                                        .role(Role::Button)
+                                        .focusable()
+                                        .tab_stop(true)
+                                        .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
+                                        .aria_label(if self.sticky_tasks_collapsed {
+                                            self.text(TextKey::ExpandStickyTasks)
+                                        } else {
+                                            self.text(TextKey::CollapseStickyTasks)
+                                        })
+                                        .cursor_pointer()
+                                        .rounded_md()
+                                        .p_1()
+                                        .hover(|style| style.bg(cx.theme().muted))
+                                        .child(
+                                            Icon::new(chevron)
+                                                .size(px(13.))
+                                                .text_color(cx.theme().muted_foreground),
+                                        )
+                                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                            this.sticky_tasks_collapsed =
+                                                !this.sticky_tasks_collapsed;
+                                            cx.notify();
+                                        })),
+                                ),
                         )
                         .child(
                             div()
                                 .h(px(3.))
-                                .w(px(72.))
+                                .w_full()
                                 .rounded_full()
                                 .bg(cx.theme().muted)
                                 .child(
                                     div()
                                         .h_full()
-                                        .w(px(72.0 * completed as f32 / task_total as f32))
+                                        .w(gpui::relative(progress))
                                         .rounded_full()
-                                        .bg(cx.theme().success),
+                                        .bg(if completed == task_total {
+                                            cx.theme().success
+                                        } else {
+                                            cx.theme().primary
+                                        }),
                                 ),
-                        ),
-                )
-            })
-            .when_some(pending, |strip, gate| {
-                let gate_for_open = gate.clone();
-                strip.child(
-                    h_flex()
-                        .flex_1()
-                        .gap_2()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(cx.theme().warning)
-                        .bg(cx.theme().warning.opacity(0.08))
-                        .px_2()
-                        .py_1()
-                        .child(
-                            div()
-                                .flex_1()
-                                .truncate()
-                                .text_sm()
-                                .child(gate.prompt.to_string()),
                         )
-                        .child(
-                            div()
-                                .id("review-gate")
-                                .role(Role::Button)
-                                .focusable()
-                                .tab_stop(true)
-                                .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
-                                .aria_label(self.text(TextKey::Review))
-                                .cursor_pointer()
-                                .text_xs()
-                                .text_color(cx.theme().warning)
-                                .child(self.text(TextKey::Review))
-                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                    this.remember_focus(window, cx);
-                                    let group = this.snapshot.transcript.iter().find_map(|row| {
-                                        let RowBody::ToolGroup(group) = &row.body else {
-                                            return None;
-                                        };
-                                        group
-                                            .items
-                                            .iter()
-                                            .any(|item| {
-                                                matches!(
-                                                    item,
-                                                    ToolGroupItem::Gate(candidate)
-                                                        if candidate.request_id == gate.request_id
-                                                )
-                                            })
-                                            .then(|| {
-                                                let tool_to_expand = match &gate.origin {
-                                                    tact_desktop_core::GateOrigin::Tool {
-                                                        tool_id,
-                                                    }
-                                                    | tact_desktop_core::GateOrigin::Subagent {
-                                                        tool_id: Some(tool_id),
-                                                        ..
-                                                    } => group.items.iter().find_map(|item| {
-                                                        let ToolGroupItem::Tool(tool) = item else {
-                                                            return None;
-                                                        };
-                                                        (tool.tool_id == *tool_id && !tool.expanded)
-                                                            .then_some(tool.id)
-                                                    }),
-                                                    _ => None,
-                                                };
-                                                (row.id, group.collapsed, tool_to_expand)
-                                            })
-                                    });
-                                    if let Some(index) =
-                                        this.snapshot.transcript.iter().position(|row| {
-                                            matches!(
-                                                &row.body,
-                                                RowBody::Gate(candidate)
-                                                    if candidate.request_id == gate.request_id
-                                            ) || matches!(
-                                                &row.body,
-                                                RowBody::ToolGroup(group)
-                                                    if group.items.iter().any(|item| matches!(
-                                                        item,
-                                                        ToolGroupItem::Gate(candidate)
-                                                            if candidate.request_id
-                                                                == gate.request_id
-                                                    ))
-                                            )
-                                        })
-                                    {
-                                        this.scroller.update(cx, |state, cx| {
-                                            state.scroll_to_item(index, cx);
-                                        });
-                                    }
-                                    let selected = match &gate.selection {
-                                        GateSelection::Single(index) => {
-                                            index.iter().copied().collect()
-                                        }
-                                        GateSelection::Multiple(indexes) => indexes.clone(),
-                                    };
-                                    this.gate_choices.insert(gate.request_id.0, selected);
-                                    this.gate_keyboard_cursor = 0;
-                                    if let Some((group_id, collapsed, tool_to_expand)) = group {
-                                        if let Some(tool_id) = tool_to_expand {
-                                            this.dispatch(DesktopIntent::ToggleTool {
-                                                group: group_id,
-                                                tool: tool_id,
-                                            });
-                                        }
-                                        if collapsed {
-                                            this.dispatch(DesktopIntent::ToggleGroup {
-                                                id: group_id,
-                                            });
-                                        }
-                                    }
-                                    this.open_overlay(Overlay::Gate(gate_for_open.clone()));
-                                    this.gate_primary_focus.focus(window, cx);
-                                    this.overlay_focus_pending = false;
-                                })),
-                        ),
+                        .when(!self.sticky_tasks_collapsed || task_total == 1, |card| {
+                            card.child(v_flex().w_full().min_w_0().gap_1().children(rows))
+                        }),
                 )
             })
-            .child(
-                h_flex()
-                    .id("sticky-task-list")
-                    .flex_1()
-                    .min_w_0()
-                    .gap_2()
-                    .overflow_x_scroll()
-                    .children(task_rows),
-            )
-            .when(self.snapshot.inspector.tasks.len() > 1, |strip| {
-                strip.child(
-                    div()
-                        .flex_none()
-                        .id("toggle-sticky-tasks")
-                        .role(Role::Button)
-                        .focusable()
-                        .tab_stop(true)
-                        .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
-                        .aria_label(if self.sticky_tasks_collapsed {
-                            self.text(TextKey::ExpandStickyTasks)
-                        } else {
-                            self.text(TextKey::CollapseStickyTasks)
-                        })
-                        .cursor_pointer()
-                        .text_xs()
-                        .child(if self.sticky_tasks_collapsed {
-                            self.text(TextKey::Expand)
-                        } else {
-                            self.text(TextKey::Collapse)
-                        })
-                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                            this.sticky_tasks_collapsed = !this.sticky_tasks_collapsed;
-                            cx.notify();
-                        })),
-                )
-            })
-            .child(
-                h_flex()
-                    .flex_none()
-                    .gap_1()
-                    .child(sticky_shortcut(
-                        self.text(TextKey::Goals),
-                        InspectorTab::Goals,
-                        false,
-                        cx,
-                    ))
-                    .child(sticky_shortcut(
-                        self.text(TextKey::Subagents),
-                        InspectorTab::Subagents,
-                        false,
-                        cx,
-                    ))
-                    .child(sticky_shortcut(
-                        self.text(TextKey::Background),
-                        InspectorTab::Run,
-                        true,
-                        cx,
-                    )),
-            )
             .into_any_element()
     }
 
@@ -4991,8 +5833,10 @@ impl DesktopRoot {
                     .debug_selector(|| "permission-picker-menu".into())
                     .role(Role::Menu)
                     .aria_label(current_label)
-                    .w(px(220.))
-                    .gap_1()
+                    // Three one-word choices do not need the width or the row
+                    // height a dialog would: the menu hugs its labels.
+                    .w(px(168.))
+                    .gap(px(2.))
                     .children(choices.into_iter().map(|(mode, value, label)| {
                         let weak = weak.clone();
                         gpui_base::Button::new(SharedString::from(format!(
@@ -5003,12 +5847,14 @@ impl DesktopRoot {
                         .aria_label(label)
                         .selected(mode == selected)
                         .cursor_pointer()
+                        .w_full()
                         .rounded_md()
                         .px_2()
-                        .py_1()
+                        .h(px(24.))
+                        .py_0()
                         .text_xs()
                         .when(mode == selected, |button| button.bg(gpui::rgba(0x007aff22)))
-                        .child(label)
+                        .child(div().w_full().min_w_0().truncate().child(label))
                         .on_click(move |_, _, cx| {
                             let _ = weak.update(cx, |this, cx| {
                                 this.permission_picker_open = false;
@@ -5125,6 +5971,62 @@ impl DesktopRoot {
             .into_any_element()
     }
 
+    /// Controls rendered inside the composer's own footer: mentions, slash
+    /// commands and the permission mode chip. Keeping them here makes the
+    /// composer one bar instead of three stacked rows.
+    fn render_composer_leading(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        vec![
+            div()
+                .id("composer-attach")
+                .role(Role::Button)
+                .focusable()
+                .tab_stop(true)
+                .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
+                .aria_label(self.text(TextKey::Attachment))
+                .cursor_pointer()
+                .rounded(px(6.))
+                .p(px(4.))
+                .hover(|style| style.bg(cx.theme().muted))
+                .child(
+                    Icon::new(IconName::File)
+                        .size(px(14.))
+                        .text_color(cx.theme().muted_foreground),
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.pick_attachments(cx);
+                }))
+                .into_any_element(),
+            composer_insert_button(
+                "composer-mention",
+                "@",
+                self.text(TextKey::MentionFile),
+                "@",
+                cx,
+            )
+            .into_any_element(),
+            composer_insert_button(
+                "composer-slash",
+                "/",
+                self.text(TextKey::InsertCommand),
+                "/",
+                cx,
+            )
+            .into_any_element(),
+        ]
+    }
+
+    fn render_composer_trailing(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        vec![self.render_permission_picker(cx)]
+    }
+
     fn render_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let labels = prompt_bar_labels(self.snapshot.language);
         self.prompt.update(cx, |prompt, cx| {
@@ -5211,11 +6113,8 @@ impl DesktopRoot {
             .debug_selector(|| "composer-area".into())
             .w_full()
             .gap_2()
-            .px_6()
-            .pt_2()
-            .pb_4()
-            .border_t_1()
-            .border_color(cx.theme().border)
+            .px(px(22.))
+            .pb(px(18.))
             .when(!self.snapshot.composer.queue.is_empty(), |area| {
                 area.child(
                     div()
@@ -5252,34 +6151,33 @@ impl DesktopRoot {
                         div()
                             .track_focus(&self.queue_focus)
                             .key_context("Queue")
+                            .w_full()
+                            // The queue is a composer accessory, not a
+                            // dialog: it stays a step narrower than the
+                            // composer frame and never taller than a few
+                            // rows. A long queue scrolls instead of
+                            // pushing the transcript off screen.
+                            .max_w(px(820.))
+                            .max_h(px(240.))
+                            .mx_auto()
+                            .overflow_y_scrollbar()
                             .child(queue_view),
                     )
                 })
             })
-            .child(self.render_permission_picker(cx))
-            .child(
-                h_flex()
-                    .gap_1()
-                    .child(composer_insert_button(
-                        "composer-mention",
-                        "@",
-                        self.text(TextKey::MentionFile),
-                        "@",
-                        cx,
-                    ))
-                    .child(composer_insert_button(
-                        "composer-slash",
-                        "/",
-                        self.text(TextKey::InsertCommand),
-                        "/",
-                        cx,
-                    )),
-            )
             .when_some(self.slash_overlay.clone(), |area, overlay| {
                 area.key_context("SlashOverlay")
                     .child(self.render_slash_overlay(&overlay, cx))
             })
-            .child(self.prompt.clone())
+            .child(
+                div()
+                    .id("composer-frame")
+                    .debug_selector(|| "composer-frame".into())
+                    .w_full()
+                    .max_w(px(900.))
+                    .mx_auto()
+                    .child(self.prompt.clone()),
+            )
             .into_any_element()
     }
 
@@ -5295,15 +6193,18 @@ impl DesktopRoot {
                 Some(
                     v_flex()
                         .id("command-center-overlay")
+                        .debug_selector(|| "command-center-overlay".into())
                         .role(Role::Dialog)
                         .aria_label(self.text(TextKey::CommandCenter))
                         .w(px(
-                            (f32::from(window.viewport_size().width) - 24.0).clamp(320.0, 640.0)
+                            (f32::from(window.viewport_size().width) - 32.0).clamp(320.0, 700.0)
                         ))
-                        .max_h(overlay_height(window, 560.))
-                        .gap_3()
-                        .p_4()
-                        .rounded_lg()
+                        .max_h(overlay_height(window, 620.))
+                        .gap(px(10.))
+                        .px(px(15.))
+                        .pt(px(14.))
+                        .pb(px(10.))
+                        .rounded(px(13.))
                         .border_1()
                         .border_color(cx.theme().border)
                         .bg(cx.theme().popover)
@@ -5333,6 +6234,41 @@ impl DesktopRoot {
                                             .text_color(cx.theme().muted_foreground)
                                             .child("Esc"),
                                     ),
+                            )
+                        })
+                        .when(!compact, |dialog| {
+                            let total =
+                                tact_desktop_core::catalog_entries(tact_catalog::builtins())
+                                    .count();
+                            let caption = match self.snapshot.language {
+                                tact_catalog::CatalogLocale::En => format!(
+                                    "{} · {} OF {} · TYPE TO SEARCH",
+                                    if self.command_query.trim().is_empty() {
+                                        "RECENT COMMANDS"
+                                    } else {
+                                        "RESULTS"
+                                    },
+                                    self.command_hit_count,
+                                    total
+                                ),
+                                tact_catalog::CatalogLocale::Zh => format!(
+                                    "{} · {} / {} · 输入以搜索",
+                                    if self.command_query.trim().is_empty() {
+                                        "最近命令"
+                                    } else {
+                                        "搜索结果"
+                                    },
+                                    self.command_hit_count,
+                                    total
+                                ),
+                            };
+                            dialog.child(
+                                div()
+                                    .flex_none()
+                                    .text_xs()
+                                    .font_family("Lilex")
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(caption),
                             )
                         })
                         .child(self.command_search.clone())
@@ -5503,6 +6439,7 @@ impl DesktopRoot {
             ),
             Overlay::ModelPicker(id) => Some(self.render_model_picker(id, window, cx)),
             Overlay::Subagent(child_id) => Some(self.render_subagent_overlay(child_id, window, cx)),
+            Overlay::Hooks => Some(self.render_hooks_overlay(window, cx)),
             Overlay::Gate(gate) => Some(self.render_gate_overlay(gate, window, cx)),
             Overlay::Extensions(tab) => Some(self.render_extensions_overlay(tab, window, cx)),
             Overlay::SessionManager => Some(self.render_session_manager_overlay(window, cx)),
@@ -5574,16 +6511,11 @@ impl DesktopRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (models, selected) = if target == SettingId::SubagentModel {
-            (
-                self.snapshot.composer.subagent_models.clone(),
-                self.snapshot.composer.subagent_model.clone(),
-            )
+        let models = self.model_picker_models();
+        let selected = if target == SettingId::SubagentModel {
+            self.snapshot.composer.subagent_model.clone()
         } else {
-            (
-                self.snapshot.composer.models.clone(),
-                self.snapshot.composer.model.clone(),
-            )
+            self.snapshot.composer.model.clone()
         };
         let title = if target == SettingId::SubagentModel {
             self.text(TextKey::SubagentModel)
@@ -5605,6 +6537,7 @@ impl DesktopRoot {
                 .aria_label(value.clone())
                 .selected(chosen)
                 .cursor_pointer()
+                .w_full()
                 .rounded_md()
                 .border_1()
                 .border_color(if active {
@@ -5613,9 +6546,13 @@ impl DesktopRoot {
                     cx.theme().border
                 })
                 .px_2()
-                .py_1()
+                // A fixed row height is what lets the keyboard keep its
+                // cursor on screen without measuring: the visible band is
+                // arithmetic.
+                .h(px(MODEL_PICKER_ROW_HEIGHT - 2.))
+                .py_0()
                 .when(chosen, |row| row.bg(cx.theme().accent))
-                .child(value.clone())
+                .child(div().w_full().min_w_0().truncate().child(value.clone()))
                 .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                     this.model_picker_cursor = index;
                     this.activate_model_picker(window, cx);
@@ -5623,6 +6560,8 @@ impl DesktopRoot {
                 .into_any_element()
             })
             .collect::<Vec<_>>();
+        let list_height =
+            MODEL_PICKER_ROW_HEIGHT * rows.len().min(MODEL_PICKER_VISIBLE_ROWS) as f32;
         v_flex()
             .id("model-picker-overlay")
             .role(Role::Dialog)
@@ -5657,22 +6596,44 @@ impl DesktopRoot {
                             .child(self.text(TextKey::Close)),
                     ),
             )
+            .child(Input::new(&self.model_search))
             .when(rows.is_empty(), |dialog| {
                 dialog.child(
                     div()
                         .text_sm()
                         .text_color(cx.theme().muted_foreground)
-                        .child(self.text(TextKey::NoModels)),
+                        .child(if self.model_picker_query.trim().is_empty() {
+                            self.text(TextKey::NoModels)
+                        } else {
+                            self.text(TextKey::NoMatchingModels)
+                        }),
                 )
             })
-            .child(v_flex().gap_1().overflow_y_scrollbar().children(rows))
+            .child(
+                div()
+                    .id("model-picker-list")
+                    .relative()
+                    .w_full()
+                    .h(px(list_height))
+                    .child(
+                        div()
+                            .id("model-picker-scroll")
+                            .size_full()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.model_picker_scroll)
+                            .child(v_flex().w_full().gap(px(2.)).children(rows)),
+                    )
+                    .child(gpui_component::scroll::Scrollbar::vertical(
+                        &self.model_picker_scroll,
+                    )),
+            )
             .into_any_element()
     }
 
     fn render_subagent_overlay(
         &mut self,
         child_id: String,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let weak = cx.weak_entity();
@@ -5707,6 +6668,7 @@ impl DesktopRoot {
                         .into_any_element(),
                 ]
             });
+        let phase = run_phase_label(self.snapshot.runtime.current_phase, self.snapshot.language);
         v_flex()
             .id("subagent-overlay")
             .debug_selector(|| "subagent-overlay".into())
@@ -5715,43 +6677,112 @@ impl DesktopRoot {
                 "{} {child_id}",
                 self.text(TextKey::SubagentTranscript)
             ))
-            .w(overlay_width(window, 820.))
-            .max_h(px(720.))
-            .p_4()
-            .gap_3()
-            .rounded_lg()
-            .border_1()
+            .h_full()
+            .w(px(520.))
+            .gap(px(0.))
+            .border_l_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().popover)
+            .bg(cx.theme().background)
             .shadow_lg()
             .child(
-                h_flex()
-                    .justify_between()
-                    .child(div().font_semibold().child(format!(
-                        "{} {child_id}",
-                        self.text(TextKey::SubagentTranscript)
-                    )))
+                v_flex()
+                    .gap(px(8.))
+                    .p(px(20.))
+                    .border_b_1()
+                    .border_color(cx.theme().border)
                     .child(
-                        div()
-                            .id("close-subagent")
-                            .role(Role::Button)
-                            .focusable()
-                            .tab_stop(true)
-                            .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
-                            .aria_label(self.text(TextKey::Close))
-                            .cursor_pointer()
-                            .child(self.text(TextKey::Close))
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                this.close_overlay();
-                                this.restore_focus(window, cx);
-                                cx.notify();
-                            })),
+                        h_flex()
+                            .justify_between()
+                            .items_start()
+                            .child(
+                                v_flex()
+                                    .gap(px(2.))
+                                    .child(
+                                        div()
+                                            .text_size(px(10.))
+                                            .font_family("Lilex")
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(match self.snapshot.language {
+                                                tact_catalog::CatalogLocale::En => "SUBAGENT",
+                                                tact_catalog::CatalogLocale::Zh => "子代理",
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(20.))
+                                            .font_semibold()
+                                            .child(child_id.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(self.text(TextKey::SubagentTranscript)),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .id("close-subagent")
+                                    .role(Role::Button)
+                                    .focusable()
+                                    .tab_stop(true)
+                                    .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
+                                    .aria_label(self.text(TextKey::Close))
+                                    .cursor_pointer()
+                                    .text_size(px(12.))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(self.text(TextKey::Close))
+                                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                        this.close_overlay();
+                                        this.restore_focus(window, cx);
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .gap(px(10.))
+                            .items_center()
+                            .child(
+                                h_flex()
+                                    .gap(px(5.))
+                                    .items_center()
+                                    .rounded_full()
+                                    .bg(cx.theme().success.opacity(0.14))
+                                    .px(px(7.))
+                                    .py(px(2.))
+                                    .child(div().size(px(5.)).rounded_full().bg(cx.theme().success))
+                                    .child(
+                                        div()
+                                            .text_size(px(10.))
+                                            .font_family("Lilex")
+                                            .text_color(cx.theme().success)
+                                            .child(phase),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(10.))
+                                    .font_family("Lilex")
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(format!(
+                                        "{} {}",
+                                        self.snapshot.runtime.turns_taken,
+                                        match self.snapshot.language {
+                                            tact_catalog::CatalogLocale::En => "turns",
+                                            tact_catalog::CatalogLocale::Zh => "轮",
+                                        }
+                                    )),
+                            ),
                     ),
             )
             .child(
                 v_flex()
                     .id("subagent-transcript")
+                    .flex_1()
+                    .min_h_0()
                     .gap_2()
+                    .p(px(20.))
                     .overflow_y_scroll()
                     .children(rows),
             )
@@ -5879,6 +6910,311 @@ impl DesktopRoot {
             .into_any_element()
     }
 
+    fn render_hooks_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let (trusted, pending) = match &self.snapshot.surface {
+            Some(SurfaceSnapshot::Hooks(snapshot)) => {
+                (snapshot.trusted.clone(), snapshot.pending.clone())
+            }
+            _ => (Vec::new(), Vec::new()),
+        };
+        let sources = group_hook_sources(&trusted, &pending);
+        let pending_sources = sources.iter().filter(|(_, _, trusted)| !trusted).count();
+        let height = (f32::from(window.viewport_size().height) - 100.0).clamp(320.0, 620.0);
+        let rows = sources
+            .iter()
+            .map(|(source, items, trusted)| {
+                let detail = items
+                    .iter()
+                    .map(|item| match &item.matcher {
+                        Some(matcher) => format!("{} · {} {}", item.event, matcher, item.command),
+                        None => format!("{} · {}", item.event, item.command),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                let source_for_click = source.clone();
+                let trusted = *trusted;
+                h_flex()
+                    .id(SharedString::from(format!("hook-source-{source}")))
+                    .justify_between()
+                    .items_center()
+                    .gap(px(12.))
+                    .p(px(10.))
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap(px(10.))
+                            .items_center()
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .size(px(28.))
+                                    .rounded(px(7.))
+                                    .bg(cx.theme().muted)
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(
+                                        Icon::new(IconName::SquareTerminal)
+                                            .size(px(14.))
+                                            .text_color(cx.theme().muted_foreground),
+                                    ),
+                            )
+                            .child(
+                                v_flex()
+                                    .min_w_0()
+                                    .gap(px(2.))
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .font_semibold()
+                                            .truncate()
+                                            .child(source.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(11.))
+                                            .text_color(cx.theme().muted_foreground)
+                                            .truncate()
+                                            .child(detail),
+                                    ),
+                            ),
+                    )
+                    .when(!trusted, |row| {
+                        row.child(
+                            gpui_base::Button::new(SharedString::from(format!(
+                                "hook-action-{source}"
+                            )))
+                            .aria_label("Trust")
+                            .rounded(px(6.))
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .px(px(10.))
+                            .py(px(4.))
+                            .text_size(px(11.))
+                            .child("Trust")
+                            .on_click(cx.listener(
+                                move |this, _: &ClickEvent, _, _| {
+                                    this.dispatch(DesktopIntent::InvokeCommand {
+                                        id: CommandId::Cli(tact_catalog::CliEntry::HooksTrust),
+                                        args: CommandArguments {
+                                            tokens: vec![
+                                                "--source".into(),
+                                                source_for_click.clone(),
+                                            ],
+                                        },
+                                    });
+                                    // The driver answers with a fresh surface; ask
+                                    // for it explicitly so the sheet cannot go stale.
+                                    this.dispatch(DesktopIntent::InvokeCommand {
+                                        id: CommandId::BuiltinPath {
+                                            root: BuiltinCommand::Hooks,
+                                            path: vec!["hooks", "list"],
+                                        },
+                                        args: CommandArguments::default(),
+                                    });
+                                },
+                            )),
+                        )
+                    })
+            })
+            .collect::<Vec<_>>();
+
+        v_flex()
+            .id("hooks-overlay")
+            .debug_selector(|| "hooks-overlay".into())
+            .role(Role::Dialog)
+            .aria_label(self.text(TextKey::Hooks))
+            .w(overlay_width(window, 780.))
+            .h(px(height))
+            .rounded(px(14.))
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().popover)
+            .shadow_lg()
+            .overflow_hidden()
+            .child(
+                h_flex()
+                    .justify_between()
+                    .items_start()
+                    .gap(px(16.))
+                    .px(px(20.))
+                    .pt(px(19.))
+                    .pb(px(16.))
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        v_flex()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .text_size(px(10.))
+                            .font_family("Lilex")
+                            .text_color(cx.theme().muted_foreground)
+                            .child("SLASH COMMAND"),
+                    )
+                    .child(
+                        div()
+                            .font_family("SF Pro Display")
+                            .text_size(px(26.))
+                            .font_semibold()
+                            .child(match self.snapshot.language {
+                                tact_catalog::CatalogLocale::En => "Command hooks",
+                                tact_catalog::CatalogLocale::Zh => "命令钩子",
+                            }),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(cx.theme().muted_foreground)
+                            .child(match self.snapshot.language {
+                                tact_catalog::CatalogLocale::En => {
+                                    "Review the exact hook sources Tact would execute. Nothing runs until its source is trusted."
+                                }
+                                tact_catalog::CatalogLocale::Zh => {
+                                    "检查 Tact 会执行的钩子来源；未受信任前不会运行。"
+                                }
+                            }),
+                    ),
+                    )
+                    .child(
+                        div()
+                            .id("close-hooks")
+                            .role(Role::Button)
+                            .focusable()
+                            .tab_stop(true)
+                            .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
+                            .aria_label(self.text(TextKey::Close))
+                            .cursor_pointer()
+                            .text_size(px(14.))
+                            .text_color(cx.theme().muted_foreground)
+                            .child("×")
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                this.close_overlay();
+                                this.restore_focus(window, cx);
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .justify_between()
+                    .px(px(20.))
+                    .pt(px(14.))
+                    .pb(px(6.))
+                    .child(
+                        div()
+                            .text_size(px(10.))
+                            .font_family("Lilex")
+                            .text_color(cx.theme().muted_foreground)
+                            .child("HOOK SOURCES"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(10.))
+                            .font_family("Lilex")
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("{pending_sources} NEED REVIEW")),
+                    ),
+            )
+            .child(
+                div()
+                    .mx(px(20.))
+                    .flex_1()
+                    .min_h_0()
+                    .rounded(px(10.))
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .overflow_y_scrollbar()
+                    .when(rows.is_empty(), |list| {
+                        list.child(
+                            div()
+                                .p(px(16.))
+                                .text_size(px(12.))
+                                .text_color(cx.theme().muted_foreground)
+                                .child(match self.snapshot.language {
+                                    tact_catalog::CatalogLocale::En => "No hooks configured.",
+                                    tact_catalog::CatalogLocale::Zh => "未配置钩子。",
+                                }),
+                        )
+                    })
+                    .children(rows),
+            )
+            .child(
+                h_flex()
+                    .justify_between()
+                    .items_center()
+                    .px(px(20.))
+                    .py(px(14.))
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(cx.theme().muted_foreground)
+                            .child(match self.snapshot.language {
+                                tact_catalog::CatalogLocale::En => format!(
+                                    "{pending_sources} sources need review"
+                                ),
+                                tact_catalog::CatalogLocale::Zh => {
+                                    format!("{pending_sources} 个来源待审阅")
+                                }
+                            }),
+                    )
+                    .child(
+                        h_flex()
+                            .gap(px(8.))
+                            .child(
+                                gpui_base::Button::new("hooks-forget-all")
+                                    .aria_label("Forget all")
+                                    .rounded(px(6.))
+                                    .border_1()
+                                    .border_color(cx.theme().border)
+                                    .px(px(12.))
+                                    .py(px(6.))
+                                    .text_size(px(12.))
+                                    .child("Forget all")
+                                    .on_click(cx.listener(|this, _: &ClickEvent, _, _| {
+                                        this.dispatch(DesktopIntent::InvokeCommand {
+                                            id: CommandId::Cli(
+                                                tact_catalog::CliEntry::HooksForget,
+                                            ),
+                                            args: CommandArguments {
+                                                tokens: vec!["--all".into()],
+                                            },
+                                        });
+                                        this.refresh_hooks_surface();
+                                    })),
+                            )
+                            .child(
+                                gpui_base::Button::new("hooks-trust-all")
+                                    .aria_label("Trust all")
+                                    .rounded(px(6.))
+                                    .bg(cx.theme().primary)
+                                    .text_color(cx.theme().primary_foreground)
+                                    .px(px(12.))
+                                    .py(px(6.))
+                                    .text_size(px(12.))
+                                    .child("Trust all")
+                                    .on_click(cx.listener(|this, _: &ClickEvent, _, _| {
+                                        this.dispatch(DesktopIntent::InvokeCommand {
+                                            id: CommandId::Cli(
+                                                tact_catalog::CliEntry::HooksTrust,
+                                            ),
+                                            args: CommandArguments {
+                                                tokens: vec!["--all".into()],
+                                            },
+                                        });
+                                        this.refresh_hooks_surface();
+                                    })),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
     fn render_gate_overlay(
         &mut self,
         gate: GateCard,
@@ -5967,24 +7303,60 @@ impl DesktopRoot {
             .key_context("Gate")
             .role(Role::Dialog)
             .aria_label(gate.prompt.to_string())
-            .w(overlay_width(window, 560.))
-            .p_4()
-            .gap_3()
-            .rounded_lg()
+            .w(overlay_width(window, 640.))
+            .p(px(18.))
+            .gap(px(14.))
+            .rounded(px(12.))
             .border_1()
             .border_color(cx.theme().warning)
             .bg(cx.theme().popover)
             .shadow_lg()
             .child(
-                v_flex()
-                    .gap_1()
+                h_flex()
+                    .items_start()
+                    .gap(px(10.))
                     .child(
                         div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(origin),
+                            .flex_none()
+                            .size(px(26.))
+                            .rounded_full()
+                            .bg(cx.theme().warning.opacity(0.16))
+                            .text_size(px(14.))
+                            .font_semibold()
+                            .text_color(cx.theme().warning)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child("!"),
                     )
-                    .child(div().font_semibold().child(gate.prompt.to_string())),
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap(px(4.))
+                            .child(
+                                div()
+                                    .text_size(px(10.))
+                                    .font_family("Lilex")
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(format!(
+                                        "{} · {}",
+                                        match self.snapshot.language {
+                                            tact_catalog::CatalogLocale::En => {
+                                                "PERMISSION REQUEST"
+                                            }
+                                            tact_catalog::CatalogLocale::Zh => "权限请求",
+                                        },
+                                        origin.to_uppercase()
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(18.))
+                                    .font_semibold()
+                                    .child(gate.prompt.to_string()),
+                            ),
+                    ),
             )
             .child(v_flex().gap_2().children(options))
             .child(
@@ -5997,7 +7369,19 @@ impl DesktopRoot {
                                 .aria_label(self.text(TextKey::CancelRequest))
                                 .px_2()
                                 .py_1()
-                                .child(self.text(TextKey::Cancel))
+                                .child(
+                                    h_flex()
+                                        .gap(px(6.))
+                                        .items_center()
+                                        .child(self.text(TextKey::Cancel))
+                                        .child(
+                                            div()
+                                                .text_size(px(9.))
+                                                .font_family("Lilex")
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child("esc"),
+                                        ),
+                                )
                                 .on_click(cx.listener({
                                     let gate = gate_for_confirm.clone();
                                     move |this, _: &ClickEvent, window, cx| {
@@ -6065,7 +7449,8 @@ impl DesktopRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let has_table_rows = if self.extension_manage {
+        let manage = self.extension_manage;
+        let has_table_rows = if manage {
             self.sync_extensions_table(tab, window, cx)
         } else {
             true
@@ -6089,11 +7474,31 @@ impl DesktopRoot {
                 .aria_label(label)
                 .aria_selected(candidate == tab)
                 .cursor_pointer()
-                .rounded_md()
-                .px_2()
-                .py_1()
-                .text_xs()
-                .when(candidate == tab, |button| button.bg(cx.theme().accent))
+                .when(manage, |button| {
+                    button
+                        .rounded(px(0.))
+                        .px(px(10.))
+                        .pt(px(8.))
+                        .pb(px(7.))
+                        .text_size(px(12.))
+                        .when(candidate == tab, |button| {
+                            button
+                                .text_color(cx.theme().foreground)
+                                .border_b_2()
+                                .border_color(cx.theme().primary)
+                        })
+                        .when(candidate != tab, |button| {
+                            button.text_color(cx.theme().muted_foreground)
+                        })
+                })
+                .when(!manage, |button| {
+                    button
+                        .rounded_md()
+                        .px_2()
+                        .py_1()
+                        .text_xs()
+                        .when(candidate == tab, |button| button.bg(cx.theme().accent))
+                })
                 .child(label)
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     if let Some(Overlay::Extensions(current)) = &mut this.overlay {
@@ -6347,6 +7752,25 @@ impl DesktopRoot {
                         }
                         _ => {}
                     }
+                }
+                let mcp_empty = !matches!(
+                    &self.snapshot.surface,
+                    Some(SurfaceSnapshot::McpServers(servers)) if !servers.is_empty()
+                );
+                if mcp_empty {
+                    rows.push(
+                        div()
+                            .id("extensions-empty-mcp")
+                            .role(Role::Status)
+                            .py_3()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(match self.snapshot.language {
+                                tact_catalog::CatalogLocale::En => "No MCP servers yet",
+                                tact_catalog::CatalogLocale::Zh => "还没有 MCP 服务器",
+                            })
+                            .into_any_element(),
+                    );
                 }
                 rows.push(
                     h_flex()
@@ -6711,15 +8135,18 @@ impl DesktopRoot {
             }
         }
 
+        let manager_height = (f32::from(window.viewport_size().height) - 100.0).clamp(320.0, 620.0);
         v_flex()
             .id("extensions-overlay")
+            .debug_selector(|| "extensions-overlay".into())
             .role(Role::Dialog)
             .aria_label(self.text(TextKey::Extensions))
-            .w(overlay_width(window, 720.))
-            .max_h(px(680.))
-            .p_4()
-            .gap_3()
-            .rounded_lg()
+            .w(overlay_width(window, if manage { 780. } else { 520. }))
+            .when(manage, |dialog| dialog.h(px(manager_height)))
+            .when(!manage, |dialog| dialog.max_h(px(560.)))
+            .p(if manage { px(20.) } else { px(15.) })
+            .gap(if manage { px(14.) } else { px(10.) })
+            .rounded(if manage { px(14.) } else { px(13.) })
             .border_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().popover)
@@ -6728,11 +8155,35 @@ impl DesktopRoot {
                 h_flex()
                     .justify_between()
                     .items_center()
-                    .child(div().font_semibold().child(if self.extension_manage {
-                        self.text(TextKey::ManageExtensions)
-                    } else {
-                        self.text(TextKey::Extensions)
-                    }))
+                    .child(
+                        v_flex()
+                            .gap(px(4.))
+                            .when(manage, |head| {
+                                head.child(
+                                    div()
+                                        .text_size(px(10.))
+                                        .font_family("Lilex")
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(match self.snapshot.language {
+                                            tact_catalog::CatalogLocale::En => "EXTENSIONS",
+                                            tact_catalog::CatalogLocale::Zh => "扩展",
+                                        }),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .when(manage, |title| {
+                                        title.font_family("SF Pro Display").text_size(px(26.))
+                                    })
+                                    .when(!manage, |title| title.text_size(px(16.)))
+                                    .font_semibold()
+                                    .child(if manage {
+                                        self.text(TextKey::ManageExtensions)
+                                    } else {
+                                        self.text(TextKey::Extensions)
+                                    }),
+                            ),
+                    )
                     .child(
                         h_flex()
                             .gap_3()
@@ -6788,7 +8239,14 @@ impl DesktopRoot {
                             ),
                     ),
             )
-            .child(h_flex().gap_1().children(tabs))
+            .child(
+                h_flex()
+                    .gap_1()
+                    .when(manage, |row| {
+                        row.w_full().border_b_1().border_color(cx.theme().border)
+                    })
+                    .children(tabs),
+            )
             .child(Input::new(&self.extension_search))
             .child(if self.extension_manage {
                 if has_table_rows {
@@ -6807,7 +8265,16 @@ impl DesktopRoot {
                         .justify_center()
                         .text_sm()
                         .text_color(cx.theme().muted_foreground)
-                        .child(self.text(TextKey::NoItems))
+                        .child(match (tab, self.snapshot.language) {
+                            (ExtensionsTab::Mcp, tact_catalog::CatalogLocale::En) => {
+                                "No MCP servers yet"
+                            }
+                            (ExtensionsTab::Mcp, tact_catalog::CatalogLocale::Zh) => {
+                                "还没有 MCP 服务器"
+                            }
+                            (_, tact_catalog::CatalogLocale::En) => self.text(TextKey::NoItems),
+                            (_, tact_catalog::CatalogLocale::Zh) => self.text(TextKey::NoItems),
+                        })
                         .into_any_element()
                 }
             } else if rows.is_empty() {
@@ -6842,6 +8309,16 @@ impl DesktopRoot {
         let title_label = argument_label("title", self.snapshot.language);
         let archive_label = self.text(TextKey::Archive);
         let restore_label = self.text(TextKey::Restore);
+        // While the controller is starting a session, another switch has
+        // nothing to act on: it would close a host that is still coming up.
+        // The rows keep their position but stop accepting the click, so a
+        // burst of clicks cannot queue a burst of starts. Teardown is
+        // excluded on purpose — closing is retryable, and a click during it
+        // is how a close that is taking too long is retried.
+        let switching = matches!(
+            self.snapshot.session.phase,
+            SessionPhase::Opening | SessionPhase::Starting | SessionPhase::Switching
+        );
         let manager_view = crate::ui::session_manager::SessionManagerView {
             project_filter: self
                 .session_project_filter
@@ -6885,7 +8362,7 @@ impl DesktopRoot {
                         .role(Role::Button)
                         .tab_stop(!locked)
                         .aria_label(title.clone())
-                        .when(!locked, |row| {
+                        .when(!locked && !switching, |row| {
                             row.cursor_pointer().on_click(cx.listener(
                                 move |this, _: &ClickEvent, window, cx| {
                                     this.dispatch(DesktopIntent::ResumeSession {
@@ -6898,7 +8375,25 @@ impl DesktopRoot {
                             ))
                         })
                         .gap_0p5()
-                        .child(div().text_sm().child(title))
+                        .child(
+                            h_flex()
+                                .items_center()
+                                .gap_1()
+                                .child(div().text_sm().child(title))
+                                .when(archived, |row| {
+                                    row.child(
+                                        div()
+                                            .flex_none()
+                                            .rounded_full()
+                                            .bg(cx.theme().muted)
+                                            .px_1p5()
+                                            .py_0p5()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(self.text(TextKey::Archived)),
+                                    )
+                                }),
+                        )
                         .child(
                             div()
                                 .text_xs()
@@ -6978,68 +8473,145 @@ impl DesktopRoot {
                 )
         })
         .collect::<Vec<_>>();
-        let project_rows = self
-            .snapshot
-            .projects
-            .iter()
-            .map(|project| {
-                let selected = project.id == self.session_project_filter;
-                let root = project.root.clone();
-                let project_id = project.id.clone();
-                gpui_base::Button::new(SharedString::from(format!(
-                    "manager-project-{}",
-                    project
-                        .id
-                        .as_ref()
-                        .map(|id| id.0.as_str())
-                        .unwrap_or("none")
-                )))
-                .selected(selected)
-                .aria_label(project.display_name.to_string())
-                .rounded_md()
-                .px_2()
-                .py_1()
-                .text_xs()
-                .child(project.display_name.to_string())
-                .on_click(cx.listener(
-                    move |this, _: &ClickEvent, window, cx| {
-                        this.session_project_filter = project_id.clone();
-                        if this.snapshot.project.id != project_id
-                            && let Some(root) = root.clone()
-                        {
-                            this.dispatch(DesktopIntent::OpenProject { root });
-                            this.close_overlay();
-                            this.restore_focus(window, cx);
-                        }
-                    },
-                ))
+        let all_projects_label = match self.snapshot.language {
+            tact_catalog::CatalogLocale::En => "All projects",
+            tact_catalog::CatalogLocale::Zh => "全部项目",
+        };
+        let all_projects_selected = self.session_project_filter.is_none();
+        let mut project_rows = vec![
+            gpui_base::Button::new("manager-project-all")
+                .selected(all_projects_selected)
+                .aria_label(all_projects_label)
+                .w_full()
+                .justify_start()
+                .rounded(px(7.))
+                .bg(if all_projects_selected {
+                    cx.theme().accent
+                } else {
+                    cx.theme().transparent
+                })
+                .px(px(8.))
+                .py(px(6.))
+                .text_size(px(12.))
+                .child(all_projects_label)
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.session_project_filter = None;
+                    cx.notify();
+                })),
+        ];
+        project_rows.extend(self.snapshot.projects.iter().map(|project| {
+            let selected = project.id == self.session_project_filter;
+            let root = project.root.clone();
+            let project_id = project.id.clone();
+            // Only the active project's sessions are loaded; showing a count
+            // for any other project would render a false zero.
+            let count = project.id.as_ref().and_then(|id| {
+                crate::ui::session_manager::project_session_count(
+                    id,
+                    self.snapshot.project.id.as_ref(),
+                    &self.snapshot.sessions.items,
+                )
+            });
+            gpui_base::Button::new(SharedString::from(format!(
+                "manager-project-{}",
+                project
+                    .id
+                    .as_ref()
+                    .map(|id| id.0.as_str())
+                    .unwrap_or("none")
+            )))
+            .selected(selected)
+            .aria_label(project.display_name.to_string())
+            .w_full()
+            .justify_start()
+            .rounded(px(7.))
+            .bg(if selected {
+                cx.theme().accent
+            } else {
+                cx.theme().transparent
             })
-            .collect::<Vec<_>>();
+            .px(px(8.))
+            .py(px(6.))
+            .text_size(px(12.))
+            .child(
+                h_flex()
+                    .w_full()
+                    .justify_between()
+                    .child(project.display_name.to_string())
+                    .when_some(count, |row, count| {
+                        row.child(
+                            div()
+                                .font_family("Lilex")
+                                .text_size(px(10.))
+                                .text_color(cx.theme().muted_foreground)
+                                .child(count.to_string()),
+                        )
+                    }),
+            )
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                this.session_project_filter = project_id.clone();
+                if this.snapshot.project.id != project_id
+                    && let Some(root) = root.clone()
+                {
+                    this.dispatch(DesktopIntent::OpenProject { root });
+                    this.close_overlay();
+                    this.restore_focus(window, cx);
+                }
+            }))
+        }));
 
+        let height = (f32::from(window.viewport_size().height) - 100.0).clamp(320.0, 720.0);
         v_flex()
             .id("session-manager-overlay")
+            .debug_selector(|| "session-manager-overlay".into())
             .role(Role::Dialog)
             .aria_label(self.text(TextKey::SessionManager))
-            .w(overlay_width(window, 760.))
-            .max_h(px(680.))
-            .p_4()
-            .gap_3()
-            .rounded_lg()
+            .w(overlay_width(window, 1040.))
+            .h(px(height))
+            .rounded(px(14.))
             .border_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().popover)
             .shadow_lg()
+            .overflow_hidden()
             .child(
                 h_flex()
+                    .w_full()
                     .justify_between()
+                    .items_start()
+                    .px(px(19.))
+                    .pt(px(17.))
+                    .pb(px(14.))
+                    .border_b_1()
+                    .border_color(cx.theme().border)
                     .child(
-                        div()
-                            .font_semibold()
-                            .child(self.text(TextKey::SessionManager)),
+                        v_flex()
+                            .gap(px(4.))
+                            .child(
+                                div()
+                                    .text_size(px(10.))
+                                    .font_family("Lilex")
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(match self.snapshot.language {
+                                        tact_catalog::CatalogLocale::En => "SESSION MANAGER",
+                                        tact_catalog::CatalogLocale::Zh => "会话管理",
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .font_family("SF Pro Display")
+                                    .text_size(px(24.))
+                                    .font_semibold()
+                                    .child(match self.snapshot.language {
+                                        tact_catalog::CatalogLocale::En => "Sessions by project",
+                                        tact_catalog::CatalogLocale::Zh => "按项目查看会话",
+                                    }),
+                            ),
                     )
                     .child(
                         h_flex()
-                            .gap_2()
+                            .gap(px(12.))
+                            .items_center()
                             .child(
                                 div()
                                     .id("manager-new-session")
@@ -7049,15 +8621,19 @@ impl DesktopRoot {
                                     .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
                                     .aria_label(self.text(TextKey::NewSession))
                                     .cursor_pointer()
-                                    .text_xs()
+                                    .text_size(px(12.))
                                     .text_color(cx.theme().link)
                                     .child(self.text(TextKey::NewSession))
-                                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                        this.dispatch(DesktopIntent::NewSession);
-                                        this.close_overlay();
-                                        this.restore_focus(window, cx);
-                                        cx.notify();
-                                    })),
+                                    .when(!switching, |button| {
+                                        button.on_click(cx.listener(
+                                            |this, _: &ClickEvent, window, cx| {
+                                                this.dispatch(DesktopIntent::NewSession);
+                                                this.close_overlay();
+                                                this.restore_focus(window, cx);
+                                                cx.notify();
+                                            },
+                                        ))
+                                    }),
                             )
                             .child(
                                 div()
@@ -7068,6 +8644,8 @@ impl DesktopRoot {
                                     .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
                                     .aria_label(self.text(TextKey::Close))
                                     .cursor_pointer()
+                                    .text_size(px(12.))
+                                    .text_color(cx.theme().muted_foreground)
                                     .child(self.text(TextKey::Close))
                                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                         this.close_overlay();
@@ -7078,88 +8656,115 @@ impl DesktopRoot {
                     ),
             )
             .child(
-                v_flex()
-                    .gap_1()
+                h_flex()
+                    .flex_1()
+                    .min_h_0()
                     .child(
-                        div()
-                            .text_xs()
-                            .font_semibold()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(self.text(TextKey::Projects)),
+                        v_flex()
+                            .w(px(232.))
+                            .h_full()
+                            .min_h_0()
+                            .gap(px(4.))
+                            .p(px(10.))
+                            .border_r_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().muted)
+                            .overflow_y_scrollbar()
+                            .child(
+                                div()
+                                    .px(px(8.))
+                                    .py(px(6.))
+                                    .text_size(px(10.))
+                                    .font_family("Lilex")
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(self.text(TextKey::Projects).to_uppercase()),
+                            )
+                            .children(project_rows),
                     )
                     .child(
-                        h_flex()
-                            .id("session-manager-projects")
-                            .gap_1()
-                            .flex_wrap()
-                            .children(project_rows),
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .gap(px(10.))
+                            .p(px(14.))
+                            .child(Input::new(&self.session_search))
+                            .child(
+                                h_flex()
+                                    .gap_1()
+                                    .child(filter_button(
+                                        self.text(TextKey::Active),
+                                        self.snapshot.sessions.filter == ArchiveFilter::Active,
+                                        ArchiveFilter::Active,
+                                        cx,
+                                    ))
+                                    .child(filter_button(
+                                        self.text(TextKey::Archived),
+                                        self.snapshot.sessions.filter == ArchiveFilter::Archived,
+                                        ArchiveFilter::Archived,
+                                        cx,
+                                    ))
+                                    .child(filter_button(
+                                        self.text(TextKey::All),
+                                        self.snapshot.sessions.filter == ArchiveFilter::All,
+                                        ArchiveFilter::All,
+                                        cx,
+                                    )),
+                            )
+                            .when_some(self.snapshot.sessions.error.clone(), |manager, failure| {
+                                manager.child(
+                                    v_flex()
+                                        .id("session-manager-error")
+                                        .role(Role::Alert)
+                                        .aria_label(failure.message.to_string())
+                                        .gap_1()
+                                        .rounded_md()
+                                        .border_1()
+                                        .border_color(cx.theme().danger)
+                                        .p_2()
+                                        .text_xs()
+                                        .child(failure.message.to_string())
+                                        .child(
+                                            div()
+                                                .id("session-manager-retry")
+                                                .role(Role::Button)
+                                                .focusable()
+                                                .tab_stop(true)
+                                                .focus_visible(|style| {
+                                                    style.bg(gpui::rgba(0x007aff22))
+                                                })
+                                                .aria_label(self.text(TextKey::Retry))
+                                                .cursor_pointer()
+                                                .text_color(cx.theme().link)
+                                                .child(self.text(TextKey::Retry))
+                                                .on_click(cx.listener(
+                                                    |this, _: &ClickEvent, _, _| {
+                                                        this.dispatch(
+                                                            DesktopIntent::RefreshSessions,
+                                                        );
+                                                    },
+                                                )),
+                                        ),
+                                )
+                            })
+                            .when(self.snapshot.sessions.loading, |manager| {
+                                manager.child(LoadingState::new().label(
+                                    match self.snapshot.language {
+                                        tact_catalog::CatalogLocale::En => "Loading sessions",
+                                        tact_catalog::CatalogLocale::Zh => "正在加载会话",
+                                    },
+                                ))
+                            })
+                            .child(
+                                v_flex()
+                                    .id("session-manager-list")
+                                    .flex_1()
+                                    .min_h_0()
+                                    .gap(px(6.))
+                                    .overflow_y_scroll()
+                                    .children(rows),
+                            ),
                     ),
-            )
-            .child(Input::new(&self.session_search))
-            .child(
-                h_flex()
-                    .gap_1()
-                    .child(filter_button(
-                        self.text(TextKey::Active),
-                        self.snapshot.sessions.filter == ArchiveFilter::Active,
-                        ArchiveFilter::Active,
-                        cx,
-                    ))
-                    .child(filter_button(
-                        self.text(TextKey::Archived),
-                        self.snapshot.sessions.filter == ArchiveFilter::Archived,
-                        ArchiveFilter::Archived,
-                        cx,
-                    ))
-                    .child(filter_button(
-                        self.text(TextKey::All),
-                        self.snapshot.sessions.filter == ArchiveFilter::All,
-                        ArchiveFilter::All,
-                        cx,
-                    )),
-            )
-            .when_some(self.snapshot.sessions.error.clone(), |manager, failure| {
-                manager.child(
-                    v_flex()
-                        .id("session-manager-error")
-                        .role(Role::Alert)
-                        .aria_label(failure.message.to_string())
-                        .gap_1()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(cx.theme().danger)
-                        .p_2()
-                        .text_xs()
-                        .child(failure.message.to_string())
-                        .child(
-                            div()
-                                .id("session-manager-retry")
-                                .role(Role::Button)
-                                .focusable()
-                                .tab_stop(true)
-                                .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
-                                .aria_label(self.text(TextKey::Retry))
-                                .cursor_pointer()
-                                .text_color(cx.theme().link)
-                                .child(self.text(TextKey::Retry))
-                                .on_click(cx.listener(|this, _: &ClickEvent, _, _| {
-                                    this.dispatch(DesktopIntent::RefreshSessions);
-                                })),
-                        ),
-                )
-            })
-            .when(self.snapshot.sessions.loading, |manager| {
-                manager.child(LoadingState::new().label(match self.snapshot.language {
-                    tact_catalog::CatalogLocale::En => "Loading sessions",
-                    tact_catalog::CatalogLocale::Zh => "正在加载会话",
-                }))
-            })
-            .child(
-                v_flex()
-                    .id("session-manager-list")
-                    .gap_1()
-                    .overflow_y_scroll()
-                    .children(rows),
             )
             .into_any_element()
     }
@@ -7195,11 +8800,15 @@ impl Render for DesktopRoot {
             let sessions_placeholder = i18n::text(self.snapshot.language, TextKey::SearchSessions);
             let extensions_placeholder =
                 i18n::text(self.snapshot.language, TextKey::SearchExtensions);
+            let models_placeholder = i18n::text(self.snapshot.language, TextKey::SearchModels);
             self.session_search.update(cx, |input, cx| {
                 input.set_placeholder(sessions_placeholder, window, cx);
             });
             self.extension_search.update(cx, |input, cx| {
                 input.set_placeholder(extensions_placeholder, window, cx);
+            });
+            self.model_search.update(cx, |input, cx| {
+                input.set_placeholder(models_placeholder, window, cx);
             });
         }
         if self.overlay_focus_pending && self.overlay.is_some() {
@@ -7209,6 +8818,14 @@ impl Render for DesktopRoot {
                     .update(cx, |input, cx| input.focus(window, cx));
             } else if matches!(self.overlay, Some(Overlay::Gate(_))) {
                 self.gate_primary_focus.focus(window, cx);
+            } else if matches!(self.overlay, Some(Overlay::ModelPicker(_))) {
+                // The filter is the picker's keyboard entry point: typing
+                // narrows the list, the arrow keys move the cursor, and Enter
+                // takes the highlighted model.
+                self.model_search.update(cx, |input, cx| {
+                    input.set_value(String::new(), window, cx);
+                    input.focus(window, cx);
+                });
             } else {
                 self.overlay_focus.focus(window, cx);
             }
@@ -7218,7 +8835,15 @@ impl Render for DesktopRoot {
             self.prompt
                 .update(cx, |prompt, cx| prompt.focus(window, cx));
         }
+        let drawer_overlay = matches!(self.overlay, Some(Overlay::Subagent(_)));
         let overlay = self.render_overlay(window, cx);
+        // Overlays arrive with one restrained fade and rise rather than
+        // appearing between two frames. Reduced motion resolves to the settled
+        // frame, as every other transition here does.
+        let overlay_epoch = self.overlay_epoch;
+        let overlay_direct_motion = crate::ui::shell::motion_policy(self.snapshot.motion)
+            .direct_state_changes
+            || cx.reduce_motion();
         let mut left_panel = self
             .left_visible
             .then(|| self.render_session_rail(window, cx).into_any_element());
@@ -7252,6 +8877,10 @@ impl Render for DesktopRoot {
             .on_action(cx.listener(|this, _: &keymap::OpenSettings, window, cx| {
                 this.remember_focus(window, cx);
                 this.open_overlay(Overlay::Settings);
+            }))
+            .on_action(cx.listener(|this, _: &keymap::NewSession, _, cx| {
+                this.dispatch(DesktopIntent::NewSession);
+                cx.notify();
             }))
             .on_action(cx.listener(|this, _: &keymap::ToggleLeft, _, cx| {
                 this.left_visible = !this.left_visible;
@@ -7353,34 +8982,37 @@ impl Render for DesktopRoot {
                     .min_h_0()
                     .when_some(inline_left, |row, left| row.child(left))
                     .child(
-                        v_flex()
-                            .id("run-room")
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_h_0()
-                                    .relative()
-                                    .child(
-                                        h_flex()
-                                            .size_full()
-                                            .min_h_0()
-                                            .child(self.render_transcript(window, cx))
-                                            .when_some(inline_right, |row, right| row.child(right)),
-                                    )
-                                    .when(
-                                        self.scroller.read(cx).is_scrolled_up()
-                                            || !self.snapshot.tail_following,
-                                        |region| region.child(self.render_back_to_bottom(cx)),
-                                    ),
-                            )
-                            .when(self.snapshot.failure.is_some(), |column| {
-                                column.child(self.render_failure(cx))
-                            })
-                            .child(self.render_sticky(cx))
-                            .child(self.render_composer(window, cx)),
+                        v_flex().id("run-room").flex_1().min_w_0().h_full().child(
+                            h_flex()
+                                .flex_1()
+                                .min_h_0()
+                                .child(
+                                    v_flex()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .h_full()
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_h_0()
+                                                .relative()
+                                                .child(self.render_transcript(window, cx))
+                                                .when(
+                                                    self.scroller.read(cx).is_scrolled_up()
+                                                        || !self.snapshot.tail_following,
+                                                    |region| {
+                                                        region.child(self.render_back_to_bottom(cx))
+                                                    },
+                                                ),
+                                        )
+                                        .when(self.snapshot.failure.is_some(), |column| {
+                                            column.child(self.render_failure(cx))
+                                        })
+                                        .child(self.render_sticky(cx))
+                                        .child(self.render_composer(window, cx)),
+                                )
+                                .when_some(inline_right, |row, right| row.child(right)),
+                        ),
                     )
                     .when_some(scrim_right, |row, right| {
                         row.child(
@@ -7482,27 +9114,47 @@ impl Render for DesktopRoot {
                 )
             })
             .when_some(overlay, |root, overlay| {
+                let content = div().child(
+                    v_flex()
+                        .id("overlay-content")
+                        .when(drawer_overlay, |content| content.h_full())
+                        .focus_trap("overlay-focus-trap", &self.overlay_focus)
+                        .on_click(|_, _, cx| cx.stop_propagation())
+                        .child(overlay),
+                );
+                let content = if overlay_direct_motion {
+                    content.into_any_element()
+                } else {
+                    content
+                        .with_animation(
+                            ("overlay-content", overlay_epoch),
+                            Animation::new(Duration::from_millis(160)),
+                            |content, delta| {
+                                content
+                                    .relative()
+                                    .top(px((1.0 - delta) * 10.0))
+                                    .opacity(delta)
+                            },
+                        )
+                        .into_any_element()
+                };
                 root.child(
                     v_flex()
                         .id("overlay-scrim")
                         .key_context("Overlay")
                         .absolute()
                         .inset_0()
-                        .items_center()
-                        .justify_center()
+                        .when(drawer_overlay, |scrim| scrim.items_end().justify_end())
+                        .when(!drawer_overlay, |scrim| {
+                            scrim.items_center().justify_center()
+                        })
                         .bg(theme::scrim_color())
                         .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                             this.close_overlay();
                             this.restore_focus(window, cx);
                             cx.notify();
                         }))
-                        .child(
-                            v_flex()
-                                .id("overlay-content")
-                                .focus_trap("overlay-focus-trap", &self.overlay_focus)
-                                .on_click(|_, _, cx| cx.stop_propagation())
-                                .child(overlay),
-                        ),
+                        .child(content),
                 )
             })
     }
@@ -7815,6 +9467,7 @@ fn goal_invoke(verb: &'static str, goal_id: &str, text: Option<&str>) -> Desktop
     }
 }
 
+#[cfg(test)]
 fn sticky_shortcut(
     label: &'static str,
     tab: InspectorTab,
@@ -7843,6 +9496,73 @@ fn sticky_shortcut(
         }))
 }
 
+fn sticky_count(
+    label: &'static str,
+    count: usize,
+    tab: InspectorTab,
+    opens_background: bool,
+    cx: &mut Context<DesktopRoot>,
+) -> impl IntoElement {
+    let text = format!("{label} {count}");
+    div()
+        .id(SharedString::from(format!("sticky-count-{label}")))
+        .role(Role::Button)
+        .focusable()
+        .tab_stop(true)
+        .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
+        .aria_label(text.clone())
+        .cursor_pointer()
+        .rounded_md()
+        .px_1p5()
+        .py_0p5()
+        .text_xs()
+        .text_color(cx.theme().muted_foreground)
+        .hover(|style| style.bg(cx.theme().muted))
+        .child(text)
+        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+            if opens_background {
+                this.remember_focus(window, cx);
+                this.open_overlay(Overlay::Background);
+            } else {
+                this.select_inspector(tab, cx);
+            }
+            cx.notify();
+        }))
+}
+
+fn signal_row(
+    label: &str,
+    value: String,
+    tone: gpui::Hsla,
+    cx: &mut Context<DesktopRoot>,
+) -> impl IntoElement {
+    h_flex()
+        .w_full()
+        .min_w_0()
+        .justify_between()
+        .gap_2()
+        .text_size(px(11.))
+        .child(
+            h_flex()
+                .min_w_0()
+                .items_center()
+                .gap(px(7.))
+                .child(div().flex_none().size(px(6.)).rounded_full().bg(tone))
+                .child(
+                    div()
+                        .truncate()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(label.to_string()),
+                ),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_color(cx.theme().muted_foreground)
+                .child(value),
+        )
+}
+
 fn format_duration_ms(ms: u64) -> String {
     if ms < 1_000 {
         format!("{ms} ms")
@@ -7858,10 +9578,25 @@ fn metric(label: &'static str, value: &str, cx: &mut Context<DesktopRoot>) -> im
         .id(SharedString::from(format!("metric-{label}")))
         .role(Role::Status)
         .aria_label(format!("{label}: {value}"))
+        .w_full()
+        .min_w_0()
+        .gap_2()
         .justify_between()
         .text_sm()
-        .child(div().text_color(cx.theme().muted_foreground).child(label))
-        .child(div().truncate().child(value.to_string()))
+        .child(
+            div()
+                .flex_none()
+                .text_color(cx.theme().muted_foreground)
+                .child(label),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_right()
+                .child(value.to_string()),
+        )
 }
 
 fn run_phase_label(
@@ -7926,29 +9661,6 @@ fn subagent_status_label(
         tact_desktop_core::SubagentStatusSnapshot::Cancelled => {
             i18n::text(locale, TextKey::Cancelled)
         }
-    }
-}
-
-fn task_status_label(
-    status: tact_desktop_core::TaskStatusSnapshot,
-    locale: tact_catalog::CatalogLocale,
-) -> &'static str {
-    match status {
-        tact_desktop_core::TaskStatusSnapshot::Pending => i18n::text(locale, TextKey::Queue),
-        tact_desktop_core::TaskStatusSnapshot::InProgress => i18n::text(locale, TextKey::Running),
-        tact_desktop_core::TaskStatusSnapshot::Completed => i18n::text(locale, TextKey::Completed),
-    }
-}
-
-fn cache_rate(usage: &tact_desktop_core::UsageView) -> String {
-    let total = usage.cache_hit_tokens.saturating_add(usage.prompt_tokens);
-    if total == 0 {
-        "0%".into()
-    } else {
-        format!(
-            "{}%",
-            (u64::from(usage.cache_hit_tokens) * 100 / u64::from(total)).min(100)
-        )
     }
 }
 
@@ -8288,11 +10000,11 @@ fn transcript_row_element(
             .aria_label(i18n::text(snapshot.language, TextKey::UserMessage))
             .items_start()
             .gap_3()
-            .py_3()
+            .py(px(18.))
             .child(
                 div()
                     .flex_none()
-                    .size(px(26.))
+                    .size(px(28.))
                     .rounded_full()
                     .bg(snapshot_row_background(snapshot))
                     .border_1()
@@ -8302,7 +10014,7 @@ fn transcript_row_element(
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child("Y"),
+                    .child(local_user_initials()),
             )
             .child(
                 v_flex()
@@ -8316,10 +10028,10 @@ fn transcript_row_element(
                             .text_color(snapshot_row_muted(snapshot))
                             .child(i18n::text(snapshot.language, TextKey::You)),
                     )
-                    .child(TextView::markdown(
+                    .child(div().text_sm().child(TextView::markdown(
                         format!("user-{id}"),
                         user.text.to_string(),
-                    ))
+                    )))
                     .when(!user.attachments.is_empty(), |row| {
                         row.child(
                             AttachmentStrip::new(format!("user-attachments-{id}"))
@@ -8421,6 +10133,119 @@ fn transcript_row_element(
                             )
                         }),
                 )
+                .into_any_element()
+        }
+        RowBody::Plan(plan) => {
+            let steps = plan.steps.iter().enumerate().map(|(index, step)| {
+                let tone = match step.status {
+                    RowStatus::Success => snapshot_row_muted(snapshot),
+                    RowStatus::Running => snapshot_theme_primary(snapshot),
+                    RowStatus::Failed => snapshot_theme_danger(snapshot),
+                    _ => snapshot_row_muted(snapshot),
+                };
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .gap(px(12.))
+                    .px(px(16.))
+                    .py(px(7.))
+                    .when(index + 1 < plan.steps.len(), |row| {
+                        row.border_b_1().border_color(snapshot_row_border(snapshot))
+                    })
+                    .child(
+                        div()
+                            .flex_none()
+                            .w(px(18.))
+                            .text_size(px(10.))
+                            .font_family("Lilex")
+                            .text_color(snapshot_row_muted(snapshot))
+                            .child(format!("{:02}", index + 1)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(12.))
+                            .text_color(tone)
+                            .child(step.label.to_string()),
+                    )
+                    .when_some(step.detail.clone(), |row, detail| {
+                        row.child(
+                            div()
+                                .text_size(px(10.))
+                                .font_family("Lilex")
+                                .text_color(snapshot_row_muted(snapshot))
+                                .child(detail.to_string()),
+                        )
+                    })
+            });
+            let executing = plan
+                .steps
+                .iter()
+                .any(|step| matches!(step.status, RowStatus::Running | RowStatus::Pending));
+            v_flex()
+                .id(SharedString::from(format!("row-plan-{id}")))
+                .debug_selector(move || format!("transcript-row-plan-{id}"))
+                .role(Role::Group)
+                .gap(px(0.))
+                .rounded(px(12.))
+                .border_1()
+                .border_color(snapshot_row_border(snapshot))
+                .bg(snapshot_row_surface(snapshot))
+                .overflow_hidden()
+                .child(
+                    v_flex()
+                        .gap(px(6.))
+                        .p(px(16.))
+                        .border_b_1()
+                        .border_color(snapshot_row_border(snapshot))
+                        .child(
+                            h_flex()
+                                .justify_between()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .text_size(px(10.))
+                                        .font_family("Lilex")
+                                        .text_color(snapshot_row_muted(snapshot))
+                                        .child(format!("PLAN / {} STEPS", plan.steps.len())),
+                                )
+                                .child(
+                                    h_flex()
+                                        .gap(px(5.))
+                                        .items_center()
+                                        .rounded_full()
+                                        .bg(snapshot_theme_success(snapshot).opacity(0.14))
+                                        .px(px(7.))
+                                        .py(px(2.))
+                                        .child(
+                                            div()
+                                                .size(px(5.))
+                                                .rounded_full()
+                                                .bg(snapshot_theme_success(snapshot)),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(10.))
+                                                .font_family("Lilex")
+                                                .text_color(snapshot_theme_success(snapshot))
+                                                .child(if executing {
+                                                    "EXECUTING"
+                                                } else {
+                                                    "COMPLETE"
+                                                }),
+                                        ),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(18.))
+                                .font_semibold()
+                                .child(plan.title.to_string()),
+                        ),
+                )
+                .child(v_flex().children(steps))
                 .into_any_element()
         }
         RowBody::Thinking(thinking) => {
@@ -8578,11 +10403,17 @@ fn transcript_row_element(
             .id(SharedString::from(format!("row-hook-context-{id}")))
             .role(Role::Note)
             .gap_1()
-            .border_l_2()
-            .pl_2()
+            .rounded_md()
+            .border_1()
+            .border_color(snapshot_row_border(snapshot))
+            .bg(snapshot_row_background(snapshot))
+            .px_3()
+            .py_2()
+            .text_xs()
             .child(
                 div()
                     .text_xs()
+                    .font_semibold()
                     .text_color(snapshot_row_muted(snapshot))
                     .child(
                         context
@@ -9217,6 +11048,117 @@ fn snapshot_row_border(snapshot: &DesktopSnapshot) -> gpui::Hsla {
     }
 }
 
+/// Groups hook items by source; a source with any pending item needs review.
+fn group_hook_sources(
+    trusted: &[tact_desktop_core::HookItemSnapshot],
+    pending: &[tact_desktop_core::HookItemSnapshot],
+) -> Vec<(String, Vec<tact_desktop_core::HookItemSnapshot>, bool)> {
+    let mut sources: Vec<(String, Vec<tact_desktop_core::HookItemSnapshot>, bool)> = Vec::new();
+    for (items, is_trusted) in [(pending, false), (trusted, true)] {
+        for item in items {
+            if let Some(entry) = sources
+                .iter_mut()
+                .find(|(source, _, _)| source == &item.source)
+            {
+                entry.1.push(item.clone());
+                entry.2 = entry.2 && is_trusted;
+            } else {
+                sources.push((item.source.clone(), vec![item.clone()], is_trusted));
+            }
+        }
+    }
+    sources
+}
+
+/// Splits the first prompt into a headline and an optional summary line.
+/// The scroller wraps every row in `px_3`; the thread and composer share one
+/// 900px column, so the row wrapper must not add its own horizontal inset.
+fn full_width_row_style() -> gpui::StyleRefinement {
+    let mut style = gpui::StyleRefinement::default();
+    style.padding.left = Some(px(0.).into());
+    style.padding.right = Some(px(0.).into());
+    style
+}
+
+fn split_run_text(text: String) -> (String, Option<String>) {
+    // Prompts may start with a blank line. The headline is the first non-empty
+    // line and the lede is the next one, matching the design's one-line
+    // summary; a long multi-paragraph prompt therefore never overflows the
+    // hero header.
+    let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
+    let Some(headline) = lines.next() else {
+        return (String::new(), None);
+    };
+    (headline.to_string(), lines.next().map(str::to_string))
+}
+
+/// Initials for the local account avatar (for example `rg` -> `RG`).
+fn local_user_initials() -> &'static str {
+    static INITIALS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    INITIALS.get_or_init(|| {
+        let name = std::env::var("USER")
+            .or_else(|_| std::env::var("USERNAME"))
+            .unwrap_or_default();
+        initials_from_name(&name)
+    })
+}
+
+fn initials_from_name(name: &str) -> String {
+    let initials = name
+        .chars()
+        .filter(|character| character.is_alphanumeric())
+        .take(2)
+        .collect::<String>()
+        .to_uppercase();
+    if initials.is_empty() {
+        "Y".to_string()
+    } else {
+        initials
+    }
+}
+
+fn snapshot_row_surface(snapshot: &DesktopSnapshot) -> gpui::Hsla {
+    match snapshot.appearance {
+        Appearance::Light => gpui::rgb(0xffffff).into(),
+        Appearance::Dark => gpui::rgb(0x2c2c2e).into(),
+    }
+}
+
+/// The run title drops a leading URL, matching the design's headline.
+fn strip_leading_url(text: &str) -> String {
+    let trimmed = text.trim_start();
+    let rest = trimmed
+        .strip_prefix("https://")
+        .or_else(|| trimmed.strip_prefix("http://"));
+    if let Some(rest) = rest
+        && let Some((_, tail)) = rest.split_once(char::is_whitespace)
+    {
+        return tail.trim_start().to_string();
+    }
+    text.to_string()
+}
+
+fn snapshot_theme_primary(snapshot: &DesktopSnapshot) -> gpui::Hsla {
+    match snapshot.appearance {
+        Appearance::Light => gpui::rgb(0x007aff).into(),
+        Appearance::Dark => gpui::rgb(0x0a84ff).into(),
+    }
+}
+
+fn snapshot_theme_success(snapshot: &DesktopSnapshot) -> gpui::Hsla {
+    match snapshot.appearance {
+        Appearance::Light => gpui::rgb(0x34c759).into(),
+        Appearance::Dark => gpui::rgb(0x30d158).into(),
+    }
+}
+
+fn snapshot_theme_danger(snapshot: &DesktopSnapshot) -> gpui::Hsla {
+    match snapshot.appearance {
+        Appearance::Light => gpui::rgb(0xff453a).into(),
+        Appearance::Dark => gpui::rgb(0xff453a).into(),
+    }
+}
+
 fn snapshot_row_muted(snapshot: &DesktopSnapshot) -> gpui::Hsla {
     match snapshot.appearance {
         Appearance::Light => gpui::rgb(0x6e6e73).into(),
@@ -9571,7 +11513,7 @@ fn surface_reader_markdown(
 mod tests {
     use gpui::{Element as _, Focusable as _, TestAppContext, VisualTestContext, px, size};
     use gpui_component::Root;
-    use tact_desktop_core::DesktopConfig;
+    use tact_desktop_core::{DesktopConfig, SessionEpoch, StateCommit};
 
     use super::*;
 
@@ -9861,7 +11803,6 @@ mod tests {
             (BuiltinCommand::Mcp, ExtensionsTab::Mcp),
             (BuiltinCommand::Plugin, ExtensionsTab::Plugins),
             (BuiltinCommand::Skill, ExtensionsTab::Skills),
-            (BuiltinCommand::Hooks, ExtensionsTab::Hooks),
         ];
         window.update(|window, cx| {
             root.update(cx, |this, cx| {
@@ -9888,6 +11829,20 @@ mod tests {
                         "{root:?} subcommand did not open its manager"
                     );
                 }
+                this.close_overlay();
+                this.execute_command(
+                    CommandId::BuiltinPath {
+                        root: BuiltinCommand::Hooks,
+                        path: vec!["hooks", "list"],
+                    },
+                    CommandArguments::default(),
+                    window,
+                    cx,
+                );
+                assert!(
+                    matches!(this.overlay, Some(Overlay::Hooks)),
+                    "hooks subcommand did not open the hooks sheet"
+                );
             });
         });
         shutdown.shutdown_blocking().unwrap();
@@ -9969,6 +11924,25 @@ mod tests {
         assert!(trap.is_some(), "the gate must install an active focus trap");
         assert!(window.debug_bounds("gate-option-0").is_some());
         assert!(window.debug_bounds("confirm-gate").is_some());
+
+        // "Confirm stays disabled until the user explicitly chooses" is a PRD
+        // requirement, and a bounds check cannot see it: click the button with
+        // no selection and prove nothing was submitted.
+        let confirm = window.debug_bounds("confirm-gate").expect("confirm");
+        window.simulate_click(confirm.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        let (submitted, still_open) = window.update(|_window, cx| {
+            let root = root.read(cx);
+            (
+                root.submitted_gates.contains(&request_id),
+                root.overlay.is_some(),
+            )
+        });
+        assert!(
+            !submitted,
+            "clicking Confirm without a choice must not answer the gate"
+        );
+        assert!(still_open, "the gate must stay open until a choice is made");
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
     }
@@ -10187,6 +12161,64 @@ mod tests {
         let _ = std::fs::remove_dir_all(data_dir);
     }
 
+    #[gpui::test]
+    fn session_list_fills_the_rail_instead_of_an_empty_spacer(cx: &mut TestAppContext) {
+        use chrono::{TimeZone as _, Utc};
+        use tact_desktop_core::{ProjectId, SessionId, SessionSummaryView};
+
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        let base = Utc
+            .with_ymd_and_hms(2026, 10, 31, 8, 0, 0)
+            .single()
+            .unwrap();
+        let items = (0..12)
+            .map(|index| SessionSummaryView {
+                id: format!("session-{index}"),
+                project_id: ProjectId("tact".into()),
+                root_dir: data_dir.clone(),
+                title: format!("Session {index}"),
+                updated_at: base - chrono::Duration::minutes(index),
+                archived_at: None,
+                locked: false,
+                message_count: 10 + index,
+                search_score: 0,
+            })
+            .collect();
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                let mut snapshot = (*root.snapshot).clone();
+                snapshot.sessions.items = items;
+                snapshot.sessions.selected = Some(SessionId("session-0".into()));
+                root.set_snapshot_for_capture(Arc::new(snapshot), cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        let list = window
+            .debug_bounds("session-list")
+            .expect("session list bounds");
+        let view_all = window
+            .debug_bounds("view-all-sessions")
+            .expect("view all sessions bounds");
+        let extensions = window
+            .debug_bounds("rail-extensions")
+            .expect("rail extensions bounds");
+        let list_bottom = list.origin.y + list.size.height;
+        assert!(
+            view_all.origin.y - list_bottom <= px(12.),
+            "session list ends at {list_bottom:?} but 'view all sessions' starts at {:?}; \
+             an empty flex spacer is stealing the rail's free height",
+            view_all.origin.y
+        );
+        assert!(
+            view_all.origin.y + view_all.size.height <= extensions.origin.y + px(12.),
+            "view-all row overlaps the extensions section"
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
     #[test]
     fn permission_gate_summaries_use_localized_decisions() {
         let options: Vec<Arc<str>> =
@@ -10296,11 +12328,14 @@ mod tests {
 
     #[gpui::test]
     fn every_catalog_entry_executes_in_the_shell(cx: &mut TestAppContext) {
+        // Counting loop iterations proves nothing: `execute_command` returns
+        // early on an unavailable entry, so a shell where every command is
+        // inert still counted as "executed". Two sessions cover both sides of
+        // availability, and each entry must show a real effect on the shell.
         let (root, window, shutdown, data_dir) = probe_root(cx);
-        let executed = window.update(|window, cx| {
+        let report = window.update(|window, cx| {
             root.update(cx, |this, cx| {
-                let catalog = tact_catalog::builtins();
-                let entries = tact_desktop_core::catalog_entries(catalog)
+                let entries = tact_desktop_core::catalog_entries(tact_catalog::builtins())
                     .cloned()
                     .collect::<Vec<_>>();
                 assert!(
@@ -10308,25 +12343,59 @@ mod tests {
                     "catalog is unexpectedly small: {}",
                     entries.len()
                 );
+                let mut inert = Vec::new();
+                let mut unavailable = Vec::new();
                 let mut executed = 0;
-                for descriptor in entries {
-                    if matches!(descriptor.id, CommandId::Builtin(BuiltinCommand::Quit)) {
-                        continue;
+                for session in ["no-session", "live-session"] {
+                    for descriptor in &entries {
+                        if matches!(descriptor.id, CommandId::Builtin(BuiltinCommand::Quit)) {
+                            continue;
+                        }
+                        this.close_overlay();
+                        this.toast = None;
+                        this.recent_commands.clear();
+                        let revision_before = this.snapshot.revision;
+                        let overlay_before = this.overlay_kind();
+                        let inspector_before = (this.snapshot.inspector.tab, this.right_visible);
+                        this.execute_command(
+                            descriptor.id.clone(),
+                            CommandArguments::default(),
+                            window,
+                            cx,
+                        );
+                        let toasted = this.toast.is_some();
+                        // Any real route either opens a surface, moves the
+                        // inspector, changes the snapshot, or is recorded as
+                        // the last invoked command. An early return does none.
+                        let moved = this.overlay_kind() != overlay_before
+                            || this.snapshot.revision != revision_before
+                            || (this.snapshot.inspector.tab, this.right_visible)
+                                != inspector_before
+                            || this.recent_commands.first() == Some(&descriptor.id);
+                        if toasted {
+                            unavailable.push(format!("{session}:{:?}", descriptor.path));
+                        } else if moved {
+                            executed += 1;
+                        } else {
+                            inert.push(format!("{session}:{:?}", descriptor.path));
+                        }
                     }
-                    this.close_overlay();
-                    this.execute_command(
-                        descriptor.id.clone(),
-                        CommandArguments::default(),
-                        window,
-                        cx,
-                    );
-                    executed += 1;
                 }
-                executed
+                (executed, inert, unavailable)
             })
         });
-        assert!(executed >= 80);
-        eprintln!("executed {executed} catalog entries");
+        let (executed, inert, unavailable) = report;
+        assert!(executed > 0, "no catalog entry produced any shell effect");
+        assert!(
+            inert.is_empty(),
+            "{} catalog entries showed no effect and no unavailable notice: {:?}",
+            inert.len(),
+            &inert[..inert.len().min(12)]
+        );
+        eprintln!(
+            "executed {executed}, unavailable {} across two sessions",
+            unavailable.len()
+        );
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
     }
@@ -10401,6 +12470,9 @@ mod tests {
                 snapshot.session.id = Some(SessionId("back-to-bottom-session".into()));
                 snapshot.project.id = Some(ProjectId("back-to-bottom-project".into()));
                 this.snapshot = Arc::new(snapshot);
+                // The pill is anchored to the transcript, not the window: with
+                // the inspector open it must not float over the inspector.
+                this.right_visible = true;
                 cx.notify();
             });
             window.draw(cx).clear(cx);
@@ -10409,9 +12481,457 @@ mod tests {
         let back = window
             .debug_bounds("back-to-bottom")
             .expect("back-to-bottom control");
+        let inspector = window.debug_bounds("run-inspector").expect("run inspector");
         assert!(
             back.origin.y + back.size.height <= sticky.origin.y,
             "back={back:?}, sticky={sticky:?}"
+        );
+        assert!(
+            back.origin.x + back.size.width <= inspector.origin.x,
+            "back={back:?} overlaps inspector={inspector:?}"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn extensions_overlays_match_prototype_sizes(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(840.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, _cx| {
+                this.open_overlay(Overlay::Extensions(ExtensionsTab::Mcp));
+                this.extension_manage = false;
+            });
+            window.draw(cx).clear(cx);
+        });
+        let popover = window
+            .debug_bounds("extensions-overlay")
+            .expect("extensions popover");
+        assert_eq!(popover.size.width, px(520.), "popover width");
+
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.extension_manage = true;
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        let manager = window
+            .debug_bounds("extensions-overlay")
+            .expect("extensions manager");
+        assert_eq!(manager.size.width, px(780.), "manager width");
+        assert_eq!(manager.size.height, px(620.), "manager height");
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn composer_shows_stop_and_send_while_running(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.session.phase = SessionPhase::Running;
+                this.snapshot = Arc::new(snapshot);
+                this.prompt.update(cx, |prompt, cx| {
+                    prompt.set_progress(ProgressState::Running, cx);
+                });
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        assert!(
+            window.debug_bounds("prompt-bar-stop-control").is_some(),
+            "stop control"
+        );
+        assert!(
+            window.debug_bounds("prompt-bar-send-control").is_some(),
+            "send control"
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn composer_and_transcript_share_one_column_with_the_inspector(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1600.), px(900.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = tact_desktop_core::fixtures::demo_transcript();
+                this.snapshot = Arc::new(snapshot);
+                this.right_visible = true;
+                this.pending_row_updates
+                    .extend(this.snapshot.transcript.iter().map(|row| row.id));
+                let count = this.snapshot.transcript.len();
+                this.scroller.update(cx, |state, cx| {
+                    state.reset(count, cx);
+                    state.scroll_to_item(0, cx);
+                });
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+            window.draw(cx).clear(cx);
+        });
+        let row = window
+            .debug_bounds("transcript-row-user-0")
+            .expect("user row");
+        let composer = window
+            .debug_bounds("composer-frame")
+            .expect("composer frame");
+        assert!(
+            (row.origin.x - composer.origin.x).abs() <= px(1.),
+            "row x {} vs composer x {}",
+            row.origin.x,
+            composer.origin.x
+        );
+        assert!(
+            (row.size.width - composer.size.width).abs() <= px(1.),
+            "row width {} vs composer width {}",
+            row.size.width,
+            composer.size.width
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn escape_denies_the_pending_gate(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let gate = tact_desktop_core::fixtures::demo_gate();
+                this.open_overlay(Overlay::Gate(gate.clone()));
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+            window.draw(cx).clear(cx);
+        });
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| this.dismiss_topmost(window, cx));
+        });
+        let (overlay_closed, submitted) = window.update(|_, cx| {
+            let root = root.read(cx);
+            (root.overlay.is_none(), root.submitted_gates.contains(&12))
+        });
+        assert!(overlay_closed, "escape must close the gate dialog");
+        assert!(submitted, "escape must deny the pending gate");
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn escape_cancels_a_run_before_closing_the_rail(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.session.phase = SessionPhase::Running;
+                this.snapshot = Arc::new(snapshot);
+                this.left_visible = true;
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| this.dismiss_topmost(window, cx));
+        });
+        let left_visible = window.update(|_, cx| root.read(cx).left_visible);
+        assert!(
+            left_visible,
+            "escape must interrupt the run instead of hiding the rail"
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn overlays_match_prototype_sizes(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(840.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.open_command_center(window, cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+        let palette = window
+            .debug_bounds("command-center-overlay")
+            .expect("command center");
+        assert_eq!(palette.size.width, px(700.), "palette width");
+
+        window.update(|window, cx| {
+            root.update(cx, |this, _cx| {
+                this.close_overlay();
+                this.open_overlay(Overlay::SessionManager);
+            });
+            window.draw(cx).clear(cx);
+        });
+        let manager = window
+            .debug_bounds("session-manager-overlay")
+            .expect("session manager");
+        assert_eq!(manager.size.width, px(1040.), "session manager width");
+        assert_eq!(manager.size.height, px(720.), "session manager height");
+
+        window.update(|window, cx| {
+            root.update(cx, |this, _cx| {
+                this.close_overlay();
+                this.open_overlay(Overlay::Subagent("child-2".to_owned()));
+            });
+            window.draw(cx).clear(cx);
+        });
+        let drawer = window
+            .debug_bounds("subagent-overlay")
+            .expect("subagent drawer");
+        assert_eq!(drawer.size.width, px(520.), "subagent drawer width");
+
+        window.update(|window, cx| {
+            root.update(cx, |this, _cx| {
+                this.close_overlay();
+                this.open_overlay(Overlay::Hooks);
+            });
+            window.draw(cx).clear(cx);
+        });
+        let hooks = window.debug_bounds("hooks-overlay").expect("hooks sheet");
+        assert_eq!(hooks.size.width, px(780.), "hooks sheet width");
+        assert_eq!(hooks.size.height, px(620.), "hooks sheet height");
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn session_switch_keeps_composer_focus(cx: &mut TestAppContext) {
+        // A session switch arrives as one `Committed` event whose snapshot has a
+        // new epoch and a Ready phase. The composer must end up focused, which
+        // is what lets the user type into the new session immediately. Asserting
+        // a queue index under this name passes without ever switching a session.
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut running = (*this.snapshot).clone();
+                running.session.phase = SessionPhase::Running;
+                running.session.epoch = SessionEpoch(1);
+                running.session.id = Some(SessionId("old-session".into()));
+                this.snapshot = Arc::new(running);
+
+                let mut switched = (*this.snapshot).clone();
+                switched.session.phase = SessionPhase::Ready;
+                switched.session.epoch = SessionEpoch(2);
+                switched.session.id = Some(SessionId("new-session".into()));
+                switched.revision = this.snapshot.revision.saturating_add(1);
+                this.handle_event(
+                    DesktopEvent::Committed(StateCommit {
+                        revision: switched.revision,
+                        snapshot: Arc::new(switched),
+                        dirty_rows: Arc::from([]),
+                        sections: SectionMask::SESSION,
+                    }),
+                    cx,
+                );
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        let (phase, focused, composer) = window.update(|window, cx| {
+            let (phase, composer) = {
+                let this = root.read(cx);
+                (
+                    this.snapshot.session.phase.clone(),
+                    this.prompt.read(cx).focus_handle(cx),
+                )
+            };
+            (phase, window.focused(cx), composer)
+        });
+        assert_eq!(phase, SessionPhase::Ready);
+        assert_eq!(
+            focused.as_ref(),
+            Some(&composer),
+            "a session switch must leave the composer focused for the new session"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn empty_tasks_reader_explains_there_are_no_tasks(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |this, _cx| {
+                this.open_typed_reader(ReaderKind::TasksDag, "Tasks");
+                this.refresh_typed_reader();
+            });
+            window.draw(cx).clear(cx);
+        });
+        let markdown = window.update(|_, cx| match &root.read(cx).overlay {
+            Some(Overlay::Reader(reader)) => reader.markdown.to_string(),
+            _ => String::new(),
+        });
+        assert!(
+            markdown.contains("No tasks"),
+            "empty tasks reader showed {markdown:?}"
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn hook_sources_with_pending_items_stay_untrusted() {
+        use tact_desktop_core::HookItemSnapshot;
+        let item = |source: &str, command: &str| HookItemSnapshot {
+            source: source.to_string(),
+            event: "post_tool".into(),
+            matcher: None,
+            command: command.to_string(),
+        };
+        let trusted = [item("a", "fmt")];
+        let pending = [item("a", "check"), item("b", "notify")];
+        let sources = group_hook_sources(&trusted, &pending);
+        let a = sources
+            .iter()
+            .find(|(source, _, _)| source == "a")
+            .expect("source a");
+        assert!(!a.2, "a source with a pending hook must stay untrusted");
+        let b = sources
+            .iter()
+            .find(|(source, _, _)| source == "b")
+            .expect("source b");
+        assert!(!b.2);
+    }
+
+    #[test]
+    fn run_titles_split_a_second_line_into_the_summary() {
+        let (title, subtitle) = split_run_text("分析这个库\n以第2个目标来设计".into());
+        assert_eq!(title, "分析这个库");
+        assert_eq!(subtitle.as_deref(), Some("以第2个目标来设计"));
+        let (title, subtitle) = split_run_text("single line".into());
+        assert_eq!(title, "single line");
+        assert_eq!(subtitle, None);
+        let (title, subtitle) = split_run_text("\n  正文".into());
+        assert_eq!(title, "正文");
+        assert_eq!(subtitle, None);
+        let (title, _) = split_run_text("headline\n  ".into());
+        assert_eq!(title, "headline");
+        let (title, subtitle) = split_run_text("\n\n分析这个库\n以第2个目标来设计\n".into());
+        assert_eq!(title, "分析这个库");
+        assert_eq!(subtitle.as_deref(), Some("以第2个目标来设计"));
+        let (title, subtitle) = split_run_text("headline\nbody one\nbody two".into());
+        assert_eq!(title, "headline");
+        assert_eq!(subtitle.as_deref(), Some("body one"));
+        let (title, subtitle) = split_run_text("\nheadline\n\nbody".into());
+        assert_eq!(title, "headline");
+        assert_eq!(subtitle.as_deref(), Some("body"));
+        let (title, subtitle) = split_run_text(" \n\t \n".into());
+        assert_eq!(title, "");
+        assert_eq!(subtitle, None);
+    }
+
+    #[test]
+    fn avatars_use_two_uppercase_initials() {
+        assert_eq!(initials_from_name("rg"), "RG");
+        assert_eq!(initials_from_name(""), "Y");
+        assert_eq!(initials_from_name("rg.agent"), "RG");
+    }
+
+    #[test]
+    fn run_titles_drop_a_leading_url() {
+        assert_eq!(
+            strip_leading_url("https://labcoder.github.io/gpui-ai 分析下这个库"),
+            "分析下这个库"
+        );
+        assert_eq!(strip_leading_url("  plain title"), "  plain title");
+    }
+
+    #[gpui::test]
+    fn chrome_matches_prototype_metrics(cx: &mut TestAppContext) {
+        let (_root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        let titlebar = window.debug_bounds("desktop-title-bar").expect("title bar");
+        // The prototype's 58px includes its 1px bottom border; debug bounds
+        // report the content box.
+        assert_eq!(titlebar.size.height + px(1.), px(58.), "titlebar height");
+
+        let rail = window.debug_bounds("session-rail").expect("session rail");
+        assert_eq!(rail.size.width, px(250.), "rail width");
+
+        let area = window.debug_bounds("composer-area").expect("composer area");
+        let composer = window
+            .debug_bounds("composer-frame")
+            .expect("composer frame");
+        assert_eq!(composer.size.width, px(900.), "composer width");
+        assert_eq!(
+            composer.origin.x,
+            area.origin.x + (area.size.width - px(900.)) / 2.,
+            "composer x"
+        );
+
+        let sticky = window.debug_bounds("sticky-strip").expect("sticky strip");
+        assert_eq!(sticky.size.width, px(900.), "sticky width");
+        assert_eq!(
+            sticky.origin.x,
+            area.origin.x + (area.size.width - px(900.)) / 2.,
+            "sticky x"
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn composer_controls_live_inside_the_prompt_frame(cx: &mut TestAppContext) {
+        let (_root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        let editor = window
+            .debug_bounds("prompt-bar-editor")
+            .expect("prompt editor");
+        let permission = window
+            .debug_bounds("permission-picker")
+            .expect("permission picker");
+        let composer = window.debug_bounds("composer-area").expect("composer area");
+        assert!(
+            permission.origin.y >= editor.origin.y + editor.size.height,
+            "permission chip sits above the prompt editor: editor={editor:?}, permission={permission:?}"
+        );
+        assert!(
+            permission.origin.y + permission.size.height
+                <= composer.origin.y + composer.size.height,
+            "permission chip escapes the composer area: permission={permission:?}, composer={composer:?}"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn sticky_strip_renders_a_task_card(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.inspector = tact_desktop_core::fixtures::demo_inspector();
+                this.snapshot = Arc::new(snapshot);
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        let card = window
+            .debug_bounds("sticky-task-card")
+            .expect("sticky task card");
+        assert!(card.size.height > px(40.), "card={card:?}");
+        assert!(
+            window.debug_bounds("toggle-sticky-tasks").is_some(),
+            "the card lost its collapse control"
         );
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
@@ -10674,6 +13194,7 @@ mod tests {
         for selector in [
             "transcript-row-user-0",
             "transcript-row-thinking-2",
+            "transcript-row-plan-13",
             "transcript-row-tool-group-3",
             "transcript-row-assistant-7",
             "transcript-row-diff-8",

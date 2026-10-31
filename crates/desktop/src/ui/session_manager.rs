@@ -1,4 +1,4 @@
-use tact_desktop_core::{ArchiveFilter, SessionSummaryView};
+use tact_desktop_core::{ArchiveFilter, ProjectId, SessionSummaryView};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionManagerView {
@@ -15,6 +15,24 @@ impl Default for SessionManagerView {
             query: String::new(),
         }
     }
+}
+
+/// The session count for one project row.
+///
+/// Only the active project's sessions are loaded in the snapshot, so a count
+/// for any other registered project would read as a false zero. The pane
+/// shows a number for the loaded project and leaves the other rows bare.
+pub fn project_session_count(
+    project: &ProjectId,
+    active: Option<&ProjectId>,
+    sessions: &[SessionSummaryView],
+) -> Option<usize> {
+    (active == Some(project)).then(|| {
+        sessions
+            .iter()
+            .filter(|session| &session.project_id == project)
+            .count()
+    })
 }
 
 pub fn filter_sessions<'a>(
@@ -59,9 +77,13 @@ mod tests {
     use super::*;
 
     fn session(id: &str, title: &str, archived: bool) -> SessionSummaryView {
+        session_in("p", id, title, archived)
+    }
+
+    fn session_in(project: &str, id: &str, title: &str, archived: bool) -> SessionSummaryView {
         SessionSummaryView {
             id: id.into(),
-            project_id: ProjectId("p".into()),
+            project_id: ProjectId(project.into()),
             root_dir: "/tmp/p".into(),
             title: title.into(),
             updated_at: Utc.with_ymd_and_hms(2026, 10, 30, 0, 0, 0).unwrap(),
@@ -97,5 +119,32 @@ mod tests {
             ..SessionManagerView::default()
         };
         assert_eq!(filter_sessions(&rows, &view)[0].id, "a");
+    }
+
+    #[gpui::test]
+    fn project_counts_only_exist_for_the_loaded_project(_cx: &mut TestAppContext) {
+        // The count must be read off the row's own project id, not off a
+        // helper that hard-codes one project: a fixture where every row shares
+        // the active project cannot tell a correct filter from a broken one.
+        let active = ProjectId("a".into());
+        let rows = vec![
+            session_in("a", "a1", "Loaded one", false),
+            session_in("a", "a2", "Loaded two", false),
+            session_in("b", "b1", "Other project", false),
+        ];
+        assert_eq!(
+            project_session_count(&active, Some(&active), &rows),
+            Some(2)
+        );
+        assert_eq!(
+            project_session_count(&ProjectId("b".into()), Some(&active), &rows),
+            None,
+            "an unloaded project must not claim a zero count"
+        );
+        assert_eq!(
+            project_session_count(&active, None, &rows),
+            None,
+            "without an active project no row may show a count"
+        );
     }
 }

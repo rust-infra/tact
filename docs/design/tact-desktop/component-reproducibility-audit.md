@@ -154,3 +154,89 @@ Resolution:
   selection actions with no page errors.
 - Re-ran `node --check docs/design/tact-desktop/prototype.js` and
   `python3 scripts/book-check.py book`.
+
+## Vendored patches (Tact)
+
+The pinned `gpui-ai` fork carries the Tact patches listed below. They are part
+of the shipping surface: re-apply them when the dependency is upgraded.
+
+### P1. `PromptBar::set_leading_controls`
+
+The component's footer rendered the model, attach and submit controls only.
+Tact needs the mention, slash and permission controls in that same row so the
+composer is one bar instead of three stacked rows. `set_leading_controls`
+installs a per-frame builder whose elements are rendered at the start of the
+footer cluster. The builder reads live application state, so the permission
+chip updates without rebuilding the bar.
+
+### P2. `SidebarNavItem::detail`
+
+The pinned row rendered one label and an optional badge. The rail needs a
+second line ("2m ago · 46 messages") to match the prototype and to keep the
+timestamp and message count readable at once. `detail` adds that line; rows
+with a detail line render through a Tact-side two-line layout while rows
+without one keep the pinned `SidebarMenuItem` presentation.
+
+### P3. `CommandSearchItem::icon`
+
+The pinned item supported title, subtitle, keywords and shortcut, but no
+leading icon. The prototype's palette rows lead with a group icon. `icon`
+takes the bundled icon path; the row renders it at 16px before the title and
+keeps the pinned Command option/activation path unchanged.
+
+### P4. `SidebarNav::set_chrome_visible`
+
+The pinned navigation always drew its own new-task button and filter input.
+The design's rail owns a larger project card, a blue New run button, a search
+field with a `/` hint, and date-grouped sections, so the host needs the row
+tree without the vendor header. `set_chrome_visible(false)` hides only the
+header controls; rows, keyboard navigation, filtering and events are unchanged.
+
+### P5. `PromptBar` footer visibility and trailing controls
+
+The prototype's composer footer is one row: paperclip, `@`, `/`, model,
+permission, then status and submit. The pinned bar always rendered attach and
+enhance text controls and had no slot after the model cluster.
+`set_attach_visible(false)` and `set_enhance_visible(false)` remove the
+built-in text controls, and `set_trailing_controls` adds the permission chip
+after the model. The attach action is re-created as an icon control by the
+host, so the event path is unchanged.
+
+### P6. `PromptBar` footer status and glyph submit
+
+The footer had no right-edge status and the glyph submit was disabled whenever
+the draft was empty, so it could not carry the design's solid send surface.
+`set_footer_status` adds the short status text before the submit control and
+`set_progress_visible(false)` hides the separate progress line. While running
+the bar now renders a red stop control **beside** the send control (matching
+the design), and the glyph submit stays enabled so an empty draft still shows
+the blue send button. Stop emits `CancelRequested`; send always submits (the
+shell queues a prompt while a run is active).
+
+### P7. `SidebarNav` row padding
+
+The pinned rows were 55px tall (two lines plus 8px vertical padding). The
+design's row pitch is 53px. Padding drops to 7px; the two-line layout and the
+1px separator still fit.
+
+### P8. `SidebarNav` trailing slot
+
+The rail's session rows need a right-aligned time on the title line while the
+detail line keeps `2m ago · 46 messages`. `SidebarNavItem::trailing` adds that
+label and the detail renderer lays it out opposite the label; the active check
+it previously drew is gone (the active dot already marks the current row).
+
+### P9. `glide.rs` — no animation frame for a merely-hovered list
+
+`Glide`'s capture hook requested an animation frame on every painted frame
+while a row was hovered, which pinned the whole window to the display refresh
+rate for as long as the pointer rested on a list. The hook now requests
+nothing: `transition` already asks for frames while its clock runs, and the
+remaining captures ask when the layer or a painted row actually moves.
+
+### P10. `todo_list.rs` — screen-reader label
+
+The completion label read `"{list_name}: {done}/{total} {completion_label}"`,
+which a screen reader announces as a single run-on token. It is now
+`"{list_name}, {done} of {total} {completion_label}"`, so the counts are
+spoken as words.

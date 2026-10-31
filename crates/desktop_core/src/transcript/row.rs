@@ -9,6 +9,13 @@ use tact_protocol::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RowId(pub(crate) u64);
 
+impl RowId {
+    /// Stable numeric identity, for host-side bookkeeping.
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct LoopId(pub(crate) u64);
 
@@ -37,6 +44,7 @@ pub enum RowBody {
     User(UserRow),
     Assistant(AssistantRow),
     Thinking(ThinkingRow),
+    Plan(PlanRow),
     ToolGroup(ToolGroupRow),
     Diff(DiffRow),
     Gate(GateCard),
@@ -229,6 +237,19 @@ pub enum GateKind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlanRow {
+    pub title: Arc<str>,
+    pub steps: Arc<[PlanStep]>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlanStep {
+    pub label: Arc<str>,
+    pub status: RowStatus,
+    pub detail: Option<Arc<str>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NoticeRow {
     pub text: Arc<str>,
 }
@@ -306,6 +327,13 @@ pub struct TranscriptView {
 }
 
 impl TranscriptView {
+    /// Builds a view from a full row list.
+    pub fn from_rows(rows: Vec<Arc<TranscriptRow>>) -> Self {
+        Self {
+            rows: rows.into_iter().collect(),
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.rows.len()
     }

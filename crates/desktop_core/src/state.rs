@@ -52,6 +52,24 @@ pub struct DesktopState {
     active_run: Option<String>,
 }
 
+/// A model list plus every discovered id it does not already hold.
+///
+/// Returns `None` when nothing was added, so callers can skip the commit that
+/// an unchanged list would otherwise produce.
+fn with_discovered_models(models: &[Arc<str>], discovered: &[String]) -> Option<Arc<[Arc<str>]>> {
+    let mut merged = models.to_vec();
+    let mut added = false;
+    for id in discovered {
+        let id = id.trim();
+        if id.is_empty() || merged.iter().any(|candidate| candidate.as_ref() == id) {
+            continue;
+        }
+        merged.push(Arc::from(id));
+        added = true;
+    }
+    added.then(|| merged.into())
+}
+
 impl DesktopState {
     pub fn new(config: &DesktopConfig) -> Self {
         let catalog = tact_catalog::builtins()
@@ -154,11 +172,42 @@ impl DesktopState {
         }
     }
 
+    /// Adds provider-discovered model ids to the composer's picker lists.
+    ///
+    /// The pickers are built from configuration alone at startup, and a stock
+    /// provider entry carries no `models = [...]`, so with the host model as
+    /// the only other source the picker can collapse to a single row — the
+    /// model already in use. The TUI supplements the same list from the
+    /// provider's model index (`GET /models`); discovery here is what keeps
+    /// the desktop picker honest about what the account can run.
+    ///
+    /// Discovered ids are appended after the configured ones: configuration
+    /// is a deliberate ordering, the index is not. Duplicates and empty ids
+    /// are dropped, and the selected model is never removed, so a provider
+    /// whose index omits it still shows it selected.
+    ///
+    /// Returns whether either list gained an entry, so a discovery that
+    /// found nothing new does not publish a commit.
+    pub fn merge_discovered_models(&mut self, main: &[String], subagent: &[String]) -> bool {
+        let mut changed = false;
+        if let Some(models) = with_discovered_models(&self.composer.models, main) {
+            self.composer.models = models;
+            changed = true;
+        }
+        if let Some(models) = with_discovered_models(&self.composer.subagent_models, subagent) {
+            self.composer.subagent_models = models;
+            changed = true;
+        }
+        changed
+    }
+
     pub fn set_project(&mut self, project: Option<&ProjectRecord>) {
         self.project = project.map_or_else(ProjectView::default, |project| ProjectView {
             id: Some(project.id.clone()),
             root: Some(project.root.clone()),
             display_name: Arc::from(project.display_name.clone()),
+            branch: crate::project::repository_branch(&project.root).map(Arc::from),
+            repository: crate::project::repository_slug(&project.root).map(Arc::from),
             available: project.available,
         });
         self.sessions.project = self.project.id.clone();
@@ -171,6 +220,8 @@ impl DesktopState {
                 id: Some(project.id.clone()),
                 root: Some(project.root.clone()),
                 display_name: Arc::from(project.display_name.clone()),
+                branch: crate::project::repository_branch(&project.root).map(Arc::from),
+                repository: crate::project::repository_slug(&project.root).map(Arc::from),
                 available: project.available,
             })
             .collect();
@@ -589,6 +640,50 @@ mod tests {
         assert_eq!(state.runtime.current_phase, RunPhase::Idle);
         assert!(state.runtime.run_started_at.is_none());
         assert_eq!(state.runtime.turns_taken, 0);
+    }
+
+    #[test]
+    fn discovered_models_extend_the_picker_without_reordering_it() {
+        let (mut state, _tmp) = state();
+        state.composer.model = Arc::from("gpt-5");
+        state.composer.models = vec![Arc::from("gpt-5")].into();
+        state.composer.subagent_models = Arc::from([]);
+
+        let main = vec![
+            "gpt-5".to_string(),
+            " gpt-5-mini ".to_string(),
+            String::new(),
+            "gpt-5-mini".to_string(),
+        ];
+        assert!(state.merge_discovered_models(&main, &["o4-mini".to_string()]));
+        assert_eq!(
+            state
+                .composer
+                .models
+                .iter()
+                .map(|model| model.as_ref())
+                .collect::<Vec<_>>(),
+            ["gpt-5", "gpt-5-mini"],
+            "configured order survives and the current model stays first"
+        );
+        assert_eq!(
+            state
+                .composer
+                .subagent_models
+                .iter()
+                .map(|model| model.as_ref())
+                .collect::<Vec<_>>(),
+            ["o4-mini"]
+        );
+        assert!(
+            !state.merge_discovered_models(&main, &[]),
+            "rediscovering the same ids publishes nothing"
+        );
+        assert_eq!(
+            state.composer.models.len(),
+            2,
+            "a merge never removes a model"
+        );
     }
 
     #[test]

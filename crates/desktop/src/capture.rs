@@ -17,8 +17,8 @@ use gpui::{AnyWindowHandle, AppContext as _, Entity, VisualTestAppContext, px, s
 use gpui_component::Root;
 use tact_catalog::SettingId;
 use tact_desktop_core::{
-    Appearance, DesktopConfig, DesktopController, DesktopSnapshot, ExtensionsTab, InspectorTab,
-    SessionPhase,
+    Appearance, DesktopConfig, DesktopController, DesktopSnapshot, ExtensionsTab, HookItemSnapshot,
+    HookSnapshot, InspectorTab, SessionPhase, SurfaceSnapshot,
 };
 
 use crate::root::{DesktopRoot, ReaderKind};
@@ -70,9 +70,13 @@ impl Harness {
             .map_err(|error| anyhow::anyhow!("load desktop config: {error:?}"))?;
         config.appearance = appearance;
         config.text_scale = text_scale;
-        if config.initial_project.is_none() {
-            config.initial_project = std::env::current_dir().ok();
-        }
+        // The harness must not read the checkout's real `.tact` store: session
+        // rows would change with the developer's history and the captures
+        // would not be reproducible. Point the controller at a disposable
+        // project and seed fixed rows after startup.
+        let project_dir = data_dir.join("tact");
+        std::fs::create_dir_all(&project_dir).context("create capture project")?;
+        config.initial_project = Some(project_dir.clone());
         let installed = PROCESS_CONFIG.get_or_init(|| {
             config
                 .install_process_config()
@@ -106,13 +110,81 @@ impl Harness {
             .take()
             .context("root entity was not created")?;
 
-        Ok(Self {
+        let mut harness = Self {
             cx,
             root: Some(root),
             window,
             controller,
             data_dir,
-        })
+        };
+        harness.seed_capture_sessions(&project_dir);
+        Ok(harness)
+    }
+
+    /// Replaces the live project/session snapshot with fixed rows so every
+    /// capture is deterministic and contains no developer session data.
+    fn seed_capture_sessions(&mut self, project_dir: &Path) {
+        use chrono::Utc;
+        use tact_desktop_core::{ProjectId, SessionId, SessionSummaryView};
+
+        // Offsets are relative to now so every run shows the same relative
+        // labels ("2m ago", "1h ago", "Yesterday") instead of drifting.
+        let base = Utc::now();
+        let rows = [
+            (
+                "session-8f2a",
+                "分析下这个库能否满足当前tact所有的功能，如果要接入desktop的话",
+                46,
+                2,
+            ),
+            ("session-4c19", "Tool output compaction layout", 112, 65),
+            ("session-9d03", "Agent kernel parity", 203, 185),
+            (
+                "session-2b77",
+                "Review the permission gate layout",
+                31,
+                1_500,
+            ),
+        ];
+        let items = rows
+            .iter()
+            .map(|(id, title, count, minutes)| SessionSummaryView {
+                id: (*id).to_string(),
+                project_id: ProjectId("tact".into()),
+                root_dir: project_dir.to_path_buf(),
+                title: (*title).to_string(),
+                updated_at: base - chrono::Duration::minutes(*minutes),
+                archived_at: None,
+                locked: false,
+                message_count: *count,
+                search_score: 0,
+            })
+            .collect();
+
+        let mut snapshot = self.snapshot();
+        snapshot.project.id = Some(ProjectId("tact".into()));
+        snapshot.project.root = Some(project_dir.to_path_buf());
+        snapshot.project.display_name = Arc::from("tact");
+        snapshot.project.branch = Some(Arc::from("feat/desktop"));
+        snapshot.project.repository = Some(Arc::from("rust-infra/tact"));
+        snapshot.project.available = true;
+        // The registry would otherwise carry the controller's project id,
+        // while the seeded sessions use the stable `tact` id.
+        snapshot.projects = Arc::from([snapshot.project.clone()]);
+        snapshot.sessions.project = Some(ProjectId("tact".into()));
+        snapshot.sessions.items = items;
+        snapshot.sessions.selected = Some(SessionId("session-8f2a".into()));
+        snapshot.session.id = Some(SessionId("session-8f2a".into()));
+        snapshot.session.title =
+            Arc::from("分析下这个库能否满足当前tact所有的功能，如果要接入desktop的话");
+        snapshot.session.phase = SessionPhase::Ready;
+        snapshot.account = Some(tact_desktop_core::AccountView::UsageQuota {
+            plan: Some(Arc::from("Kimi K2.5")),
+            used: Some(78),
+            limit: Some(100),
+            resets_at: Some(Arc::from("in 3h 12m")),
+        });
+        self.set_snapshot(snapshot);
     }
 
     pub fn draw(&mut self) {
@@ -285,6 +357,48 @@ pub fn capture_all(out: &Path) -> Result<Vec<PathBuf>> {
         harness.with_root(|root, _, cx| root.capture_close_overlay(cx));
     }
 
+    harness.with_root(|root, _, cx| {
+        let mut snapshot = root.snapshot().as_ref().clone();
+        snapshot.surface = Some(SurfaceSnapshot::Hooks(HookSnapshot {
+            trusted: vec![HookItemSnapshot {
+                source: "~/.tact/hooks.json".into(),
+                event: "session_start".into(),
+                matcher: None,
+                command: "tact notify started".into(),
+            }],
+            pending: vec![
+                HookItemSnapshot {
+                    source: ".tact/hooks.json".into(),
+                    event: "post_tool".into(),
+                    matcher: Some("cargo".into()),
+                    command: "cargo fmt".into(),
+                },
+                HookItemSnapshot {
+                    source: "plugin ponytail".into(),
+                    event: "post_tool".into(),
+                    matcher: None,
+                    command: "format".into(),
+                },
+            ],
+        }));
+        root.set_snapshot_for_capture(Arc::new(snapshot), cx);
+        root.capture_open_hooks();
+    });
+    shoot(&mut harness, "10c-hooks-sheet")?;
+    harness.with_root(|root, _, cx| root.capture_close_overlay(cx));
+
+    harness.with_root(|root, _, _| {
+        root.capture_open_subagent("child-2");
+    });
+    shoot(&mut harness, "30b-subagent-drawer")?;
+    harness.with_root(|root, _, cx| root.capture_close_overlay(cx));
+
+    harness.with_root(|root, _, _| {
+        root.capture_open_extensions_manager(ExtensionsTab::Mcp);
+    });
+    shoot(&mut harness, "10b-extensions-manager")?;
+    harness.with_root(|root, _, cx| root.capture_close_overlay(cx));
+
     harness.with_root(|root, _, _| root.capture_open_background());
     shoot(&mut harness, "11-background")?;
     harness.with_root(|root, _, cx| root.capture_close_overlay(cx));
@@ -322,19 +436,62 @@ pub fn capture_all(out: &Path) -> Result<Vec<PathBuf>> {
     shoot(&mut harness, "22-command-form")?;
     harness.with_root(|root, _, cx| root.capture_close_overlay(cx));
 
+    fn design_transcript() -> tact_desktop_core::TranscriptView {
+        use tact_desktop_core::RowBody;
+        let transcript = tact_desktop_core::fixtures::demo_transcript();
+        let rows = transcript
+            .iter()
+            .map(|row| {
+                let mut row = (**row).clone();
+                match row.id.value() {
+                    0 => {
+                        if let RowBody::User(user) = &mut row.body {
+                            user.text = Arc::from(
+                                "https://labcoder.github.io/gpui-ai/components 分析下这个库能否满足当前tact所有的功能，如果要接入desktop的话\n以第2个目标来设计，可以先出prd原型图，用html画原型，采用适合的pstack skill来处理",
+                            );
+                        }
+                    }
+                    7 => {
+                        if let RowBody::Assistant(assistant) = &mut row.body {
+                            assistant.markdown = Arc::from(
+                                "I'll keep `tact_host` as the runtime boundary and give the desktop one reducer over `AgentUpdate`. The shell will use gpui-ai leaf components, with a custom virtualized transcript for mixed rows.",
+                            );
+                            assistant.suggestions = Arc::from([]);
+                        }
+                    }
+                    _ => {}
+                }
+                Arc::new(row)
+            })
+            .collect::<Vec<_>>();
+        tact_desktop_core::TranscriptView::from_rows(rows)
+    }
+
     // Seed representative runtime data so every transcript row kind and every
     // inspector panel renders with real content rather than an empty state.
     let mut snapshot = harness.snapshot();
-    snapshot.transcript = tact_desktop_core::fixtures::demo_transcript();
+    snapshot.transcript = design_transcript();
     snapshot.inspector = tact_desktop_core::fixtures::demo_inspector();
     snapshot.failure = None;
     snapshot.tail_following = false;
     snapshot.session.phase = SessionPhase::Running;
+    snapshot.runtime.usage.total_tokens = 136_000;
+    snapshot.runtime.usage.prompt_tokens = 96_000;
+    snapshot.runtime.usage.cache_hit_tokens = 72_000;
+    snapshot.runtime.turns_taken = 7;
+    snapshot.runtime.current_phase = tact_desktop_core::RunPhase::RunningTools;
+    snapshot.runtime.latest_tool = Some(std::sync::Arc::from("edit_file bridge.rs +18 -4"));
+    snapshot.pending_gates = std::sync::Arc::from([tact_desktop_core::fixtures::demo_gate()]);
     harness.set_snapshot(snapshot);
     harness.with_root(|root, _, cx| root.capture_scroll_to(0, cx));
     shoot(&mut harness, "26a-transcript-top")?;
-    harness.with_root(|root, _, cx| root.capture_scroll_to(12, cx));
+    let last_row = harness.snapshot().transcript.len().saturating_sub(1);
+    harness.with_root(|root, _, cx| root.capture_scroll_to(last_row, cx));
     shoot(&mut harness, "26b-transcript-bottom")?;
+    harness.with_root(|root, _, cx| root.capture_scroll_to(3, cx));
+    shoot(&mut harness, "26c-transcript-tools")?;
+    harness.with_root(|root, _, cx| root.capture_scroll_to(4, cx));
+    shoot(&mut harness, "26d-transcript-plan")?;
 
     harness.set_appearance(Appearance::Dark);
     harness.with_root(|root, _, cx| root.capture_scroll_to(0, cx));
@@ -364,6 +521,11 @@ pub fn capture_all(out: &Path) -> Result<Vec<PathBuf>> {
 
     harness.with_root(|root, _, _| root.capture_open_reader(ReaderKind::TasksDag));
     shoot(&mut harness, "38-reader-tasks-dag-populated")?;
+    harness.with_root(|root, _, cx| root.capture_close_overlay(cx));
+
+    let help = tact_desktop_core::help_reader(tact_catalog::CatalogLocale::En);
+    harness.with_root(|root, _, cx| root.capture_show_reader(help, cx));
+    shoot(&mut harness, "40-help")?;
     harness.with_root(|root, _, cx| root.capture_close_overlay(cx));
 
     harness.simulate_keystrokes("tab");

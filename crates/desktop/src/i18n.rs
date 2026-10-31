@@ -25,6 +25,7 @@ pub enum TextKey {
     Resume,
     OpenProject,
     SearchSessions,
+    SearchModels,
     SearchExtensions,
     Active,
     Archived,
@@ -205,6 +206,7 @@ pub enum TextKey {
     Shell,
     NoGoalSnapshot,
     NoModels,
+    NoMatchingModels,
     EmptySessionTitle,
     EmptySessionBody,
     EmptySessionHint,
@@ -252,6 +254,7 @@ pub const ALL: &[TextKey] = &[
     TextKey::Resume,
     TextKey::OpenProject,
     TextKey::SearchSessions,
+    TextKey::SearchModels,
     TextKey::SearchExtensions,
     TextKey::Active,
     TextKey::Archived,
@@ -432,6 +435,7 @@ pub const ALL: &[TextKey] = &[
     TextKey::Shell,
     TextKey::NoGoalSnapshot,
     TextKey::NoModels,
+    TextKey::NoMatchingModels,
     TextKey::EmptySessionTitle,
     TextKey::EmptySessionBody,
     TextKey::EmptySessionHint,
@@ -503,6 +507,8 @@ pub fn text(locale: CatalogLocale, key: TextKey) -> &'static str {
         (CatalogLocale::Zh, TextKey::OpenProject) => "打开项目",
         (CatalogLocale::En, TextKey::SearchSessions) => "Search sessions by title or id",
         (CatalogLocale::Zh, TextKey::SearchSessions) => "按标题或 ID 搜索会话",
+        (CatalogLocale::En, TextKey::SearchModels) => "Search models",
+        (CatalogLocale::Zh, TextKey::SearchModels) => "搜索模型",
         (CatalogLocale::En, TextKey::SearchExtensions) => {
             "Search MCP servers, skills, plugins and marketplaces"
         }
@@ -891,6 +897,8 @@ pub fn text(locale: CatalogLocale, key: TextKey) -> &'static str {
         (CatalogLocale::Zh, TextKey::NoGoalSnapshot) => "暂无目标快照",
         (CatalogLocale::En, TextKey::NoModels) => "No models are configured.",
         (CatalogLocale::Zh, TextKey::NoModels) => "尚未配置模型。",
+        (CatalogLocale::En, TextKey::NoMatchingModels) => "No models match that search.",
+        (CatalogLocale::Zh, TextKey::NoMatchingModels) => "没有匹配的模型。",
         (CatalogLocale::En, TextKey::EmptySessionTitle) => "Ready when you are",
         (CatalogLocale::Zh, TextKey::EmptySessionTitle) => "随时开始",
         (CatalogLocale::En, TextKey::EmptySessionBody) => {

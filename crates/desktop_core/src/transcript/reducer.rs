@@ -12,9 +12,10 @@ use crate::{
     gates::PendingUiRequest,
     transcript::row::{
         AssistantRow, ErrorRow, GateCard, GateKind, GateOrigin, GateSelection, GateState,
-        HookContextRow, HookStatusRow, LoopId, NoticeRow, RequestId, RowBody, RowId, RowStatus,
-        SessionEpoch, ThinkingRow, ToolBody, ToolGroupItem, ToolGroupRow, ToolMetaView,
-        ToolOutputView, ToolRow, TranscriptRow, TranscriptView, UsageView, UserRow,
+        HookContextRow, HookStatusRow, LoopId, NoticeRow, PlanRow, PlanStep as PlanRowStep,
+        RequestId, RowBody, RowId, RowStatus, SessionEpoch, ThinkingRow, ToolBody, ToolGroupItem,
+        ToolGroupRow, ToolMetaView, ToolOutputView, ToolRow, TranscriptRow, TranscriptView,
+        UsageView, UserRow,
     },
 };
 
@@ -48,6 +49,7 @@ pub(crate) struct TranscriptReducer {
     active_message_id: Option<String>,
     active_assistant: Option<RowId>,
     active_thinking: Option<RowId>,
+    active_plan: Option<RowId>,
     assistant_messages: HashMap<String, RowId>,
     last_assistant: Option<RowId>,
     last_group: Option<RowId>,
@@ -71,6 +73,7 @@ impl Default for TranscriptReducer {
             active_message_id: None,
             active_assistant: None,
             active_thinking: None,
+            active_plan: None,
             assistant_messages: HashMap::new(),
             last_assistant: None,
             last_group: None,
@@ -302,6 +305,7 @@ impl TranscriptReducer {
                     .or_else(|| self.active_run.clone())
                     .unwrap_or_else(|| "fallback-run".to_string());
                 self.active_run = Some(run_id);
+                self.active_plan = None;
                 if let Some(group) = self.active_group.take() {
                     self.update_group(group, |group| {
                         group.status = RowStatus::Success;
@@ -364,7 +368,21 @@ impl TranscriptReducer {
                     }
                 }
             },
+            AgentUpdate::StepAdded(step) => {
+                let row = self.ensure_plan();
+                self.update_plan(row, |plan| {
+                    let mut steps = plan.steps.to_vec();
+                    steps.push(PlanRowStep {
+                        label: Arc::from(step.description.clone()),
+                        status: RowStatus::Pending,
+                        detail: (!step.tool.is_empty()).then(|| Arc::from(step.tool.clone())),
+                    });
+                    plan.steps = steps.into();
+                });
+                delta.changed(row);
+            }
             AgentUpdate::StepStarted {
+                idx,
                 tool_id,
                 tool_name,
                 arg_summary,
@@ -372,6 +390,11 @@ impl TranscriptReducer {
                 presentation,
                 ..
             } => {
+                if self.set_plan_step(idx, RowStatus::Running)
+                    && let Some(plan) = self.active_plan
+                {
+                    delta.changed(plan);
+                }
                 let row = self.ensure_tool(
                     &tool_id,
                     &tool_name,
@@ -386,6 +409,7 @@ impl TranscriptReducer {
                 }
             }
             AgentUpdate::StepFinished {
+                idx,
                 run_id,
                 tool_id,
                 result,
@@ -393,6 +417,15 @@ impl TranscriptReducer {
             } => {
                 if !self.run_matches_active(run_id.as_deref()) {
                     return delta;
+                }
+                let plan_status = match result.status {
+                    StepStatus::Failed => RowStatus::Failed,
+                    StepStatus::Success => RowStatus::Success,
+                };
+                if self.set_plan_step(idx, plan_status)
+                    && let Some(plan) = self.active_plan
+                {
+                    delta.changed(plan);
                 }
                 if let Some((group, row)) = self.current_tool(&tool_id).copied() {
                     let keep_live = result.presentation.keep_live;
@@ -1642,6 +1675,45 @@ impl TranscriptReducer {
         id
     }
 
+    fn ensure_plan(&mut self) -> RowId {
+        if let Some(row) = self.active_plan {
+            return row;
+        }
+        let row = self.push_row(
+            self.current_loop(),
+            RowBody::Plan(PlanRow {
+                title: Arc::from("Execution plan"),
+                steps: Arc::from([]),
+            }),
+        );
+        self.active_plan = Some(row);
+        row
+    }
+
+    fn update_plan(&mut self, row: RowId, update: impl FnOnce(&mut PlanRow)) {
+        if let Some(existing) = self.rows.iter_mut().find(|candidate| candidate.id == row) {
+            let mut next = (**existing).clone();
+            if let RowBody::Plan(plan) = &mut next.body {
+                update(plan);
+            }
+            *existing = Arc::new(next);
+        }
+    }
+
+    fn set_plan_step(&mut self, index: usize, status: RowStatus) -> bool {
+        let Some(row) = self.active_plan else {
+            return false;
+        };
+        let mut updated = false;
+        self.update_plan(row, |plan| {
+            if let Some(step) = Arc::make_mut(&mut plan.steps).get_mut(index) {
+                step.status = status;
+                updated = true;
+            }
+        });
+        updated
+    }
+
     fn push_existing(&mut self, id: RowId, loop_id: Option<LoopId>, body: RowBody) {
         let ordinal = self.ordinal;
         self.ordinal += 1;
@@ -1738,6 +1810,61 @@ mod tests {
             arg_full: "README.md".into(),
             presentation: ToolPresentationInfo::generic("read_file"),
         }
+    }
+
+    #[test]
+    fn step_added_builds_a_plan_row_and_tracks_status() {
+        let mut reducer = TranscriptReducer::default();
+        run_started(&mut reducer, "run-plan");
+        reducer.apply_agent_update(
+            AgentUpdate::StepAdded(tact_protocol::PlanStep::new(
+                "Read the shell",
+                "read_file",
+                "tool-plan-1",
+                Vec::<(&str, &str)>::new(),
+            )),
+            &context(1),
+        );
+        reducer.apply_agent_update(
+            AgentUpdate::StepAdded(tact_protocol::PlanStep::new(
+                "Patch the shell",
+                "edit_file",
+                "tool-plan-2",
+                Vec::<(&str, &str)>::new(),
+            )),
+            &context(1),
+        );
+        let plan = reducer
+            .rows
+            .iter()
+            .find_map(|row| match &row.body {
+                RowBody::Plan(plan) => Some(plan.clone()),
+                _ => None,
+            })
+            .expect("plan row");
+        assert_eq!(plan.steps.len(), 2);
+        assert_eq!(plan.steps[0].label.as_ref(), "Read the shell");
+
+        reducer.apply_agent_update(
+            AgentUpdate::StepStarted {
+                idx: 1,
+                tool_id: "tool-plan-2".into(),
+                tool_name: "edit_file".into(),
+                arg_summary: "src/lib.rs".into(),
+                arg_full: "src/lib.rs".into(),
+                presentation: ToolPresentationInfo::generic("edit_file"),
+            },
+            &context(1),
+        );
+        let plan = reducer
+            .rows
+            .iter()
+            .find_map(|row| match &row.body {
+                RowBody::Plan(plan) => Some(plan.clone()),
+                _ => None,
+            })
+            .expect("plan row");
+        assert_eq!(plan.steps[1].status, RowStatus::Running);
     }
 
     fn group_rows(reducer: &TranscriptReducer) -> Vec<Arc<TranscriptRow>> {

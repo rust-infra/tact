@@ -12,6 +12,9 @@ tact = { version = "2.0.0", path = "../tact" }
 tact_agent_api = { version = "2.0.0", path = "../agent_api" }
 tact_catalog = { version = "2.0.0", path = "../catalog" }
 tact_host = { version = "2.0.0", path = "../tact_host" }
+# `model-discovery` fills the composer's model pickers from the provider's own
+# model index; the crate itself already compiles with it through `tact`.
+tact_llm = { version = "2.0.0", path = "../tact_llm", default-features = false, features = ["model-discovery"] }
 tact_protocol = { version = "2.0.0", path = "../protocol" }
 anyhow = { workspace = true }
 async-trait = { workspace = true }

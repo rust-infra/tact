@@ -17,6 +17,7 @@ fn kind(row: &TranscriptRow) -> TranscriptRowKind {
         RowBody::User(_) => TranscriptRowKind::User,
         RowBody::Assistant(_) => TranscriptRowKind::Assistant,
         RowBody::Thinking(_) => TranscriptRowKind::Thinking,
+        RowBody::Plan(_) => TranscriptRowKind::Plan,
         RowBody::ToolGroup(_) => TranscriptRowKind::ToolGroup,
         RowBody::Diff(_) => TranscriptRowKind::Diff,
         RowBody::Gate(_) => TranscriptRowKind::Gate,
@@ -44,6 +45,10 @@ pub fn accessibility_label_for_kind(
         TranscriptRowKind::User => i18n::text(locale, TextKey::UserMessage),
         TranscriptRowKind::Assistant => i18n::text(locale, TextKey::AssistantResponse),
         TranscriptRowKind::Thinking => i18n::text(locale, TextKey::Thinking),
+        TranscriptRowKind::Plan => match locale {
+            CatalogLocale::En => "Plan",
+            CatalogLocale::Zh => "计划",
+        },
         TranscriptRowKind::ToolGroup => i18n::text(locale, TextKey::ToolGroup),
         TranscriptRowKind::Diff => i18n::text(locale, TextKey::Diff),
         TranscriptRowKind::Gate => i18n::text(locale, TextKey::PermissionOrQuestionGate),
