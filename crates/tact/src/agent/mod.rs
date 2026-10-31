@@ -497,6 +497,14 @@ impl Agent {
         let stats = Arc::new(RwLock::new(SessionStats::default()));
         let events = UpdateSink::default();
         let pending_subagent_results = Arc::new(Mutex::new(VecDeque::new()));
+        // The tool side of the same queue: a detached background subagent
+        // pushes its summary here for re-injection on a later turn. Stamped
+        // from the one queue this agent owns, so every construction site (TUI,
+        // headless, a subagent built from a permission snapshot) carries the
+        // handle without a second parameter to thread. Leaving it `None`
+        // while a UI channel was attached made every `run_in_background`
+        // request reject itself.
+        tool_context.subagent_results = Some(pending_subagent_results.clone());
         let pending_hook_context = Arc::new(Mutex::new(VecDeque::new()));
         let hook_status_seq = Arc::new(std::sync::atomic::AtomicU64::new(1));
         let mcp_router = McpCatalogHandle::new(mcp_router);

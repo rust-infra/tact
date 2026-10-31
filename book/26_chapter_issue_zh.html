@@ -724,6 +724,7 @@
 <li class="toc-l2"><a href="#18-2026-10-29--llm-telemetry-%E8%A1%A5%E5%85%A8%E7%BB%88%E6%80%81%E4%B8%8E-http-%E7%B1%BB%E5%88%AB" title="18. 2026-10-29 — LLM telemetry 补全终态与 HTTP 类别"><span class="toc-label">18. 2026-10-29 — LLM telemetry 补全终态与 HTTP 类别</span></a></li>
 <li class="toc-l2"><a href="#19-2026-10-29--%E8%BD%BB%E9%87%8F%E6%8E%A5%E5%85%A5%E6%94%B6%E5%8F%A3%E4%B8%8E-200-%E5%8F%91%E5%B8%83" title="19. 2026-10-29 — 轻量接入收口与 2.0.0 发布"><span class="toc-label">19. 2026-10-29 — 轻量接入收口与 2.0.0 发布</span></a></li>
 <li class="toc-l2"><a href="#20-2026-10-29--%E6%8A%BD%E7%A6%BB-ui-%E6%97%A0%E5%85%B3%E7%9A%84-host-service" title="20. 2026-10-29 — 抽离 UI 无关的 host service"><span class="toc-label">20. 2026-10-29 — 抽离 UI 无关的 host service</span></a></li>
+<li class="toc-l2"><a href="#22-2026-10-31--%E5%90%8E%E5%8F%B0%E5%AD%90%E4%BB%A3%E7%90%86%E7%9A%84%E5%83%B5%E5%B0%B8-run-%E4%B8%8E%E6%B0%B8%E4%B8%8D%E6%8E%A5%E7%BA%BF%E7%9A%84%E7%BB%93%E6%9E%9C%E9%98%9F%E5%88%97" title="22. 2026-10-31 — 后台子代理的僵尸 run 与永不接线的结果队列"><span class="toc-label">22. 2026-10-31 — 后台子代理的僵尸 run 与永不接线的结果队列</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -21420,6 +21421,41 @@ lease owner 与 session-lock 错误不再写死 <code>tact-ui</code>；
 从 <code>0.1.0</code> 提升到 <code>2.0.0</code>，与 <code>tact</code> /
 <code>tact_host</code> 的发布线对齐，避免 <code>2.0.0</code> 依赖
 <code>0.1.x</code> 的 semver 漏洞。</p>
+<hr />
+<h2 id="22-2026-10-31--后台子代理的僵尸-run-与永不接线的结果队列">22. 2026-10-31 —
+后台子代理的僵尸 run 与永不接线的结果队列</h2>
+<p><strong>现象：</strong> 在 TUI 里请求
+<code>spawn_subagent { run_in_background: true }</code> 会立刻返回
+<code>run_in_background requires a parent agent runtime</code>，但
+<code>subagent_runs</code> 里已经留下一条永远停在 <code>Running</code> 的记录。
+它既不会被 <code>finish</code>（唯一会调用它的是被拒绝后从未 spawn 的任务），
+也无法用 <code>cancel_subagent</code> 清掉（取消句柄与 run 记录写在同一条路径
+上，而取消要求句柄存在）。记录只能等下一次启动时的 orphan 修复改写，
+<code>wait_subagent</code> 则会一直等到超时。</p>
+<p><strong>根因有两个，互相掩盖：</strong></p>
+<ol type="1">
+<li><p><strong>结果队列没有接线。</strong>
+<code>ToolContext::subagent_results</code> 在
+<code>session_bootstrap</code> 和测试夹具里都写成 <code>None</code>，全仓库没有
+任何一处给它赋过值；而队列本身在 <code>Agent::new</code> 里已经造好了。于是
+后台分支的 <code>ok_or_else</code> 在真实 TUI 会话里必然失败——尽管 UI 通道
+明明存在。</p></li>
+<li><p><strong>落库早于检查。</strong>
+<code>subagent_manager.start()</code> 先写入 <code>Running</code> 行，
+队列检查排在它后面。一旦检查失败，函数用一个
+<code>?</code> 返回，而回滚代码在下面那条根本不会执行的分支里。同一段路
+上，resume 场景还会漏掉 <code>SessionLock</code>——它按设计没有
+<code>Drop</code>，异常路径必须手动释放。</p></li>
+</ol>
+<p><strong>改后行为：</strong> <code>Agent::new</code> 把自家
+<code>pending_subagent_results</code> 回填到 <code>tool_context</code>，一处
+覆盖 TUI / headless / 子代理三种构造点，后台派发真正可用。派发模式与它需要的
+队列改为在写 run 记录<strong>之前</strong>解析，被拒绝的请求不再留下任何行；
+<code>start()</code> 失败时手动释放 resume 锁。错误文案也不再指向"父运行时"，
+而是点名未接线的结果队列。两条回归测试各自带牙：一条用伪造的 UI sink 证明被
+拒绝的派发不留记录（撤销修复即失败并打印
+<code>…: Running (no summary)</code>），一条用
+<code>Arc::ptr_eq</code> 证明工具侧与父代理侧是同一个队列。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>
