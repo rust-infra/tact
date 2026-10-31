@@ -118,6 +118,7 @@ fn recording_subscriber(
         .with(tracing_subscriber::filter::LevelFilter::TRACE)
         .with(
             tracing_subscriber::fmt::layer()
+                .with_ansi(false)
                 .with_writer(captured.clone())
                 .with_filter(tracing_subscriber::filter::LevelFilter::TRACE),
         )
@@ -267,8 +268,12 @@ async fn telemetry_records_model_and_tool_durations() {
 #[tokio::test(flavor = "multi_thread")]
 async fn telemetry_records_time_to_first_event() {
     let captured = Captured::default();
+    // `with_ansi(false)`: field assertions below match plain `field=value`
+    // text, and ANSI styling is on whenever another workspace member unifies
+    // tracing-subscriber's default features into this test build.
     let subscriber = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::TRACE)
+        .with_ansi(false)
         .with_writer(captured.clone())
         .finish();
     let _guard = tracing::subscriber::set_default(subscriber);
@@ -287,8 +292,12 @@ async fn telemetry_records_time_to_first_event() {
 #[tokio::test(flavor = "multi_thread")]
 async fn telemetry_records_usage_tokens() {
     let captured = Captured::default();
+    // `with_ansi(false)`: field assertions below match plain `field=value`
+    // text, and ANSI styling is on whenever another workspace member unifies
+    // tracing-subscriber's default features into this test build.
     let subscriber = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::TRACE)
+        .with_ansi(false)
         .with_writer(captured.clone())
         .finish();
     let _guard = tracing::subscriber::set_default(subscriber);
@@ -314,8 +323,12 @@ async fn telemetry_records_usage_tokens() {
 #[tokio::test(flavor = "multi_thread")]
 async fn telemetry_does_not_log_content_by_default() {
     let captured = Captured::default();
+    // `with_ansi(false)`: field assertions below match plain `field=value`
+    // text, and ANSI styling is on whenever another workspace member unifies
+    // tracing-subscriber's default features into this test build.
     let subscriber = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::TRACE)
+        .with_ansi(false)
         .with_writer(captured.clone())
         .finish();
     let _guard = tracing::subscriber::set_default(subscriber);
@@ -337,8 +350,12 @@ async fn telemetry_does_not_log_content_by_default() {
 #[tokio::test(flavor = "multi_thread")]
 async fn telemetry_content_is_bounded_when_explicitly_enabled() {
     let captured = Captured::default();
+    // `with_ansi(false)`: field assertions below match plain `field=value`
+    // text, and ANSI styling is on whenever another workspace member unifies
+    // tracing-subscriber's default features into this test build.
     let subscriber = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::TRACE)
+        .with_ansi(false)
         .with_writer(captured.clone())
         .finish();
     let _guard = tracing::subscriber::set_default(subscriber);
@@ -789,8 +806,12 @@ async fn telemetry_first_error_does_not_record_time_to_first_event() {
     use futures_util::StreamExt;
 
     let captured = Captured::default();
+    // `with_ansi(false)`: field assertions below match plain `field=value`
+    // text, and ANSI styling is on whenever another workspace member unifies
+    // tracing-subscriber's default features into this test build.
     let subscriber = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::TRACE)
+        .with_ansi(false)
         .with_writer(captured.clone())
         .finish();
     let _guard = tracing::subscriber::set_default(subscriber);

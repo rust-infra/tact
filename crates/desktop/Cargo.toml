@@ -1,0 +1,44 @@
+[package]
+name = "tact-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Native Tact Desktop frontend"
+repository = "https://github.com/rust-infra/tact"
+
+[lib]
+name = "tact_desktop"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tact-desktop"
+path = "src/main.rs"
+
+[[example]]
+name = "ui_capture"
+path = "examples/ui_capture.rs"
+required-features = ["ui-capture"]
+
+[features]
+# Offscreen render harness used to verify the real shell's pixels on a
+# developer machine or in CI without Screen Recording permission.
+ui-capture = ["dep:image"]
+
+[dependencies]
+anyhow = { workspace = true }
+chrono = { workspace = true }
+image = { workspace = true, optional = true }
+tact_catalog = { version = "2.0.0", path = "../catalog" }
+tact_desktop_core = { version = "2.0.0", path = "../desktop_core" }
+gpui = { workspace = true, features = ["test-support"] }
+gpui_ai = { package = "gpui-ai", version = "=0.8.0" }
+gpui_base = { workspace = true }
+gpui_component = { workspace = true }
+gpui_component_assets = { workspace = true }
+gpui-component-macros = { workspace = true }
+gpui_platform = { workspace = true, features = ["test-support"] }
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+tact_protocol = { version = "2.0.0", path = "../protocol" }

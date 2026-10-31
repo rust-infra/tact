@@ -1,0 +1,28 @@
+[package]
+name = "tact_desktop_core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "GPUI-free state and orchestration for Tact Desktop"
+repository = "https://github.com/rust-infra/tact"
+
+[dependencies]
+tact = { version = "2.0.0", path = "../tact" }
+tact_agent_api = { version = "2.0.0", path = "../agent_api" }
+tact_catalog = { version = "2.0.0", path = "../catalog" }
+tact_host = { version = "2.0.0", path = "../tact_host" }
+tact_protocol = { version = "2.0.0", path = "../protocol" }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true }
+im = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time", "rt-multi-thread", "macros", "fs"] }
+url = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

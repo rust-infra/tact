@@ -1,4 +1,5 @@
 [workspace]
+exclude = ["vendor/gpui-ai"]
 members = [
     "crates/protocol",
     "crates/agent_tui_kit",
@@ -10,6 +11,9 @@ members = [
     "crates/tact_host",
     "crates/tact-ui",
     "crates/tact_llm",
+    "crates/catalog",
+    "crates/desktop_core",
+    "crates/desktop",
     "crates/tool_refactor_macros",
 ]
 resolver = "2"
@@ -92,6 +96,17 @@ url = "2"
 walkdir = "2.5"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"] }
 ratatui-markdown = { git = "https://github.com/celestia-island/ratatui-markdown", rev = "3a8bcbe", default-features = false, features = ["mermaid"] }
+gpui = { package = "gpui-pre", version = "=0.3.3" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.3" }
+gpui_component = { package = "gpui-component", version = "=0.6.0" }
+gpui_base = { package = "gpui-base", version = "=0.6.0" }
+gpui_component_assets = { package = "gpui-kit-assets", version = "=0.6.0" }
+gpui-ai = "=0.8.0"
+gpui-component-macros = "=0.6.0"
+im = "15"
+
+[patch.crates-io]
+gpui-ai = { path = "vendor/gpui-ai" }
 
 # Keep the dev build (and its on-disk footprint) small. This workspace has ~30
 # bin/test units per crate and Cargo stores every unit's artifacts in its own
