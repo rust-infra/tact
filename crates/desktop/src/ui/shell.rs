@@ -43,8 +43,8 @@ pub struct ThemeGeometry {
 
 pub const fn geometry(_appearance: Appearance) -> ThemeGeometry {
     ThemeGeometry {
-        rail_width: 264,
-        inspector_width: 300,
+        rail_width: layout::RAIL_WIDTH as u16,
+        inspector_width: layout::INSPECTOR_WIDTH as u16,
         titlebar_height: 48,
         row_gap: 8,
     }
@@ -159,6 +159,7 @@ mod tests {
             "secondary-b",
             "secondary-alt-b",
             "secondary-enter",
+            "secondary-,",
             "escape",
             "secondary-.",
             "secondary-1",

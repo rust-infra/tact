@@ -6,13 +6,15 @@ use std::{
 };
 
 use gpui::{
-    Animation, AnimationExt as _, AnyElement, AppContext as _, ClickEvent, Context, Entity,
+    Anchor, Animation, AnimationExt as _, AnyElement, AppContext as _, ClickEvent, Context, Entity,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, Role, SharedString,
     StatefulInteractiveElement as _, Styled, Task, WeakEntity, Window, div,
     prelude::FluentBuilder as _, px,
 };
 use gpui_ai::prelude::*;
+use gpui_base::FocusTrapElement as _;
 use gpui_component::message_scroller::{MessageScroller, MessageScrollerState};
+use gpui_component::popover::Popover;
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::{
     ActiveTheme as _, Icon, IconName, StyledExt as _, TitleBar, h_flex, input::Input,
@@ -121,6 +123,7 @@ impl Render for TranscriptRowView {
             &self.snapshot,
             self.root.clone(),
             self.assistant_selection.clone(),
+            false,
         )
     }
 }
@@ -138,9 +141,11 @@ pub(crate) struct DesktopRoot {
     command_search: Entity<CommandSearch>,
     command_scope: Option<CommandId>,
     form_input: Entity<gpui_component::input::InputState>,
+    criteria_input: Entity<gpui_component::input::InputState>,
     session_search: Entity<gpui_component::input::InputState>,
     extension_search: Entity<gpui_component::input::InputState>,
     gate_confirm_focus: gpui::FocusHandle,
+    gate_primary_focus: gpui::FocusHandle,
     queue_focus: gpui::FocusHandle,
     overlay_focus: gpui::FocusHandle,
     overlay_focus_pending: bool,
@@ -157,6 +162,7 @@ pub(crate) struct DesktopRoot {
     slash_dismissed_for: Option<String>,
     gate_choices: HashMap<u64, Vec<usize>>,
     gate_keyboard_cursor: usize,
+    permission_picker_open: bool,
     model_picker_cursor: usize,
     submitted_gates: HashSet<u64>,
     queue_cursor: usize,
@@ -221,6 +227,7 @@ impl DesktopRoot {
         });
         let command_search = cx.new(|cx| CommandSearch::new("tact-command-center", window, cx));
         let form_input = cx.new(|cx| gpui_component::input::InputState::new(window, cx));
+        let criteria_input = cx.new(|cx| gpui_component::input::InputState::new(window, cx));
         let session_search = cx.new(|cx| {
             gpui_component::input::InputState::new(window, cx)
                 .placeholder(i18n::text(snapshot.language, TextKey::SearchSessions))
@@ -230,6 +237,7 @@ impl DesktopRoot {
                 .placeholder(i18n::text(snapshot.language, TextKey::SearchExtensions))
         });
         let gate_confirm_focus = cx.focus_handle();
+        let gate_primary_focus = cx.focus_handle();
         let queue_focus = cx.focus_handle();
         let overlay_focus = cx.focus_handle();
 
@@ -400,9 +408,11 @@ impl DesktopRoot {
             command_search,
             command_scope: None,
             form_input,
+            criteria_input,
             session_search,
             extension_search,
             gate_confirm_focus,
+            gate_primary_focus,
             queue_focus,
             overlay_focus,
             overlay_focus_pending: false,
@@ -419,6 +429,7 @@ impl DesktopRoot {
             slash_dismissed_for: None,
             gate_choices: HashMap::new(),
             gate_keyboard_cursor: 0,
+            permission_picker_open: false,
             model_picker_cursor: 0,
             submitted_gates: HashSet::new(),
             queue_cursor: 0,
@@ -472,6 +483,17 @@ impl DesktopRoot {
 
     fn dispatch(&self, intent: DesktopIntent) {
         let _ = self.controller.dispatch(intent);
+    }
+
+    fn select_inspector(&mut self, tab: InspectorTab, cx: &mut Context<Self>) {
+        self.right_visible = true;
+        if self.snapshot.inspector.tab != tab {
+            let mut snapshot = (*self.snapshot).clone();
+            snapshot.inspector.tab = tab;
+            self.snapshot = Arc::new(snapshot);
+        }
+        self.dispatch(DesktopIntent::SetInspector(tab));
+        cx.notify();
     }
 
     fn text(&self, key: TextKey) -> &'static str {
@@ -1906,16 +1928,14 @@ impl DesktopRoot {
                 });
             }
             CommandId::Builtin(BuiltinCommand::Goal) => {
-                self.right_visible = true;
-                self.dispatch(DesktopIntent::SetInspector(InspectorTab::Goals));
+                self.select_inspector(InspectorTab::Goals, cx);
                 self.dispatch(DesktopIntent::InvokeCommand { id, args });
             }
             CommandId::BuiltinPath {
                 root: BuiltinCommand::Goal,
                 ..
             } => {
-                self.right_visible = true;
-                self.dispatch(DesktopIntent::SetInspector(InspectorTab::Goals));
+                self.select_inspector(InspectorTab::Goals, cx);
                 self.dispatch(DesktopIntent::InvokeCommand { id, args });
             }
             CommandId::Cli(_)
@@ -2147,6 +2167,9 @@ impl DesktopRoot {
         } else {
             self.open_overlay(Overlay::Form(form));
         }
+        self.criteria_input.update(cx, |input, cx| {
+            input.set_value("", window, cx);
+        });
         self.form_input.update(cx, |input, cx| {
             input.set_value("", window, cx);
             input.focus(window, cx);
@@ -2161,6 +2184,7 @@ impl DesktopRoot {
         };
         let action = form.action.clone();
         let text = self.form_input.read(cx).value().to_string();
+        let criteria = self.criteria_input.read(cx).value().to_string();
         if let FormAction::McpAddTransport(name) = &action
             && !text.trim().is_empty()
         {
@@ -2195,9 +2219,7 @@ impl DesktopRoot {
                 if !text.trim().is_empty() {
                     self.dispatch(DesktopIntent::InvokeCommand {
                         id: CommandId::Builtin(BuiltinCommand::Goal),
-                        args: CommandArguments {
-                            tokens: vec!["create".into(), text.trim().into()],
-                        },
+                        args: goal_create_arguments(text.trim(), &criteria),
                     });
                 }
             }
@@ -2338,9 +2360,7 @@ impl DesktopRoot {
             FormAction::CreateGoal => {
                 self.dispatch(DesktopIntent::InvokeCommand {
                     id: CommandId::Builtin(BuiltinCommand::Goal),
-                    args: CommandArguments {
-                        tokens: vec!["create".into(), value],
-                    },
+                    args: goal_create_arguments(&value, ""),
                 });
             }
             FormAction::SteerGoal(goal_id) => {
@@ -3716,6 +3736,7 @@ impl DesktopRoot {
                 let selected = self.snapshot.inspector.tab == tab;
                 div()
                     .id(SharedString::from(format!("inspector-tab-{index}")))
+                    .debug_selector(move || format!("inspector-tab-{index}"))
                     .role(Role::Tab)
                     .focusable()
                     .tab_stop(true)
@@ -3728,8 +3749,8 @@ impl DesktopRoot {
                     .rounded_md()
                     .when(selected, |tab| tab.bg(cx.theme().accent))
                     .child(label)
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, _| {
-                        this.dispatch(DesktopIntent::SetInspector(tab));
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.select_inspector(tab, cx);
                     }))
             })
             .collect::<Vec<_>>();
@@ -3783,7 +3804,14 @@ impl DesktopRoot {
                     .gap_1()
                     .children(tab_buttons),
             )
-            .child(content)
+            .child(
+                div()
+                    .id("inspector-content")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scrollbar()
+                    .child(content),
+            )
     }
 
     fn render_run_inspector(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -4660,15 +4688,12 @@ impl DesktopRoot {
                                             state.scroll_to_item(index, cx);
                                         });
                                     }
-                                    let mut selected = match &gate.selection {
+                                    let selected = match &gate.selection {
                                         GateSelection::Single(index) => {
                                             index.iter().copied().collect()
                                         }
                                         GateSelection::Multiple(indexes) => indexes.clone(),
                                     };
-                                    if selected.is_empty() && !gate.options.is_empty() {
-                                        selected.push(0);
-                                    }
                                     this.gate_choices.insert(gate.request_id.0, selected);
                                     this.gate_keyboard_cursor = 0;
                                     if let Some((group_id, collapsed, tool_to_expand)) = group {
@@ -4685,7 +4710,7 @@ impl DesktopRoot {
                                         }
                                     }
                                     this.open_overlay(Overlay::Gate(gate_for_open.clone()));
-                                    this.gate_confirm_focus.focus(window, cx);
+                                    this.gate_primary_focus.focus(window, cx);
                                     this.overlay_focus_pending = false;
                                 })),
                         ),
@@ -4925,46 +4950,78 @@ impl DesktopRoot {
                 self.text(TextKey::PermissionAuto),
             ),
         ];
-        h_flex()
-            .id("permission-picker")
-            .debug_selector(|| "permission-picker".into())
-            .role(Role::Group)
-            .aria_label(self.text(TextKey::PermissionMode))
-            .gap_1()
-            .items_center()
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(self.text(TextKey::PermissionMode)),
-            )
-            .child(div().flex_1())
-            .children(choices.into_iter().map(|(mode, value, label)| {
-                gpui_base::Button::new(SharedString::from(format!("permission-{value}")))
-                    .role(Role::RadioButton)
+        let current_label = choices
+            .iter()
+            .find_map(|(mode, _, label)| (*mode == selected).then_some(*label))
+            .unwrap_or(self.text(TextKey::PermissionDefault));
+        let weak = cx.weak_entity();
+        let open_weak = weak.clone();
+        Popover::new("permission-picker-popover")
+            .anchor(Anchor::TopLeft)
+            .open(self.permission_picker_open)
+            .on_open_change(move |open, _, cx| {
+                let _ = open_weak.update(cx, |this, cx| {
+                    this.permission_picker_open = *open;
+                    cx.notify();
+                });
+            })
+            .trigger(
+                gpui_base::Button::new("permission-picker-trigger")
+                    .debug_selector(|| "permission-picker".into())
+                    .role(Role::Button)
                     .tab_stop(true)
-                    .aria_label(label)
-                    .selected(mode == selected)
+                    .aria_label(format!(
+                        "{}: {current_label}",
+                        self.text(TextKey::PermissionMode)
+                    ))
+                    .selected(false)
                     .cursor_pointer()
-                    .rounded_md()
+                    .rounded_full()
                     .border_1()
-                    .border_color(if mode == selected {
-                        cx.theme().primary
-                    } else {
-                        cx.theme().border
-                    })
+                    .border_color(cx.theme().border)
                     .px_2()
-                    .py_0p5()
+                    .py_1()
                     .text_xs()
-                    .when(mode == selected, |button| button.bg(cx.theme().accent))
-                    .child(label)
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, _| {
-                        this.dispatch(DesktopIntent::SetSetting {
-                            id: SettingId::PermissionMode,
-                            value: SettingValue::Choice(value.into()),
-                        });
+                    .child(format!("{current_label}  ▾")),
+            )
+            .content(move |_, _, _| {
+                let weak = weak.clone();
+                v_flex()
+                    .id("permission-picker-menu")
+                    .debug_selector(|| "permission-picker-menu".into())
+                    .role(Role::Menu)
+                    .aria_label(current_label)
+                    .w(px(220.))
+                    .gap_1()
+                    .children(choices.into_iter().map(|(mode, value, label)| {
+                        let weak = weak.clone();
+                        gpui_base::Button::new(SharedString::from(format!(
+                            "permission-choice-{value}"
+                        )))
+                        .role(Role::RadioButton)
+                        .tab_stop(true)
+                        .aria_label(label)
+                        .selected(mode == selected)
+                        .cursor_pointer()
+                        .rounded_md()
+                        .px_2()
+                        .py_1()
+                        .text_xs()
+                        .when(mode == selected, |button| button.bg(gpui::rgba(0x007aff22)))
+                        .child(label)
+                        .on_click(move |_, _, cx| {
+                            let _ = weak.update(cx, |this, cx| {
+                                this.permission_picker_open = false;
+                                this.dispatch(DesktopIntent::SetSetting {
+                                    id: SettingId::PermissionMode,
+                                    value: SettingValue::Choice(value.into()),
+                                });
+                                cx.notify();
+                            });
+                        })
                     }))
-            }))
+                    .into_any_element()
+            })
             .into_any_element()
     }
 
@@ -5325,6 +5382,17 @@ impl DesktopRoot {
                         .when(form.choice.is_none(), |panel| {
                             panel.child(Input::new(&self.form_input).aria_label(input_label))
                         })
+                        .when(matches!(&form.action, FormAction::CreateGoal), |panel| {
+                            let criteria_label = self.text(TextKey::Criteria);
+                            panel
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(criteria_label),
+                                )
+                                .child(Input::new(&self.criteria_input).aria_label(criteria_label))
+                        })
                         .when_some(form.choice.clone(), |panel, choices| {
                             panel.child(v_flex().gap_1().children(choices.into_iter().map(
                                 |(label, value)| {
@@ -5621,22 +5689,13 @@ impl DesktopRoot {
                     .flatten()
             })
         });
-        let selections = transcript
-            .as_ref()
-            .map(|transcript| self.sync_assistant_selections(transcript, &child_id, window, cx))
-            .unwrap_or_default();
         let rows = transcript
             .as_ref()
             .map(|transcript| {
                 transcript
                     .iter()
                     .map(|row| {
-                        transcript_row_element(
-                            row,
-                            &self.snapshot,
-                            weak.clone(),
-                            selections.get(&(child_id.clone(), row.id)).cloned(),
-                        )
+                        transcript_row_element(row, &self.snapshot, weak.clone(), None, true)
                     })
                     .collect::<Vec<_>>()
             })
@@ -5650,6 +5709,7 @@ impl DesktopRoot {
             });
         v_flex()
             .id("subagent-overlay")
+            .debug_selector(|| "subagent-overlay".into())
             .role(Role::Dialog)
             .aria_label(format!(
                 "{} {child_id}",
@@ -5843,6 +5903,7 @@ impl DesktopRoot {
                 let is_selected = selected.contains(&index);
                 let is_active = index == self.gate_keyboard_cursor;
                 gpui_base::Button::new(("gate-option", u64::try_from(index).unwrap_or(u64::MAX)))
+                    .debug_selector(move || format!("gate-option-{index}"))
                     .role(match gate.kind {
                         GateKind::Select => Role::RadioButton,
                         GateKind::MultiSelect => Role::CheckBox,
@@ -5859,6 +5920,7 @@ impl DesktopRoot {
                     .px_3()
                     .py_2()
                     .when(is_selected, |row| row.bg(cx.theme().accent))
+                    .when(index == 0, |row| row.track_focus(&self.gate_primary_focus))
                     .child(option.to_string())
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         this.gate_keyboard_cursor = index;
@@ -5960,6 +6022,7 @@ impl DesktopRoot {
                     .when(pending, |row| {
                         row.child(
                             gpui_base::Button::new("confirm-gate")
+                                .debug_selector(|| "confirm-gate".into())
                                 .aria_label(self.text(TextKey::ConfirmRequest))
                                 .track_focus(&self.gate_confirm_focus)
                                 .disabled(selected_for_confirm.is_empty())
@@ -7144,6 +7207,8 @@ impl Render for DesktopRoot {
             if matches!(self.overlay, Some(Overlay::Extensions(_))) {
                 self.extension_search
                     .update(cx, |input, cx| input.focus(window, cx));
+            } else if matches!(self.overlay, Some(Overlay::Gate(_))) {
+                self.gate_primary_focus.focus(window, cx);
             } else {
                 self.overlay_focus.focus(window, cx);
             }
@@ -7184,6 +7249,10 @@ impl Render for DesktopRoot {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .on_action(cx.listener(Self::on_command_center))
+            .on_action(cx.listener(|this, _: &keymap::OpenSettings, window, cx| {
+                this.remember_focus(window, cx);
+                this.open_overlay(Overlay::Settings);
+            }))
             .on_action(cx.listener(|this, _: &keymap::ToggleLeft, _, cx| {
                 this.left_visible = !this.left_visible;
                 cx.notify();
@@ -7201,38 +7270,22 @@ impl Render for DesktopRoot {
                 this.request_cancel_run(window, cx);
             }))
             .on_action(cx.listener(|this, _: &keymap::NextInspector, _, cx| {
-                this.right_visible = true;
-                this.dispatch(DesktopIntent::SetInspector(next_inspector(
-                    this.snapshot.inspector.tab,
-                )));
-                cx.notify();
+                this.select_inspector(next_inspector(this.snapshot.inspector.tab), cx);
             }))
             .on_action(cx.listener(|this, _: &keymap::PreviousInspector, _, cx| {
-                this.right_visible = true;
-                this.dispatch(DesktopIntent::SetInspector(previous_inspector(
-                    this.snapshot.inspector.tab,
-                )));
-                cx.notify();
+                this.select_inspector(previous_inspector(this.snapshot.inspector.tab), cx);
             }))
             .on_action(cx.listener(|this, _: &keymap::ShowRun, _, cx| {
-                this.right_visible = true;
-                this.dispatch(DesktopIntent::SetInspector(InspectorTab::Run));
-                cx.notify();
+                this.select_inspector(InspectorTab::Run, cx);
             }))
             .on_action(cx.listener(|this, _: &keymap::ShowGoals, _, cx| {
-                this.right_visible = true;
-                this.dispatch(DesktopIntent::SetInspector(InspectorTab::Goals));
-                cx.notify();
+                this.select_inspector(InspectorTab::Goals, cx);
             }))
             .on_action(cx.listener(|this, _: &keymap::ShowSubagents, _, cx| {
-                this.right_visible = true;
-                this.dispatch(DesktopIntent::SetInspector(InspectorTab::Subagents));
-                cx.notify();
+                this.select_inspector(InspectorTab::Subagents, cx);
             }))
             .on_action(cx.listener(|this, _: &keymap::ShowContext, _, cx| {
-                this.right_visible = true;
-                this.dispatch(DesktopIntent::SetInspector(InspectorTab::Context));
-                cx.notify();
+                this.select_inspector(InspectorTab::Context, cx);
             }))
             .on_action(cx.listener(|this, _: &keymap::QueuePrevious, window, cx| {
                 this.queue_cursor = crate::ui::shell::alt_up_down_keeps_queue_selection(
@@ -7432,7 +7485,6 @@ impl Render for DesktopRoot {
                 root.child(
                     v_flex()
                         .id("overlay-scrim")
-                        .track_focus(&self.overlay_focus)
                         .key_context("Overlay")
                         .absolute()
                         .inset_0()
@@ -7447,6 +7499,7 @@ impl Render for DesktopRoot {
                         .child(
                             v_flex()
                                 .id("overlay-content")
+                                .focus_trap("overlay-focus-trap", &self.overlay_focus)
                                 .on_click(|_, _, cx| cx.stop_propagation())
                                 .child(overlay),
                         ),
@@ -7784,8 +7837,7 @@ fn sticky_shortcut(
                 this.remember_focus(window, cx);
                 this.open_overlay(Overlay::Background);
             } else {
-                this.right_visible = true;
-                this.dispatch(DesktopIntent::SetInspector(tab));
+                this.select_inspector(tab, cx);
             }
             cx.notify();
         }))
@@ -8221,6 +8273,7 @@ fn transcript_row_element(
     snapshot: &DesktopSnapshot,
     weak: WeakEntity<DesktopRoot>,
     assistant_selection: Option<Entity<SelectionActions>>,
+    read_only: bool,
 ) -> AnyElement {
     if !crate::ui::transcript::visible_row(row, snapshot) {
         return div().into_any_element();
@@ -8333,7 +8386,7 @@ fn transcript_row_element(
                                 .child("Tact"),
                         )
                         .child(body)
-                        .when(!assistant.suggestions.is_empty(), |row| {
+                        .when(!read_only && !assistant.suggestions.is_empty(), |row| {
                             let suggestions = assistant.suggestions.clone();
                             let weak = weak.clone();
                             row.child(
@@ -8421,7 +8474,15 @@ fn transcript_row_element(
             let tools = group
                 .items
                 .iter()
-                .map(|item| tool_group_item_element(item, row.id, snapshot.language, weak.clone()))
+                .map(|item| {
+                    tool_group_item_element(
+                        item,
+                        row.id,
+                        snapshot.language,
+                        weak.clone(),
+                        read_only,
+                    )
+                })
                 .collect::<Vec<_>>();
             let group_id = row.id;
             let group_weak = weak.clone();
@@ -8503,7 +8564,7 @@ fn transcript_row_element(
         }
         RowBody::Gate(gate) => div()
             .debug_selector(move || format!("transcript-row-gate-{id}"))
-            .child(gate_element(gate, snapshot.language, weak))
+            .child(gate_element(gate, snapshot.language, weak, read_only))
             .into_any_element(),
         RowBody::Notice(notice) => div()
             .id(SharedString::from(format!("row-notice-{id}")))
@@ -8571,7 +8632,7 @@ fn transcript_row_element(
                 format!("error-{id}"),
                 error.message.to_string(),
             ))
-            .when(error.retryable, |card| {
+            .when(!read_only && error.retryable, |card| {
                 card.child(
                     div()
                         .id(SharedString::from(format!("retry-error-{id}")))
@@ -8612,9 +8673,10 @@ fn tool_group_item_element(
     group_id: RowId,
     locale: tact_catalog::CatalogLocale,
     weak: WeakEntity<DesktopRoot>,
+    read_only: bool,
 ) -> AnyElement {
     match item {
-        ToolGroupItem::Gate(gate) => gate_element(gate, locale, weak),
+        ToolGroupItem::Gate(gate) => gate_element(gate, locale, weak, read_only),
         ToolGroupItem::Tool(tool) => tool_row_element(tool, group_id, locale, weak),
     }
 }
@@ -8778,6 +8840,7 @@ fn gate_element(
     gate: &GateCard,
     locale: tact_catalog::CatalogLocale,
     weak: WeakEntity<DesktopRoot>,
+    read_only: bool,
 ) -> AnyElement {
     let origin = match &gate.origin {
         tact_desktop_core::GateOrigin::Main => i18n::text(locale, TextKey::MainAgent).to_string(),
@@ -8871,6 +8934,35 @@ fn gate_element(
         tact_desktop_core::UiRequestPurpose::Permission
             | tact_desktop_core::UiRequestPurpose::PlanApproval
     ) {
+        if read_only {
+            let request_id = gate.request_id.0;
+            return v_flex()
+                .id(SharedString::from(format!(
+                    "gate-read-only-{}",
+                    gate.request_id.0
+                )))
+                .debug_selector(move || format!("gate-read-only-{request_id}"))
+                .role(Role::Status)
+                .aria_label(gate.prompt.to_string())
+                .gap_1()
+                .p_2()
+                .rounded_md()
+                .border_1()
+                .border_color(gpui::rgb(0x5f6673))
+                .child(div().text_sm().child(gate.prompt.to_string()))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(gpui::rgb(0x98a2b3))
+                        .child(origin),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .child(i18n::text(locale, TextKey::ApprovalInMainTranscript)),
+                )
+                .into_any_element();
+        }
         let request_id = gate.request_id.0;
         let session_epoch = gate.session_epoch;
         let option_count = gate.options.len();
@@ -8985,19 +9077,20 @@ fn gate_element(
             let request_id = gate.request_id.0;
             let session_epoch = gate.session_epoch;
             let initial_selected = selected.clone();
+            let live_choices = std::rc::Rc::new(std::cell::RefCell::new(initial_selected.clone()));
             let rows = gate
                 .options
                 .iter()
                 .enumerate()
                 .map(|(index, option)| {
                     let weak = weak.clone();
-                    let initial_selected = initial_selected.clone();
+                    let live_choices = live_choices.clone();
                     Toggle::new(format!("gate-option-{}", index), option.to_string())
                         .shape(ToggleShape::Check)
                         .on(selected.contains(&index))
                         .on_event(move |event, _, cx| {
                             let ToggleEvent::Toggled { on, .. } = event;
-                            let mut choices = initial_selected.clone();
+                            let mut choices = live_choices.borrow_mut();
                             if *on {
                                 choices.push(index);
                                 choices.sort_unstable();
@@ -9005,11 +9098,13 @@ fn gate_element(
                             } else {
                                 choices.retain(|candidate| *candidate != index);
                             }
+                            let next = choices.clone();
+                            drop(choices);
                             let _ = weak.update(cx, |this, _| {
                                 this.dispatch(DesktopIntent::SetGateDraft {
                                     session_epoch,
                                     request_id,
-                                    selected: choices,
+                                    selected: next,
                                 });
                             });
                         })
@@ -9138,6 +9233,20 @@ fn snapshot_accent(snapshot: &DesktopSnapshot) -> gpui::Hsla {
 
 fn snapshot_accent_foreground(_snapshot: &DesktopSnapshot) -> gpui::Hsla {
     gpui::rgb(0xffffff).into()
+}
+
+fn goal_create_arguments(objective: &str, criteria: &str) -> CommandArguments {
+    let criteria = criteria
+        .split([';', '\n'])
+        .map(str::trim)
+        .filter(|criterion| !criterion.is_empty())
+        .collect::<Vec<_>>();
+    let mut tokens = vec!["create".to_string(), objective.trim().to_string()];
+    if !criteria.is_empty() {
+        tokens.push("--".into());
+        tokens.push(criteria.join(";"));
+    }
+    CommandArguments { tokens }
 }
 
 fn overlay_width(window: &Window, desired: f32) -> gpui::Pixels {
@@ -9644,6 +9753,54 @@ mod tests {
     }
 
     #[gpui::test]
+    fn tab_cycles_inside_an_overlay_focus_trap(cx: &mut TestAppContext) {
+        let data_dir = probe_dir("overlay-trap");
+        let config = DesktopConfig::load(data_dir.clone()).unwrap();
+        install_test_config(&config);
+        let (controller, _events) = DesktopController::start(config).unwrap();
+        let shutdown = controller.clone();
+        let root_slot: std::rc::Rc<std::cell::RefCell<Option<Entity<DesktopRoot>>>> =
+            Default::default();
+        let slot = root_slot.clone();
+        let (_, window) = cx.add_window_view(move |window, cx| {
+            gpui_ai::init(cx);
+            crate::theme::apply(Appearance::Light, Some(window), cx);
+            let root = cx.new(|cx| DesktopRoot::new_for_test(controller, window, cx));
+            *slot.borrow_mut() = Some(root.clone());
+            Root::new(root, window, cx)
+        });
+        let root = root_slot.borrow().clone().expect("desktop root");
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.prompt.update(cx, |prompt, cx| {
+                    prompt.set_draft("", window, cx);
+                    prompt.focus(window, cx);
+                });
+                this.open_overlay(Overlay::Gate(tact_desktop_core::fixtures::demo_gate()));
+            });
+            window.draw(cx).clear(cx);
+        });
+        let composer = window.update(|_, cx| root.read(cx).prompt.read(cx).focus_handle(cx));
+        for key in ["tab", "tab", "tab", "tab", "tab", "tab", "tab", "shift-tab"] {
+            window.simulate_keystrokes(key);
+            window.update(|window, cx| {
+                window.draw(cx).clear(cx);
+                assert!(
+                    gpui_base::active_focus_trap(window, cx).is_some(),
+                    "{key} escaped the overlay focus trap"
+                );
+                assert_ne!(
+                    window.focused(cx).as_ref(),
+                    Some(&composer),
+                    "{key} moved focus back to the inert composer"
+                );
+            });
+        }
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
     fn snapshot_refreshes_workspace_mentions(cx: &mut TestAppContext) {
         let (root, window, shutdown, data_dir) = probe_root(cx);
         let project = probe_dir("project");
@@ -9764,6 +9921,166 @@ mod tests {
         window.update(|window, cx| window.draw(cx).clear(cx));
         window.update(|window, cx| window.focus_next(cx));
         assert!(window.update(|window, cx| window.focused(cx).is_some()));
+        assert!(
+            window.debug_bounds("permission-picker-menu").is_none(),
+            "the permission choices must start collapsed"
+        );
+        let trigger = window
+            .debug_bounds("permission-picker")
+            .expect("permission picker trigger");
+        window.simulate_click(trigger.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            window.debug_bounds("permission-picker-menu").is_some(),
+            "clicking the permission trigger must open the anchored menu"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn permission_review_starts_empty_and_focuses_the_first_option(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        let gate = tact_desktop_core::fixtures::demo_gate();
+        let request_id = gate.request_id.0;
+        window.update(|window, cx| {
+            root.update(cx, |this, _| this.open_overlay(Overlay::Gate(gate)));
+            window.draw(cx).clear(cx);
+        });
+        let (choices, focused, primary, trap) = window.update(|window, cx| {
+            let root = root.read(cx);
+            (
+                root.gate_choices.get(&request_id).cloned(),
+                window.focused(cx),
+                root.gate_primary_focus.clone(),
+                gpui_base::active_focus_trap(window, cx),
+            )
+        });
+        assert_eq!(
+            choices,
+            Some(Vec::new()),
+            "opening Review must not preselect an approval option"
+        );
+        assert_eq!(
+            focused.as_ref(),
+            Some(&primary),
+            "Review must focus the first option, not Confirm"
+        );
+        assert!(trap.is_some(), "the gate must install an active focus trap");
+        assert!(window.debug_bounds("gate-option-0").is_some());
+        assert!(window.debug_bounds("confirm-gate").is_some());
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn multiselect_gate_keeps_every_clicked_choice(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        let mut gate = tact_desktop_core::fixtures::demo_gate();
+        gate.kind = GateKind::MultiSelect;
+        gate.selection = GateSelection::Multiple(Vec::new());
+        gate.options = Arc::from([Arc::from("first"), Arc::from("second")]);
+        let request_id = gate.request_id.0;
+        window.update(|window, cx| {
+            root.update(cx, |this, _| this.open_overlay(Overlay::Gate(gate)));
+            window.draw(cx).clear(cx);
+        });
+        for selector in ["gate-option-0", "gate-option-1"] {
+            let bounds = window.debug_bounds(selector).expect(selector);
+            window.simulate_click(bounds.center(), gpui::Modifiers::default());
+            window.update(|window, cx| window.draw(cx).clear(cx));
+        }
+        let choices = window.update(|_, cx| {
+            root.read(cx)
+                .gate_choices
+                .get(&request_id)
+                .cloned()
+                .unwrap_or_default()
+        });
+        assert_eq!(choices, vec![0, 1]);
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn goal_create_arguments_preserve_objective_and_acceptance_criteria() {
+        let args = goal_create_arguments(
+            "  ship desktop  ",
+            "Windows builds;\n Linux builds\n\nmacOS builds;",
+        );
+        assert_eq!(
+            args.tokens,
+            vec![
+                "create",
+                "ship desktop",
+                "--",
+                "Windows builds;Linux builds;macOS builds"
+            ]
+        );
+    }
+
+    #[gpui::test]
+    fn inspector_tabs_switch_through_the_real_controller(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.right_visible = true;
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        let goals = window
+            .debug_bounds("inspector-tab-1")
+            .expect("Goals inspector tab");
+        window.simulate_click(goals.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(
+            window.update(|_, cx| root.read(cx).snapshot.inspector.tab),
+            InspectorTab::Goals
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn read_only_subagent_rows_hide_suggestions_retry_and_gate_actions(cx: &mut TestAppContext) {
+        struct ReadOnlyTranscriptProbe {
+            root: Entity<DesktopRoot>,
+        }
+
+        impl Render for ReadOnlyTranscriptProbe {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let root = self.root.read(cx);
+                let snapshot = root.snapshot.clone();
+                let weak = self.root.downgrade();
+                let transcript = tact_desktop_core::fixtures::demo_transcript();
+                let rows = [7_u64, 11, 12]
+                    .into_iter()
+                    .filter_map(|index| transcript.iter().find(|row| row.ordinal == index).cloned())
+                    .collect::<Vec<_>>();
+                v_flex().size_full().children(
+                    rows.into_iter().map(|row| {
+                        transcript_row_element(&row, &snapshot, weak.clone(), None, true)
+                    }),
+                )
+            }
+        }
+
+        let data_dir = probe_dir("subagent-read-only");
+        let config = DesktopConfig::load(data_dir.clone()).unwrap();
+        install_test_config(&config);
+        let (controller, _events) = DesktopController::start(config).unwrap();
+        let shutdown = controller.clone();
+        let (_, window) = cx.add_window_view(move |window, cx| {
+            gpui_ai::init(cx);
+            crate::theme::apply(Appearance::Light, Some(window), cx);
+            let root = cx.new(|cx| DesktopRoot::new_for_test(controller, window, cx));
+            ReadOnlyTranscriptProbe { root }
+        });
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(window.debug_bounds("suggestion-0").is_none());
+        assert!(window.debug_bounds("retry-error-11").is_none());
+        assert!(window.debug_bounds("gate-read-only-12").is_some());
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
     }

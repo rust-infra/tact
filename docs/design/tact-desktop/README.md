@@ -89,8 +89,9 @@ the actual mapping.
 - The transcript header keeps only run state. Model and permission mode live in
   the composer; context usage lives in the Inspector.
 - Pending permission is a persistent warning banner at the top of Sticky Tasks.
-  Review expands and scrolls to the approval tool, then focuses Allow once;
-  resolving the gate hides the banner.
+  Review expands and scrolls to the approval tool, then focuses Allow once
+  without selecting it; Confirm remains disabled until the user explicitly
+  chooses. Resolving the gate hides the banner.
 - When the transcript leaves the tail, a floating `New activity · Back to bottom`
   pill appears above Sticky Tasks; clicking it smooth-scrolls to the bottom and
   hides the pill.
@@ -150,8 +151,7 @@ the actual mapping.
 - `previews/session-fuzzy-search.png` - abbreviated session search.
 - `previews/slash-hooks.png` - `/hooks` nested subcommand popup.
 - `previews/hooks-list.png` - `/hooks list` review and trust surface.
-- `previews/composer-attachments-queue.png` - attachment strip, queue actions
-  and live voice state.
+- `previews/composer-attachments-queue.png` - attachment strip and queue actions.
 - `previews/selection-actions.png` - Ask / Explain / Rewrite selection toolbar.
 - `previews/slash-command.png` - first-level slash-command popup.
 - `previews/slash-subcommands.png` - `/mcp` subcommand popup.

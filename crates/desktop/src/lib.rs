@@ -1,7 +1,10 @@
 //! Native Tact Desktop shell.
 
 mod app;
-#[cfg(feature = "ui-capture")]
+// GPUI's deterministic off-screen compositor currently exists only on macOS.
+// Linux and Windows verification uses the real packaged window, as documented
+// in `docs/design/tact-desktop/visual-verification.md`.
+#[cfg(all(feature = "ui-capture", target_os = "macos"))]
 pub mod capture;
 pub mod i18n;
 mod keymap;

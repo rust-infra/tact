@@ -87,12 +87,24 @@ pub fn plan(command: &CommandId) -> CommandPlan {
 /// declared form; a route that returns `Noop` without a form is the
 /// visible-but-inert case the parity suite must reject.
 pub fn command_is_executable(id: &CommandId) -> bool {
+    // CLI catalog entries are surfaced through an executable desktop surface
+    // even when they still need a flag or confirmation, such as `hooks forget
+    // --all`. Their route class and Clap parity are checked separately.
+    if let CommandId::Cli(entry) = id {
+        return cli_entry_has_setting_route(*entry);
+    }
     let route = crate::commands::route_command(id, &CommandArguments::default());
     match route {
         crate::commands::CommandRoute::Noop => false,
-        // `Error` here means the action needs arguments the shell supplies
-        // through its declared form or slash path; it is not inert.
-        crate::commands::CommandRoute::Error(_) => true,
+        // Missing arguments are only executable when the catalog declares a
+        // form or child commands that the shell can open. An undeclared error is
+        // visible-but-inert instead of pretending that routing metadata is action.
+        crate::commands::CommandRoute::Error(_) => {
+            form_for(id) != CommandForm::None
+                || tact_catalog::builtins()
+                    .get(id)
+                    .is_some_and(|descriptor| !descriptor.children.is_empty())
+        }
         _ => true,
     }
 }

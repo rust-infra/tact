@@ -7,8 +7,8 @@
 pub const RAIL_BREAKPOINT: f32 = 860.0;
 pub const INSPECTOR_BREAKPOINT: f32 = 1180.0;
 pub const THREE_COLUMN_BREAKPOINT: f32 = INSPECTOR_BREAKPOINT;
-pub const RAIL_WIDTH: f32 = 264.0;
-pub const INSPECTOR_WIDTH: f32 = 300.0;
+pub const RAIL_WIDTH: f32 = 250.0;
+pub const INSPECTOR_WIDTH: f32 = 318.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ShellLayout {
@@ -68,6 +68,12 @@ pub fn usable_text_scale(text_scale: f32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn panel_widths_match_the_reviewed_prototype() {
+        assert_eq!(RAIL_WIDTH, 250.0);
+        assert_eq!(INSPECTOR_WIDTH, 318.0);
+    }
 
     #[test]
     fn narrow_window_moves_panels_to_scrimmed_overlays() {

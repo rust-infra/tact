@@ -241,7 +241,9 @@ Two alternatives were evaluated:
   them above the transcript.
 - Pending permission is surfaced as a persistent sticky warning banner, not a
   transcript-header chip. Review expands the approval tool, scrolls it into view
-  and focuses the primary allow action; the banner clears after the decision.
+  and focuses the primary allow option without selecting it; Confirm stays
+  disabled until the user explicitly chooses. The banner clears after the
+  decision.
 - MCP list/auth/prompts, Hook list/trust/forget, Plugin and Skill management.
 - The rail MCP, Skills and Plugins entries open a shared Extensions popover with
   MCP / Skills / Plugins tabs, live status and row actions. The roomy popover
@@ -289,8 +291,9 @@ entry and reports its output in a result surface).
   provider, model, API key, base URL, max tokens, thinking budget, permission
   mode, notifications, context window, theme, project snapshot size,
   micro-compaction, tokio diagnostics, and skill-body injection.
-- Composer entries include `@file`, image attachments, voice input, queued
-  messages, stop, compact, and session actions.
+- Composer P1 entries include `@file`, image attachments, queued messages,
+  stop, compact, and session actions. Voice input remains a P2 capability and
+  is not mounted as a dead microphone in the P1 composer.
 - The Command Center is the canonical discovery surface. Every entry has a
   stable ID, group, title, description, shortcut/CLI alias, availability state,
   and an executable action.
@@ -319,7 +322,7 @@ entry and reports its output in a result surface).
 | Context usage | `ContextMeter` | Direct |
 | Task and plugin tables | `TaskRow`, `TodoList`, `FilterTable` | Compose |
 | Stats / balance summaries | `InsightCard` | Compose |
-| Voice controls | `VoiceControls` | Direct in desktop-finish scope |
+| Voice controls | `VoiceControls` | P2 deferred until recording plus transcription state exists |
 | Goal panel | none | Build locally |
 | Subagent transcript | none | Build locally |
 | Mixed transcript | `Chat` is insufficient | Build a virtualized row list |
@@ -331,7 +334,8 @@ entry and reports its output in a result surface).
 - AI-specific surfaces are real `gpui-ai` component instances, not visual
   recreations: `PlanCard`, `Thinking`, `ToolGroup`, `ApprovalCard`,
   `StreamingText`, `PromptBar`, `CommandSearch`, `ContextMeter`, `MessageQueue`,
-  `AttachmentStrip`, `VoiceControls` and their `gpui-component` popovers.
+  `AttachmentStrip` and their `gpui-component` popovers. `VoiceControls` joins
+  that list only when the P2 recording/transcription pipeline is implemented.
 - `PromptBar` owns the native editor, model picker, mentions and attachments.
   Tact composes a slash-command overlay around it because upstream
   `PromptCommand` is flat and has no nested/value/Tab-complete model.
@@ -395,6 +399,7 @@ The reducer is pure where possible. Runtime effects are emitted as
 - `Cmd/Ctrl+K`: command palette.
 - `Cmd/Ctrl+B`: hide or show the session sidebar.
 - `Cmd/Ctrl+Alt+B`: hide or show the run inspector.
+- `Cmd/Ctrl+,`: open Settings.
 - `Cmd/Ctrl+Enter`: submit prompt.
 - `Esc`: close topmost overlay; if none, cancel the active CTE request or clear
   selection.
@@ -590,7 +595,7 @@ The desktop is ready for implementation planning when:
 | CLI flags | tokio-console | Diagnostics |
 | CLI flags | skill-body auto-inject | Skills settings |
 | Input | `@file`, image mention, attachment picker | Composer |
-| Input | voice input | Composer voice control |
+| Input | voice input | P2 composer voice control; deferred until transcription exists |
 | Input | queued messages | Composer queue |
 | Input | permission and `ask_user` | Gate and question flow |
 

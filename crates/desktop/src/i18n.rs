@@ -113,6 +113,7 @@ pub enum TextKey {
     Error,
     Retry,
     RetryAvailable,
+    ApprovalInMainTranscript,
     AddMcpServer,
     RemoteUrl,
     LocalCommand,
@@ -339,6 +340,7 @@ pub const ALL: &[TextKey] = &[
     TextKey::Error,
     TextKey::Retry,
     TextKey::RetryAvailable,
+    TextKey::ApprovalInMainTranscript,
     TextKey::AddMcpServer,
     TextKey::RemoteUrl,
     TextKey::LocalCommand,
@@ -679,6 +681,10 @@ pub fn text(locale: CatalogLocale, key: TextKey) -> &'static str {
         (CatalogLocale::Zh, TextKey::Retry) => "重试",
         (CatalogLocale::En, TextKey::RetryAvailable) => "Retry available",
         (CatalogLocale::Zh, TextKey::RetryAvailable) => "可重试",
+        (CatalogLocale::En, TextKey::ApprovalInMainTranscript) => {
+            "Approval is available from the main transcript."
+        }
+        (CatalogLocale::Zh, TextKey::ApprovalInMainTranscript) => "请在主对话中处理此审批。",
         (CatalogLocale::En, TextKey::AddMcpServer) => "Add MCP server",
         (CatalogLocale::Zh, TextKey::AddMcpServer) => "添加 MCP 服务器",
         (CatalogLocale::En, TextKey::RemoteUrl) => "Remote URL",

@@ -77,6 +77,18 @@ fn all_composer_entries_have_desktop_routes() {
 }
 
 #[test]
+fn executable_routes_do_not_treat_undeclared_errors_as_actions() {
+    let undeclared = CommandId::BuiltinPath {
+        root: BuiltinCommand::Hooks,
+        path: vec!["hooks", "forget", "not-a-command"],
+    };
+    assert!(
+        !command_is_executable(&undeclared),
+        "an undeclared error must not be advertised as an executable action"
+    );
+}
+
+#[test]
 fn cli_tree_and_flags_match_command_catalog() {
     let errors = cli_catalog_parity_errors();
     assert!(errors.is_empty(), "{errors:#?}");

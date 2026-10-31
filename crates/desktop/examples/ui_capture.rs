@@ -9,9 +9,10 @@
 //! The harness uses GPUI's real renderer, so the files match what the
 //! compositor would show; no Screen Recording permission is required.
 
-use std::path::PathBuf;
-
+#[cfg(target_os = "macos")]
 fn main() -> anyhow::Result<()> {
+    use std::path::PathBuf;
+
     let out = std::env::args()
         .nth(1)
         .map(PathBuf::from)
@@ -32,4 +33,13 @@ fn main() -> anyhow::Result<()> {
             std::process::exit(1);
         }
     }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn main() {
+    eprintln!(
+        "ui_capture uses GPUI's macOS-only VisualTestAppContext; \
+         verify Linux and Windows through the packaged live window instead"
+    );
+    std::process::exit(2);
 }

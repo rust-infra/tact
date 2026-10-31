@@ -1,11 +1,13 @@
 # Tact Desktop visual verification
 
-The desktop shell ships two verification paths that do not need Screen
-Recording permission. Both render the production `DesktopRoot`, not a mock.
+The desktop shell ships three verification paths. The off-screen harness is
+macOS-only because GPUI currently exposes `VisualTestAppContext` only there;
+Linux and Windows use the live packaged-window and CI smoke paths below. Every
+path renders the production `DesktopRoot`, not a mock.
 
 ## 1. Off-screen render harness
 
-`crates/desktop/src/capture.rs` opens the real shell in an off-screen GPUI
+On macOS, `crates/desktop/src/capture.rs` opens the real shell in an off-screen GPUI
 window through `gpui_platform::current_platform(true)` and
 `VisualTestAppContext`. The capture goes through GPUI's Metal renderer, so the
 PNG is what the compositor would show. Scripted entrances are skipped
@@ -15,8 +17,12 @@ PNG is what the compositor would show. Scripted entrances are skipped
 cargo run -p tact-desktop --example ui_capture --features ui-capture -- target/ui-capture
 ```
 
-The walk opens every overlay and reader from the real shell code and writes
-one PNG per surface:
+On Linux or Windows this command exits with an explanatory message rather than
+silently substituting a mock renderer. Use the live-window walkthrough and the
+packaged smoke test for those targets.
+
+The walk opens representative overlays and readers from the real shell code and
+writes one PNG per surface:
 
 | File | Surface |
 |---|---|
@@ -27,7 +33,7 @@ one PNG per surface:
 | `06-session-manager` | Project chips, filters, rename/archive rows |
 | `07`–`10` | Extensions MCP / Skills / Plugins / Hooks tabs |
 | `11-background` | Background task list |
-| `12`–`15` | Run inspector tabs |
+| `12`–`15` | Run / Goals / Subagents / Context inspector tabs |
 | `16`–`20` | Typed readers (system prompt, stats, history, task DAG, balance) |
 | `21`–`22` | Model picker and a free-form command form |
 | `23-narrow-window` | 900×700 layout |
@@ -44,20 +50,30 @@ one PNG per surface:
 and inspector data behind the `ui-capture` feature. It is compiled only for
 that feature and never by the product binary.
 
+This harness is a visual matrix, not exhaustive interaction coverage. It does
+not capture the subagent drawer, the anchored permission picker menu, Goal
+create/steer/accept forms, queued-prompt expansion, slash-command subtrees,
+125% text scale, reduced-motion transitions, or combined narrow-window/locale/
+scale states. Those states are exercised by focused shell tests and by the
+live-window walkthrough. Because the harness only runs on macOS, it also does
+not prove Linux or Windows rendering or input behavior.
+
 ## 2. Runtime accessibility walkthrough
 
-With the app running, macOS Accessibility exposes the live tree. This verifies
-that each entry really opens its surface, not just that the code compiles:
+On macOS, with Accessibility permission granted, the app exposes a live
+Accessibility tree. The repository includes two probes for inspecting and
+pressing that tree:
 
 ```bash
 osascript -l JavaScript scripts/ax-press.js "Settings"
 osascript -l JavaScript scripts/ax-dump.js
 ```
 
-The walkthrough used for the 2026-10-30 release covered: Settings → Model
-picker, Command Center, Extensions (MCP/Skills/Plugins/Hooks), Run inspector
-(Run/Goals/Subagents/Context), Session Manager, permission mode, and the
-composer.
+Use these probes to verify that each entry really opens its surface, not just
+that the view compiled. They require macOS and were not used for the Linux
+Xwayland run; that run uses screenshots, OCR, and synthetic input, which proves
+pixels, layout, and pointer/keyboard behavior but not native Accessibility
+semantics.
 
 ## 3. Packaged smoke test
 
