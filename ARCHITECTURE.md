@@ -20,6 +20,9 @@ This project is a Cargo Workspace containing the following crates:
 | `crates/agent_tui_kit` | `agent_tui_kit` | `0.1.0` (local) | Reusable host-protocol rendering kit for thinking/tool/log/popup widgets. |
 | `crates/tact` | `tact` | `2.0.0` (workspace) | Product composition root and compatibility facade: tool router, MCP client, hooks, permissions, prompt/compaction policy, persistence adapters, and kernel wiring. |
 | `crates/tact_host` | `tact_host` | `2.0.0` (workspace) | UI-independent host services: session bootstrap/locking, command loop, Goal runner, account polling, permission mapping, and input normalization. |
+| `crates/catalog` | `tact_catalog` | `2.0.0` (workspace) | Frontend-neutral slash/CLI/setting command catalog, localization, canonical action IDs, and fuzzy matching shared by the TUI and desktop. |
+| `crates/desktop_core` | `tact_desktop_core` | `2.0.0` (workspace) | GPUI-free desktop controller, transcript reducer, typed snapshots, project/session catalog, desktop settings, and host-session orchestration. |
+| `crates/desktop` | `tact-desktop` | `2.0.0` (workspace) | Native GPUI desktop shell for macOS, Windows, and Linux. Thin UI over `tact_desktop_core` and `tact_catalog`, with gpui-ai/gpui-component leaf surfaces. |
 | `crates/tact-ui` | `tact-ui` | `2.0.0` (workspace) | TUI adapter and CLI: terminal rendering/input plus headless CLI, consuming `tact_host` for shared orchestration. |
 | `crates/tact_llm` | `tact_llm` | `2.0.0` (workspace) | Stable provider SDK and `tact_agent_api::ModelPort` implementation. `core` exposes the facade, builder, endpoint/limit/auth types, and a lazy stream; protocol adapters are feature-isolated behind `anthropic`, `openai-chat`, and `openai-responses`. |
 | `crates/tool_refactor_macros` | `tool_refactor_macros` | `2.0.0` (workspace) | Proc-macro `#[tool]` that generates `Tool` trait implementations from async functions. |
@@ -33,6 +36,13 @@ flowchart TB
     tact_host --> tact
     tact_host --> tact_llm
     tact_host --> tact_protocol
+    tact_desktop["tact-desktop"] --> tact_desktop_core["tact_desktop_core"]
+    tact_desktop --> tact_catalog
+    tact_desktop --> gpui_ai["gpui-ai (vendored localization fork)"]
+    tact_desktop_core --> tact_host
+    tact_desktop_core --> tact_catalog
+    tact_desktop_core --> tact_protocol
+    tact_desktop_core --> tact
     tact_ui --> tui
     tact_ui --> tact_llm
     tact_ui --> tact_protocol
@@ -80,6 +90,7 @@ Binaries produced by `crates/tact-ui`:
 | Binary | Source | Mode |
 |---|---|---|
 | `tact-ui` | `crates/tact-ui/` | Interactive TUI by default; `headless` subcommand for CI / non-interactive |
+| `tact-desktop` | `crates/desktop/` | Native GPUI desktop app; packaged for macOS, Windows, and Linux |
 
 `tact-ui` crate layout: `main.rs` (dispatch), `interactive.rs`, `headless.rs`, and
 the terminal-specific `headless_session.rs` test harness and `sessions.rs`

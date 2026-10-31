@@ -147,8 +147,9 @@ Resolution:
   `crates/gpui-ai/src/thread_list.rs`.
 - Confirmed flat `CommandSearchItem` indexing in
   `crates/gpui-ai/src/command_search.rs`.
-- Ran the prototype in Chromium at 1440x900 and 390x844; exercised all 81
-  command-palette entries, all 46 audited slash-command paths, queue
+- Ran the prototype in Chromium at 1440x900 and 390x844; exercised the
+  command-palette entries and every declared slash-command path (including
+  parent groups), queue
   send/remove/clear, attachment add/remove, voice toggle, follow-up chips and
   selection actions with no page errors.
 - Re-ran `node --check docs/design/tact-desktop/prototype.js` and

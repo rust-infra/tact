@@ -5,7 +5,7 @@
 <h1 align="center">tact</h1>
 
 <p align="center">
-  <strong>Terminal-first AI coding agent. Built in Rust. MIT licensed.</strong>
+  <strong>Terminal and native desktop AI coding agent. Built in Rust. MIT licensed.</strong>
 </p>
 
 <p align="center">
@@ -19,7 +19,7 @@
   <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square&logo=rust" alt="Rust" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT License" />
   <img src="https://img.shields.io/badge/version-2.0.0-blue?style=flat-square" alt="Version" />
-  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20WSL-lightgrey?style=flat-square" alt="Platform" />
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey?style=flat-square" alt="Platform" />
   <a href="https://ko-fi.com/00x80">
     <img src="https://img.shields.io/badge/Ko--fi-Buy%20me%20a%20coffee-FF5E5B?style=flat-square&logo=ko-fi&logoColor=white" alt="Support on Ko-fi" />
   </a>
@@ -114,6 +114,21 @@ cargo build --release --locked -p tact-ui
 ./target/release/tact-ui --help
 ```
 
+### Tact Desktop
+
+`tact-desktop` is the native GPUI frontend for macOS, Windows, and Linux. It
+uses the same `tact_host` session runtime, project-local SQLite store, command
+catalog, Goals, subagents, and extensions as the terminal UI.
+
+```bash
+cargo run -p tact-desktop
+cargo build --release -p tact-desktop
+```
+
+The release workflow also packages `tact-ui` beside the desktop binary. macOS
+assets are signed/notarized `.app` bundles; Windows and Linux ship matching
+desktop and CLI binaries.
+
 Via Cargo (coming soon to crates.io):
 
 ```bash
@@ -127,7 +142,10 @@ git tag v2.0.0
 git push origin v2.0.0
 ```
 
-GitHub Actions (`.github/workflows/release.yml`) uploads `tact-ui-v<version>-<target-triple>.tar.gz` / `.zip` plus `SHA256SUMS`.
+GitHub Actions (`.github/workflows/release.yml`) uploads
+`tact-ui-v<version>-<target-triple>.tar.gz` / `.zip`,
+`tact-desktop-v<version>-<target-triple>.tar.gz` / `.zip`, and the checksum
+manifest.
 
 ### 2. Configure
 
@@ -249,6 +267,11 @@ it against the published `SHA256SUMS`, and atomically replaces the running
 executable on macOS/Linux. Track a fork with `--repo owner/name` (or the
 `TACT_UPGRADE_REPO` environment variable). On Windows, re-run
 `scripts/install.ps1` to upgrade.
+
+The automated release workflow intentionally publishes stable
+`vMAJOR.MINOR.PATCH` tags only. SemVer prerelease and build-metadata suffixes
+are rejected with an explicit error rather than being treated as publishable
+desktop releases.
 
 ---
 

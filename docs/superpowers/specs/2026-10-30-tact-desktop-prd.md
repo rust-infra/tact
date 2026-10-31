@@ -5,6 +5,8 @@
 - Scope: native desktop frontend built on `tact_host`, with `gpui-ai` as the
   AI-surface component layer
 - Prototype: `docs/design/tact-desktop/prototype.html`
+- Architecture: `docs/superpowers/specs/2026-10-30-tact-desktop-design.md`
+- Plan: `docs/superpowers/plans/2026-10-30-tact-desktop.md`
 
 ## 1. Product Statement
 
@@ -47,6 +49,8 @@ integration.
   the same intent with native conventions.
 - Shipping a remote or web-hosted frontend in the first release. The initial
   transport is the existing in-process `tact_host` channel.
+- Multiple simultaneous project windows. V1 is one controller (one active
+  session) per window, and project switching is a serialized close-then-open.
 - Achieving exact pixel parity with the TUI. Feature parity and information
   continuity are the requirement; the desktop has its own layout language.
 
@@ -221,7 +225,7 @@ Two alternatives were evaluated:
 
 ### P1: Tact Feature Parity
 
-- Goal create/list/show/steer/pause/resume/cancel/accept/archive.
+- Goal create/list/show/steer/pause/resume/cancel/accept/archive/unarchive.
 - Subagent overview, cancel, and immersive transcript.
 - Slash commands and command palette for all built-in commands.
 - Model, effort, thinking budget, permission, theme, and language controls.
@@ -252,10 +256,13 @@ Two alternatives were evaluated:
 - Assistant answers expose stable follow-up prompt chips (`Suggestions`);
   selected Markdown exposes Ask / Explain / Rewrite actions
   (`SelectionActions`).
+- macOS, Windows, and Linux packaging from one release workflow, with a macOS
+  app bundle and native archives for Windows and Linux.
 
 ### P2: Desktop Polish
 
-- Mermaid diagrams and Task DAG view.
+- Mermaid diagrams and the Task DAG graph view (the `/tasks-dag` command entry
+  and dependency-list fallback are P1; the graph renderer is P2).
 - ANSI-to-GPUI text rendering for terminal output.
 - Web-search result reader using `SearchResults`.
 - Artifact preview/source panel using `ArtifactPanel`.
@@ -264,7 +271,6 @@ Two alternatives were evaluated:
 - Native menus and global shortcuts.
 - OS notifications and dock/taskbar badges.
 - Voice recording and transcription controls.
-- Cross-platform packaging and update flow.
 - Theme migration for existing Tact themes.
 
 ### Entry Parity Contract
@@ -312,8 +318,6 @@ entry and reports its output in a result surface).
 | Context usage | `ContextMeter` | Direct |
 | Task and plugin tables | `TaskRow`, `TodoList`, `FilterTable` | Compose |
 | Stats / balance summaries | `InsightCard` | Compose |
-| Pending prompts | `MessageQueue` | Direct |
-| Attachments | `AttachmentStrip` | Direct |
 | Voice controls | `VoiceControls` | Direct in desktop-finish scope |
 | Goal panel | none | Build locally |
 | Subagent transcript | none | Build locally |
@@ -337,7 +341,7 @@ entry and reports its output in a result surface).
   or Active/Archived/All filters.
 - The prototype names these surfaces with `data-gpui-ai` attributes. The desktop
   implementation must preserve that mapping.
-- Tact owns only the native macOS shell, the mixed virtualized transcript
+- Tact owns only the native desktop shell, the mixed virtualized transcript
   container, Goal and Subagent panels, Mermaid/ANSI adapters, and persistence.
 - Call `gpui_ai::init(cx)` once and keep every window rooted in
   `gpui_component::Root`.
@@ -426,7 +430,7 @@ Gates and transient surfaces must restore focus to their trigger when closed.
 
 ## 13. Visual Direction
 
-The desktop uses a native macOS visual language:
+The desktop uses a native platform visual language:
 
 - a native window frame with traffic lights, material-backed title bar, and
   translucent sidebar;
@@ -560,7 +564,7 @@ The desktop is ready for implementation planning when:
 | TUI | `/history` | Task-history reader |
 | TUI | `/skill` | Skills manager; `list`, `reload`, `enable`, `disable` |
 | TUI | `/plugin` | Plugins manager; includes marketplace operations |
-| TUI | `/mcp` | MCP manager; includes CLI get/add/remove/login/logout, prompts and prompt execution |
+| TUI | `/mcp` | MCP manager; includes CLI get/add/remove/login/logout, `auth`, prompts and prompt execution |
 | TUI | `/hooks` | Hook review and trust |
 | TUI | `/hook-output` | Hook-output display toggle |
 | TUI | `/balance` | Account balance detail |
@@ -580,7 +584,7 @@ The desktop is ready for implementation planning when:
 | CLI flags | permission mode, thinking budget | Agent settings |
 | CLI flags | context window, snapshot size, micro-compaction | Context settings |
 | CLI flags | notifications | Notifications setting |
-| CLI flags | theme, language | Appearance and Language settings |
+| CLI flags | theme | Appearance setting |
 | CLI flags | config path | Configuration file reader |
 | CLI flags | tokio-console | Diagnostics |
 | CLI flags | skill-body auto-inject | Skills settings |
@@ -588,3 +592,10 @@ The desktop is ready for implementation planning when:
 | Input | voice input | Composer voice control |
 | Input | queued messages | Composer queue |
 | Input | permission and `ask_user` | Gate and question flow |
+
+Language has no CLI flag; it is the TUI `/lang` command and a desktop setting.
+`--session` and `--resume-last` are navigation entries, not settings. The
+desktop surfaces every entry above, but startup-global settings (provider,
+credentials, token/context limits, config path, diagnostics) apply on the next
+launch and are labeled as such; session settings (model, effort, thinking
+budget, permission mode) apply immediately through `UserCommand`.

@@ -16,11 +16,11 @@ Status values:
 | `Thinking` | Direct | Reasoning traces with Markdown. |
 | `Orbs` | Direct | Subagent/background activity signal. |
 | `ContextMeter` | Direct | Inspector context tab. |
-| `ToolChip` | Direct | Compact tool lifecycle in subagent/tool groups. |
+| `ToolChip` | Direct | Latest-tool lifecycle chip in the Run inspector. |
 | `ToolCall` | Direct | Tool input/output/approval card. |
 | `TaskRow` | Direct | Sticky task rows. |
 | `SearchResults` | Deferred | Hosted web search currently injects context without a result reader. Candidate P2 evidence surface. |
-| `TodoList` | Direct | Sticky task checklist. |
+| `TodoList` | Direct | Task checklist in the Run inspector. |
 | `ImageGeneration` | N/A | Tact is a coding agent; image generation is not a product tool. |
 | `StreamingText` | Direct | Assistant Markdown stream. |
 | `CodeBlock` | Direct | Terminal output and code evidence. |
@@ -32,12 +32,12 @@ Status values:
 | `ArtifactPanel` | Deferred | Generated documents/code artifacts are not yet a Tact workflow. Candidate P2 panel. |
 | `FineTuneCard` | N/A | Design-property tuning is not a Tact agent workflow. |
 | `PromptBar` | Compose | Native editor/model/mentions/attachments; Tact adds the nested slash overlay. |
-| `VoiceControls` | Direct | Composer dictation state (desktop-finish scope). |
+| `VoiceControls` | Deferred | P2 transcription pipeline; the P1 composer deliberately shows no dead microphone. |
 | `MessageQueue` | Direct | Queued prompts with send/remove/clear. |
 | `CommandSearch` | Direct | Flat command palette with group metadata in subtitle/keywords. |
-| `SidebarNav` | Compose | Project pane in the Session Manager. |
+| `SidebarNav` | Compose | Project-scoped session rail with the app-owned filter and lock badges. |
 | `ThreadList` | Deferred | Insufficient for project-scoped fuzzy/filter manager; not claimed for that surface. |
-| `RecordsTable` | Compose | Session rows and task-history rows. |
+| `RecordsTable` | Compose | Used through `FilterTable`; direct session rows remain Tact-owned. |
 | `DiffTable` | Deferred | Multi-file proposal review; `CodeDiff` covers the current single-file flow. |
 | `FilterTable` | Compose | Extensions Manager rows and filters. |
 | `ComparisonTable` | N/A | No bounded feature-matrix workflow in Tact. |

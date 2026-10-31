@@ -724,6 +724,7 @@
 <li class="toc-l2"><a href="#18-2026-10-29--llm-telemetry-%E8%A1%A5%E5%85%A8%E7%BB%88%E6%80%81%E4%B8%8E-http-%E7%B1%BB%E5%88%AB" title="18. 2026-10-29 — LLM telemetry 补全终态与 HTTP 类别"><span class="toc-label">18. 2026-10-29 — LLM telemetry 补全终态与 HTTP 类别</span></a></li>
 <li class="toc-l2"><a href="#19-2026-10-29--%E8%BD%BB%E9%87%8F%E6%8E%A5%E5%85%A5%E6%94%B6%E5%8F%A3%E4%B8%8E-200-%E5%8F%91%E5%B8%83" title="19. 2026-10-29 — 轻量接入收口与 2.0.0 发布"><span class="toc-label">19. 2026-10-29 — 轻量接入收口与 2.0.0 发布</span></a></li>
 <li class="toc-l2"><a href="#20-2026-10-29--%E6%8A%BD%E7%A6%BB-ui-%E6%97%A0%E5%85%B3%E7%9A%84-host-service" title="20. 2026-10-29 — 抽离 UI 无关的 host service"><span class="toc-label">20. 2026-10-29 — 抽离 UI 无关的 host service</span></a></li>
+<li class="toc-l2"><a href="#21-2026-10-31--desktop-%E9%97%B8%E9%97%A8%E4%B8%8E%E5%8F%91%E5%B8%83%E4%BA%A4%E4%BB%98%E6%94%B6%E5%8F%A3" title="21. 2026-10-31 — Desktop 闸门与发布交付收口"><span class="toc-label">21. 2026-10-31 — Desktop 闸门与发布交付收口</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -21420,6 +21421,24 @@ lease owner 与 session-lock 错误不再写死 <code>tact-ui</code>；
 从 <code>0.1.0</code> 提升到 <code>2.0.0</code>，与 <code>tact</code> /
 <code>tact_host</code> 的发布线对齐，避免 <code>2.0.0</code> 依赖
 <code>0.1.x</code> 的 semver 漏洞。</p>
+<hr />
+<h2 id="21-2026-10-31--desktop-闸门与发布交付收口">21. 2026-10-31 —
+Desktop 闸门与发布交付收口</h2>
+<p><strong>现象：</strong> Computer Use 与 pstack 对抗审查发现，嵌在
+ToolGroup 内的权限闸门响应后仍可点击；取消后重新展开仍会显示旧选项；过期
+session 的闸门点击会给新 session 留下失败横幅；旧 run 晚到的
+<code>ToolProgress</code> / <code>StepFinished</code> 可能覆盖新 run 中同名
+tool。UI 侧还存在 Manage 搜索不过滤、两步 MCP 表单丢失焦点、中文 reader
+泄漏 Rust Debug 状态、Back to bottom 位于 Sticky Tasks 内、初始队列直接展开
+等问题。</p>
+<p><strong>改后行为：</strong> 嵌套闸门通过 ToolGroup 内层行更新并保留
+<code>Resolved</code> / <code>Cancelled</code>；过期闸门响应变为 no-op；
+tool 生命周期事件携带可选 <code>run_id</code>，显式旧 run 事件被忽略；
+Manage 搜索过滤实际行；多步表单原位替换并恢复原触发点焦点；中文 reader 与
+gpui-ai 组件的附件/上下文标签完成本地化；Back to bottom 作为 transcript
+区浮动控件位于 Sticky Tasks 上方并显示“新活动”；队列初始折叠为数量徽标。
+发布侧增加逐 target 的第三方许可证 bundle、固定工具链、确定性 zip/tar
+元数据，并让 smoke shutdown 失败真正返回非零退出码。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>
