@@ -72,3 +72,29 @@ Smoke mode initializes config, opens the window, and quits after one frame; a
 panic, a failed shutdown, or a failed `tact-ui` sidecar version check fails the
 job. The same environment variable is used on Linux (under `xvfb-run`) and
 Windows.
+
+## 4. Cross-platform package verification
+
+`.github/workflows/desktop-package.yml` builds and packages all five release
+targets without signing or publishing. It is the branch-level acceptance for
+the release matrix; `release.yml` keeps the signed/notarized macOS path.
+
+Run `41175364461` (commit `386f169b`, Rust 1.99) passed every target and
+produced:
+
+| Target | Asset | Verified payload |
+|---|---|---|
+| `aarch64-apple-darwin` | `tact-desktop-v2.0.0-aarch64-apple-darwin.zip` | `Tact Desktop.app`, Mach-O arm64, Info.plist 2.0.0 |
+| `x86_64-apple-darwin` | `tact-desktop-v2.0.0-x86_64-apple-darwin.zip` | `Tact Desktop.app`, Mach-O x86_64, Info.plist 2.0.0 |
+| `x86_64-unknown-linux-gnu` | `tact-desktop-v2.0.0-x86_64-unknown-linux-gnu.tar.gz` | ELF x86-64, licenses, Cargo.lock |
+| `aarch64-unknown-linux-gnu` | `tact-desktop-v2.0.0-aarch64-unknown-linux-gnu.tar.gz` | ELF aarch64, licenses, Cargo.lock |
+| `x86_64-pc-windows-msvc` | `tact-desktop-v2.0.0-x86_64-pc-windows-msvc.zip` | PE32+ GUI `tact-desktop.exe` + console `tact-ui.exe` |
+
+Each job runs the packaged binary from a clean app-data directory
+(`TACT_DESKTOP_SMOKE=1`); Linux uses Mesa lavapipe under `xvfb-run` because the
+hosted runners have no GPU.
+
+The signed release remains blocked on repository secrets the workflow requires:
+`MACOS_CERTIFICATE`, `MACOS_CERTIFICATE_PASSWORD`, `MACOS_SIGNING_IDENTITY`,
+`APPLE_ID`, `APPLE_TEAM_ID`, and `APPLE_APP_PASSWORD`. Only
+`CARGO_PACKAGER_SIGN_PRIVATE_KEY` is configured today.
