@@ -73,7 +73,7 @@ Or from a clone:
 ```
 
 The installer prefers a matching GitHub release asset when one exists, otherwise
-builds `tact-ui` from source (requires **Rust 1.91+** / edition 2024; installs
+builds `tact-ui` from source (requires **Rust 1.99+** / edition 2024; installs
 rustup if needed). Pass `--from-source` / `-FromSource` to skip the release
 download, or `--release` / `-Release` to prefer a pre-built binary with source
 fallback:
@@ -99,7 +99,7 @@ Install options:
 **Manual build from source**
 
 Linux: install SQLite build dependencies first (required by `sqlx` / session store).
-Building from source requires **Rust 1.91+** (edition 2024):
+Building from source requires **Rust 1.99+** (edition 2024):
 
 ```bash
 sudo apt-get update
@@ -109,7 +109,7 @@ sudo apt-get install -y libsqlite3-dev pkg-config clang libclang-dev
 ```bash
 git clone https://github.com/rust-infra/tact.git
 cd tact
-rustup toolchain install stable   # if needed; rustc >= 1.91
+rustup toolchain install stable   # if needed; rustc >= 1.99
 cargo build --release --locked -p tact-ui
 ./target/release/tact-ui --help
 ```

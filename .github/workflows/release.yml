@@ -142,7 +142,7 @@ jobs:
           TAG: ${{ steps.resolve.outputs.tag }}
         run: python3 scripts/check-release-tag.py "$TAG"
 
-      - uses: dtolnay/rust-toolchain@1.91.0
+      - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
@@ -278,7 +278,7 @@ jobs:
           TAG: ${{ steps.resolve.outputs.tag }}
         run: python3 scripts/check-release-tag.py "$TAG"
 
-      - uses: dtolnay/rust-toolchain@1.91.0
+      - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
