@@ -30,9 +30,10 @@ def metadata(target: str) -> dict:
         ],
         check=True,
         capture_output=True,
-        text=True,
     )
-    return json.loads(result.stdout)
+    # Git Bash on Windows hands Python a cp1252 stdout; the metadata JSON is
+    # UTF-8 (package descriptions may contain non-ASCII bytes).
+    return json.loads(result.stdout.decode("utf-8", "replace"))
 
 
 def license_files(manifest: Path, declared: str | None) -> list[Path]:
