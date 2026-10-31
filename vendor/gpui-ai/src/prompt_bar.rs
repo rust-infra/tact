@@ -467,6 +467,12 @@ pub struct PromptBar {
     actions: PromptActions,
     submit: PromptSubmit,
     labels: PromptBarLabels,
+    leading_controls: Option<Box<dyn Fn(&mut Window, &mut App) -> Vec<AnyElement>>>,
+    trailing_controls: Option<Box<dyn Fn(&mut Window, &mut App) -> Vec<AnyElement>>>,
+    footer_status: Option<SharedString>,
+    show_progress: bool,
+    show_attach: bool,
+    show_enhance: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -520,8 +526,79 @@ impl PromptBar {
             actions: PromptActions::default(),
             submit: PromptSubmit::default(),
             labels,
+            leading_controls: None,
+            trailing_controls: None,
+            footer_status: None,
+            show_progress: true,
+            show_attach: true,
+            show_enhance: true,
             _subscriptions: vec![subscription, observation],
         }
+    }
+
+    /// Installs controls rendered at the start of the composer footer.
+    ///
+    /// The builder runs on every frame, so callers can read current
+    /// application state without rebuilding the bar. Tact uses it to keep the
+    /// mention, slash and permission controls inside the composer frame
+    /// instead of stacking extra rows above it.
+    pub fn set_leading_controls(
+        &mut self,
+        builder: impl Fn(&mut Window, &mut App) -> Vec<AnyElement> + 'static,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        self.leading_controls = Some(Box::new(builder));
+        cx.notify();
+    }
+
+    /// Installs controls rendered after the model cluster in the footer.
+    pub fn set_trailing_controls(
+        &mut self,
+        builder: impl Fn(&mut Window, &mut App) -> Vec<AnyElement> + 'static,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        self.trailing_controls = Some(Box::new(builder));
+        cx.notify();
+    }
+
+    /// Shows or hides the progress line above the footer.
+    pub fn set_progress_visible(&mut self, visible: bool, cx: &mut gpui::Context<Self>) {
+        if self.show_progress == visible {
+            return;
+        }
+        self.show_progress = visible;
+        cx.notify();
+    }
+
+    /// Sets the short status shown at the right edge of the footer.
+    pub fn set_footer_status(
+        &mut self,
+        status: Option<SharedString>,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        if self.footer_status == status {
+            return;
+        }
+        self.footer_status = status;
+        cx.notify();
+    }
+
+    /// Shows or hides the built-in attach control.
+    pub fn set_attach_visible(&mut self, visible: bool, cx: &mut gpui::Context<Self>) {
+        if self.show_attach == visible {
+            return;
+        }
+        self.show_attach = visible;
+        cx.notify();
+    }
+
+    /// Shows or hides the built-in enhance control.
+    pub fn set_enhance_visible(&mut self, visible: bool, cx: &mut gpui::Context<Self>) {
+        if self.show_enhance == visible {
+            return;
+        }
+        self.show_enhance = visible;
+        cx.notify();
     }
 
     /// Replaces every user-visible label and updates the native placeholder.
@@ -971,7 +1048,18 @@ impl Render for PromptBar {
             .map(|model| format!("{}{}", labels.model_prefix, model.label).into())
             .unwrap_or_else(|| labels.no_models.clone());
         let draft = self.editor.read(cx).value().to_string();
+        let leading = self
+            .leading_controls
+            .as_ref()
+            .map(|build| build(window, &mut **cx))
+            .unwrap_or_default();
+        let trailing = self
+            .trailing_controls
+            .as_ref()
+            .map(|build| build(window, &mut **cx))
+            .unwrap_or_default();
         let running = self.progress == ProgressState::Running;
+        let label_cancel = running && matches!(self.submit, PromptSubmit::Label);
         // Send and Cancel share one slot; the face the control settles into
         // fades in once per state, and the state it mounts with is exempt.
         let submit_ack = crate::motion::acknowledged_state(
@@ -990,8 +1078,8 @@ impl Render for PromptBar {
         };
 
         prompt_frame(&self.id, labels.composer.clone())
-            .gap(tokens.spacing.sm)
-            .p(tokens.spacing.md)
+            .gap(tokens.spacing.xs)
+            .p(gpui::px(10.))
             .border_1()
             .border_color(cx.theme().border)
             .rounded(tokens.radius.lg)
@@ -1045,16 +1133,18 @@ impl Render for PromptBar {
                     .children(suggestions),
                 )
             })
-            .when_some(progress_text, |this, progress_text| {
-                this.child(
-                    prompt_status(
-                        (gpui::ElementId::from(root_id.clone()), "progress").into(),
-                        progress_text.clone(),
+            .when(self.show_progress, |this| {
+                this.when_some(progress_text, |this, progress_text| {
+                    this.child(
+                        prompt_status(
+                            (gpui::ElementId::from(root_id.clone()), "progress").into(),
+                            progress_text.clone(),
+                        )
+                        .text_token(tokens.typography.xs)
+                        .text_color(cx.theme().muted_foreground)
+                        .child(progress_text),
                     )
-                    .text_token(tokens.typography.xs)
-                    .text_color(cx.theme().muted_foreground)
-                    .child(progress_text),
-                )
+                })
             })
             .child(
                 h_flex()
@@ -1076,6 +1166,7 @@ impl Render for PromptBar {
                             .flex_wrap()
                             .items_center()
                             .gap(tokens.spacing.xs)
+                            .children(leading)
                             .child(if self.models.is_empty() {
                                 prompt_status(
                                     (gpui::ElementId::from(root_id.clone()), "model-empty").into(),
@@ -1125,110 +1216,156 @@ impl Render for PromptBar {
                                     )
                                     .into_any_element()
                             })
-                            .child(
-                                prompt_control(
-                                    (gpui::ElementId::from(root_id.clone()), "attach"),
-                                    labels.attach.clone(),
-                                    cx,
+                            .when(self.show_attach, |row| {
+                                row.child(
+                                    prompt_control(
+                                        (gpui::ElementId::from(root_id.clone()), "attach"),
+                                        labels.attach.clone(),
+                                        cx,
+                                    )
+                                    .debug_selector(|| "prompt-bar-attach-control".to_owned())
+                                    .on_click(cx.listener(
+                                        |this, _, _, cx| {
+                                            cx.emit(PromptBarEvent::AttachRequested {
+                                                id: this.id.clone(),
+                                            });
+                                        },
+                                    )),
                                 )
-                                .debug_selector(|| "prompt-bar-attach-control".to_owned())
-                                .on_click(cx.listener(
-                                    |this, _, _, cx| {
-                                        cx.emit(PromptBarEvent::AttachRequested {
-                                            id: this.id.clone(),
-                                        });
-                                    },
-                                )),
-                            )
-                            .child(
-                                prompt_control(
-                                    (gpui::ElementId::from(root_id.clone()), "enhance"),
-                                    labels.enhance.clone(),
-                                    cx,
+                            })
+                            .when(self.show_enhance, |row| {
+                                row.child(
+                                    prompt_control(
+                                        (gpui::ElementId::from(root_id.clone()), "enhance"),
+                                        labels.enhance.clone(),
+                                        cx,
+                                    )
+                                    .debug_selector(|| "prompt-bar-enhance-control".to_owned())
+                                    .disabled(draft.trim().is_empty() || running)
+                                    .on_click(cx.listener(
+                                        |this, _, _, cx| {
+                                            let draft = this.editor.read(cx).value().to_string();
+                                            cx.emit(PromptBarEvent::EnhanceRequested {
+                                                id: this.id.clone(),
+                                                draft: draft.into(),
+                                            });
+                                        },
+                                    )),
                                 )
-                                .debug_selector(|| "prompt-bar-enhance-control".to_owned())
-                                .disabled(draft.trim().is_empty() || running)
-                                .on_click(cx.listener(
-                                    |this, _, _, cx| {
-                                        let draft = this.editor.read(cx).value().to_string();
-                                        cx.emit(PromptBarEvent::EnhanceRequested {
-                                            id: this.id.clone(),
-                                            draft: draft.into(),
-                                        });
-                                    },
-                                )),
-                            ),
+                            })
+                            .children(trailing),
                     )
-                    .child(
-                        prompt_control_shell(
-                            (gpui::ElementId::from(root_id.clone()), "submit"),
-                            if running {
-                                labels.cancel.clone()
-                            } else {
-                                labels.send.clone()
-                            },
-                            true,
-                            cx,
+                    .when_some(self.footer_status.clone(), |row, status| {
+                        row.child(
+                            div()
+                                .flex_none()
+                                .text_size(gpui::px(11.))
+                                .text_color(cx.theme().muted_foreground)
+                                .child(status),
                         )
-                        .map(|button| match self.submit {
-                            // A glyph composer says what it does with a
-                            // shape: one square control at its own height,
-                            // an arrow to send and a square to cancel.
-                            PromptSubmit::Glyph => button
-                                .w(crate::sizing::control_lg(cx))
-                                .px(gpui::Pixels::ZERO)
-                                .justify_center()
-                                .rounded(cx.theme().radius_full())
-                                .child(
-                                    div().opacity(submit_ack).child(
-                                        Icon::new(if running {
-                                            IconName::Close
-                                        } else {
-                                            IconName::ArrowUp
-                                        })
-                                        .small(),
+                    })
+                    .child(
+                        h_flex()
+                            .flex_none()
+                            .items_center()
+                            .gap(gpui::px(6.))
+                            .when(running && matches!(self.submit, PromptSubmit::Glyph), |row| {
+                                row.child(
+                                    gpui_base::Button::new("prompt-bar-stop")
+                                        .debug_selector(|| "prompt-bar-stop-control".to_owned())
+                                        .aria_label(labels.cancel.clone())
+                                        .w(crate::sizing::control_lg(cx))
+                                        .h(crate::sizing::control_lg(cx))
+                                        .justify_center()
+                                        .rounded(cx.theme().radius_full())
+                                        .bg(cx.theme().danger.opacity(0.14))
+                                        .text_color(cx.theme().danger)
+                                        .child(
+                                            div()
+                                                .size(gpui::px(9.))
+                                                .rounded(gpui::px(1.5))
+                                                .bg(cx.theme().danger),
+                                        )
+                                        .on_click(cx.listener(
+                                            |this, _, _, cx| {
+                                                cx.emit(PromptBarEvent::CancelRequested {
+                                                    id: this.id.clone(),
+                                                });
+                                                cues::emit(cx, Cue::Cancelled);
+                                            },
+                                        )),
+                                )
+                            })
+                            .child(
+                                prompt_control_shell(
+                                    (gpui::ElementId::from(root_id.clone()), "submit"),
+                                    labels.send.clone(),
+                                    true,
+                                    cx,
+                                )
+                                .map(|button| match self.submit {
+                                    // A glyph composer says what it does with a
+                                    // shape: an arrow to send.
+                                    PromptSubmit::Glyph => button
+                                        .w(crate::sizing::control_lg(cx))
+                                        .px(gpui::Pixels::ZERO)
+                                        .justify_center()
+                                        .rounded(cx.theme().radius_full())
+                                        .bg(cx.theme().primary)
+                                        .text_color(cx.theme().primary_foreground)
+                                        .child(
+                                            div()
+                                                .opacity(submit_ack)
+                                                .child(Icon::new(IconName::ArrowUp).small()),
+                                        ),
+                                    PromptSubmit::Label => button.child(
+                                        v_flex()
+                                            .relative()
+                                            .items_center()
+                                            .children(
+                                                [labels.send.clone(), labels.cancel.clone()].map(
+                                                    |ghost| {
+                                                        div()
+                                                            .h(gpui::rems(0.))
+                                                            .overflow_hidden()
+                                                            .opacity(0.)
+                                                            .child(ghost)
+                                                    },
+                                                ),
+                                            )
+                                            .child(
+                                                div().opacity(submit_ack).child(if label_cancel {
+                                                    labels.cancel.clone()
+                                                } else {
+                                                    labels.send.clone()
+                                                }),
+                                            ),
                                     ),
-                                ),
-                            // Zero-height ghosts of both faces hold the slot
-                            // at the widest label, so Send↔Cancel swaps
-                            // without nudging the composer row.
-                            PromptSubmit::Label => button.child(
-                                v_flex()
-                                    .relative()
-                                    .items_center()
-                                    .children([labels.send.clone(), labels.cancel.clone()].map(|ghost| {
-                                        div()
-                                            .h(gpui::rems(0.))
-                                            .overflow_hidden()
-                                            .opacity(0.)
-                                            .child(ghost)
-                                    }))
-                                    .child(div().opacity(submit_ack).child(if running {
-                                        labels.cancel.clone()
+                                })
+                                .debug_selector(move || {
+                                    if label_cancel {
+                                        "prompt-bar-cancel-control".to_owned()
                                     } else {
-                                        labels.send.clone()
-                                    })),
+                                        "prompt-bar-send-control".to_owned()
+                                    }
+                                })
+                                .disabled(
+                                    !label_cancel
+                                        && (running || draft.trim().is_empty()),
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, window, cx| {
+                                        if label_cancel {
+                                            cx.emit(PromptBarEvent::CancelRequested {
+                                                id: this.id.clone(),
+                                            });
+                                            cues::emit(cx, Cue::Cancelled);
+                                        } else {
+                                            this.submit(window, cx);
+                                        }
+                                    },
+                                )),
                             ),
-                        })
-                        .when(running, |button| {
-                            button.debug_selector(|| "prompt-bar-cancel-control".to_owned())
-                        })
-                        .when(!running, |button| {
-                            button.debug_selector(|| "prompt-bar-send-control".to_owned())
-                        })
-                        .disabled(!running && draft.trim().is_empty())
-                        .on_click(cx.listener(
-                            move |this, _, window, cx| {
-                                if running {
-                                    cx.emit(PromptBarEvent::CancelRequested {
-                                        id: this.id.clone(),
-                                    });
-                                    cues::emit(cx, Cue::Cancelled);
-                                } else {
-                                    this.submit(window, cx);
-                                }
-                            },
-                        )),
                     ),
             )
             .when(self.model_menu_open, |this| {

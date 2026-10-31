@@ -9,7 +9,7 @@ use gpui::{
     StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, ElementExt as _, IconName, IndexPath,
+    ActiveTheme as _, Disableable as _, ElementExt as _, Icon, IconName, IndexPath,
     command::{Command, CommandItem, CommandState},
     h_flex,
     label::Label,
@@ -27,6 +27,7 @@ pub struct CommandSearchItem {
     id: SharedString,
     title: SharedString,
     subtitle: Option<SharedString>,
+    icon: Option<SharedString>,
     keywords: Arc<[SharedString]>,
     shortcut: Option<SharedString>,
     disabled: bool,
@@ -60,10 +61,22 @@ impl CommandSearchItem {
             id: id.into(),
             title: title.into(),
             subtitle: None,
+            icon: None,
             keywords: Arc::from([]),
             shortcut: None,
             disabled: false,
         }
+    }
+
+    /// Set the leading icon path.
+    pub fn icon(mut self, icon: impl Into<SharedString>) -> Self {
+        self.icon = Some(icon.into());
+        self
+    }
+
+    /// Return the leading icon path.
+    pub fn icon_path(&self) -> Option<&SharedString> {
+        self.icon.as_ref()
     }
 
     /// Set secondary descriptive text, which also participates in filtering.
@@ -212,6 +225,9 @@ fn row_content(
         .w_full()
         .min_w_0()
         .gap(tokens.spacing.sm)
+        .when_some(item.icon.clone(), |this, icon| {
+            this.child(Icon::default().path(icon).size_4())
+        })
         .child(
             v_flex()
                 .min_w_0()

@@ -124,7 +124,7 @@ where
     E: gpui::ParentElement,
 {
     let state = state.clone();
-    capture(frame, move |_, window, cx| {
+    capture(frame, move |_, _window, cx| {
         state.update(cx, |state, cx| {
             // Rows stamp the epoch this container hands them, so anything
             // still carrying the previous stamp was not painted last
@@ -148,12 +148,12 @@ where
             }
             state.epoch = painted.wrapping_add(1);
         });
-        // The container's own bounds move without any hover changing —
-        // a resize, a pane collapse — and the highlight is positioned
-        // relative to them.
-        if state.read(cx).hovered.is_some() {
-            window.request_animation_frame();
-        }
+        // No frame request here. A list that is merely hovered is not
+        // animating: `transition` asks for frames only while its clock runs,
+        // and the captures below ask when the layer or a painted row moves.
+        // Requesting a frame per painted frame kept the whole application
+        // repainting at the display rate for as long as the pointer rested on
+        // a list — exactly when the reader is looking at it.
     })
 }
 

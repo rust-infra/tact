@@ -222,7 +222,7 @@ impl RenderOnce for TodoList {
         let list_name = self.title.clone().unwrap_or_else(|| "To-do list".into());
         let root_id = self.id.clone();
         let accessibility_label: SharedString =
-            format!("{list_name}: {done}/{total} {}", self.completion_label).into();
+            format!("{list_name}, {done} of {total} {}", self.completion_label).into();
 
         v_flex()
             .id(self.id)

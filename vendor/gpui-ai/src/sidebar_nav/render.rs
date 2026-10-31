@@ -10,7 +10,7 @@ use gpui::{
     div, percentage, prelude::FluentBuilder as _,
 };
 use gpui_component::{
-    ActiveTheme as _, Icon, IconName, h_flex,
+    ActiveTheme as _, Icon, IconName, h_flex, v_flex,
     sidebar::{SidebarItem as _, SidebarMenuItem},
     tooltip::Tooltip,
 };
@@ -243,6 +243,82 @@ pub(super) struct RowContext<'a> {
     pub(super) labels: &'a SidebarNavLabels,
 }
 
+
+fn sidebar_item_with_detail(
+    row: &VisibleRow,
+    detail: SharedString,
+    cx: &mut App,
+) -> AnyElement {
+    let tokens = cx.theme().semantic_tokens();
+    h_flex()
+        .w_full()
+        .min_w_0()
+        .items_center()
+        .gap(tokens.spacing.xs)
+        .px(tokens.spacing.sm)
+        .py(gpui::px(7.))
+        .when(row.active, |this| {
+            this.child(
+                div()
+                    .flex_none()
+                    .size(gpui::px(6.))
+                    .rounded_full()
+                    .bg(cx.theme().primary),
+            )
+        })
+        .when_some(row.icon.clone(), |this, icon| {
+            this.child(Icon::default().path(icon).size_4())
+        })
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap(gpui::px(2.))
+                .child(
+                    h_flex()
+                        .w_full()
+                        .min_w_0()
+                        .items_center()
+                        .gap(gpui::px(8.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_token(tokens.typography.sm)
+                                .child(row.label.clone()),
+                        )
+                        .when_some(row.trailing.clone(), |line, trailing| {
+                            line.child(
+                                div()
+                                    .flex_none()
+                                    .text_token(tokens.typography.xs)
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(trailing),
+                            )
+                        }),
+                )
+                .child(
+                    div()
+                        .truncate()
+                        .text_token(tokens.typography.xs)
+                        .text_color(cx.theme().muted_foreground)
+                        .child(detail),
+                ),
+        )
+        .when_some(row.badge.clone(), |this, badge| {
+            this.child(
+                crate::status::chip_frame(
+                    cx.theme().muted_foreground,
+                    crate::status::ChipStrength::Neutral,
+                    cx,
+                )
+                .child(badge),
+            )
+        })
+        .into_any_element()
+}
+
 pub(super) fn render_row(
     row: &VisibleRow,
     context: &RowContext<'_>,
@@ -361,15 +437,22 @@ pub(super) fn render_row(
                 // bunch up when the labels leave.
                 .when(collapsed, |this| this.h(crate::sizing::control_lg(cx)))
                 .when(!collapsed, |this| {
-                    this.child(menu_item.render(
-                        format!("sidebar-nav-menu.{component_id}.{}", row.id),
-                        // SidebarMenuItem owns the pinned presentation. The
-                        // transparent stable control blocks non-scroll pointer
-                        // fallthrough and owns tooltip and AccessKit activation
-                        // as one handler.
-                        window,
-                        cx,
-                    ))
+                    if let Some(detail) = row.detail.clone() {
+                        // A row with a second line needs the application's
+                        // own two-line layout: the pinned menu item has one
+                        // label slot and no detail line.
+                        this.child(sidebar_item_with_detail(row, detail, cx))
+                    } else {
+                        this.child(menu_item.render(
+                            format!("sidebar-nav-menu.{component_id}.{}", row.id),
+                            // SidebarMenuItem owns the pinned presentation. The
+                            // transparent stable control blocks non-scroll pointer
+                            // fallthrough and owns tooltip and AccessKit activation
+                            // as one handler.
+                            window,
+                            cx,
+                        ))
+                    }
                 })
                 .child(control),
         )

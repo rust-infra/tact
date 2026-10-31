@@ -52,6 +52,8 @@ pub struct SidebarNavItem {
     label: SharedString,
     icon: Option<SharedString>,
     badge: Option<SharedString>,
+    detail: Option<SharedString>,
+    trailing: Option<SharedString>,
     disabled: bool,
     children: Arc<[SidebarNavItem]>,
 }
@@ -64,6 +66,8 @@ impl SidebarNavItem {
             label: label.into(),
             icon: None,
             badge: None,
+            detail: None,
+            trailing: None,
             disabled: false,
             children: Arc::from([]),
         }
@@ -78,6 +82,21 @@ impl SidebarNavItem {
     /// Set compact trailing badge text.
     pub fn badge(mut self, badge: impl Into<SharedString>) -> Self {
         self.badge = Some(badge.into());
+        self
+    }
+
+    /// Set a secondary line under the label, such as a timestamp and count.
+    ///
+    /// A row with a detail line is taller; the list measures the row, so the
+    /// rhythm adapts instead of assuming one label height.
+    pub fn detail(mut self, detail: impl Into<SharedString>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    /// Set a short right-aligned label on the title line, such as a time.
+    pub fn trailing(mut self, trailing: impl Into<SharedString>) -> Self {
+        self.trailing = Some(trailing.into());
         self
     }
 
@@ -114,6 +133,11 @@ impl SidebarNavItem {
     /// Return optional trailing badge text.
     pub fn badge_text(&self) -> Option<&SharedString> {
         self.badge.as_ref()
+    }
+
+    /// Return the optional secondary line.
+    pub fn detail_text(&self) -> Option<&SharedString> {
+        self.detail.as_ref()
     }
 
     /// Return whether every activation path is unavailable.
@@ -304,6 +328,10 @@ pub struct SidebarNav {
     input: Entity<InputState>,
     filter_placeholder: SharedString,
     labels: SidebarNavLabels,
+    /// Whether the component draws its own new-task button and filter input.
+    /// Hosts with their own rail chrome turn this off and dock the row tree
+    /// below their header.
+    chrome_visible: bool,
     expanded: HashSet<SharedString>,
     /// Flattened visible rows, recomputed only where state changes.
     rows: Arc<[VisibleRow]>,
@@ -345,6 +373,7 @@ impl SidebarNav {
             input,
             filter_placeholder: "Filter navigation".into(),
             labels: SidebarNavLabels::default(),
+            chrome_visible: true,
             expanded: HashSet::new(),
             rows: Arc::from([]),
             focused_row: None,
@@ -410,6 +439,8 @@ impl SidebarNav {
         let item_id = item_id.into();
         if self.active_item.as_ref() != Some(&item_id) {
             self.active_item = Some(item_id);
+            // Selection recolors rows, so the list keeps its measurements and
+            // its scroll position instead of resetting under the pointer.
             self.rebuild_rows(cx);
         }
     }
@@ -429,6 +460,18 @@ impl SidebarNav {
             input.set_placeholder(placeholder.to_string(), window, cx);
         });
         self.filter_placeholder = placeholder;
+        cx.notify();
+    }
+
+    /// Shows or hides the component's own header controls.
+    ///
+    /// The row tree, keyboard model and events stay active; only the new-task
+    /// button and filter input are removed, for hosts that render their own.
+    pub fn set_chrome_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if self.chrome_visible == visible {
+            return;
+        }
+        self.chrome_visible = visible;
         cx.notify();
     }
 
@@ -726,8 +769,9 @@ impl SidebarNav {
         let header = v_flex()
             .w_full()
             .gap(tokens.spacing.sm)
-            .child(header_actions)
-            .when(!collapsed, |this| {
+            .when(!self.chrome_visible, |this| this.flex_none())
+            .when(self.chrome_visible, |this| this.child(header_actions))
+            .when(self.chrome_visible && !collapsed, |this| {
                 this.child(
                     div()
                         .id((ElementId::from(id.clone()), "filter"))

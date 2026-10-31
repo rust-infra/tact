@@ -132,6 +132,9 @@ pub(super) struct VisibleRow {
     pub(super) icon: Option<SharedString>,
     /// Compact trailing badge text, when the item declares one.
     pub(super) badge: Option<SharedString>,
+    /// Secondary line under the label, when the item declares one.
+    pub(super) detail: Option<SharedString>,
+    pub(super) trailing: Option<SharedString>,
     /// The row this one hangs from: a root item's parent is its section.
     pub(super) parent: Option<SharedString>,
     /// One-based accessibility level; a section header is level 1.
@@ -237,6 +240,8 @@ pub(super) fn visible_rows(
                 label: section.label.clone(),
                 icon: None,
                 badge: None,
+                detail: None,
+                trailing: None,
                 parent: None,
                 level: 1,
                 indent: 0,
@@ -290,6 +295,8 @@ fn push_rows(
             label: item.label.clone(),
             icon: item.icon.clone(),
             badge: item.badge.clone(),
+            detail: item.detail.clone(),
+            trailing: item.trailing.clone(),
             parent: Some(parent.clone()),
             level,
             indent,
@@ -320,17 +327,44 @@ impl SidebarNav {
     ///
     /// Every path that changes sections, query, expansion, active item, or the
     /// collapsed rail ends here, and `Render` ends nowhere near it.
+    ///
+    /// A row list whose identities survive a change keeps its scroll position
+    /// and its measured heights: only the rows whose projection differs are
+    /// remeasured. Resetting on every update threw away the measurements of
+    /// every row above the viewport and re-ran layout, which the reader sees
+    /// as the list jumping — on each selection, and each time a relative
+    /// timestamp ticked over. A change in count, order, or identity still
+    /// resets, because there is no height to carry across.
     pub(super) fn rebuild_rows(&mut self, cx: &mut Context<Self>) {
         let anchor = self.scroll_anchor();
-        self.rows = visible_rows(
+        let rows = visible_rows(
             &self.sections,
             &self.query,
             &self.expanded,
             self.active_item.as_ref(),
             self.collapsed,
         );
-        self.row_list.reset(self.rows.len());
-        self.restore_anchor(anchor);
+        let same_shape = rows.len() == self.rows.len()
+            && rows
+                .iter()
+                .zip(self.rows.iter())
+                .all(|(row, previous)| row.id == previous.id);
+        if same_shape {
+            let changed: Vec<usize> = rows
+                .iter()
+                .zip(self.rows.iter())
+                .enumerate()
+                .filter_map(|(index, (row, previous))| (row != previous).then_some(index))
+                .collect();
+            self.rows = rows;
+            for index in changed {
+                self.row_list.remeasure_items(index..index + 1);
+            }
+        } else {
+            self.rows = rows;
+            self.row_list.reset(self.rows.len());
+            self.restore_anchor(anchor);
+        }
         cx.notify();
     }
 
