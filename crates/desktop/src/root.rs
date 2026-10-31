@@ -9978,6 +9978,43 @@ mod tests {
     }
 
     #[gpui::test]
+    fn every_catalog_entry_executes_in_the_shell(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        let executed = window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let catalog = tact_catalog::builtins();
+                let entries = tact_desktop_core::catalog_entries(catalog)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                assert!(
+                    entries.len() >= 80,
+                    "catalog is unexpectedly small: {}",
+                    entries.len()
+                );
+                let mut executed = 0;
+                for descriptor in entries {
+                    if matches!(descriptor.id, CommandId::Builtin(BuiltinCommand::Quit)) {
+                        continue;
+                    }
+                    this.close_overlay();
+                    this.execute_command(
+                        descriptor.id.clone(),
+                        CommandArguments::default(),
+                        window,
+                        cx,
+                    );
+                    executed += 1;
+                }
+                executed
+            })
+        });
+        assert!(executed >= 80);
+        eprintln!("executed {executed} catalog entries");
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
     fn composer_recalls_input_history_with_arrow_keys(cx: &mut TestAppContext) {
         let (root, window, shutdown, data_dir) = probe_root(cx);
         window.update(|window, cx| {
