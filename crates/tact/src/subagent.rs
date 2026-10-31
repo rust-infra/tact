@@ -105,6 +105,14 @@ impl std::fmt::Debug for SubagentManager {
     }
 }
 
+/// Summary written to a run this process started and then abandoned.
+///
+/// Deliberately distinct from the startup orphan repair ("Process interrupted
+/// (agent restarted)"): that one describes a previous process, this one a live
+/// process that gave up on the child.
+pub const ABANDONED_RUN_SUMMARY: &str =
+    "Spawn was abandoned before the child started; no result will be delivered";
+
 #[derive(Clone, Debug)]
 pub struct SharedSubagentManager {
     inner: Arc<SubagentManager>,
@@ -191,6 +199,52 @@ impl SubagentManager {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(child_id);
+    }
+
+    /// A run this process started but can no longer be driving.
+    pub fn has_cancel_handle(&self, child_id: &str) -> bool {
+        self.cancel_handles
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(child_id)
+    }
+
+    /// Whether this process started `child_id` at all.
+    fn knows(&self, child_id: &str) -> bool {
+        self.known
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(child_id)
+    }
+
+    /// Rewrites runs that this process owns but is no longer driving as
+    /// failed, and returns how many it repaired.
+    ///
+    /// [`Self::new`] repairs orphans only at startup, which is right for a row
+    /// left by a *previous* process. It never catches a row this process wrote
+    /// and then abandoned, because that process is still alive and nothing else
+    /// will look at the row: `finish` runs in the detached task that gives up,
+    /// and `cancel_subagent` needs a cancel handle.
+    ///
+    /// The predicate is deliberately narrow, because the row store is shared
+    /// with other Tact processes. A run is a zombie only when this process
+    /// started it (`known`), it is still `Running`, and no cancel handle is
+    /// registered — the state a spawn leaves when it records the start and then
+    /// returns before the child is wired up.
+    pub async fn repair_abandoned_runs(&self) -> Result<usize> {
+        let mut repaired = 0;
+        for record in self.records.list_running().await? {
+            if !self.knows(&record.child_id) || self.has_cancel_handle(&record.child_id) {
+                continue;
+            }
+            let mut record = record;
+            record.status = SubagentStatus::Failed;
+            record.finished_at = Some(Utc::now());
+            record.summary = Some(ABANDONED_RUN_SUMMARY.to_string());
+            self.records.upsert(&record).await?;
+            repaired += 1;
+        }
+        Ok(repaired)
     }
 
     /// Requests cancellation of a running child through its cooperative
@@ -452,6 +506,10 @@ impl SharedSubagentManager {
         self.inner.unregister_cancel_handle(child_id);
     }
 
+    pub async fn repair_abandoned_runs(&self) -> Result<usize> {
+        self.inner.repair_abandoned_runs().await
+    }
+
     pub fn request_cancel(&self, child_id: &str) -> bool {
         self.inner.request_cancel(child_id)
     }
@@ -487,6 +545,56 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("tact.db")
+    }
+
+    /// A spawn that records the start and then returns leaves a row nothing
+    /// will finish. The watchdog has to turn it terminal, but only when this
+    /// process owns it: the run store is shared with other Tact processes, and
+    /// rewriting a live child elsewhere would report a healthy run as failed.
+    #[tokio::test]
+    async fn repair_abandoned_runs_only_touches_unhandled_children_of_this_process() {
+        let db = temp_db("repair_abandoned");
+        let manager = SharedSubagentManager::new(SubagentManager::new(&db).await.unwrap());
+
+        // A run another process is driving: this process never saw it start.
+        manager
+            .start("other-process-child".to_string())
+            .await
+            .unwrap();
+
+        // A run this process started and never wired.
+        manager.start("abandoned-child".to_string()).await.unwrap();
+        manager.note_started("abandoned-child");
+
+        // A run this process started and is still driving.
+        manager.start("live-child".to_string()).await.unwrap();
+        manager.note_started("live-child");
+        manager.register_cancel_handle("live-child", Arc::new(CancelController::new()));
+
+        let repaired = manager.repair_abandoned_runs().await.unwrap();
+        assert_eq!(repaired, 1, "exactly the abandoned child is a zombie");
+
+        let abandoned = manager.get("abandoned-child").await.unwrap().unwrap();
+        assert_eq!(abandoned.status, SubagentStatus::Failed);
+        assert_eq!(abandoned.summary.as_deref(), Some(ABANDONED_RUN_SUMMARY));
+        assert!(abandoned.finished_at.is_some());
+
+        let live = manager.get("live-child").await.unwrap().unwrap();
+        assert_eq!(
+            live.status,
+            SubagentStatus::Running,
+            "a driven child stays live"
+        );
+
+        let foreign = manager.get("other-process-child").await.unwrap().unwrap();
+        assert_eq!(
+            foreign.status,
+            SubagentStatus::Running,
+            "another process's child is not ours to rewrite"
+        );
+
+        // Idempotent: a second sweep has nothing left to repair.
+        assert_eq!(manager.repair_abandoned_runs().await.unwrap(), 0);
     }
 
     #[tokio::test]

@@ -14,6 +14,31 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 1
 fi
 
+# macOS gives each process `ulimit -n 256`. The workspace test binary opens a
+# SQLite pool, tokio runtimes and a skill registry per desktop-core test, so
+# that budget runs out part-way through and libtest reports it as unrelated
+# failures ("Too many open files (os error 24)" raised inside controller
+# startup). Raise the soft limit for this script only, up to the hard limit,
+# so a red run always means a real defect. Builtins only: this must not depend
+# on the caller's shell config.
+soft_limit="$(ulimit -Sn 2>/dev/null || true)"
+hard_limit="$(ulimit -Hn 2>/dev/null || true)"
+if [ -z "$hard_limit" ] || [ "$hard_limit" = "unlimited" ]; then
+  target_limit=8192
+else
+  target_limit="$hard_limit"
+fi
+if [ -n "$soft_limit" ] && [ "$soft_limit" != "unlimited" ] \
+  && [ "$target_limit" != "unlimited" ] && [ "$soft_limit" -lt "$target_limit" ]; then
+  if ulimit -n "$target_limit" 2>/dev/null; then
+    raised_limit="$(ulimit -Sn)"
+    echo "==> raised the open-file limit from $soft_limit to $raised_limit for this run"
+  else
+    echo "==> warning: could not raise the open-file limit above $soft_limit" >&2
+    echo "    (desktop-core tests may fail with 'Too many open files')" >&2
+  fi
+fi
+
 echo "==> agent kernel dependency boundaries"
 scripts/check-agent-kernel-deps.sh tact_agent_api tact_agent_core tact_llm tact_agent_sdk
 

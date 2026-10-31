@@ -982,6 +982,14 @@ pub const WAIT_SUBAGENT_METADATA: ToolMetadata = ToolMetadata::read_json(
 /// Returns an error if the provided child id does not exist or the subagent
 /// manager encounters an internal error.
 pub async fn check_subagent(ctx: ToolContext, input: CheckSubagentInput) -> Result<String> {
+    // A run this process abandoned stays `Running` until something looks,
+    // because the task that would have finished it was never spawned. Repair
+    // before reporting, so the caller sees the truth instead of a run that
+    // will never end.
+    let repaired = ctx.subagent_manager.repair_abandoned_runs().await?;
+    if repaired > 0 {
+        crate::subagent::emit_subagents_changed(&ctx.events, &ctx.subagent_manager).await;
+    }
     ctx.subagent_manager.check(input.child_id.as_deref()).await
 }
 
@@ -1014,6 +1022,13 @@ pub async fn cancel_subagent(ctx: ToolContext, input: CancelSubagentInput) -> Re
 /// encounters an internal error. A timeout returns an `Ok` "still running"
 /// note rather than an error.
 pub async fn wait_subagent(ctx: ToolContext, input: WaitSubagentInput) -> Result<String> {
+    // Same reason as `check_subagent`: a `Running` row this process abandoned
+    // would otherwise make this wait for the full timeout and then report
+    // "still running" about a child that does not exist.
+    let repaired = ctx.subagent_manager.repair_abandoned_runs().await?;
+    if repaired > 0 {
+        crate::subagent::emit_subagents_changed(&ctx.events, &ctx.subagent_manager).await;
+    }
     let timeout_ms = input.timeout_ms.unwrap_or(60_000);
     ctx.subagent_manager.wait(&input.child_id, timeout_ms).await
 }
@@ -1793,6 +1808,39 @@ mod tests {
         assert_eq!(
             listed, "No subagent runs.",
             "a rejected spawn must not record a run"
+        );
+    }
+
+    /// A row that a spawn recorded but never wired has to become terminal when
+    /// the parent looks, otherwise `check_subagent` reports a run that will
+    /// never end and `wait_subagent` burns its whole timeout on it.
+    #[tokio::test]
+    async fn check_subagent_repairs_a_run_this_process_abandoned() {
+        crate::config::test_support::install_default();
+        let ctx = test_context("check-subagent-repairs-zombie");
+        // Exactly the state a spawn leaves if it records the start and stops.
+        ctx.subagent_manager
+            .start("abandoned".to_string())
+            .await
+            .unwrap();
+        ctx.subagent_manager.note_started("abandoned");
+
+        let reported = check_subagent(
+            ctx.clone(),
+            CheckSubagentInput {
+                child_id: Some("abandoned".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+        // The single-child form is pretty-printed JSON with the serde spelling.
+        assert!(
+            reported.contains("\"status\": \"failed\""),
+            "a repaired run must be reported terminal, got: {reported}"
+        );
+        assert!(
+            !reported.contains("\"running\""),
+            "reporting running would send the parent back to wait on a ghost: {reported}"
         );
     }
 }
