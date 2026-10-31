@@ -489,6 +489,39 @@ fn assemble_subagent_agent(
 /// - `run_in_background` is requested without a parent agent runtime.
 /// - The subagent agent loop encounters an error.
 pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Result<String> {
+    // Decide the dispatch mode before doing any work that could fail.
+    //
+    // True background dispatch needs a UI channel: without a driver there is no
+    // one to submit a wake-up turn, and headless exits by cancelling the child.
+    // It additionally needs the parent's results queue, which is what delivers
+    // the summary of the detached task.
+    //
+    // Both checks are total and cheap, so they run before the client is built
+    // and before the run row is written. Order matters for the row: once
+    // `start()` has written `Running`, the only code that calls `finish()` is
+    // the task spawned later in this function, and a rejected spawn never
+    // spawns one, so the row would stay `Running` forever. `cancel_subagent`
+    // could not clear it either, because the cancel handle is registered on
+    // the same path as the row.
+    let run_async = input.run_in_background == Some(true) && ctx.events.has_ui();
+    let async_results = if run_async {
+        Some(ctx.subagent_results.clone().ok_or_else(|| {
+            anyhow::anyhow!(
+                "run_in_background needs the parent's subagent results queue, but this \
+                 session was started without one; spawn synchronously or report the \
+                 unwired queue as a build defect"
+            )
+        })?)
+    } else {
+        None
+    };
+    if input.run_in_background == Some(true) && !run_async {
+        warn!(
+            "run_in_background requested without an interactive UI channel; \
+             running subagent synchronously"
+        );
+    }
+
     let settings = crate::config::settings();
     let subagent_provider_info = settings
         .agent
@@ -698,6 +731,10 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
 
     // Resume reuses a finished child session: hold its process lock for the
     // duration of the follow-up run so two runs can't operate on it at once.
+    //
+    // `SessionLock` deliberately has no `Drop` (abnormal exit must not run
+    // cleanup), so every failure after this point releases it by hand. That is
+    // the one place in this function where a `?` is not enough.
     let lock = if input.resume.is_some() {
         Some(SessionLock::acquire(store, &child_id).await?)
     } else {
@@ -709,7 +746,15 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
     // child can also be cancelled via `/subagent_cancel` or parent exit). On
     // `resume` this resets the prior terminal record to Running for the
     // follow-up run.
-    ctx.subagent_manager.start(child_id.clone()).await?;
+    //
+    // This is the last fallible step before the run is genuinely owned by the
+    // code below, so a failure here has to undo the lock by hand.
+    if let Err(error) = ctx.subagent_manager.start(child_id.clone()).await {
+        if let Some(lock) = lock {
+            let _ = lock.release().await;
+        }
+        return Err(error);
+    }
     // The sticky overview only shows children started by this process;
     // register now and broadcast the snapshot (no-op without a sink).
     ctx.subagent_manager.note_started(&child_id);
@@ -727,24 +772,14 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
         subagent_id: Some(child_id.clone()),
     });
 
-    // True background dispatch needs a UI channel: without a driver there is
-    // no one to submit a wake-up turn, and headless exits by cancelling the
-    // child. Degrade to synchronous so the summary still reaches the parent.
-    let run_async = input.run_in_background == Some(true) && ctx.events.has_ui();
-    if input.run_in_background == Some(true) && !run_async {
-        warn!(
-            "run_in_background requested without an interactive UI channel; \
-             running subagent synchronously"
-        );
-    }
-
     if run_async {
         // Async: return immediately; the detached task finalizes the card,
-        // persists the lifecycle, and re-injects the summary.
-        let results = ctx
-            .subagent_results
+        // persists the lifecycle, and re-injects the summary. `async_results`
+        // was resolved before the run row was written, so this branch cannot
+        // fail and leave that row behind.
+        let results = async_results
             .clone()
-            .ok_or_else(|| anyhow::anyhow!("run_in_background requires a parent agent runtime"))?;
+            .expect("async dispatch resolved its results queue before start()");
         let manager = ctx.subagent_manager.clone();
         let events = ctx.events.clone();
         let tool_id = ctx.progress_reporter.tool_id().to_string();
@@ -1677,5 +1712,87 @@ mod tests {
             .unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("git repository"), "unexpected error: {msg}");
+    }
+
+    /// The tool-side handle and the agent-side queue must be the same queue.
+    ///
+    /// `run_in_background` pushes its summary through `ToolContext` and the
+    /// parent drains it from `Agent::pending_subagent_results`. Two different
+    /// `Arc`s (or a `None` handle) would surface as either a rejected spawn or
+    /// a summary that never reaches the parent's next turn.
+    #[test]
+    fn the_tool_handle_points_at_the_agents_own_results_queue() {
+        crate::config::test_support::install_default();
+        let context = test_context("subagent-results-handle");
+        let agent = Agent::new(
+            tact_llm::LlmProvider::Mock(tact_llm::MockClient::new(vec![])),
+            context,
+            crate::tool::ToolRouter::new(),
+            MCPToolRouter::new(),
+            PermissionManager::try_new(crate::permission::PermissionMode::Default).unwrap(),
+            AgentSystemPrompt::Static("system".to_string()),
+        );
+        let handle = agent
+            .tool_context
+            .subagent_results
+            .as_ref()
+            .expect("Agent::new must stamp the tool-side results queue");
+        assert!(
+            std::sync::Arc::ptr_eq(handle, &agent.pending_subagent_results()),
+            "the tool must push into the queue the parent actually drains"
+        );
+    }
+
+    /// A context with a UI channel but no parent results queue describes a
+    /// build that cannot deliver a background summary. Rejecting the request is
+    /// correct; leaving a `Running` row behind is not: nothing would ever call
+    /// `finish`, and `cancel_subagent` cannot reach it either, because the
+    /// cancel handle is registered after the run row is written.
+    #[tokio::test]
+    async fn a_rejected_background_spawn_leaves_no_running_row() {
+        // The dispatch decision runs before any client is built, so this test
+        // needs neither a provider nor a credential — and must not install one:
+        // the provider is process-global and rewriting it here would race every
+        // other test in the binary.
+        let mut ctx = test_context("rejected-background-no-zombie");
+        let (ui_tx, _ui_rx) = tokio::sync::mpsc::unbounded_channel();
+        ctx.events = tact_protocol::UpdateSink::for_ui(ui_tx);
+        assert!(ctx.events.has_ui(), "precondition: interactive frontend");
+        assert!(
+            ctx.subagent_results.is_none(),
+            "precondition: no parent results queue"
+        );
+
+        let rejected = spawn_subagent(
+            ctx.clone(),
+            SubagentInput {
+                prompt: "do work".into(),
+                description: None,
+                run_in_background: Some(true),
+                max_turns: None,
+                resume: None,
+                worktree: None,
+                skill: None,
+            },
+        )
+        .await;
+        let message = rejected
+            .as_ref()
+            .err()
+            .map(|error| format!("{error:#}"))
+            .unwrap_or_default();
+        assert!(
+            message.contains("subagent results queue"),
+            "the rejection must name the unwired queue, got: {message:?}"
+        );
+
+        // Read the run store itself, not the UI snapshot: the snapshot is
+        // scoped to `note_started`, which a sabotage that writes the row early
+        // can skip, and the row is the thing that goes stale.
+        let listed = ctx.subagent_manager.check(None).await.unwrap();
+        assert_eq!(
+            listed, "No subagent runs.",
+            "a rejected spawn must not record a run"
+        );
     }
 }
