@@ -489,6 +489,39 @@ fn assemble_subagent_agent(
 /// - `run_in_background` is requested without a parent agent runtime.
 /// - The subagent agent loop encounters an error.
 pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Result<String> {
+    // Decide the dispatch mode before doing any work that could fail.
+    //
+    // True background dispatch needs a UI channel: without a driver there is no
+    // one to submit a wake-up turn, and headless exits by cancelling the child.
+    // It additionally needs the parent's results queue, which is what delivers
+    // the summary of the detached task.
+    //
+    // Both checks are total and cheap, so they run before the client is built
+    // and before the run row is written. Order matters for the row: once
+    // `start()` has written `Running`, the only code that calls `finish()` is
+    // the task spawned later in this function, and a rejected spawn never
+    // spawns one, so the row would stay `Running` forever. `cancel_subagent`
+    // could not clear it either, because the cancel handle is registered on
+    // the same path as the row.
+    let run_async = input.run_in_background == Some(true) && ctx.events.has_ui();
+    let async_results = if run_async {
+        Some(ctx.subagent_results.clone().ok_or_else(|| {
+            anyhow::anyhow!(
+                "run_in_background needs the parent's subagent results queue, but this \
+                 session was started without one; spawn synchronously or report the \
+                 unwired queue as a build defect"
+            )
+        })?)
+    } else {
+        None
+    };
+    if input.run_in_background == Some(true) && !run_async {
+        warn!(
+            "run_in_background requested without an interactive UI channel; \
+             running subagent synchronously"
+        );
+    }
+
     let settings = crate::config::settings();
     let subagent_provider_info = settings
         .agent
@@ -694,37 +727,6 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
         // No answering frontend (headless): the child still reports to the
         // same observers, so a run with a subagent stays legible.
         subagent = subagent.with_observed_events(ctx.events.clone());
-    }
-
-    // Decide the dispatch mode, and resolve everything it needs, BEFORE the run
-    // row is written.
-    //
-    // True background dispatch needs a UI channel: without a driver there is no
-    // one to submit a wake-up turn, and headless exits by cancelling the child.
-    // It additionally needs the parent's results queue, which is what delivers
-    // the summary of the detached task. Both checks are cheap and total, so
-    // they belong here: once `start()` has written a `Running` row, the only
-    // code that calls `finish()` is the task spawned further down, and a
-    // rejected spawn never spawns one. That left an unreachable `Running` row
-    // that `cancel_subagent` could not clear either, because the cancel handle
-    // is registered on the same path.
-    let run_async = input.run_in_background == Some(true) && ctx.events.has_ui();
-    let async_results = if run_async {
-        Some(ctx.subagent_results.clone().ok_or_else(|| {
-            anyhow::anyhow!(
-                "run_in_background needs the parent's subagent results queue, but this \
-                 session was started without one; spawn synchronously or report the \
-                 unwired queue as a build defect"
-            )
-        })?)
-    } else {
-        None
-    };
-    if input.run_in_background == Some(true) && !run_async {
-        warn!(
-            "run_in_background requested without an interactive UI channel; \
-             running subagent synchronously"
-        );
     }
 
     // Resume reuses a finished child session: hold its process lock for the
@@ -1748,17 +1750,10 @@ mod tests {
     /// cancel handle is registered after the run row is written.
     #[tokio::test]
     async fn a_rejected_background_spawn_leaves_no_running_row() {
-        crate::config::test_support::install_default();
-        // `spawn_subagent` builds a client from the process-global provider
-        // before it reaches the background branch. A dummy key plus an
-        // unroutable base URL constructs that client without any network call,
-        // so the test exercises the branch instead of dying on credential
-        // resolution. `install_default` above is a process-wide `Once`, so this
-        // override cannot be undone by a later-installed default.
-        let mut provider = tact_llm::get_provider();
-        provider.api_key = "dummy-key".to_string();
-        provider.base_url = "http://127.0.0.1:9/v1".to_string();
-        tact_llm::init_provider(provider);
+        // The dispatch decision runs before any client is built, so this test
+        // needs neither a provider nor a credential — and must not install one:
+        // the provider is process-global and rewriting it here would race every
+        // other test in the binary.
         let mut ctx = test_context("rejected-background-no-zombie");
         let (ui_tx, _ui_rx) = tokio::sync::mpsc::unbounded_channel();
         ctx.events = tact_protocol::UpdateSink::for_ui(ui_tx);
