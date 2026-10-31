@@ -9,6 +9,10 @@ name: Desktop package
 
 on:
   workflow_dispatch:
+  # Dispatch requires the workflow on the default branch; while the desktop
+  # work lives on its feature branch, a push to that branch is the trigger.
+  push:
+    branches: [ "feat/desktop" ]
 
 permissions:
   contents: read
