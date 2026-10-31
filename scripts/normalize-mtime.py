@@ -8,6 +8,14 @@ import sys
 from pathlib import Path
 
 
+def set_mtime(path: Path, epoch: int) -> None:
+    try:
+        os.utime(path, (epoch, epoch), follow_symlinks=False)
+    except NotImplementedError:
+        # Windows has no separate symlink timestamps.
+        os.utime(path, (epoch, epoch))
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         raise SystemExit("usage: normalize-mtime.py PATH...")
@@ -16,8 +24,8 @@ def main() -> None:
         root = Path(raw)
         paths = sorted(root.rglob("*"), reverse=True) if root.is_dir() else [root]
         for path in paths:
-            os.utime(path, (epoch, epoch), follow_symlinks=False)
-        os.utime(root, (epoch, epoch), follow_symlinks=False)
+            set_mtime(path, epoch)
+        set_mtime(root, epoch)
 
 
 if __name__ == "__main__":
