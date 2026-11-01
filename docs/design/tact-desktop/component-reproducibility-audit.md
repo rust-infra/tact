@@ -356,9 +356,11 @@ The P2 components ship unmodified; the shell only chooses when to mount them.
   decision epoch and rebuilds rows when a decision lands.
 - **ContextCard.** The Context inspector lists the newest hook contexts and
   tool outputs still in the run; selecting a card opens its reader.
-- **Dock badge.** macOS sets the Dock tile label from the pending-gate count
-  through `NSDockTile`; zero clears it. Windows has no GPUI `HWND` hook, so
-  the count stays in the gate banner and notification there.
+- **Dock/taskbar badge.** macOS sets the Dock tile label from the pending-gate
+  count through `NSDockTile`; zero clears it. Windows has no numeric badge
+  API, so it finds the process's top-level window and sets a
+  `ITaskbarList3::SetOverlayIcon` warning overlay, cleared at zero; the count
+  stays in the gate banner and notification there.
 
 ### Vendor test note
 

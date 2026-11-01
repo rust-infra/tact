@@ -18,6 +18,7 @@ licenses. The primary UI dependencies are:
   `gpui-kit-assets` bundle ships the same icon set.
 - `cocoa` 0.26.0 (macOS Dock badge): MIT / Apache-2.0.
 - `objc` 0.2.7 (macOS Dock badge): MIT.
+- `windows` 0.61.3 (Windows taskbar badge): MIT OR Apache-2.0.
 
 The Apache License 2.0 text is included in
 `THIRD-PARTY-APACHE-2.0.txt`. Release archives also include

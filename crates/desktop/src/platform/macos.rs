@@ -5,6 +5,7 @@ pub use super::{PackagingTarget, TARGET};
 ///
 /// `None` hides the badge. The app may not have a Dock tile in a headless
 /// test process, so a missing tile is not an error.
+#[cfg(target_os = "macos")]
 #[allow(deprecated, unexpected_cfgs)]
 pub fn set_dock_badge(label: Option<String>) {
     use cocoa::appkit::NSApplication;
@@ -28,6 +29,9 @@ pub fn set_dock_badge(label: Option<String>) {
         let _: () = objc::msg_send![dock, setBadgeLabel: text];
     }
 }
+
+#[cfg(not(target_os = "macos"))]
+pub fn set_dock_badge(_label: Option<String>) {}
 
 #[cfg(test)]
 mod tests {

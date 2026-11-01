@@ -277,7 +277,7 @@ that guards each one.
 | Multi-file review using `DiffTable` | Implemented: a patch touching several files opens a per-file table with line counts and accept/reject decisions | `diff_review::tests`; capture `43-reader-diff-review` |
 | Retained-evidence cards using `ContextCard` | Implemented: the Context inspector lists the newest hook contexts and tool outputs still in the run | capture `31-inspector-context-populated` |
 | Native menus and global shortcuts | Implemented: `cx.set_menus` File/View/Session menus; keymap matches the PRD interaction table | `keymap_matches_prd_interaction_table` |
-| OS notifications and dock/taskbar badges | Implemented: system notifications from `DesktopEffect::Notify`; the macOS Dock tile shows the pending-decision count and clears at zero (Windows has no GPUI HWND hook, documented) | `badge_labels_clear_at_zero_and_bound_at_ninety_nine` |
+| OS notifications and dock/taskbar badges | Implemented: system notifications from `DesktopEffect::Notify`; the macOS Dock tile shows the pending-decision count and clears at zero; Windows draws a taskbar overlay icon on the process window and clears it | `badge_labels_clear_at_zero_and_bound_at_ninety_nine`; Windows badge module target-checked with `cargo check --target x86_64-pc-windows-gnu` |
 | Voice recording and transcription controls | Implemented: `tact::voice` worker, composer microphone, status row and transcript insertion | `voice_transcript_lands_in_the_composer`; capture `26b` |
 | Theme migration for existing Tact themes | Implemented: an existing Tact theme name maps to Light/Dark on first launch | `existing_tact_themes_migrate_to_the_desktop_appearance` |
 

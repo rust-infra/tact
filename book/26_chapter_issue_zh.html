@@ -21561,14 +21561,17 @@ Allow once，不代替用户作答；<code>ask_user</code> 的单选/多选仍�
 挂载 <code>ArtifactPanel</code>，可切换 Preview / Source；一次改动多个文件的
 patch 在 reader 中挂载 <code>DiffTable</code>，按文件列出增删行并可接受/拒绝；
 上下文检查器在 token 指标下列出本轮仍保留的 hook 上下文与工具输出
-（<code>ContextCard</code>）；macOS Dock 图标显示待决定闸门数量，归零即清除。
-新增截图 <code>41-reader-ansi</code>、<code>42-reader-search</code>、
+（<code>ContextCard</code>）；macOS Dock 图标显示待决定闸门数量，归零即清除；
+Windows 任务栏用 <code>ITaskbarList3::SetOverlayIcon</code> 标记待决定状态
+（平台没有数字徽标 API，数量仍由闸门横幅与通知承载）。新增截图
+<code>41-reader-ansi</code>、<code>42-reader-search</code>、
 <code>43-reader-diff-review</code>、<code>44-assistant-mermaid</code>。</p>
 <p><strong>验证：</strong> <code>cargo test -p tact-desktop</code>（127 + 10
 通过）、<code>cargo test -p tact_desktop_core</code>（113 通过）、重新生成的全套
 离屏截图、<code>scripts/check-ui.sh</code> 的锚点
-（rail 498、titlebar 114、composer 631..2428）与 Light/Dark 区域均值
-（rail 12.69 / 17.19）。</p>
+（Light rail 498、titlebar 114、composer 630..2429；Dark 498、114、
+630..2429）与 Light/Dark 区域均值。Windows 徽标模块通过
+<code>cargo check --target x86_64-pc-windows-gnu</code> 的独立类型检查。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>

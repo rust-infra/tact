@@ -233,8 +233,8 @@ unfinished work:
 - The permission card and the sticky warning banner can both be visible while
   the card is on screen; the PRD requires the banner to persist until the
   decision.
-- Windows taskbar overlay badges are not drawn (GPUI exposes no `HWND`); the
-  gate banner and OS notification carry the pending count there.
+- Windows taskbar badges are an overlay icon, not a number: the platform has
+  no numeric badge API, so the gate banner and notification carry the count.
 
 Message labels carry the shell's local arrival time (`You 10:42`); persisted
 history has no per-message time, so seeded rows leave it out. The decorative

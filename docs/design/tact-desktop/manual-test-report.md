@@ -125,7 +125,7 @@ scripts/check-rust.sh
 | Mermaid diagram | `mermaid::tests`; capture `44-assistant-mermaid` |
 | Retained evidence | `retained_evidence` in the Context inspector; capture `31-inspector-context-populated` |
 | Artifact preview/source | `transcript_readers_mount_their_typed_surfaces` |
-| Dock badge | `badge_labels_clear_at_zero_and_bound_at_ninety_nine` |
+| Dock/taskbar badge | `badge_labels_clear_at_zero_and_bound_at_ninety_nine`; Windows overlay module target-checked for `x86_64-pc-windows-gnu` |
 
 `transcript_readers_mount_their_typed_surfaces` renders seeded ANSI,
 web-search and multi-file rows and asserts the coloured reader, the
@@ -133,8 +133,8 @@ web-search and multi-file rows and asserts the coloured reader, the
 
 ## Residual (non-blocking)
 
-- Windows taskbar overlay badges need the window `HWND`, which GPUI does not
-  expose; the in-app gate banner and OS notification carry the count there.
+- Windows taskbar badges are an overlay icon rather than a number (Windows has
+  no numeric badge API); the gate banner and OS notification carry the count.
 - The Task DAG graph renderer stays a dependency list; the flowchart adapter
   covers Mermaid diagrams.
 - The capture harness seeds design copy from `26a` onward; production content

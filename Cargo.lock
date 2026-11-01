@@ -9088,6 +9088,7 @@ dependencies = [
  "tact_catalog",
  "tact_desktop_core",
  "tact_protocol",
+ "windows 0.61.3",
 ]
 
 [[package]]
