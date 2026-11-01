@@ -125,7 +125,7 @@ scripts/check-rust.sh
 | Mermaid diagram | `mermaid::tests`; capture `44-assistant-mermaid` |
 | Retained evidence | `retained_evidence` in the Context inspector; capture `31-inspector-context-populated` |
 | Artifact preview/source | `transcript_readers_mount_their_typed_surfaces` |
-| Dock/taskbar badge | `badge_labels_clear_at_zero_and_bound_at_ninety_nine`; Windows overlay module target-checked for `x86_64-pc-windows-gnu` |
+| Dock/taskbar badge | `badge_labels_clear_at_zero_and_bound_at_ninety_nine`; full crate type-checks for `x86_64-pc-windows-gnu` |
 
 `transcript_readers_mount_their_typed_surfaces` renders seeded ANSI,
 web-search and multi-file rows and asserts the coloured reader, the
