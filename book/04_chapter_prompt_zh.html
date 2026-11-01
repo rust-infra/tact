@@ -606,12 +606,14 @@ Responses，<code>build_system_prompt</code> 会在 builder 之前换上
 上下文压力提示（窗口快满时引导拆给 subagent）</h3>
 <p>窗口占用达到 <strong>60%</strong> 时，<code>dynamic_context</code>
 末尾追加一行提示，引导模型把大块或自包含的工作交给
-<code>spawn_subagent</code>：</p>
+<code>spawn_subagent</code>，并在末尾说明怎么并行拆：</p>
 <pre><code>Context window is over 60% full. Prefer delegating large or self-contained work to a
 subagent (`spawn_subagent`), which runs in its own fresh context and returns only a
 summary — the parent window then pays for the summary, not the work. Keep work whose
 intermediate results you need in this conversation here; delegate the parts you only
-need the answer to.</code></pre>
+need the answer to. To split the work across several subagents, set `run_in_background:
+true` on every spawn of the same message so they run in parallel, then collect each
+summary with `wait_subagent`; blocking spawns run one at a time.</code></pre>
 <p>四个设计要点：</p>
 <ul>
 <li><strong>阈值 60% 是刻意低于 auto-compact 的
