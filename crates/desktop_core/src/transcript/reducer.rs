@@ -49,12 +49,6 @@ pub(crate) struct TranscriptReducer {
     active_message_id: Option<String>,
     active_assistant: Option<RowId>,
     active_thinking: Option<RowId>,
-    /// The thinking row a run appends every thought block to.
-    ///
-    /// One run is one thought card, the same way it is one tool group: the
-    /// model reasons between tools, and splitting those blocks into separate
-    /// cards repeats the same disclosure over and over.
-    run_thinking: Option<RowId>,
     active_plan: Option<RowId>,
     assistant_messages: HashMap<String, RowId>,
     last_assistant: Option<RowId>,
@@ -79,7 +73,6 @@ impl Default for TranscriptReducer {
             active_message_id: None,
             active_assistant: None,
             active_thinking: None,
-            run_thinking: None,
             active_plan: None,
             assistant_messages: HashMap::new(),
             last_assistant: None,
@@ -108,7 +101,6 @@ impl TranscriptReducer {
         self.active_message_id = None;
         self.active_assistant = None;
         self.active_thinking = None;
-        self.run_thinking = None;
         self.assistant_messages.clear();
         self.last_assistant = None;
         self.last_group = None;
@@ -250,7 +242,6 @@ impl TranscriptReducer {
                 self.active_group = None;
                 self.active_assistant = None;
                 self.active_thinking = None;
-                self.run_thinking = None;
                 self.assistant_messages.clear();
                 self.last_assistant = None;
                 self.last_group = None;
@@ -336,29 +327,29 @@ impl TranscriptReducer {
                         });
                         delta.changed(row);
                     }
-                    let row = self.run_thinking_row();
-                    if self.thinking_has_text(row) {
-                        // A later block in the same run continues the card
-                        // instead of starting another disclosure.
-                        self.append_thinking(row, "\n\n");
-                    }
-                    self.update_thinking(row, |thinking| {
-                        thinking.status = RowStatus::Running;
-                    });
+                    let row = self.push_row(
+                        self.current_loop(),
+                        RowBody::Thinking(ThinkingRow {
+                            markdown: Arc::from(""),
+                            status: RowStatus::Running,
+                            duration_ms: None,
+                        }),
+                    );
                     self.active_thinking = Some(row);
                     self.move_empty_assistant_to_tail();
                     delta.changed(row);
                 }
                 ThinkingChunk::Delta(text) => {
-                    let new_block = self.active_thinking.is_none();
-                    let row = self
-                        .active_thinking
-                        .unwrap_or_else(|| self.run_thinking_row());
-                    if new_block && self.thinking_has_text(row) {
-                        // The Started hint was dropped; the first delta of
-                        // the next block still starts a new paragraph.
-                        self.append_thinking(row, "\n\n");
-                    }
+                    let row = self.active_thinking.unwrap_or_else(|| {
+                        self.push_row(
+                            self.current_loop(),
+                            RowBody::Thinking(ThinkingRow {
+                                markdown: Arc::from(""),
+                                status: RowStatus::Running,
+                                duration_ms: None,
+                            }),
+                        )
+                    });
                     self.active_thinking = Some(row);
                     self.move_empty_assistant_to_tail();
                     self.append_thinking(row, &text);
@@ -960,12 +951,9 @@ impl TranscriptReducer {
     ) -> RowDelta {
         let mut delta = RowDelta::default();
         let mut tools = HashMap::<String, RowId>::new();
-        // One thinking card per run, the same rule the live reducer applies.
-        let mut run_thinking: Option<RowId> = None;
         for message in messages {
             match &message.origin {
                 MessageOrigin::User => {
-                    run_thinking = None;
                     let text = message_text(message);
                     let row = self.push_row_at(
                         None,
@@ -1009,30 +997,15 @@ impl TranscriptReducer {
                         if let AgentContentBlock::Thinking { thinking, .. } = block
                             && !thinking.trim().is_empty()
                         {
-                            let row = match run_thinking {
-                                Some(row)
-                                    if self.rows.iter().any(|candidate| candidate.id == row) =>
-                                {
-                                    if self.thinking_has_text(row) {
-                                        self.append_thinking(row, "\n\n");
-                                    }
-                                    self.append_thinking(row, thinking);
-                                    row
-                                }
-                                _ => {
-                                    let row = self.push_row_at(
-                                        None,
-                                        RowBody::Thinking(ThinkingRow {
-                                            markdown: Arc::from(thinking.as_str()),
-                                            status: RowStatus::Success,
-                                            duration_ms: None,
-                                        }),
-                                        None,
-                                    );
-                                    run_thinking = Some(row);
-                                    row
-                                }
-                            };
+                            let row = self.push_row_at(
+                                None,
+                                RowBody::Thinking(ThinkingRow {
+                                    markdown: Arc::from(thinking.as_str()),
+                                    status: RowStatus::Success,
+                                    duration_ms: None,
+                                }),
+                                None,
+                            );
                             delta.changed(row);
                         }
                     }
@@ -1640,32 +1613,6 @@ impl TranscriptReducer {
                 self.rows.set(index, Arc::new(next));
             }
         }
-    }
-
-    /// The run's single thinking row, created on its first block.
-    fn run_thinking_row(&mut self) -> RowId {
-        if let Some(row) = self.run_thinking
-            && self.rows.iter().any(|candidate| candidate.id == row)
-        {
-            return row;
-        }
-        let row = self.push_row(
-            self.current_loop(),
-            RowBody::Thinking(ThinkingRow {
-                markdown: Arc::from(""),
-                status: RowStatus::Running,
-                duration_ms: None,
-            }),
-        );
-        self.run_thinking = Some(row);
-        row
-    }
-
-    fn thinking_has_text(&self, row: RowId) -> bool {
-        self.rows.iter().any(|candidate| {
-            candidate.id == row
-                && matches!(&candidate.body, RowBody::Thinking(thinking) if !thinking.markdown.is_empty())
-        })
     }
 
     fn append_thinking(&mut self, row: RowId, text: &str) {
@@ -2610,14 +2557,12 @@ mod tests {
             &context(1),
         );
         let view = reducer.view();
-        let thinking = view
-            .iter()
-            .filter_map(|row| match &row.body {
-                RowBody::Thinking(thinking) => Some(thinking.markdown.to_string()),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(thinking, ["thinking tool-1\n\nthinking tool-2"]);
+        assert_eq!(
+            view.iter()
+                .filter(|row| matches!(row.body, RowBody::Thinking(_)))
+                .count(),
+            2
+        );
         assert_eq!(
             view.iter()
                 .filter(|row| matches!(row.body, RowBody::Notice(_)))
@@ -2625,38 +2570,6 @@ mod tests {
             1
         );
         assert_eq!(group_rows(&reducer).len(), 2);
-    }
-
-    #[test]
-    fn persisted_user_turn_starts_a_new_thinking_card() {
-        let mut reducer = TranscriptReducer::new();
-        let assistant = |text: &str| {
-            AgentMessage::new(
-                AgentRole::Assistant,
-                MessageOrigin::Assistant,
-                vec![AgentContentBlock::Thinking {
-                    thinking: text.into(),
-                    signature: String::new(),
-                }],
-            )
-        };
-        reducer.seed_persisted(
-            &[
-                assistant("first"),
-                AgentMessage::text(AgentRole::User, MessageOrigin::User, "next run"),
-                assistant("second"),
-            ],
-            &context(1),
-        );
-        let thinking = reducer
-            .view()
-            .iter()
-            .filter_map(|row| match &row.body {
-                RowBody::Thinking(thinking) => Some(thinking.markdown.to_string()),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(thinking, ["first", "second"]);
     }
 
     #[test]
@@ -2745,7 +2658,7 @@ mod tests {
     }
 
     #[test]
-    fn thinking_blocks_in_one_run_share_a_card() {
+    fn a_new_thinking_started_finalizes_the_previous_block() {
         let mut reducer = TranscriptReducer::new();
         run_started(&mut reducer, "run-1");
         turn(&mut reducer);
@@ -2767,41 +2680,11 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(thinking, ["first\n\nsecond"]);
-    }
-
-    #[test]
-    fn a_new_run_starts_a_new_thinking_card() {
-        let mut reducer = TranscriptReducer::new();
-        for (run, text) in [("run-1", "first"), ("run-2", "second")] {
-            run_started(&mut reducer, run);
-            turn(&mut reducer);
-            reducer.apply_agent_update(
-                AgentUpdate::ThinkingChunk(ThinkingChunk::Started),
-                &context(1),
-            );
-            reducer.apply_agent_update(
-                AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(text.into())),
-                &context(1),
-            );
-            reducer.apply_agent_update(
-                AgentUpdate::ThinkingChunk(ThinkingChunk::Finished),
-                &context(1),
-            );
-        }
-        let thinking = reducer
-            .rows
-            .iter()
-            .filter_map(|row| match &row.body {
-                RowBody::Thinking(thinking) => Some(thinking.markdown.to_string()),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
         assert_eq!(thinking, ["first", "second"]);
     }
 
     #[test]
-    fn dropped_started_hints_still_share_the_run_thinking_card() {
+    fn a_new_message_finalizes_thinking_when_the_started_hint_was_dropped() {
         let mut reducer = TranscriptReducer::new();
         run_started(&mut reducer, "run-1");
         turn(&mut reducer);
@@ -2833,7 +2716,7 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(thinking, ["a-body\n\nb-body"]);
+        assert_eq!(thinking, ["a-body", "b-body"]);
     }
 
     #[test]
