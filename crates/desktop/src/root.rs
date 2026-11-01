@@ -11723,17 +11723,12 @@ fn gate_prompt_command(prompt: &str) -> Option<SharedString> {
 }
 
 /// The tool that raised a gate, when the gate carries a tool identity.
-fn gate_tool_name<'a>(snapshot: &'a DesktopSnapshot, gate: &GateCard) -> Option<&'a str> {
-    let tool_id = match &gate.origin {
-        tact_desktop_core::GateOrigin::Tool { tool_id } => tool_id.as_ref(),
-        tact_desktop_core::GateOrigin::Subagent {
-            tool_id: Some(tool_id),
-            ..
-        } => tool_id.as_ref(),
-        _ => return None,
-    };
+fn tool_name_for_id<'a>(
+    view: &'a tact_desktop_core::TranscriptView,
+    tool_id: &str,
+) -> Option<&'a str> {
     let mut found = None;
-    for row in snapshot.transcript.iter() {
+    for row in view.iter() {
         let RowBody::ToolGroup(group) = &row.body else {
             continue;
         };
@@ -11748,6 +11743,40 @@ fn gate_tool_name<'a>(snapshot: &'a DesktopSnapshot, gate: &GateCard) -> Option<
     found
 }
 
+fn gate_tool_name<'a>(snapshot: &'a DesktopSnapshot, gate: &GateCard) -> Option<&'a str> {
+    match &gate.origin {
+        tact_desktop_core::GateOrigin::Tool { tool_id } => {
+            tool_name_for_id(&snapshot.transcript, tool_id)
+        }
+        tact_desktop_core::GateOrigin::Subagent {
+            child_id,
+            tool_id: Some(tool_id),
+        } => {
+            // A child tool lives in the spawn card's nested transcript, not in
+            // the parent's top-level rows.
+            let mut found = None;
+            for row in snapshot.transcript.iter() {
+                let RowBody::ToolGroup(group) = &row.body else {
+                    continue;
+                };
+                for item in group.items.iter() {
+                    let ToolGroupItem::Tool(spawn) = item else {
+                        continue;
+                    };
+                    if spawn.meta.subagent_id.as_deref() == Some(child_id.as_ref())
+                        && let Some(nested) = &spawn.subagent
+                        && let Some(name) = tool_name_for_id(nested, tool_id)
+                    {
+                        found = Some(name);
+                    }
+                }
+            }
+            found
+        }
+        _ => None,
+    }
+}
+
 /// Help text under a gate title. A command, a question, and a subagent are
 /// different promises; the command wording must not leak onto the others.
 fn gate_description(
@@ -11755,7 +11784,7 @@ fn gate_description(
     tool_name: Option<&str>,
 ) -> Option<&'static str> {
     match tool_name {
-        Some("bash") => Some(match locale {
+        Some("bash" | "worktree_run" | "background_run") => Some(match locale {
             tact_catalog::CatalogLocale::En => {
                 "This command runs in the current worktree and may write files."
             }
@@ -15126,6 +15155,16 @@ mod tests {
         use tact_desktop_core::CatalogLocale::{En, Zh};
         assert!(
             gate_description(En, Some("bash"))
+                .unwrap()
+                .contains("command")
+        );
+        assert!(
+            gate_description(En, Some("worktree_run"))
+                .unwrap()
+                .contains("command")
+        );
+        assert!(
+            gate_description(En, Some("background_run"))
                 .unwrap()
                 .contains("command")
         );
