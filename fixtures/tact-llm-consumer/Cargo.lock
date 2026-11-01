@@ -1449,7 +1449,7 @@ dependencies = [
 
 [[package]]
 name = "tact_agent_api"
-version = "2.0.0"
+version = "2.0.4"
 dependencies = [
  "async-trait",
  "futures-core",
@@ -1461,7 +1461,7 @@ dependencies = [
 
 [[package]]
 name = "tact_llm"
-version = "2.0.0"
+version = "2.0.4"
 dependencies = [
  "async-openai",
  "async-trait",
