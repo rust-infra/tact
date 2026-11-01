@@ -328,6 +328,11 @@ fn normalize_updates(updates: &[AgentUpdate]) -> Vec<String> {
     let mut normalizer = UpdateNormalizer::default();
     updates
         .iter()
+        // `StepQueued` is kernel-only: the frozen baseline was captured from
+        // the legacy loop, which never split "dispatched" from "started", so
+        // its vocabulary has no slot for the queued half. Dropping it keeps
+        // the comparison about the updates both loops emit.
+        .filter(|update| !matches!(update, AgentUpdate::StepQueued { .. }))
         .map(|update| normalizer.normalize(update))
         .collect()
 }

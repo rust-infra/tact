@@ -27,6 +27,9 @@ pub const TOOL_RUNNING_SPINNER: &[char] = RUNNING_SPINNER;
 /// Tool execution phase for display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolPhase {
+    /// Dispatched, waiting for an earlier wave. Painted dim with no clock;
+    /// flips to [`Self::Running`] when the kernel actually starts the call.
+    Queued,
     Running,
     Success,
     Failed,
@@ -187,6 +190,7 @@ pub fn build_meta_text(
     error_message: Option<&str>,
     spinner_char: char,
     phase_running: &str,
+    phase_queued: &str,
     phase_success: &str,
     phase_failed: &str,
     meta_sep: &str,
@@ -194,6 +198,7 @@ pub fn build_meta_text(
     fail_prefix: &str,
 ) -> String {
     let phase_label = match phase {
+        ToolPhase::Queued => format!("⏳ {phase_queued}"),
         ToolPhase::Running => format!("{spinner_char} {phase_running}"),
         ToolPhase::Success => format!("{success_prefix} {phase_success}"),
         ToolPhase::Failed => format!("{fail_prefix} {phase_failed}"),
@@ -575,6 +580,7 @@ impl ToolRenderOutput {
             ),
             ' ',
             msgs.tool_phase_running,
+            msgs.tool_phase_queued,
             msgs.tool_phase_success,
             msgs.tool_phase_failed,
             msgs.tool_meta_sep,
@@ -1650,6 +1656,7 @@ mod tests {
             None,
             '⠋',
             msgs.tool_phase_running,
+            msgs.tool_phase_queued,
             msgs.tool_phase_success,
             msgs.tool_phase_failed,
             msgs.tool_meta_sep,
@@ -1672,6 +1679,7 @@ mod tests {
             Some("Permission denied by user for bash"),
             '⠋',
             msgs.tool_phase_running,
+            msgs.tool_phase_queued,
             msgs.tool_phase_success,
             msgs.tool_phase_failed,
             msgs.tool_meta_sep,
@@ -1701,6 +1709,7 @@ mod tests {
             None,
             '⠋',
             msgs.tool_phase_running,
+            msgs.tool_phase_queued,
             msgs.tool_phase_success,
             msgs.tool_phase_failed,
             msgs.tool_meta_sep,
@@ -2194,6 +2203,7 @@ mod tests {
             None,
             ' ',
             msgs.tool_phase_running,
+            msgs.tool_phase_queued,
             msgs.tool_phase_success,
             msgs.tool_phase_failed,
             msgs.tool_meta_sep,

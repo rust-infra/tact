@@ -87,10 +87,9 @@ use read_file::ReadFileTool;
 pub use registry::{subagent_toolset, toolset, toolset_with_memory};
 #[cfg(test)]
 use sleep::SleepTool;
-// Test-only: `runtime::tool_presentation` reads the spawn metadata without
-// naming the private `subagent` module. `tool_adapter` no longer needs it —
-// every spawn resolves its own `ResourcePolicy`.
-#[cfg(test)]
+// Re-exported so `runtime::tool_adapter` can lift the barrier for a
+// worktree-isolated `spawn_subagent` without naming the private `subagent`
+// module.
 pub(crate) use subagent::SPAWN_SUBAGENT_METADATA;
 pub use subagent::annotate_spawn_subagent_skill_catalog;
 #[cfg(test)]

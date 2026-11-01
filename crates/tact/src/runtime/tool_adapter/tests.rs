@@ -181,8 +181,8 @@ fn port_classifies_native_mcp_and_subagent_resource_scopes() {
     assert_eq!(mcp_access.writes[0].key.namespace, "mcp_server");
     assert_eq!(mcp_access.writes[0].key.components, ["postgres"]);
 
-    // Spawns fan out: neither a plain nor a worktree-isolated spawn is a
-    // barrier, so every spawn in one assistant turn can share a wave.
+    // A plain spawn shares the workspace, so it is a barrier; only the
+    // worktree-isolated spawn resolves independent and may share a wave.
     let plain_subagent = call("spawn_subagent", json!({"prompt": "work"}));
     let plain_access = port.access(
         &port
@@ -190,7 +190,7 @@ fn port_classifies_native_mcp_and_subagent_resource_scopes() {
             .expect("resolve spawn_subagent"),
         &plain_subagent.input,
     );
-    assert_eq!(plain_access, ResourceAccess::independent());
+    assert!(plain_access.barrier);
 
     let worktree_subagent = call(
         "spawn_subagent",

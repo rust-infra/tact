@@ -152,8 +152,9 @@ impl ToolComponent {
         self.step_indices.entry(step.tool_id.clone()).or_insert(idx);
     }
 
+    /// Build the card for a freshly dispatched call, in `phase`.
     #[allow(clippy::too_many_arguments)] // mirrors the protocol update payload
-    fn on_step_started(
+    fn push_card(
         &mut self,
         idx: usize,
         tool_id: &str,
@@ -161,18 +162,9 @@ impl ToolComponent {
         arg_summary: &str,
         arg_full: &str,
         presentation: &crate::protocol::ToolPresentationInfo,
+        phase: ToolPhase,
         events: &mut Vec<ToolEvent>,
     ) {
-        // Same tool_id restarting without a finish: drop the stale card first
-        // (the shell removes its placeholder rows via Cancelled).
-        if let Some(pos) = self.state.active.iter().position(|a| a.tool_id == tool_id) {
-            let active = self.state.active.remove(pos);
-            events.push(ToolEvent::Cancelled {
-                tool_id: tool_id.to_string(),
-                phys_idx: active.phys_idx,
-                rows: active.output.visual_rows(false),
-            });
-        }
         // A restarted id is a new invocation, so its transcript starts empty:
         // keeping the old entries would splice two conversations together.
         self.state.transcripts.remove(tool_id);
@@ -187,7 +179,7 @@ impl ToolComponent {
             .with_arg_summary(arg_summary.to_string())
             .with_arg_full(arg_full.to_string())
             .with_step_index(step_idx)
-            .with_phase(ToolPhase::Running)
+            .with_phase(phase)
             .with_duration_us(0)
             .build();
         let rows = output.visual_rows(false);
@@ -207,6 +199,94 @@ impl ToolComponent {
             tool_id: tool_id.to_string(),
             rows,
         });
+    }
+
+    /// A dispatched call waiting for an earlier wave: the card exists but is
+    /// painted as queued, never as running.
+    #[allow(clippy::too_many_arguments)] // mirrors the protocol update payload
+    fn on_step_queued(
+        &mut self,
+        idx: usize,
+        tool_id: &str,
+        tool_name: &str,
+        arg_summary: &str,
+        arg_full: &str,
+        presentation: &crate::protocol::ToolPresentationInfo,
+        events: &mut Vec<ToolEvent>,
+    ) {
+        // The kernel queues each call once; a replay must not duplicate the
+        // card (nor reset one that already started).
+        if self.state.active.iter().any(|a| a.tool_id == tool_id) {
+            return;
+        }
+        self.push_card(
+            idx,
+            tool_id,
+            tool_name,
+            arg_summary,
+            arg_full,
+            presentation,
+            ToolPhase::Queued,
+            events,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)] // mirrors the protocol update payload
+    fn on_step_started(
+        &mut self,
+        idx: usize,
+        tool_id: &str,
+        tool_name: &str,
+        arg_summary: &str,
+        arg_full: &str,
+        presentation: &crate::protocol::ToolPresentationInfo,
+        events: &mut Vec<ToolEvent>,
+    ) {
+        if let Some(pos) = self.state.active.iter().position(|a| a.tool_id == tool_id) {
+            // The queued card for this call: flip it to running in place, so
+            // the placeholder rows stay where the reader saw them.
+            if self.state.active[pos].output.phase == ToolPhase::Queued {
+                let step_idx = self.resolve_step_idx(tool_id, idx);
+                let output = ToolWidget::new()
+                    .with_tool(tool_name.to_string())
+                    .with_arg_summary(arg_summary.to_string())
+                    .with_arg_full(arg_full.to_string())
+                    .with_step_index(step_idx)
+                    .with_phase(ToolPhase::Running)
+                    .with_duration_us(0)
+                    .build();
+                let active = &mut self.state.active[pos];
+                let old_rows = active.output.visual_rows(false);
+                active.output = output;
+                active.started_at = std::time::Instant::now();
+                let new_rows = active.output.visual_rows(false);
+                events.push(ToolEvent::Resize {
+                    tool_id: tool_id.to_string(),
+                    phys_idx: active.phys_idx,
+                    old_rows,
+                    new_rows,
+                });
+                return;
+            }
+            // Same tool_id restarting without a finish: drop the stale card
+            // first (the shell removes its placeholder rows via Cancelled).
+            let active = self.state.active.remove(pos);
+            events.push(ToolEvent::Cancelled {
+                tool_id: tool_id.to_string(),
+                phys_idx: active.phys_idx,
+                rows: active.output.visual_rows(false),
+            });
+        }
+        self.push_card(
+            idx,
+            tool_id,
+            tool_name,
+            arg_summary,
+            arg_full,
+            presentation,
+            ToolPhase::Running,
+            events,
+        );
     }
 
     fn on_tool_progress(&mut self, tool_id: &str, events: &mut Vec<ToolEvent>) {
@@ -536,6 +616,25 @@ impl Component for ToolComponent {
                 self.on_step_added(step);
                 true
             }
+            AgentUpdate::StepQueued {
+                idx,
+                tool_id,
+                tool_name,
+                arg_summary,
+                arg_full,
+                presentation,
+            } => {
+                self.on_step_queued(
+                    *idx,
+                    tool_id,
+                    tool_name,
+                    arg_summary,
+                    arg_full,
+                    presentation,
+                    ctx.tool_events,
+                );
+                true
+            }
             AgentUpdate::StepStarted {
                 idx,
                 tool_id,
@@ -810,6 +909,47 @@ mod tests {
         let _ = step_started(&mut c, "t1");
         c.set_phys_idx("t1", 42);
         assert_eq!(c.state().active[0].phys_idx, 42);
+    }
+
+    fn step_queued(c: &mut ToolComponent, tool_id: &str) -> Vec<ToolEvent> {
+        let (mut log, mut pending, mut events, mut tool_events) = (
+            LogCoordinator::default(),
+            PendingQueue::default(),
+            Vec::new(),
+            Vec::new(),
+        );
+        c.on_update(
+            &AgentUpdate::StepQueued {
+                idx: 0,
+                tool_id: tool_id.into(),
+                tool_name: "read_file".into(),
+                arg_summary: "main.rs".into(),
+                arg_full: "main.rs".into(),
+                presentation: ToolPresentationInfo::generic("read_file"),
+            },
+            &mut ctx(&mut log, &mut pending, &mut events, &mut tool_events),
+        );
+        tool_events
+    }
+
+    /// A dispatched call draws its card immediately, painted as queued; the
+    /// wave-start update reuses that card instead of cancelling and recreating
+    /// it, so the placeholder rows never move.
+    #[test]
+    fn queued_card_flips_to_running_in_place() {
+        let mut c = comp();
+        step_added(&mut c, "t1");
+        let started = step_queued(&mut c, "t1");
+        assert_eq!(c.state().active.len(), 1);
+        assert_eq!(c.state().active[0].output.phase, ToolPhase::Queued);
+        assert!(matches!(started[0], ToolEvent::Started { .. }));
+
+        c.set_phys_idx("t1", 7);
+        let events = step_started(&mut c, "t1");
+        assert_eq!(c.state().active.len(), 1, "the queued card is reused");
+        assert_eq!(c.state().active[0].output.phase, ToolPhase::Running);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], ToolEvent::Resize { phys_idx: 7, .. }));
     }
 
     #[test]

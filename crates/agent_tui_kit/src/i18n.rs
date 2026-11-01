@@ -98,6 +98,8 @@ pub struct Messages {
     /// Code-card variant: how many lines the card left out, then the label.
     pub code_card_progress_tmpl: &'static str, // " +{} lines | {}", len
     pub tool_phase_running: &'static str,
+    /// A dispatched call whose wave has not started yet.
+    pub tool_phase_queued: &'static str,
     pub tool_phase_success: &'static str,
     pub tool_phase_failed: &'static str,
     pub tool_meta_sep: &'static str,
@@ -533,6 +535,7 @@ impl Messages {
             tool_card_progress_tmpl: " {}/{} lines | {} ",
             code_card_progress_tmpl: " +{} lines | {}",
             tool_phase_running: "Running",
+            tool_phase_queued: "Queued",
             tool_phase_success: "Success",
             tool_phase_failed: "Failed",
             tool_meta_sep: " · ",
@@ -871,6 +874,7 @@ impl Messages {
             tool_card_progress_tmpl: " {}/{} 行 | {} ",
             code_card_progress_tmpl: " +{} 行 | {}",
             tool_phase_running: "运行中",
+            tool_phase_queued: "排队中",
             tool_phase_success: "成功",
             tool_phase_failed: "失败",
             tool_meta_sep: " · ",

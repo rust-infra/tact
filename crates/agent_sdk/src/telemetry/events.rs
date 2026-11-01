@@ -37,6 +37,14 @@ impl TelemetryEventObserver {
                     "agent model call started"
                 );
             }
+            AgentEvent::ToolQueued { call, .. } => {
+                debug!(
+                    target: "tact_agent_sdk",
+                    tool = %call.name,
+                    call_id = %call.id,
+                    "agent tool queued"
+                );
+            }
             AgentEvent::ToolStarted { call, .. } => {
                 debug!(target: "tact_agent_sdk", tool = %call.name, call_id = %call.id, "agent tool started");
                 if self.config.record_content_enabled()

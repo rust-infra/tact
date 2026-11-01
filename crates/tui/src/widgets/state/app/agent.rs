@@ -361,6 +361,14 @@ impl App {
     fn shell_handle(&mut self, update: AgentUpdate) {
         match update {
             AgentUpdate::StepAdded(step) => self.on_step_added(step),
+            // Dispatched, still waiting for its wave: the card already exists
+            // (ToolComponent built it as queued), so the tail only keeps the
+            // same "busy" hygiene `StepAdded` applies.
+            AgentUpdate::StepQueued { .. } => {
+                self.flush_stream_pending();
+                let idx = self.plan().steps.len();
+                self.ensure_executing_status(idx);
+            }
             AgentUpdate::StepStarted { idx, tool_id, .. } => {
                 self.on_step_started_tail(idx, tool_id);
             }
@@ -608,6 +616,7 @@ impl App {
             // the turn on to its next stage.
             AgentUpdate::StreamChunk(_)
             | AgentUpdate::StepAdded(_)
+            | AgentUpdate::StepQueued { .. }
             | AgentUpdate::StepStarted { .. }
             | AgentUpdate::StepFinished { .. }
             | AgentUpdate::StepFailed { .. }

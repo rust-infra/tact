@@ -196,12 +196,18 @@ impl TactToolPort {
 
     fn access(&self, kind: &ResolvedKind, input: &Value) -> ResourceAccess {
         let resources = match kind {
-            // `spawn_subagent` resolves to `ResourcePolicy::Independent`, so
-            // every spawn in one assistant turn shares a wave and the children
-            // run concurrently — the same fan-out the worktree-isolated spawn
-            // already had.
+            // The one input-aware exception: a worktree-isolated spawn scopes
+            // its file effects to its own lane, so it may share a wave with
+            // other tools. A plain spawn shares the workspace and stays the
+            // static `Barrier` its metadata declares.
             ResolvedKind::Native { metadata } => {
-                metadata.resources.resolve(input, &self.context.work_dir)
+                if metadata.name == crate::tool::SPAWN_SUBAGENT_METADATA.name
+                    && input.get("worktree").and_then(Value::as_bool) == Some(true)
+                {
+                    ToolResources::independent()
+                } else {
+                    metadata.resources.resolve(input, &self.context.work_dir)
+                }
             }
             ResolvedKind::Mcp { server, .. } => {
                 crate::agent::tool_schedule::mcp_server_resources(server)

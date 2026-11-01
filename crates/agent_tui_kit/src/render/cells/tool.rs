@@ -58,6 +58,7 @@ pub struct ToolCell {
     /// The glyphs that button draws — the tail this row splits off.
     collapsed_action: Option<String>,
     tool_phase_running: &'static str,
+    tool_phase_queued: &'static str,
     tool_phase_success: &'static str,
     tool_phase_failed: &'static str,
     tool_meta_sep: &'static str,
@@ -147,6 +148,7 @@ impl ToolCell {
             collapsed_action_label,
             collapsed_action,
             tool_phase_running: msgs.tool_phase_running,
+            tool_phase_queued: msgs.tool_phase_queued,
             tool_phase_success: msgs.tool_phase_success,
             tool_phase_failed: msgs.tool_phase_failed,
             tool_meta_sep: msgs.tool_meta_sep,
@@ -205,6 +207,7 @@ impl ToolCell {
             ),
             self.spinner_char,
             self.tool_phase_running,
+            self.tool_phase_queued,
             self.tool_phase_success,
             self.tool_phase_failed,
             self.tool_meta_sep,
@@ -222,6 +225,7 @@ impl ToolCell {
             self.collapsed_output_hint.as_deref(),
         ));
         let style = match self.phase {
+            ToolPhase::Queued => Style::default().fg(self.muted),
             ToolPhase::Running => Style::default().fg(self.warning),
             ToolPhase::Success => Style::default().fg(self.success),
             ToolPhase::Failed => Style::default().fg(self.error),
