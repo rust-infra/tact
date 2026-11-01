@@ -960,9 +960,12 @@ impl TranscriptReducer {
     ) -> RowDelta {
         let mut delta = RowDelta::default();
         let mut tools = HashMap::<String, RowId>::new();
+        // One thinking card per run, the same rule the live reducer applies.
+        let mut run_thinking: Option<RowId> = None;
         for message in messages {
             match &message.origin {
                 MessageOrigin::User => {
+                    run_thinking = None;
                     let text = message_text(message);
                     let row = self.push_row_at(
                         None,
@@ -1006,15 +1009,30 @@ impl TranscriptReducer {
                         if let AgentContentBlock::Thinking { thinking, .. } = block
                             && !thinking.trim().is_empty()
                         {
-                            let row = self.push_row_at(
-                                None,
-                                RowBody::Thinking(ThinkingRow {
-                                    markdown: Arc::from(thinking.as_str()),
-                                    status: RowStatus::Success,
-                                    duration_ms: None,
-                                }),
-                                None,
-                            );
+                            let row = match run_thinking {
+                                Some(row)
+                                    if self.rows.iter().any(|candidate| candidate.id == row) =>
+                                {
+                                    if self.thinking_has_text(row) {
+                                        self.append_thinking(row, "\n\n");
+                                    }
+                                    self.append_thinking(row, thinking);
+                                    row
+                                }
+                                _ => {
+                                    let row = self.push_row_at(
+                                        None,
+                                        RowBody::Thinking(ThinkingRow {
+                                            markdown: Arc::from(thinking.as_str()),
+                                            status: RowStatus::Success,
+                                            duration_ms: None,
+                                        }),
+                                        None,
+                                    );
+                                    run_thinking = Some(row);
+                                    row
+                                }
+                            };
                             delta.changed(row);
                         }
                     }
@@ -2592,12 +2610,14 @@ mod tests {
             &context(1),
         );
         let view = reducer.view();
-        assert_eq!(
-            view.iter()
-                .filter(|row| matches!(row.body, RowBody::Thinking(_)))
-                .count(),
-            2
-        );
+        let thinking = view
+            .iter()
+            .filter_map(|row| match &row.body {
+                RowBody::Thinking(thinking) => Some(thinking.markdown.to_string()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(thinking, ["thinking tool-1\n\nthinking tool-2"]);
         assert_eq!(
             view.iter()
                 .filter(|row| matches!(row.body, RowBody::Notice(_)))
@@ -2605,6 +2625,38 @@ mod tests {
             1
         );
         assert_eq!(group_rows(&reducer).len(), 2);
+    }
+
+    #[test]
+    fn persisted_user_turn_starts_a_new_thinking_card() {
+        let mut reducer = TranscriptReducer::new();
+        let assistant = |text: &str| {
+            AgentMessage::new(
+                AgentRole::Assistant,
+                MessageOrigin::Assistant,
+                vec![AgentContentBlock::Thinking {
+                    thinking: text.into(),
+                    signature: String::new(),
+                }],
+            )
+        };
+        reducer.seed_persisted(
+            &[
+                assistant("first"),
+                AgentMessage::text(AgentRole::User, MessageOrigin::User, "next run"),
+                assistant("second"),
+            ],
+            &context(1),
+        );
+        let thinking = reducer
+            .view()
+            .iter()
+            .filter_map(|row| match &row.body {
+                RowBody::Thinking(thinking) => Some(thinking.markdown.to_string()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(thinking, ["first", "second"]);
     }
 
     #[test]
