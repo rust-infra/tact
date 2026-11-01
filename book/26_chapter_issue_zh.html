@@ -21562,8 +21562,10 @@ patch 在 reader 中挂载 <code>DiffTable</code>，按文件列出增删行并�
 上下文检查器在 token 指标下列出本轮仍保留的 hook 上下文与工具输出
 （<code>ContextCard</code>）；macOS Dock 图标显示待决定闸门数量，归零即清除；
 Windows 任务栏用 <code>ITaskbarList3::SetOverlayIcon</code> 标记待决定状态
-（平台没有数字徽标 API，数量仍由闸门横幅与通知承载）。思考块保持每段一张
-Thinking 卡，点击标题用 gpui-ai 组件就地展开，不再弹 reader，截图
+（平台没有数字徽标 API，数量仍由闸门横幅与通知承载）。思考块与 TUI 的
+<code>ends_thinking_region</code> 规则对齐：连续思考共用一个区块，工具调用、
+正文、通知或错误到达即结束；重复的 <code>Started</code> 只是提示，不会拆出新卡。
+点击标题用 gpui-ai 组件就地展开，不再弹 reader，截图
 <code>45-thinking-expanded</code>。桌面图标改为蓝色圆角底、
 白色 T 与开口智能体环（<code>assets/app-icon.svg</code>，生成
 <code>.icns</code> / <code>.ico</code> / <code>.png</code>），macOS 包写入

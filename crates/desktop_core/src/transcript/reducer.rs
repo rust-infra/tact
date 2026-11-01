@@ -235,6 +235,13 @@ impl TranscriptReducer {
         _context: &ReduceContext,
     ) -> RowDelta {
         let mut delta = RowDelta::default();
+        // Same rule as the TUI: a reasoning region ends before this turn's
+        // own output lands at the transcript tail. The next thinking delta
+        // then opens a fresh card instead of growing the one above the new
+        // content.
+        if ends_thinking_region(&update) {
+            self.close_thinking(&mut delta);
+        }
         match update {
             AgentUpdate::RunStarted { run_id } => {
                 self.pending_run = Some(run_id);
@@ -321,11 +328,10 @@ impl TranscriptReducer {
             }
             AgentUpdate::ThinkingChunk(chunk) => match chunk {
                 ThinkingChunk::Started => {
-                    if let Some(row) = self.active_thinking.take() {
-                        self.update_thinking(row, |thinking| {
-                            thinking.status = RowStatus::Success;
-                        });
-                        delta.changed(row);
+                    // A repeated Started is a hint, not a new region: the
+                    // TUI keeps the open card and the deltas continue it.
+                    if self.active_thinking.is_some() {
+                        return delta;
                     }
                     let row = self.push_row(
                         self.current_loop(),
@@ -1123,15 +1129,6 @@ impl TranscriptReducer {
         if self.active_message_id.as_deref() == Some(message_id) {
             return;
         }
-        if let Some(row) = self.active_thinking.take() {
-            self.update_thinking(row, |thinking| {
-                if thinking.status == RowStatus::Running {
-                    thinking.status = RowStatus::Success;
-                }
-            });
-            self.last_finished_rows.push(row);
-            delta.changed(row);
-        }
         if let Some(row) = self.assistant_messages.get(message_id).copied() {
             self.active_message_id = Some(message_id.to_string());
             self.active_assistant = Some(row);
@@ -1615,6 +1612,19 @@ impl TranscriptReducer {
         }
     }
 
+    /// Ends the open reasoning region, settling its card.
+    fn close_thinking(&mut self, delta: &mut RowDelta) {
+        if let Some(row) = self.active_thinking.take() {
+            self.update_thinking(row, |thinking| {
+                if thinking.status == RowStatus::Running {
+                    thinking.status = RowStatus::Success;
+                }
+            });
+            self.last_finished_rows.push(row);
+            delta.changed(row);
+        }
+    }
+
     fn append_thinking(&mut self, row: RowId, text: &str) {
         self.update_thinking(row, |thinking| {
             thinking.markdown = Arc::from(format!("{}{}", thinking.markdown, text));
@@ -1799,6 +1809,30 @@ fn output_view(text: &str) -> ToolOutputView {
 fn append_output(tool: &mut ToolRow, text: &str) {
     let combined = format!("{}{}", tool.output.detail.as_deref().unwrap_or(""), text);
     tool.output = output_view(&combined);
+}
+
+/// Updates that end an open reasoning region.
+///
+/// Mirrors the TUI's `ends_thinking_region`: these updates append this turn's
+/// own output at the transcript tail or move the turn to its next stage, so
+/// the open thinking card must settle before they land. Status-bar metadata,
+/// overlays, and other agents' traffic leave the region open.
+fn ends_thinking_region(update: &AgentUpdate) -> bool {
+    matches!(
+        update,
+        AgentUpdate::StreamChunk(_)
+            | AgentUpdate::StepAdded(_)
+            | AgentUpdate::StepStarted { .. }
+            | AgentUpdate::StepFinished { .. }
+            | AgentUpdate::StepFailed { .. }
+            | AgentUpdate::Info(_)
+            | AgentUpdate::MdInfo(_)
+            | AgentUpdate::HookContext { .. }
+            | AgentUpdate::HookStatus { .. }
+            | AgentUpdate::Error(_)
+            | AgentUpdate::TaskComplete(_)
+            | AgentUpdate::TaskIdle
+    )
 }
 
 #[cfg(test)]
@@ -2658,7 +2692,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_thinking_started_finalizes_the_previous_block() {
+    fn a_repeated_thinking_started_keeps_the_open_card() {
         let mut reducer = TranscriptReducer::new();
         run_started(&mut reducer, "run-1");
         turn(&mut reducer);
@@ -2680,11 +2714,11 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(thinking, ["first", "second"]);
+        assert_eq!(thinking, ["firstsecond"]);
     }
 
     #[test]
-    fn a_new_message_finalizes_thinking_when_the_started_hint_was_dropped() {
+    fn message_started_keeps_the_open_thinking_card() {
         let mut reducer = TranscriptReducer::new();
         run_started(&mut reducer, "run-1");
         turn(&mut reducer);
@@ -2716,7 +2750,73 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(thinking, ["a-body", "b-body"]);
+        assert_eq!(thinking, ["a-bodyb-body"]);
+    }
+
+    #[test]
+    fn tool_output_ends_the_thinking_region() {
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-1");
+        turn(&mut reducer);
+        reducer.apply_agent_update(
+            AgentUpdate::ThinkingChunk(ThinkingChunk::Started),
+            &context(1),
+        );
+        reducer.apply_agent_update(
+            AgentUpdate::ThinkingChunk(ThinkingChunk::Delta("before".into())),
+            &context(1),
+        );
+        reducer.apply_agent_update(step_started("tool-1"), &context(1));
+        reducer.apply_agent_update(
+            AgentUpdate::ThinkingChunk(ThinkingChunk::Started),
+            &context(1),
+        );
+        reducer.apply_agent_update(
+            AgentUpdate::ThinkingChunk(ThinkingChunk::Delta("after".into())),
+            &context(1),
+        );
+        let thinking = reducer
+            .rows
+            .iter()
+            .filter_map(|row| match &row.body {
+                RowBody::Thinking(thinking) => Some(thinking.markdown.to_string()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(thinking, ["before", "after"]);
+    }
+
+    #[test]
+    fn stream_text_ends_the_thinking_region() {
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-1");
+        turn(&mut reducer);
+        reducer.apply_agent_update(
+            AgentUpdate::ThinkingChunk(ThinkingChunk::Started),
+            &context(1),
+        );
+        reducer.apply_agent_update(
+            AgentUpdate::ThinkingChunk(ThinkingChunk::Delta("before".into())),
+            &context(1),
+        );
+        reducer.apply_agent_update(AgentUpdate::StreamChunk("answer".into()), &context(1));
+        reducer.apply_agent_update(
+            AgentUpdate::ThinkingChunk(ThinkingChunk::Started),
+            &context(1),
+        );
+        reducer.apply_agent_update(
+            AgentUpdate::ThinkingChunk(ThinkingChunk::Delta("after".into())),
+            &context(1),
+        );
+        let thinking = reducer
+            .rows
+            .iter()
+            .filter_map(|row| match &row.body {
+                RowBody::Thinking(thinking) => Some(thinking.markdown.to_string()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(thinking, ["before", "after"]);
     }
 
     #[test]
