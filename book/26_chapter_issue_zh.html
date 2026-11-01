@@ -21572,8 +21572,14 @@ Windows 任务栏用 <code>ITaskbarList3::SetOverlayIcon</code> 标记待决定�
 <code>CFBundleIconFile</code>，Windows 可执行文件嵌入图标资源。新增截图
 <code>41-reader-ansi</code>、<code>42-reader-search</code>、
 <code>43-reader-diff-review</code>、<code>44-assistant-mermaid</code>。</p>
-<p><strong>验证：</strong> <code>cargo test -p tact-desktop</code>（127 + 10
-通过）、<code>cargo test -p tact_desktop_core</code>（113 通过）、重新生成的全套
+<p><strong>交付核对：</strong>按实现计划与设计逐项核对后，桌面壳补齐了七处与规格不一致的行为：设置面板在保存后立即刷新快照，不再显示启动时的旧值；裸
+<code>/goal</code> 只打开 Goals 检查器，不再落到没有处理器的路由并弹出失败横幅；语音未配置时不显示麦克风；不支持的
+Mermaid 图（如 <code>sequenceDiagram</code>）保留为代码块，不再从回答中消失；标题推导跨行折叠空白并截断到
+80 个字符（含省略号）；无标题但有消息的会话显示本地化的「未命名会话」；闸门快照按设计每
+250ms 核对一次。控制器改为在 <code>next_event</code> 上 select，宿主事件到达即唤醒，关闭意图不再与借用的读取竞争；
+进行中的存储读取同时与关闭令牌竞速，慢磁盘不会拖住退出。</p>
+<p><strong>验证：</strong> <code>cargo test -p tact-desktop</code>（133 + 10
+通过）、<code>cargo test -p tact_desktop_core</code>（118 通过）、重新生成的全套
 离屏截图、<code>scripts/check-ui.sh</code> 的锚点
 （Light rail 498、titlebar 114、composer 630..2429；Dark 498、114、
 630..2429）与 Light/Dark 区域均值。整个 desktop crate 通过

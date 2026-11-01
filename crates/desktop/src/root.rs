@@ -678,12 +678,13 @@ impl DesktopRoot {
     }
 
     fn session_title(&self, session: &tact_desktop_core::SessionSummaryView) -> String {
-        if session.message_count == 0 && matches!(session.title.as_str(), "New session" | "新会话")
-        {
-            self.text(TextKey::NewSession).to_string()
-        } else {
-            session.title.clone()
+        if session.message_count == 0 {
+            return self.text(TextKey::NewSession).to_string();
         }
+        if session.title.trim().is_empty() {
+            return self.text(TextKey::UntitledSession).to_string();
+        }
+        session.title.clone()
     }
 
     fn sync_sidebar_nav(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -6446,7 +6447,7 @@ impl DesktopRoot {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        vec![
+        let mut leading = vec![
             div()
                 .id("composer-attach")
                 .role(Role::Button)
@@ -6483,9 +6484,15 @@ impl DesktopRoot {
                 cx,
             )
             .into_any_element(),
-            composer_voice_button(self.voice, self.text(TextKey::VoiceInput), cx)
-                .into_any_element(),
-        ]
+        ];
+        // A microphone with no voice worker behind it is a dead control.
+        if voice_button_visible(self.voice) {
+            leading.push(
+                composer_voice_button(self.voice, self.text(TextKey::VoiceInput), cx)
+                    .into_any_element(),
+            );
+        }
+        leading
     }
 
     fn render_composer_trailing(
@@ -12916,6 +12923,10 @@ fn overlay_height(window: &Window, desired: f32) -> gpui::Pixels {
     px((f32::from(window.viewport_size().height) - 24.0).clamp(180.0, desired))
 }
 
+fn voice_button_visible(voice: VoiceUi) -> bool {
+    voice.enabled && !voice.missing_api_key
+}
+
 fn composer_voice_button(
     voice: VoiceUi,
     label: &'static str,
@@ -13288,6 +13299,19 @@ mod tests {
     fn install_test_config(config: &DesktopConfig) {
         static INSTALL: std::sync::Once = std::sync::Once::new();
         INSTALL.call_once(|| config.install_process_config().unwrap());
+    }
+
+    #[test]
+    fn voice_button_only_shows_for_a_configured_worker() {
+        let voice = |enabled, missing_api_key| VoiceUi {
+            enabled,
+            missing_api_key,
+            listening: false,
+            transcribing: false,
+        };
+        assert!(!voice_button_visible(voice(false, false)));
+        assert!(!voice_button_visible(voice(true, true)));
+        assert!(voice_button_visible(voice(true, false)));
     }
 
     fn probe_dir(label: &str) -> PathBuf {

@@ -191,25 +191,39 @@ mod tests {
 
     #[test]
     fn tui_subcommand_completion_matches_catalog_tree() {
-        fn walk(
-            catalog: &tact_catalog::CommandCatalog,
-            parent: &tact_catalog::CommandId,
-            declared: &[Subcommand],
-        ) {
-            let actual: Vec<_> = catalog.children(parent).collect();
-            assert_eq!(actual.len(), declared.len());
-            for (descriptor, child) in actual.into_iter().zip(declared) {
-                assert_eq!(descriptor.path.last().map(String::as_str), Some(child.name));
-                walk(catalog, &descriptor.id, child.children);
-            }
-        }
-
         let catalog = tact_catalog::builtins();
         for command in SlashCommand::iter() {
-            walk(
-                catalog,
-                &tact_catalog::CommandId::Builtin(command),
-                command.subcommands(),
+            let declared: Vec<String> = catalog
+                .children(&tact_catalog::CommandId::Builtin(command))
+                .map(|descriptor| descriptor.path.last().cloned().unwrap_or_default())
+                .collect();
+            if declared.is_empty() {
+                continue;
+            }
+            let (mut app, _rx) = TestApp::new().into_commands();
+            app.input = format!("/{} ", command.name());
+            app.input_cursor = app.input.len();
+            app.slash_command.active = true;
+            app.slash_command.start_pos = 0;
+            app.slash_command.selected = 0;
+            let completed: Vec<String> = app
+                .slash_candidates()
+                .into_iter()
+                .filter(|candidate| !candidate.is_skill)
+                .map(|candidate| {
+                    candidate
+                        .path
+                        .rsplit(' ')
+                        .next()
+                        .unwrap_or_default()
+                        .to_string()
+                })
+                .collect();
+            assert_eq!(
+                completed,
+                declared,
+                "TUI completion for /{} does not match the catalog tree",
+                command.name()
             );
         }
     }

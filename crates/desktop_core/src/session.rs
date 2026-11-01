@@ -80,13 +80,7 @@ impl SessionCatalog {
                 let title = summary
                     .title
                     .filter(|title| !title.trim().is_empty())
-                    .unwrap_or_else(|| {
-                        if summary.message_count == 0 {
-                            "New session".to_string()
-                        } else {
-                            summary.id.clone()
-                        }
-                    });
+                    .unwrap_or_default();
                 let score = if search.trim().is_empty() {
                     0
                 } else {
@@ -118,7 +112,7 @@ impl SessionCatalog {
     pub async fn rename(&self, session_id: &str, title: &str) -> Result<()> {
         self.store()
             .await?
-            .set_session_title(session_id, title)
+            .set_session_title(session_id, Some(title))
             .await
     }
 

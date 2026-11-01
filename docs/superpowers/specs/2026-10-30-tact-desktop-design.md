@@ -547,6 +547,10 @@ pub struct ReaderRequest {
 }
 ```
 
+`/balance` opens the shell's typed Balance reader, which renders the
+`AccountView` through `InsightCard`. `ReaderRef::Balance` stays available for
+controller-initiated reader requests.
+
 `DesktopSnapshot` is immutable. `dirty_rows` lets the shell update only the
 row entities whose content changed. The transcript's structural vector uses a
 persistent representation internally; the public surface exposes only indexed
@@ -1454,7 +1458,7 @@ The reducer keys live rows as follows:
 ```text
 User row       -> session epoch + submission sequence
 Assistant row  -> MessageStarted.message_id
-Thinking row   -> MessageStarted.message_id + thinking block index
+Thinking row   -> run identity + the open thinking region
 Tool group     -> RunStarted.run_id + TurnStats.turns_taken
 Tool row       -> run identity + tool_id
 Gate row       -> request_id
@@ -1539,7 +1543,10 @@ Projection rules:
   the reducer sees them. Markdown stays as `Arc<str>`; GPUI renders it through
   `StreamingText` or `TextView::markdown`.
 - `ThinkingChunk::Started/Delta/Finished` create, append, and finalize one
-  thinking row. A second `Started` finalizes the previous block defensively.
+  thinking row. Consecutive deltas share one card; a repeated `Started` keeps
+  the open card, and the TUI's `ends_thinking_region` rule closes it when a
+  tool, streamed answer, notice, hook, error, or completion arrives.
+  `MessageStarted` and `TurnStats` do not close it.
 - `Info`, `MdInfo`, `HookContext`, `HookStatus`, `Error`, completion, and
   cancellation create typed notice/error rows. `HookStatus` is rewritten in
   place without changing row order.
@@ -1550,8 +1557,9 @@ Projection rules:
 - `TaskComplete`, `TaskCancelled`, and `TaskIdle` close the active run cursor.
   `TaskCancelled` pauses queue advancement.
 - A gate hint that has no active loop becomes `RowBody::Gate`; a gate inside a
-  loop is `ToolGroupItem::Gate`. A diff without a tool card becomes
-  `RowBody::Diff`.
+  loop is `ToolGroupItem::Gate`. A diff presentation without a tool card
+  becomes `RowBody::Diff`; the row kind and its reader are implemented, while
+  current producers attach diffs to a tool card.
 
 Persisted history uses the same row grammar:
 
@@ -1615,18 +1623,22 @@ pub struct ProjectRegistry {
 
 pub struct ProjectRecord {
     pub id: ProjectId,
-    pub root_dir: PathBuf,
+    pub root: PathBuf,
     pub display_name: String,
     pub last_opened_at: DateTime<Utc>,
+    /// Recomputed when the registry opens; a missing root stays listed as
+    /// unavailable until the user removes it.
+    pub available: bool,
 }
 
 impl ProjectRegistry {
-    pub fn load(path: PathBuf) -> Result<Self, ProjectRegistryError>;
-    pub fn projects(&self) -> &[ProjectRecord];
-    pub fn upsert_folder(&mut self, root: &Path)
-        -> Result<ProjectRecord, ProjectRegistryError>;
-    pub fn remove(&mut self, id: ProjectId) -> Result<bool, ProjectRegistryError>;
-    fn flush_atomic(&self) -> Result<(), ProjectRegistryError>;
+    pub fn open(app_data_dir: impl AsRef<Path>) -> Result<Self>;
+    pub fn records(&self) -> &[ProjectRecord];
+    pub fn get(&self, id: &ProjectId) -> Option<&ProjectRecord>;
+    pub fn register(&mut self, root: impl AsRef<Path>)
+        -> Result<ProjectRecord>;
+    pub fn remove(&mut self, id: &ProjectId) -> Result<bool>;
+    // Every mutation writes a temp file and renames it over the registry.
 }
 ```
 
@@ -1640,34 +1652,30 @@ remain authoritative in `<root>/.tact/tact.db`.
 
 ```rust
 pub struct SessionCatalog {
-    projects: ProjectRegistry,
-    summaries: HashMap<ProjectId, Arc<[SessionSummaryView]>>,
+    project: ProjectRecord,
+    store: OnceCell<DynSessionStore>,
 }
 
 pub struct SessionSummaryView {
-    pub id: SessionId,
+    pub id: String,
     pub project_id: ProjectId,
-    pub title: Arc<str>,
-    pub archived: bool,
+    pub root_dir: PathBuf,
+    pub title: String,
     pub updated_at: DateTime<Utc>,
-    pub created_at: DateTime<Utc>,
-    pub message_count: i64,
+    pub archived_at: Option<DateTime<Utc>>,
     pub locked: bool,
+    pub message_count: i64,
+    pub search_score: i32,
 }
 
 impl SessionCatalog {
-    pub async fn refresh(
-        &mut self,
-        project: &ProjectRecord,
-        filter: ArchiveFilter,
-    ) -> Result<Arc<[SessionSummaryView]>, SessionCatalogError>;
-
-    pub fn search(
+    pub fn new(project: ProjectRecord) -> Self;
+    pub fn project(&self) -> &ProjectRecord;
+    pub async fn list(
         &self,
-        project_id: ProjectId,
-        query: &str,
-        filter: ArchiveFilter,
-    ) -> Vec<SessionSummaryView>;
+        archive: ArchiveFilter,
+        search: &str,
+    ) -> Result<Vec<SessionSummaryView>>;
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1728,6 +1736,7 @@ pub struct SessionSummary {
 pub struct SessionListQuery {
     pub root_dir: Option<String>,
     pub archive: ArchiveFilter,
+    pub search: Option<String>,
 }
 
 async fn list_sessions_filtered(
@@ -2367,7 +2376,7 @@ Focused tests, in build order:
   - `every_setting_has_one_catalog_spec`
   - `slash_subcommands_form_a_tree_without_duplicate_siblings`
   - `fuzzy_search_ranks_prefix_then_word_then_subsequence`
-  - `command_requirements_disable_unavailable_actions`
+  - `command_availability_disables_unavailable_actions`
   - `search_returns_one_hit_per_canonical_action`
 - `tact_catalog` / `tui` compatibility
   - `tui_dispatch_is_exhaustive_over_builtin_catalog`
@@ -2408,7 +2417,7 @@ Focused tests, in build order:
   - `stale_gate_hint_is_repaired_from_snapshot`
   - `resolved_gate_collapses_without_losing_history`
   - `session_epoch_rejects_stale_gate_response`
-  - `back_to_bottom_restores_tail_following`
+  - `back_to_bottom_resets_tail_following`
 - `tact_desktop_core::sessions`
   - `project_registry_deduplicates_canonical_roots`
   - `missing_project_remains_visible_unavailable`

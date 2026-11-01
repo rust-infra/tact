@@ -13,6 +13,7 @@ use crate::{DesktopConfig, InitialSession, ProjectRecord};
 #[async_trait]
 pub(crate) trait HostBackend: Send {
     fn session_id(&self) -> &str;
+    async fn next_event(&mut self) -> Option<tact_host::HostEvent>;
     fn try_next_event(&mut self) -> TryHostEvent;
     fn send(&self, command: UserCommand) -> Result<(), HostSendError>;
     fn pending_requests(&self) -> Vec<tact::ui_responder::PendingUiRequest>;
@@ -24,6 +25,10 @@ pub(crate) trait HostBackend: Send {
 impl HostBackend for HostSession {
     fn session_id(&self) -> &str {
         HostSession::session_id(self)
+    }
+
+    async fn next_event(&mut self) -> Option<tact_host::HostEvent> {
+        HostSession::next_event(self).await
     }
 
     fn try_next_event(&mut self) -> TryHostEvent {

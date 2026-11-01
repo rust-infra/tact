@@ -174,6 +174,8 @@ pub struct DesktopController {
     intents: mpsc::UnboundedSender<ControllerMessage>,
     snapshot: Arc<RwLock<Arc<DesktopSnapshot>>>,
     thread: Arc<std::sync::Mutex<Option<std::thread::JoinHandle<()>>>>,
+    /// Cancels in-flight store reads so shutdown never waits on a slow disk.
+    shutdown: tokio_util::sync::CancellationToken,
 }
 
 pub struct DesktopEvents {
@@ -238,6 +240,8 @@ impl DesktopController {
             urgent: urgent_tx,
         };
         let (intents, intent_rx) = mpsc::unbounded_channel();
+        let shutdown = tokio_util::sync::CancellationToken::new();
+        let actor_shutdown = shutdown.clone();
         // The actor keeps a sender of its own: model discovery finishes after
         // startup and re-enters the loop as a message rather than mutating
         // state from a background task.
@@ -263,6 +267,7 @@ impl DesktopController {
                     actor_intents,
                     events,
                     actor_snapshot,
+                    actor_shutdown,
                 )
                 .await?;
                 actor.publish(true);
@@ -296,6 +301,7 @@ impl DesktopController {
                 intents,
                 snapshot,
                 thread: Arc::new(std::sync::Mutex::new(Some(thread))),
+                shutdown,
             },
             DesktopEvents {
                 commits: tokio::sync::Mutex::new((commit_rx, None)),
@@ -326,6 +332,7 @@ impl DesktopController {
     }
 
     pub async fn shutdown(&self) -> Result<(), DesktopShutdownError> {
+        self.shutdown.cancel();
         let (tx, rx) = oneshot::channel();
         self.intents
             .send(ControllerMessage::Shutdown(tx))
@@ -372,12 +379,19 @@ struct DesktopActor {
     project: Option<ProjectRecord>,
     catalog: Option<SessionCatalog>,
     host: Option<Box<dyn HostBackend>>,
+    /// The event that woke the actor's select, consumed by the next drain.
+    pending_host_event: Option<HostEvent>,
+    /// Set once the host event channel has closed, so the select stops polling
+    /// a receiver that can never yield again.
+    host_events_closed: bool,
     queue: VecDeque<Submission>,
     request_id: u64,
     last_gate_reconcile: Instant,
     restore_failure: Option<FailureView>,
     /// Commands for the voice worker task, when voice is configured.
     voice: Option<mpsc::UnboundedSender<tact::voice::VoiceCommand>>,
+    /// Cancels in-flight store reads when the shell asks the controller to stop.
+    shutdown: tokio_util::sync::CancellationToken,
 }
 
 /// The keyboard-shortcut reader shown by `/help`.
@@ -418,6 +432,7 @@ impl DesktopActor {
         intents_tx: mpsc::UnboundedSender<ControllerMessage>,
         events: DesktopEventSink,
         snapshot: Arc<RwLock<Arc<DesktopSnapshot>>>,
+        shutdown: tokio_util::sync::CancellationToken,
     ) -> Result<Self, DesktopStartError> {
         let registry = ProjectRegistry::open(&config.app_data_dir)
             .map_err(|error| DesktopStartError::Config(error.to_string()))?;
@@ -433,11 +448,14 @@ impl DesktopActor {
             project: None,
             catalog: None,
             host: None,
+            pending_host_event: None,
+            host_events_closed: false,
             queue: VecDeque::new(),
             request_id: 1,
             last_gate_reconcile: Instant::now(),
             restore_failure: None,
             voice: None,
+            shutdown,
         };
         if let Some(settings) = tact::config::try_settings()
             .map(|settings| settings.voice)
@@ -519,19 +537,46 @@ impl DesktopActor {
     }
 
     async fn run(mut self) {
+        enum Wake {
+            Message(Option<ControllerMessage>),
+            Host(Option<HostEvent>),
+            Tick,
+        }
+
         let mut poll =
             tokio::time::interval(self.config.update_batch.max(Duration::from_millis(1)));
         poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             self.drain_host_events().await;
-            tokio::select! {
-                message = self.intents.recv() => {
-                    let Some(message) = message else { break };
+            let host_open = self.host.is_some() && !self.host_events_closed;
+            let wake = {
+                let intents = &mut self.intents;
+                let host = &mut self.host;
+                tokio::select! {
+                    message = intents.recv() => Wake::Message(message),
+                    event = async {
+                        match host {
+                            Some(host) if host_open => host.next_event().await,
+                            _ => std::future::pending().await,
+                        }
+                    } => Wake::Host(event),
+                    _ = poll.tick() => Wake::Tick,
+                }
+            };
+            match wake {
+                Wake::Message(None) => break,
+                Wake::Message(Some(message)) => {
                     if self.handle_message(message).await {
                         break;
                     }
                 }
-                _ = poll.tick() => {}
+                Wake::Host(Some(event)) => self.pending_host_event = Some(event),
+                Wake::Host(None) => {
+                    self.host_events_closed = true;
+                    self.pending_host_event = None;
+                    self.mark_host_disconnected();
+                }
+                Wake::Tick => {}
             }
         }
         let _ = self.close_host().await;
@@ -960,6 +1005,8 @@ impl DesktopActor {
         self.state.sessions.selected = self.state.session.id.clone();
         let session_id = host.session_id().to_string();
         self.host = Some(host);
+        self.pending_host_event = None;
+        self.host_events_closed = false;
         self.restore_failure = None;
         let Some(store) = self.catalog.as_ref().and_then(SessionCatalog::store_handle) else {
             let failure = FailureView {
@@ -983,7 +1030,11 @@ impl DesktopActor {
             };
             return Ok(());
         };
-        match store.load_agent_session(&session_id).await {
+        let loaded = tokio::select! {
+            loaded = store.load_agent_session(&session_id) => loaded,
+            _ = self.shutdown.cancelled() => return Ok(()),
+        };
+        match loaded {
             Ok(messages) => {
                 self.state.reducer.seed_persisted(
                     &messages,
@@ -991,7 +1042,11 @@ impl DesktopActor {
                         session_epoch: self.state.session.epoch,
                     },
                 );
-                if let Ok(history) = store.load_input_history(&session_id).await {
+                let history = tokio::select! {
+                    history = store.load_input_history(&session_id) => history,
+                    _ = self.shutdown.cancelled() => return Ok(()),
+                };
+                if let Ok(history) = history {
                     self.state.composer.history = history
                         .into_iter()
                         .rev()
@@ -1067,12 +1122,14 @@ impl DesktopActor {
         self.publish(false);
         let filter = self.state.sessions.filter;
         let query = self.state.sessions.query.clone();
-        let result = self
-            .catalog
-            .as_ref()
-            .expect("catalog checked above")
-            .list(filter, &query)
-            .await;
+        let result = tokio::select! {
+            result = self
+                .catalog
+                .as_ref()
+                .expect("catalog checked above")
+                .list(filter, &query) => result,
+            _ = self.shutdown.cancelled() => return Ok(()),
+        };
         match result {
             Ok(items) => self.state.set_sessions(items),
             Err(error) => {
@@ -1335,6 +1392,10 @@ impl DesktopActor {
                 self.config.save().map_err(|error| format!("{error:?}"))?;
                 self.publish(false);
             }
+            CommandId::Builtin(tact_catalog::BuiltinCommand::Goal) => {
+                // The bare `/goal` opens the Goals inspector in the shell. The
+                // controller has no work until a goal verb is chosen.
+            }
             CommandId::Builtin(tact_catalog::BuiltinCommand::Save) => {
                 let markdown = self.transcript_markdown();
                 let _ =
@@ -1590,6 +1651,7 @@ impl DesktopActor {
         if persist {
             self.config.save().map_err(|error| format!("{error:?}"))?;
         }
+        self.state.refresh_settings(&self.config);
         let route = route_setting(id, &value);
         match route {
             CommandRoute::Noop => Err(format!("invalid value for setting `{}`", id.as_str())),
@@ -2026,21 +2088,17 @@ impl DesktopActor {
                 break;
             }
             drained += 1;
-            let event = match self.host.as_mut().map(|host| host.try_next_event()) {
-                Some(TryHostEvent::Available(event)) => event,
-                Some(TryHostEvent::Empty) | None => break,
-                Some(TryHostEvent::Disconnected) => {
-                    if !matches!(self.state.session.phase, SessionPhase::Failed { .. }) {
-                        let reason = localized(
-                            self.state.language,
-                            "Host event channel closed",
-                            "宿主事件通道已关闭",
-                        )
-                        .to_string();
-                        self.mark_disconnected(&reason);
+            let event = if let Some(event) = self.pending_host_event.take() {
+                event
+            } else {
+                match self.host.as_mut().map(|host| host.try_next_event()) {
+                    Some(TryHostEvent::Available(event)) => event,
+                    Some(TryHostEvent::Empty) | None => break,
+                    Some(TryHostEvent::Disconnected) => {
+                        self.host_events_closed = true;
+                        self.mark_host_disconnected();
+                        break;
                     }
-                    self.publish(true);
-                    break;
                 }
             };
             match event {
@@ -2314,6 +2372,19 @@ impl DesktopActor {
         });
     }
 
+    fn mark_host_disconnected(&mut self) {
+        if !matches!(self.state.session.phase, SessionPhase::Failed { .. }) {
+            let reason = localized(
+                self.state.language,
+                "Host event channel closed",
+                "宿主事件通道已关闭",
+            )
+            .to_string();
+            self.mark_disconnected(&reason);
+        }
+        self.publish(true);
+    }
+
     fn publish_rows(&mut self, dirty: Vec<crate::RowId>, sections: SectionMask) {
         let commit = self.state.commit(dirty, sections);
         self.write_commit(commit);
@@ -2479,6 +2550,10 @@ mod tests {
                 Err(mpsc::error::TryRecvError::Empty) => TryHostEvent::Empty,
                 Err(mpsc::error::TryRecvError::Disconnected) => TryHostEvent::Disconnected,
             }
+        }
+
+        async fn next_event(&mut self) -> Option<HostEvent> {
+            self.events.recv().await
         }
 
         fn send(&self, command: UserCommand) -> Result<(), HostSendError> {
@@ -2752,7 +2827,10 @@ mod tests {
             controller.snapshot().session.phase,
             SessionPhase::Failed { .. }
         ));
-        assert!(controller.snapshot().failure.is_some());
+        let snapshot = controller.snapshot();
+        let failure = snapshot.failure.as_ref().expect("typed failure");
+        assert_eq!(failure.kind, FailureKind::Startup);
+        assert!(!failure.retryable);
     }
 
     #[tokio::test]
@@ -2793,6 +2871,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bare_goal_command_opens_without_a_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_project(tmp.path());
+        let factory = FakeFactory::new();
+        let (controller, _events) =
+            DesktopController::start_with_factory(config(tmp.path()), factory).unwrap();
+        wait_ready(&controller).await;
+        controller
+            .dispatch(DesktopIntent::InvokeCommand {
+                id: CommandId::Builtin(tact_catalog::BuiltinCommand::Goal),
+                args: CommandArguments::default(),
+            })
+            .unwrap();
+        controller.when_idle().await.unwrap();
+        assert!(controller.snapshot().failure.is_none());
+    }
+
+    #[tokio::test]
     async fn controller_never_reinitializes_process_config() {
         let tmp = tempfile::tempdir().unwrap();
         make_project(tmp.path());
@@ -2818,9 +2914,20 @@ mod tests {
     async fn permission_mode_is_reapplied_after_ready() {
         let tmp = tempfile::tempdir().unwrap();
         make_project(tmp.path());
-        let factory = FakeFactory::new();
+        let factory = FakeFactory::deferred_ready();
         let (controller, _events) =
             DesktopController::start_with_factory(config(tmp.path()), factory.clone()).unwrap();
+        controller.when_idle().await.unwrap();
+        assert!(
+            !factory
+                .commands
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|command| matches!(command, UserCommand::SetPermissionMode(_))),
+            "the permission mode must not be sent before the host is ready"
+        );
+        factory.emit(HostEvent::Ready);
         wait_ready(&controller).await;
         assert!(
             factory
@@ -2858,6 +2965,24 @@ mod tests {
                 break;
             }
         }
+    }
+
+    #[tokio::test]
+    async fn setting_change_refreshes_the_published_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_project(tmp.path());
+        let factory = FakeFactory::new();
+        let (controller, _events) =
+            DesktopController::start_with_factory(config(tmp.path()), factory).unwrap();
+        wait_ready(&controller).await;
+        controller
+            .dispatch(DesktopIntent::SetSetting {
+                id: SettingId::MaxTokens,
+                value: SettingValue::Text("4096".into()),
+            })
+            .unwrap();
+        controller.when_idle().await.unwrap();
+        assert_eq!(controller.snapshot().settings.max_tokens, Some(4096));
     }
 
     #[tokio::test]

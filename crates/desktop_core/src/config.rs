@@ -176,7 +176,7 @@ impl DesktopConfig {
                 .and_then(|settings| settings.initial_project.clone()),
             initial_session: InitialSession::ResumeLast,
             update_batch: Duration::from_millis(33),
-            gate_reconcile: Duration::from_millis(100),
+            gate_reconcile: Duration::from_millis(250),
             appearance: persisted
                 .as_ref()
                 .map(|settings| settings.appearance)

@@ -149,7 +149,7 @@ pub trait SessionStore: Send + Sync {
 
     async fn list_sessions_filtered(&self, query: SessionListQuery) -> Result<Vec<SessionSummary>>;
 
-    async fn set_session_title(&self, session_id: &str, title: &str) -> Result<()>;
+    async fn set_session_title(&self, session_id: &str, title: Option<&str>) -> Result<()>;
 
     async fn set_session_archived(&self, session_id: &str, archived: bool) -> Result<()>;
 

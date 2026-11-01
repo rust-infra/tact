@@ -246,6 +246,7 @@ impl TranscriptReducer {
             AgentUpdate::RunStarted { run_id } => {
                 self.pending_run = Some(run_id);
                 self.active_run = None;
+                self.active_loop = None;
                 self.active_group = None;
                 self.active_assistant = None;
                 self.active_thinking = None;
@@ -306,6 +307,7 @@ impl TranscriptReducer {
                 }
             }
             AgentUpdate::TurnStats { .. } => {
+                let promoting = self.active_run.is_none();
                 let run_id = self
                     .pending_run
                     .take()
@@ -316,10 +318,13 @@ impl TranscriptReducer {
                 // One run is one execution group: a later model turn in the
                 // same run appends its tools to the group the run already
                 // owns instead of opening a second card. The group settles
-                // when the run finishes.
-                let loop_id = LoopId(self.next_loop_id);
-                self.next_loop_id += 1;
-                self.active_loop = Some(loop_id);
+                // when the run finishes. The loop identity is allocated when
+                // the pending run is promoted, not on every turn.
+                if promoting {
+                    let loop_id = LoopId(self.next_loop_id);
+                    self.next_loop_id += 1;
+                    self.active_loop = Some(loop_id);
+                }
             }
             AgentUpdate::StreamChunk(text) => {
                 let row = self.ensure_assistant();
@@ -1117,6 +1122,12 @@ impl TranscriptReducer {
                 suggestions: Arc::from([]),
             }),
         );
+        if self.active_message_id.is_none() {
+            tracing::warn!(
+                run = self.active_run.as_deref().unwrap_or("unknown"),
+                "assistant text arrived without MessageStarted; using a fallback row"
+            );
+        }
         if let Some(message_id) = self.active_message_id.clone() {
             self.assistant_messages.insert(message_id, row);
         }
@@ -2020,6 +2031,25 @@ mod tests {
         assert_eq!(group_rows(&reducer).len(), 0);
         reducer.apply_agent_update(step_started("tool-1"), &context(1));
         assert_eq!(group_rows(&reducer).len(), 1);
+    }
+
+    #[test]
+    fn one_run_allocates_one_loop_id() {
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-1");
+        turn(&mut reducer);
+        let loop_id = reducer.active_loop;
+        assert!(loop_id.is_some());
+        turn(&mut reducer);
+        assert_eq!(reducer.active_loop, loop_id);
+        reducer.apply_agent_update(
+            AgentUpdate::RunFinished {
+                run_id: "run-1".into(),
+            },
+            &context(1),
+        );
+        run_started(&mut reducer, "run-2");
+        assert_eq!(reducer.active_loop, None);
     }
 
     #[test]

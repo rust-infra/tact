@@ -728,8 +728,10 @@ Expected: FAIL because the reducer and row types do not exist.
 - [x] **Step 3: Implement the row model and reducer**
 
 Implement the `TranscriptRow`/`RowBody` model, `RowId` allocation, `LoopId`
-allocation on the first `TurnStats` after `RunStarted`, assistant/thinking
-cursors from `MessageStarted`, tool grouping by loop, standalone
+allocation on the first `TurnStats` after `RunStarted`, assistant cursors from
+`MessageStarted`, thinking rows that follow the TUI thinking-region rule (a
+repeated `Started` keeps the open card; tools, streamed answers, notices,
+hooks, errors, and completions close it), tool grouping by loop, standalone
 `RowBody::Gate`/`RowBody::Diff` rows, and typed notices. A `RunFinished` for a
 pending run that never saw `TurnStats` must leave no row.
 
@@ -990,8 +992,9 @@ Keep draft text, cursor, focus, selection, and scroll in the shell.
 - [x] **Step 5: Implement the mixed transcript**
 
 Use `StreamingText` for assistant Markdown, `Thinking` for reasoning,
-`ToolGroup`/`ToolCall` for tool rows, `ApprovalCard`/`QuestionFlow`/`ChoiceGroup`
-for gates, `CodeBlock`/`CodeDiff` for evidence, and `ContextMeter` for context.
+`ToolGroup`/`ToolCall` for tool rows, `QuestionFlow`/`ChoiceGroup` for
+questions, and `ApprovalCard`'s one-click semantics in the Tact-owned gate
+shell (P15), `CodeBlock`/`CodeDiff` for evidence, and `ContextMeter` for context.
 Tact-owned rows cover user, standalone gate/diff, notice, hook context, hook
 status, error, and subagent drawer. Add `Suggestions` and `SelectionActions`
 around assistant Markdown, and keep a readable code-block fallback for
@@ -1073,9 +1076,9 @@ fn hook_output_toggle_hides_hook_status_rows() {}
 
 - [x] **Step 2: Implement the session manager**
 
-Use `SidebarNav` for the project pane and Tact-owned rows for sessions. The
-manager supports project filtering, fuzzy search, Active/Archived/All,
-rename, archive/restore, and long-list scrolling.
+Use `SidebarNav` for the project-scoped session rail and Tact-owned rows for
+the project pane. The manager supports project filtering, fuzzy search,
+Active/Archived/All, rename, archive/restore, and long-list scrolling.
 
 - [x] **Step 3: Implement the inspector**
 

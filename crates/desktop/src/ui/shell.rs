@@ -150,6 +150,11 @@ mod tests {
         assert!(root.contains("crate::ui::transcript_row::accessibility_label("));
         assert!(root.contains("snapshot.language"));
         assert!(root.contains("aria_label(self.text(TextKey::RunInspector))"));
+        // Tabs carry their role, label, and selected state; icons sit inside
+        // those labeled controls and stay decorative.
+        assert!(root.contains(".role(Role::Tab)"));
+        assert!(root.contains(".aria_label(label"));
+        assert!(root.contains(".aria_selected("));
     }
 
     #[gpui::test]
@@ -177,14 +182,11 @@ mod tests {
         ];
         for expected in PRD_BINDINGS {
             assert!(
-                crate::keymap::SHORTCUTS.contains(expected),
-                "PRD binding {expected} is missing from keymap::SHORTCUTS"
+                crate::keymap::binds(expected)
+                    || crate::keymap::COMPONENT_NATIVE_SHORTCUTS.contains(expected),
+                "PRD binding {expected} has no keymap route"
             );
         }
-        assert!(
-            crate::keymap::bindings().len() >= PRD_BINDINGS.len(),
-            "keymap registers fewer bindings than the PRD interaction table"
-        );
     }
 
     #[gpui::test]

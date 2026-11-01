@@ -1077,6 +1077,13 @@ mod tests {
         assert_eq!(first_tasks[0].id, id);
         assert_eq!(first_tasks[0].status, BackgroundTaskStatusSnapshot::Running);
 
+        let other = start_task(&manager, tmp.path(), "sleep 30", "sess-1").await;
+        let started = match rx.recv().await.expect("second start snapshot") {
+            AgentUpdate::BackgroundTasksChanged { tasks } => tasks,
+            other => panic!("expected snapshot, got {other:?}"),
+        };
+        assert_eq!(started.len(), 2, "a start publishes every live task");
+
         let second = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("terminal snapshot timed out")
@@ -1085,11 +1092,18 @@ mod tests {
             AgentUpdate::BackgroundTasksChanged { tasks } => tasks,
             other => panic!("expected snapshot, got {other:?}"),
         };
-        assert_eq!(second_tasks.len(), 1, "snapshot is a full replacement");
-        assert_eq!(
-            second_tasks[0].status,
-            BackgroundTaskStatusSnapshot::Completed
-        );
+        assert_eq!(second_tasks.len(), 2, "snapshot is a full replacement");
+        let finished = second_tasks
+            .iter()
+            .find(|task| task.id == id)
+            .expect("finished task is still listed");
+        assert_eq!(finished.status, BackgroundTaskStatusSnapshot::Completed);
+        let running = second_tasks
+            .iter()
+            .find(|task| task.id == other)
+            .expect("unrelated task is still listed");
+        assert_eq!(running.status, BackgroundTaskStatusSnapshot::Running);
+        manager.cancel(&other);
     }
 
     #[tokio::test]

@@ -471,8 +471,7 @@ fn agent_message_text(message: &AgentMessage) -> String {
 }
 
 fn derive_session_title(text: &str) -> Option<String> {
-    let first_line = text.lines().map(str::trim).find(|line| !line.is_empty())?;
-    let normalized = first_line.split_whitespace().collect::<Vec<_>>().join(" ");
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if normalized.is_empty() {
         return None;
     }
@@ -480,10 +479,8 @@ fn derive_session_title(text: &str) -> Option<String> {
     if normalized.chars().count() <= MAX_CHARS {
         Some(normalized)
     } else {
-        Some(format!(
-            "{}...",
-            normalized.chars().take(MAX_CHARS).collect::<String>()
-        ))
+        let truncated: String = normalized.chars().take(MAX_CHARS - 3).collect();
+        Some(format!("{truncated}..."))
     }
 }
 
@@ -1247,11 +1244,17 @@ impl super::SessionStore for SqliteSessionStore {
         Ok(sessions)
     }
 
-    async fn set_session_title(&self, session_id: &str, title: &str) -> Result<()> {
-        let title = title.trim();
-        if title.is_empty() {
-            anyhow::bail!("session title cannot be empty");
-        }
+    async fn set_session_title(&self, session_id: &str, title: Option<&str>) -> Result<()> {
+        let title = match title {
+            Some(title) => {
+                let title = title.trim();
+                if title.is_empty() {
+                    anyhow::bail!("session title cannot be empty");
+                }
+                Some(title)
+            }
+            None => None,
+        };
         let result = sqlx::query("UPDATE sessions SET title = ? WHERE id = ?")
             .bind(title)
             .bind(session_id)
@@ -1986,6 +1989,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn title_derivation_collapses_whitespace_and_caps_at_80() {
+        let (_tmp, store) = new_store_with_session("session").await;
+        let prompt = format!("  First line\n\nsecond\tline {}", "x".repeat(100));
+        store
+            .append_agent_message(
+                "session",
+                &AgentMessage::text(AgentRole::User, MessageOrigin::User, prompt),
+                1,
+            )
+            .await
+            .unwrap();
+        let title = store.list_sessions(None).await.unwrap()[0]
+            .title
+            .clone()
+            .unwrap();
+        assert_eq!(title.chars().count(), 80);
+        assert!(title.starts_with("First line second line "));
+        assert!(title.ends_with("..."));
+    }
+
+    #[tokio::test]
     async fn injected_context_does_not_derive_title() {
         let (_tmp, store) = new_store_with_session("session").await;
         store
@@ -2022,7 +2046,10 @@ mod tests {
     #[tokio::test]
     async fn manual_title_is_not_overwritten() {
         let (_tmp, store) = new_store_with_session("session").await;
-        store.set_session_title("session", "Manual").await.unwrap();
+        store
+            .set_session_title("session", Some("Manual"))
+            .await
+            .unwrap();
         store
             .append_agent_message(
                 "session",
@@ -2035,6 +2062,17 @@ mod tests {
             store.list_sessions(None).await.unwrap()[0].title.as_deref(),
             Some("Manual")
         );
+    }
+
+    #[tokio::test]
+    async fn manual_title_can_be_cleared() {
+        let (_tmp, store) = new_store_with_session("session").await;
+        store
+            .set_session_title("session", Some("Manual"))
+            .await
+            .unwrap();
+        store.set_session_title("session", None).await.unwrap();
+        assert!(store.list_sessions(None).await.unwrap()[0].title.is_none());
     }
 
     #[tokio::test]

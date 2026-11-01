@@ -41,7 +41,7 @@ Status values:
 | `DiffTable` | Direct | A patch touching several files opens a per-file table with accept/reject decisions. |
 | `FilterTable` | Compose | Extensions Manager rows and filters. |
 | `ComparisonTable` | N/A | No bounded feature-matrix workflow in Tact. |
-| `ApprovalCard` | Direct | Permission and destructive-action gates. |
+| `ApprovalCard` | Compose | Permission gates keep its one-click semantics; the visual shell is Tact-owned (P15) because the runtime offers four permission choices. |
 | `PlanCard` | Compose | Goals criteria use the plan-step grammar; the transcript plan card is Tact-owned so it can carry row identity. |
 | `RecommendationCard` | Deferred | No current recommendation decision workflow. |
 | `ContextCard` | Direct | Retained hook/tool evidence in the Context inspector. |

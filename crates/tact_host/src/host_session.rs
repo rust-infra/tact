@@ -753,11 +753,16 @@ mod tests {
         let harness = Harness::new().await;
         let stopped = Arc::new(AtomicBool::new(false));
         let stopped_by_driver = stopped.clone();
+        let (cancelled_tx, cancelled_rx) = tokio::sync::oneshot::channel();
+        let mut cancelled_tx = Some(cancelled_tx);
         let driver: DriverFn = Box::new(move |_agent, mut rx, _account| {
             Box::pin(async move {
                 while let Some(command) = rx.recv().await {
                     if matches!(command, UserCommand::Cancel) {
-                        tokio::time::sleep(Duration::from_millis(20)).await;
+                        if let Some(tx) = cancelled_tx.take() {
+                            let _ = tx.send(());
+                        }
+                        tokio::time::sleep(Duration::from_millis(50)).await;
                         stopped_by_driver.store(true, Ordering::SeqCst);
                         return Ok(());
                     }
@@ -777,7 +782,14 @@ mod tests {
         assert!(matches!(host.next_event().await, Some(HostEvent::Ready)));
         assert_lock_conflict(&harness.store, host.session_id()).await;
 
+        let store = harness.store.clone();
+        let session_id = host.session_id().to_string();
+        let probe = tokio::spawn(async move {
+            cancelled_rx.await.expect("driver saw the cancel");
+            assert_lock_conflict(&store, &session_id).await;
+        });
         let exit = host.close().await.expect("close");
+        probe.await.expect("lock probe");
         assert!(exit.cancelled);
         assert!(stopped.load(Ordering::SeqCst));
         let lock = SessionLockGuard::acquire(harness.store.clone(), &exit.session_id)

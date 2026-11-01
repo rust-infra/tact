@@ -113,24 +113,43 @@ pub fn blocks(markdown: &str) -> Vec<String> {
     blocks
 }
 
-/// Removes fenced Mermaid blocks, which the transcript renders as diagrams.
+/// Removes fenced Mermaid blocks the transcript renders as diagrams.
+///
+/// A fence whose source is not a supported diagram stays in the prose, so the
+/// reader still sees the original source as a readable code block.
 pub fn strip_blocks(markdown: &str) -> String {
     let mut out = String::new();
-    let mut inside = false;
+    let mut fence: Option<Vec<&str>> = None;
     for line in markdown.lines() {
         let trimmed = line.trim();
-        if !inside && trimmed.eq_ignore_ascii_case("```mermaid") {
-            inside = true;
-            continue;
-        }
-        if inside {
-            if trimmed.starts_with("```") {
-                inside = false;
+        match fence.as_mut() {
+            Some(lines) => {
+                if trimmed.starts_with("```") {
+                    let source = lines.join("\n");
+                    if parse(&source).is_none() {
+                        out.push_str("```mermaid\n");
+                        out.push_str(&source);
+                        out.push_str("\n```\n");
+                    }
+                    fence = None;
+                } else {
+                    lines.push(line);
+                }
             }
-            continue;
+            None => {
+                if trimmed.eq_ignore_ascii_case("```mermaid") {
+                    fence = Some(Vec::new());
+                } else {
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
         }
-        out.push_str(line);
-        out.push('\n');
+    }
+    if let Some(lines) = fence {
+        out.push_str("```mermaid\n");
+        out.push_str(&lines.join("\n"));
+        out.push_str("\n```\n");
     }
     out.trim_end().to_string()
 }
@@ -462,6 +481,15 @@ mod tests {
     fn fences_are_removed_from_the_prose() {
         let markdown = "Intro\n```mermaid\ngraph TD\n A --> B\n```\nOutro";
         assert_eq!(super::strip_blocks(markdown), "Intro\nOutro");
+    }
+
+    #[test]
+    fn unsupported_fences_stay_as_readable_code() {
+        let markdown = "Intro\n```mermaid\nsequenceDiagram\n A->>B: hi\n```\nOutro";
+        let stripped = super::strip_blocks(markdown);
+        assert!(stripped.contains("```mermaid"));
+        assert!(stripped.contains("sequenceDiagram"));
+        assert!(stripped.contains("Outro"));
     }
 
     #[test]

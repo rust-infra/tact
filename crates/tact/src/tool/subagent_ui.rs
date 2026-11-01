@@ -15,7 +15,7 @@ use std::collections::HashMap;
 
 use tact_protocol::{
     AgentUpdate, SubagentStep, SubagentStepStatus, SubagentTranscriptEntry, ToolOutputChunk,
-    ToolPresentationInfo, UpdateSender,
+    ToolPresentationInfo, UiAgentRef, UpdateSender,
 };
 
 use crate::tool::ToolProgressReporter;
@@ -447,12 +447,14 @@ pub fn tagged_ui_channel_with_progress(
                     // flag, not a prompt prefix: the popup titles itself with it
                     // (see `SelectPopup::from_subagent`), so a child that writes
                     // "[Subagent]" into its own prompt cannot fake the label.
+                    // It is derived from the origin so the two cannot disagree.
+                    let from_subagent = matches!(origin.agent, UiAgentRef::Subagent { .. });
                     let _ = inner.send(AgentUpdate::RequestSelect {
                         request_id,
                         prompt,
                         options,
                         log_confirm,
-                        from_subagent: true,
+                        from_subagent,
                         purpose,
                         origin,
                     });
@@ -465,11 +467,12 @@ pub fn tagged_ui_channel_with_progress(
                     origin,
                     ..
                 } => {
+                    let from_subagent = matches!(origin.agent, UiAgentRef::Subagent { .. });
                     let _ = inner.send(AgentUpdate::RequestMultiSelect {
                         request_id,
                         prompt,
                         options,
-                        from_subagent: true,
+                        from_subagent,
                         purpose,
                         origin,
                     });

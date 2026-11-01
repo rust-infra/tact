@@ -87,9 +87,8 @@ pub fn plan(command: &CommandId) -> CommandPlan {
 /// declared form; a route that returns `Noop` without a form is the
 /// visible-but-inert case the parity suite must reject.
 pub fn command_is_executable(id: &CommandId) -> bool {
-    // CLI catalog entries are surfaced through an executable desktop surface
-    // even when they still need a flag or confirmation, such as `hooks forget
-    // --all`. Their route class and Clap parity are checked separately.
+    // CLI entries that open a shell form or confirmation are executable even
+    // when their empty-argument route is an error; the rest must route.
     if let CommandId::Cli(entry) = id {
         return cli_entry_has_setting_route(*entry);
     }
@@ -244,7 +243,7 @@ pub fn catalog_entries(catalog: &CommandCatalog) -> impl Iterator<Item = &Comman
 
 /// Assertion helpers shared by shell tests without exposing executor internals.
 pub fn cli_entry_has_setting_route(entry: CliEntry) -> bool {
-    matches!(
+    if matches!(
         entry,
         CliEntry::PluginInstall
             | CliEntry::PluginUninstall
@@ -255,7 +254,20 @@ pub fn cli_entry_has_setting_route(entry: CliEntry) -> bool {
             | CliEntry::McpLogout
             | CliEntry::HooksTrust
             | CliEntry::HooksForget
-    ) || plan(&CommandId::Cli(entry)).target == CommandTarget::Shell
+    ) {
+        return true;
+    }
+    let id = CommandId::Cli(entry);
+    match crate::commands::route_cli(entry, &CommandArguments::default()) {
+        crate::commands::CommandRoute::Noop => false,
+        crate::commands::CommandRoute::Error(_) => {
+            form_for(&id) != CommandForm::None
+                || tact_catalog::builtins()
+                    .get(&id)
+                    .is_some_and(|descriptor| !descriptor.children.is_empty())
+        }
+        _ => true,
+    }
 }
 
 pub fn cli_route_class(entry: CliEntry) -> CliRouteClass {
