@@ -4369,7 +4369,7 @@ impl DesktopRoot {
         .scrollbar(true)
         .jump_button(false)
         .p_0()
-        .with_row_style(full_width_row_style());
+        .with_row_style(transcript_row_style());
         let column = v_flex()
             .id("transcript-column")
             .flex_1()
@@ -12769,10 +12769,14 @@ fn next_new_activity(
     }
 }
 
-fn full_width_row_style() -> gpui::StyleRefinement {
+fn transcript_row_style() -> gpui::StyleRefinement {
     let mut style = gpui::StyleRefinement::default();
     style.padding.left = Some(px(0.).into());
     style.padding.right = Some(px(0.).into());
+    // The scroller's default 32px row gap reads as a paragraph break between
+    // the activity cards of one turn. The shell owns the tighter rhythm and
+    // lets each row's own padding separate prose.
+    style.padding.bottom = Some(px(12.).into());
     style
 }
 
@@ -13766,6 +13770,41 @@ mod tests {
                 "a second click collapses the thought"
             );
         });
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn transcript_rows_keep_a_tight_activity_rhythm(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let demo = tact_desktop_core::fixtures::demo_transcript();
+                let rows = demo
+                    .iter()
+                    .filter(|row| matches!(row.ordinal, 0 | 2))
+                    .cloned()
+                    .collect();
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = tact_desktop_core::TranscriptView::from_rows(rows);
+                this.snapshot = Arc::new(snapshot);
+                this.transcript_rows.clear();
+                let count = this.snapshot.transcript.len();
+                this.scroller.update(cx, |state, cx| state.reset(count, cx));
+            });
+            window.draw(cx).clear(cx);
+        });
+        let user = window
+            .debug_bounds("transcript-row-user-0")
+            .expect("user row");
+        let thinking = window
+            .debug_bounds("transcript-row-thinking-2")
+            .expect("thinking row");
+        assert_eq!(
+            thinking.origin.y - (user.origin.y + user.size.height),
+            px(12.),
+            "activity rows sit on the shell's tight rhythm, not the scroller default"
+        );
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
     }

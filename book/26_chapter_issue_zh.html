@@ -728,6 +728,7 @@
 <li class="toc-l2"><a href="#22-2026-10-31--%E5%90%8E%E5%8F%B0%E5%AD%90%E4%BB%A3%E7%90%86%E7%9A%84%E5%83%B5%E5%B0%B8-run-%E4%B8%8E%E6%B0%B8%E4%B8%8D%E6%8E%A5%E7%BA%BF%E7%9A%84%E7%BB%93%E6%9E%9C%E9%98%9F%E5%88%97" title="22. 2026-10-31 — 后台子代理的僵尸 run 与永不接线的结果队列"><span class="toc-label">22. 2026-10-31 — 后台子代理的僵尸 run 与永不接线的结果队列</span></a></li>
 <li class="toc-l2"><a href="#23-2026-10-31--%E5%83%B5%E5%B0%B8-run-%E7%9A%84%E8%BF%90%E8%A1%8C%E6%97%B6%E8%87%AA%E6%84%88%E4%B8%8E-fd-%E4%B8%8A%E9%99%90" title="23. 2026-10-31 — 僵尸 run 的运行时自愈与 fd 上限"><span class="toc-label">23. 2026-10-31 — 僵尸 run 的运行时自愈与 fd 上限</span></a></li>
 <li class="toc-l2"><a href="#24-2026-11-01--desktop-%E8%A7%86%E8%A7%89%E5%AF%B9%E9%BD%90%E4%B8%8E%E7%BB%84%E4%BB%B6%E8%A1%A5%E4%B8%81" title="24. 2026-11-01 — Desktop 视觉对齐与组件补丁"><span class="toc-label">24. 2026-11-01 — Desktop 视觉对齐与组件补丁</span></a></li>
+<li class="toc-l2"><a href="#25-2026-11-01--desktop-%E8%BD%AC%E5%BD%95%E8%A1%8C%E8%B7%9D%E6%94%B6%E7%B4%A7" title="25. 2026-11-01 — Desktop 转录行距收紧"><span class="toc-label">25. 2026-11-01 — Desktop 转录行距收紧</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -21586,6 +21587,19 @@ Mermaid 图（如 <code>sequenceDiagram</code>）保留为代码块，不再从�
 <code>cargo check -p tact-desktop --target x86_64-pc-windows-gnu</code>
 （zig cc 交叉工具链）；
 <code>TACT_DESKTOP_SMOKE=1</code> 在干净 HOME 下启动并退出，退出码 0。</p>
+<hr />
+<h2 id="25-2026-11-01--desktop-转录行距收紧">25. 2026-11-01 — Desktop
+转录行距收紧</h2>
+<p><strong>现象：</strong> 转录的纵向节奏由
+<code>MessageScroller</code> 的默认行间距决定（每行底部 32px），而思考行、
+工具组、计划卡这些「同一 turn 的活动」本身已是独立卡片，两卡之间再叠一段
+段落级空白，视觉上被切成互不相干的两块；思考标题与其下方的工具卡尤其明显。</p>
+<p><strong>改后行为：</strong> 行间距改由 shell 自己持有：<code>root.rs</code>
+的 <code>transcript_row_style()</code> 在组件默认值之后覆盖行底距为 12px，
+正文之间的疏密仍由各行的内边距负责。新增
+<code>transcript_rows_keep_a_tight_activity_rhythm</code>，直接渲染用户行与其后的
+思考行并断言两行间隙为 12px，防止回退到组件默认值。离屏截图
+<code>26a</code>–<code>26c</code> 与 <code>34</code>–<code>37</code> 重新生成。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>
