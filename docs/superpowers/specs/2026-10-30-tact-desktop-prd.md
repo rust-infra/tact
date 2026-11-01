@@ -605,7 +605,7 @@ The desktop is ready for implementation planning when:
 | CLI flags | tokio-console | Diagnostics |
 | CLI flags | skill-body auto-inject | Skills settings |
 | Input | `@file`, image mention, attachment picker | Composer |
-| Input | voice input | P2 composer voice control; deferred until transcription exists |
+| Input | voice input | Composer microphone when the voice provider is configured |
 | Input | queued messages | Composer queue |
 | Input | permission and `ask_user` | Gate and question flow |
 

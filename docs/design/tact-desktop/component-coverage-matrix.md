@@ -19,7 +19,7 @@ Status values:
 | `ToolChip` | Direct | Latest-tool lifecycle chip in the Run inspector. |
 | `ToolCall` | Direct | Tool input/output/approval card. |
 | `TaskRow` | Direct | Sticky task rows. |
-| `SearchResults` | Deferred | Hosted web search currently injects context without a result reader. Candidate P2 evidence surface. |
+| `SearchResults` | Direct | Web-search tool reader: query, title and source domain; selecting a hit opens it. |
 | `TodoList` | Direct | Task checklist in the Run inspector. |
 | `ImageGeneration` | N/A | Tact is a coding agent; image generation is not a product tool. |
 | `StreamingText` | Direct | Assistant Markdown stream. |
@@ -29,22 +29,22 @@ Status values:
 | `Chat` | N/A | Its message model cannot interleave tools, reasoning, diffs and gates. |
 | `Suggestions` | Direct | Follow-up prompt chips after an answer. |
 | `AttachmentStrip` | Direct | Composer attachments. |
-| `ArtifactPanel` | Deferred | Generated documents/code artifacts are not yet a Tact workflow. Candidate P2 panel. |
+| `ArtifactPanel` | Direct | A write/edit tool body opens with Preview / Source switching. |
 | `FineTuneCard` | N/A | Design-property tuning is not a Tact agent workflow. |
 | `PromptBar` | Compose | Native editor/model/mentions/attachments; Tact adds the nested slash overlay. |
-| `VoiceControls` | Deferred | P2 transcription pipeline; the P1 composer deliberately shows no dead microphone. |
+| `VoiceControls` | Direct | Composer microphone when the voice worker is configured; inserts the transcript on stop. |
 | `MessageQueue` | Direct | Queued prompts with send/remove/clear. |
 | `CommandSearch` | Direct | Flat command palette with group metadata in subtitle/keywords. |
 | `SidebarNav` | Compose | Project-scoped session rail with the app-owned filter and lock badges. |
 | `ThreadList` | Deferred | Insufficient for project-scoped fuzzy/filter manager; not claimed for that surface. |
 | `RecordsTable` | Compose | Used through `FilterTable`; direct session rows remain Tact-owned. |
-| `DiffTable` | Deferred | Multi-file proposal review; `CodeDiff` covers the current single-file flow. |
+| `DiffTable` | Direct | A patch touching several files opens a per-file table with accept/reject decisions. |
 | `FilterTable` | Compose | Extensions Manager rows and filters. |
 | `ComparisonTable` | N/A | No bounded feature-matrix workflow in Tact. |
 | `ApprovalCard` | Direct | Permission and destructive-action gates. |
 | `PlanCard` | Compose | Goals criteria use the plan-step grammar; the transcript plan card is Tact-owned so it can carry row identity. |
 | `RecommendationCard` | Deferred | No current recommendation decision workflow. |
-| `ContextCard` | Deferred | Could render retained evidence in a future compact evidence panel. |
+| `ContextCard` | Direct | Retained hook/tool evidence in the Context inspector. |
 | `InsightCard` | Compose | Stats and balance summaries. |
 | `ChoiceGroup` | Deferred | Single-choice gates use `QuestionFlow`'s option grammar; `ChoiceGroup` is the compact inline candidate once gates lose their confirm step. |
 | `QuestionFlow` | Direct | Multi-question clarification sequence; multi-select uses `Toggle`. |
@@ -53,10 +53,8 @@ Status values:
 
 The following are not silently ignored:
 
-- `SearchResults`: web-search evidence has no dedicated reader today.
-- `ArtifactPanel`: generated artifacts have no inspect/preview surface.
-- `DiffTable`: multi-file change review is not covered by the single-file diff.
 - `RecommendationCard`: no decision/recommendation workflow exists.
-- `ContextCard`: retained evidence is currently rendered inside tool cards only.
 
-These are recorded as P2 candidates unless the product scope adds them earlier.
+`SearchResults`, `ArtifactPanel`, `DiffTable` and `ContextCard` were P2
+candidates and are now mounted by the readers and the Context inspector
+(captures `41`–`44` and `31`).

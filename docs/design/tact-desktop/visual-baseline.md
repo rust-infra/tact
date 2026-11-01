@@ -295,5 +295,5 @@ record them:
 | Run summary | No second line under the headline | Fixed: the prompt's second line renders as the muted summary (`split_run_text`) |
 | Avatars | Hard-coded `Y` / `RG` | Fixed: local account initials from `USER`/`USERNAME` |
 | Dark theme | Not compared against the design | Fixed: dark prototype render and anchor check |
-| Session Manager keyboard hints | No footer shortcut hints | Deferred (P2) |
+| Session Manager keyboard hints | No footer shortcut hints | Fixed: `↑↓ move · ↵ open · esc close` footer |
 | i18n | System notices such as `Context compacted: ...` stay English in the Chinese shell | Deferred: the text is produced by the runtime, not the desktop shell |

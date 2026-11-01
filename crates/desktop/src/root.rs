@@ -9555,6 +9555,27 @@ impl DesktopRoot {
                             ),
                     ),
             )
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .gap(px(14.))
+                    .px(px(19.))
+                    .py(px(8.))
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .font_family("Lilex")
+                    .text_size(px(10.))
+                    .text_color(cx.theme().muted_foreground)
+                    .children(
+                        match self.snapshot.language {
+                            tact_catalog::CatalogLocale::En => ["↑↓ move", "↵ open", "esc close"],
+                            tact_catalog::CatalogLocale::Zh => ["↑↓ 移动", "↵ 打开", "esc 关闭"],
+                        }
+                        .into_iter()
+                        .map(|hint| div().child(hint)),
+                    ),
+            )
             .into_any_element()
     }
 
