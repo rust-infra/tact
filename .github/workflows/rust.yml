@@ -16,6 +16,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # `check-package.sh` builds `fixtures/tact-host-consumer`, whose closure
+      # reaches `tact` and therefore `cpal`/`alsa-sys`: the runner image does
+      # not carry the ALSA headers, so the job needs the same system libraries
+      # the build jobs install.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsqlite3-dev libasound2-dev pkg-config clang libclang-dev
       - run: scripts/check-agent-kernel-deps.sh tact_agent_api tact_agent_core tact_llm tact_agent_sdk
       - run: python3 scripts/check-packaging.py
       - run: scripts/check-package.sh
