@@ -2929,9 +2929,11 @@ mod tests {
             .iter()
             .position(|entry| entry.starts_with("close:"))
             .unwrap();
+        // The fake host logs `open:{root}:{id}`, and a Windows root separates
+        // with `\`, so compare on a normalized separator.
         let second_open = log
             .iter()
-            .rposition(|entry| entry.contains("/second:"))
+            .rposition(|entry| entry.replace('\\', "/").contains("/second:"))
             .unwrap();
         assert!(close < second_open, "{log:?}");
     }
