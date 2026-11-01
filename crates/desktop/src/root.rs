@@ -7130,6 +7130,11 @@ impl DesktopRoot {
                     cx,
                 );
                 table.set_rows(diff_rows(files, &reader.decisions), window, cx);
+                if !files.is_empty() {
+                    // Review is a decision surface: start on the first file
+                    // so its accept/reject actions are visible.
+                    table.set_selected_row("file-0", window, cx);
+                }
             });
             let subscription = cx.subscribe(&table, |this, _, event, cx| {
                 if let DiffTableEvent::DecisionRequested { row_id, action, .. } = event
