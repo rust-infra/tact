@@ -25,7 +25,8 @@ actions!(
         SlashExecute,
         SlashDismiss,
         NewSession,
-        Dismiss
+        Dismiss,
+        Quit
     ]
 );
 
@@ -52,6 +53,8 @@ pub const SHORTCUTS: &[&str] = &[
     "shift-tab",
     "secondary-shift-l",
     "secondary-n",
+    // The platform quit convention; not a PRD interaction-table entry.
+    "secondary-q",
 ];
 
 /// Keys the focused control activates natively instead of through a global
@@ -83,6 +86,7 @@ pub(crate) enum BindingAction {
     SlashDismiss,
     NewSession,
     Dismiss,
+    Quit,
 }
 
 /// The executable keymap. `bindings()` is built from this table, so the tests
@@ -114,6 +118,7 @@ pub(crate) const GLOBAL_BINDINGS: &[(&str, Option<&str>, BindingAction)] = &[
     ("enter", Some("SlashOverlay"), BindingAction::SlashExecute),
     ("escape", Some("SlashOverlay"), BindingAction::SlashDismiss),
     ("secondary-shift-l", None, BindingAction::BackToBottom),
+    ("secondary-q", None, BindingAction::Quit),
 ];
 
 #[cfg(test)]
@@ -158,6 +163,7 @@ pub fn bindings() -> Vec<gpui::KeyBinding> {
             BindingAction::SlashDismiss => gpui::KeyBinding::new(keystroke, SlashDismiss, context),
             BindingAction::NewSession => gpui::KeyBinding::new(keystroke, NewSession, context),
             BindingAction::Dismiss => gpui::KeyBinding::new(keystroke, Dismiss, context),
+            BindingAction::Quit => gpui::KeyBinding::new(keystroke, Quit, context),
         })
         .collect()
 }
@@ -209,6 +215,11 @@ mod tests {
                 "PRD shortcut {shortcut} has no binding and is not component-native"
             );
         }
+    }
+
+    #[test]
+    fn platform_quit_is_bound() {
+        assert!(binds("secondary-q"));
     }
 
     #[test]

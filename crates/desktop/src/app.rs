@@ -160,6 +160,7 @@ fn run_inner(smoke: bool) -> Result<(), DesktopStartError> {
                     MenuItem::action("New Session", crate::keymap::NewSession),
                     MenuItem::action("Command Center", crate::keymap::CommandCenter),
                     MenuItem::action("Settings", crate::keymap::OpenSettings),
+                    MenuItem::action("Quit", crate::keymap::Quit),
                 ]),
                 Menu::new("View").items([
                     MenuItem::action("Toggle Sessions", crate::keymap::ToggleLeft),

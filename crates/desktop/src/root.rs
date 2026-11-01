@@ -678,13 +678,11 @@ impl DesktopRoot {
     }
 
     fn session_title(&self, session: &tact_desktop_core::SessionSummaryView) -> String {
-        if session.message_count == 0 {
-            return self.text(TextKey::NewSession).to_string();
-        }
-        if session.title.trim().is_empty() {
-            return self.text(TextKey::UntitledSession).to_string();
-        }
-        session.title.clone()
+        session_title_label(
+            self.snapshot.language,
+            &session.title,
+            session.message_count,
+        )
     }
 
     fn sync_sidebar_nav(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -9751,6 +9749,7 @@ impl Render for DesktopRoot {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .on_action(cx.listener(Self::on_command_center))
+            .on_action(cx.listener(|_, _: &keymap::Quit, _, cx| cx.quit()))
             .on_action(cx.listener(|this, _: &keymap::OpenSettings, window, cx| {
                 if this.overlay.is_some() {
                     return;
@@ -12927,6 +12926,22 @@ fn voice_button_visible(voice: VoiceUi) -> bool {
     voice.enabled && !voice.missing_api_key
 }
 
+fn session_title_label(
+    locale: tact_desktop_core::CatalogLocale,
+    title: &str,
+    message_count: i64,
+) -> String {
+    if !title.trim().is_empty() {
+        return title.to_string();
+    }
+    let key = if message_count == 0 {
+        TextKey::NewSession
+    } else {
+        TextKey::UntitledSession
+    };
+    i18n::text(locale, key).to_string()
+}
+
 fn composer_voice_button(
     voice: VoiceUi,
     label: &'static str,
@@ -13312,6 +13327,18 @@ mod tests {
         assert!(!voice_button_visible(voice(false, false)));
         assert!(!voice_button_visible(voice(true, true)));
         assert!(voice_button_visible(voice(true, false)));
+    }
+
+    #[test]
+    fn manual_titles_survive_an_empty_session() {
+        use tact_desktop_core::CatalogLocale::{En, Zh};
+        assert_eq!(
+            session_title_label(En, "Live smoke session", 0),
+            "Live smoke session"
+        );
+        assert_eq!(session_title_label(En, "", 0), "New session");
+        assert_eq!(session_title_label(Zh, "", 0), "新会话");
+        assert_eq!(session_title_label(En, "", 3), "Untitled session");
     }
 
     fn probe_dir(label: &str) -> PathBuf {
