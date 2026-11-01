@@ -324,11 +324,16 @@ impl TranscriptReducer {
                     .unwrap_or_else(|| "fallback-run".to_string());
                 self.active_run = Some(run_id);
                 self.active_plan = None;
-                // One run is one execution group: a later model turn in the
-                // same run appends its tools to the group the run already
-                // owns instead of opening a second card. The group settles
-                // when the run finishes. The loop identity is allocated when
-                // the pending run is promoted, not on every turn.
+                // Each model turn draws its own card where its calls run, so
+                // the reader meets a tool beside the reasoning that asked for
+                // it. The previous turn's card settles in place instead of
+                // collecting the rest of the run. The loop identity belongs to
+                // the whole run, so every card of the run carries it.
+                if let Some(group) = self.active_group.take() {
+                    self.settle_group(group, false);
+                    self.last_group = Some(group);
+                    delta.changed(group);
+                }
                 if promoting {
                     let loop_id = LoopId(self.next_loop_id);
                     self.next_loop_id += 1;
@@ -1184,7 +1189,7 @@ impl TranscriptReducer {
         if let Some(group) = self.active_group {
             return group;
         }
-        let loop_id = self.active_loop.take();
+        let loop_id = self.active_loop;
         let row = self.push_row(
             loop_id,
             RowBody::ToolGroup(ToolGroupRow {
@@ -1519,9 +1524,9 @@ impl TranscriptReducer {
     }
 
     fn settle_group(&mut self, row: RowId, finish_run: bool) {
-        // A group still collecting the run's steps stays open: settling it
+        // A group still collecting its turn's steps stays open: settling it
         // between two steps would close the card and hide every later step of
-        // the same loop behind its header.
+        // the same turn behind its header.
         let collecting = self.active_group == Some(row);
         self.update_group(row, |group| {
             let status = if group.items.iter().any(|item| {
@@ -2153,7 +2158,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_from_every_turn_in_a_run_share_one_group() {
+    fn every_turn_of_a_run_opens_its_own_group() {
         let mut reducer = TranscriptReducer::new();
         run_started(&mut reducer, "run-1");
         turn(&mut reducer);
@@ -2162,15 +2167,66 @@ mod tests {
         reducer.apply_agent_update(step_started("tool-2"), &context(1));
 
         let groups = group_rows(&reducer);
-        assert_eq!(groups.len(), 1, "one run draws one execution group");
+        assert_eq!(groups.len(), 2, "each turn draws its own card");
+        assert_eq!(
+            groups[0].loop_id, groups[1].loop_id,
+            "every card of the run names the same loop"
+        );
         assert!(matches!(
             &groups[0].body,
-            RowBody::ToolGroup(group) if group.items.len() == 2
+            RowBody::ToolGroup(group) if group.items.len() == 1
+        ));
+        assert!(matches!(
+            &groups[1].body,
+            RowBody::ToolGroup(group) if group.items.len() == 1
         ));
     }
 
     #[test]
-    fn a_running_loop_keeps_its_group_open_between_steps() {
+    fn each_turn_places_its_tools_between_the_reasoning_regions() {
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-1");
+        turn(&mut reducer);
+        reducer.apply_agent_update(
+            AgentUpdate::ThinkingChunk(tact_protocol::ThinkingChunk::Started),
+            &context(1),
+        );
+        reducer.apply_agent_update(
+            AgentUpdate::ThinkingChunk(tact_protocol::ThinkingChunk::Delta("first".into())),
+            &context(1),
+        );
+        reducer.apply_agent_update(step_started("tool-1"), &context(1));
+        reducer.apply_agent_update(step_finished("tool-1"), &context(1));
+
+        turn(&mut reducer);
+        reducer.apply_agent_update(
+            AgentUpdate::ThinkingChunk(tact_protocol::ThinkingChunk::Started),
+            &context(1),
+        );
+        reducer.apply_agent_update(
+            AgentUpdate::ThinkingChunk(tact_protocol::ThinkingChunk::Delta("second".into())),
+            &context(1),
+        );
+        reducer.apply_agent_update(step_started("tool-2"), &context(1));
+
+        let kinds = reducer
+            .rows
+            .iter()
+            .map(|row| match &row.body {
+                RowBody::Thinking(_) => "thinking",
+                RowBody::ToolGroup(_) => "group",
+                _ => "other",
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            ["thinking", "group", "thinking", "group"],
+            "a turn's calls must land beside the reasoning that asked for them"
+        );
+    }
+
+    #[test]
+    fn a_running_turn_keeps_its_group_open_between_steps() {
         let mut reducer = TranscriptReducer::new();
         run_started(&mut reducer, "run-1");
         turn(&mut reducer);
@@ -2181,26 +2237,24 @@ mod tests {
                 &group_rows(&reducer)[0].body,
                 RowBody::ToolGroup(group) if !group.collapsed
             ),
-            "one step finishing must not hide the rest of the run behind the group header"
+            "one step finishing must not hide the rest of the turn behind the group header"
         );
 
-        turn(&mut reducer);
         reducer.apply_agent_update(step_started("tool-2"), &context(1));
         assert!(matches!(
             &group_rows(&reducer)[0].body,
             RowBody::ToolGroup(group) if !group.collapsed && group.items.len() == 2
         ));
 
-        reducer.apply_agent_update(
-            AgentUpdate::RunFinished {
-                run_id: "run-1".into(),
-            },
-            &context(1),
+        reducer.apply_agent_update(step_finished("tool-2"), &context(1));
+        turn(&mut reducer);
+        assert!(
+            matches!(
+                &group_rows(&reducer)[0].body,
+                RowBody::ToolGroup(group) if group.collapsed
+            ),
+            "the next turn settles the card the previous turn left open"
         );
-        assert!(matches!(
-            &group_rows(&reducer)[0].body,
-            RowBody::ToolGroup(group) if group.collapsed
-        ));
     }
 
     #[test]
