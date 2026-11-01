@@ -731,6 +731,7 @@
 <li class="toc-l2"><a href="#25-2026-11-01--desktop-%E8%BD%AC%E5%BD%95%E8%A1%8C%E8%B7%9D%E6%94%B6%E7%B4%A7" title="25. 2026-11-01 — Desktop 转录行距收紧"><span class="toc-label">25. 2026-11-01 — Desktop 转录行距收紧</span></a></li>
 <li class="toc-l2"><a href="#26-2026-11-01--%E5%B7%A5%E5%85%B7%E7%BB%84%E6%A0%87%E9%A2%98%E4%B8%8E%E5%90%8E%E5%8F%B0%E8%BF%90%E8%A1%8C%E4%BC%9A%E8%AF%9D" title="26. 2026-11-01 — 工具组标题与后台运行会话"><span class="toc-label">26. 2026-11-01 — 工具组标题与后台运行会话</span></a></li>
 <li class="toc-l2"><a href="#27-2026-11-01--%E6%8E%92%E9%98%9F%E4%B8%AD%E7%9A%84%E5%B7%A5%E5%85%B7%E5%8D%A1%E4%B8%8E%E5%AD%90%E4%BB%A3%E7%90%86%E5%8D%A1%E7%89%87%E7%9A%84%E5%8F%8C%E5%87%BB%E9%80%89%E6%8B%A9" title="27. 2026-11-01 — 排队中的工具卡 与子代理卡片的双击选择"><span class="toc-label">27. 2026-11-01 — 排队中的工具卡 与子代理卡片的双击选择</span></a></li>
+<li class="toc-l2"><a href="#28-2026-11-01--windows-%E8%B7%AF%E5%BE%84%E4%B8%8E%E4%BC%9A%E8%AF%9D%E5%BA%93%E7%9A%84-sqlite-url" title="28. 2026-11-01 — Windows 路径与会话库的 sqlite URL"><span class="toc-label">28. 2026-11-01 — Windows 路径与会话库的 sqlite URL</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -21689,6 +21690,26 @@ Subagent sticky 总览只显示 1 个「运行中」，而工具卡与状态行�
 <code>crates/tui/src/handlers/mouse.rs</code>（<code>handle_tool_block_click</code>）；
 文档 <code>docs/parallel_tool_execution.md</code> 与本章第
 <a href="./12_chapter_subagent_zh.html">12 章</a> §7。</p>
+<hr />
+<h2 id="28-2026-11-01--windows-路径与会话库的-sqlite-url">28. 2026-11-01 — Windows 路径与会话库的 sqlite URL</h2>
+<p><strong>现象：</strong> Windows 上的 desktop 测试全挂在打开会话库这一步，报
+<code>unknown query parameter `\C:\Users\...` while parsing connection URL</code>；
+真实用户的项目根目录一旦被规范化成 <code>\\?\C:\...</code>，会话库同样打不开。</p>
+<p><strong>根因：</strong> <code>crates/tact/src/store/sqlite.rs</code> 用
+<code>format!("sqlite:{}", path.display())</code> 拼连接串。Windows 的 verbatim
+路径自带 <code>?</code>，sqlx 把它当成查询串的起点，于是整段路径被解析成未知参数。</p>
+<p><strong>决策：</strong> 连接选项改为
+<code>SqliteConnectOptions::new().filename(path)</code>，路径按路径传入，不再经过
+URL 解析；打开池与探测 journal mode 两处共用同一个 <code>connect_options</code>。
+回归测试 <code>a_path_with_url_syntax_opens</code> 用 Unix 上合法的 <code>?</code>
+目录名复现同一失败，<code>connection_options_take_the_path_literally</code>
+钉住 verbatim 路径原样传入。</p>
+<p><strong>同时：</strong> <code>kernel-deps</code> 任务补回
+<code>libasound2-dev</code> 等构建依赖——<code>check-package.sh</code> 会构建
+<code>fixtures/tact-host-consumer</code>，其依赖闭包经 <code>tact</code> 到达
+<code>cpal</code>/<code>alsa-sys</code>。</p>
+<p><strong>Pointers：</strong> <code>crates/tact/src/store/sqlite.rs</code>、
+<code>.github/workflows/rust.yml</code>。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>
