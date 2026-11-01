@@ -10996,6 +10996,10 @@ fn transcript_row_element(
             .into_any_element(),
         RowBody::Assistant(assistant) => {
             let display_markdown = mermaid::strip_blocks(&assistant.markdown);
+            let diagrams: Vec<mermaid::Diagram> = mermaid::blocks(&assistant.markdown)
+                .iter()
+                .filter_map(|source| mermaid::parse(source))
+                .collect();
             let content = streamed_text(&display_markdown, assistant.status, snapshot.language);
             let body = match (assistant.status, assistant_selection) {
                 (RowStatus::Running, _) | (_, None) => {
@@ -11066,18 +11070,14 @@ fn transcript_row_element(
                                 ),
                         )
                         .child(body)
-                        .when(!mermaid::blocks(&assistant.markdown).is_empty(), |row| {
+                        .when(!diagrams.is_empty(), |row| {
                             let mut row = row;
-                            for (index, source) in
-                                mermaid::blocks(&assistant.markdown).iter().enumerate()
-                            {
-                                if let Some(diagram) = mermaid::parse(source) {
-                                    row = row.child(mermaid::element(
-                                        format!("assistant-mermaid-{id}-{index}"),
-                                        &diagram,
-                                        snapshot.appearance == Appearance::Dark,
-                                    ));
-                                }
+                            for (index, diagram) in diagrams.iter().enumerate() {
+                                row = row.child(mermaid::element(
+                                    format!("assistant-mermaid-{id}-{index}"),
+                                    diagram,
+                                    snapshot.appearance == Appearance::Dark,
+                                ));
                             }
                             row
                         })
@@ -13417,6 +13417,45 @@ mod tests {
         }
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn multi_file_review_rows_carry_their_decisions() {
+        let files = [
+            crate::ui::diff_review::FileDiff {
+                path: "a.rs".into(),
+                added: 2,
+                removed: 1,
+            },
+            crate::ui::diff_review::FileDiff {
+                path: "b.rs".into(),
+                added: 0,
+                removed: 3,
+            },
+        ];
+        let rows = diff_rows(
+            &files,
+            &[DiffProposalState::Accepted, DiffProposalState::Pending],
+        );
+        assert_eq!(rows.content().len(), 2);
+        assert_eq!(
+            rows.content()[0].proposal_state(),
+            DiffProposalState::Accepted
+        );
+        assert_eq!(
+            rows.content()[1].proposal_state(),
+            DiffProposalState::Pending
+        );
+    }
+
+    #[test]
+    fn evidence_snippets_are_plain_and_bounded() {
+        assert_eq!(
+            evidence_snippet("## **Project:** tact\n\nmore"),
+            "Project: tact"
+        );
+        let long = "x".repeat(200);
+        assert_eq!(evidence_snippet(&long).chars().count(), 161);
     }
 
     #[gpui::test]

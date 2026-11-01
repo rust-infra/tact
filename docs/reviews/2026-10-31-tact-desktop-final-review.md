@@ -283,6 +283,9 @@ above were superseded:
   `visual-baseline.md`.
 - Captures: 52 PNGs, including `33b-questions`, `26e-assistant-markdown` and
   the P2 readers `41`–`44`.
+- `TACT_DESKTOP_SMOKE=1` from a clean `HOME` starts the real window and exits
+  0; the Windows badge module type-checks and clippy-checks for
+  `x86_64-pc-windows-gnu`.
 - A prototype-vs-capture audit closed Session Manager, Command Center,
   Extensions, composer, question-card, nested-gate, rail/pill, color and
   typography differences. The remaining deviations (persistent permission

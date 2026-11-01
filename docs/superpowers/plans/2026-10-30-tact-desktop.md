@@ -1277,11 +1277,15 @@ geometry, and `prefers-contrast`/reduced-transparency variants use stronger
 borders or solid surfaces. Include the narrow-window and 125%/150% text-scale
 cases in the same matrix.
 
-- [x] **Step 3b: Lock P2 fallback behavior**
+- [x] **Step 3b: Lock P2 fallback and adapter behavior**
 
-Assert Mermaid and ANSI content has a readable code-block fallback before the
-P2 adapters. Keep `SearchResults`, `ArtifactPanel`, `DiffTable`, and
-`ContextCard` explicitly deferred rather than silently unreachable.
+Assert Mermaid and ANSI content in a tool body has a readable code-block
+fallback (`mermaid_and_ansi_use_readable_code_fallbacks`), while the readers
+mount the P2 adapters: ANSI spans, `SearchResults`, `ArtifactPanel`,
+`DiffTable` and `ContextCard` (`transcript_readers_mount_their_typed_surfaces`,
+`p2_components_are_mounted_by_the_shell`). Mermaid fences are removed from the
+answer and replaced by a layered diagram (`mermaid::tests`). The multi-file
+review keeps its per-file decisions (`multi_file_review_rows_carry_their_decisions`).
 
 - [x] **Step 4: Add the cross-platform packaging smoke**
 
