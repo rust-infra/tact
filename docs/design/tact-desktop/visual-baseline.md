@@ -213,9 +213,11 @@ structural differences that remained after 4b:
 - **Colors.** Dark rail uses the prototype's `#1c1c1e`; light canvas, rail and
   inspector follow `--canvas`, `--rail` and `--panel`.
 - **Execution grouping.** Every turn in one run appends to the run's single
-  `ToolGroup`; the group settles when the run finishes. Thinking rows lost
-  their separate `Open reader` link; the title expands the trace in place
-  through the `Thinking` component, so a thought between tools stays one row.
+  `ToolGroup`; the group settles when the run finishes. Thinking rows follow
+  the TUI region rule: consecutive deltas share one card, while a tool,
+  streamed answer, notice, hook, error or completion closes it; a repeated
+  `Started` keeps the open card. The title expands the trace in place through
+  the `Thinking` component.
 - **Back to bottom.** The `New activity` chip appears only while the run is
   active and unseen transcript rows arrived; a finished run or a plain
   scroll-up shows only `Back to bottom`.
