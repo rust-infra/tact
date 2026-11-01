@@ -324,16 +324,12 @@ impl TranscriptReducer {
                     .unwrap_or_else(|| "fallback-run".to_string());
                 self.active_run = Some(run_id);
                 self.active_plan = None;
-                // Each model turn draws its own card where its calls run, so
-                // the reader meets a tool beside the reasoning that asked for
-                // it. The previous turn's card settles in place instead of
-                // collecting the rest of the run. The loop identity belongs to
-                // the whole run, so every card of the run carries it.
-                if let Some(group) = self.active_group.take() {
-                    self.settle_group(group, false);
-                    self.last_group = Some(group);
-                    delta.changed(group);
-                }
+                // A turn boundary is not a card boundary: back-to-back calls
+                // stay in one card even when the loop starts a new turn
+                // between them. A card ends when another visible row lands
+                // after it (see the tail check at the end of this function).
+                // The loop identity belongs to the whole run, so every card
+                // of the run carries it.
                 if promoting {
                     let loop_id = LoopId(self.next_loop_id);
                     self.next_loop_id += 1;
@@ -782,6 +778,18 @@ impl TranscriptReducer {
                 }
             }
             _ => {}
+        }
+        // A card owns only the calls that are consecutive on screen. Once any
+        // other row lands after it, the card settles where it stands and the
+        // next call opens a new one beside that row. The row is marked dirty
+        // so the shell remeasures it at its collapsed height.
+        if let Some(group) = self.active_group
+            && !self.rows.last().is_some_and(|row| row.id == group)
+        {
+            self.active_group = None;
+            self.settle_group(group, false);
+            self.last_group = Some(group);
+            delta.changed(group);
         }
         delta
     }
@@ -2158,27 +2166,25 @@ mod tests {
     }
 
     #[test]
-    fn every_turn_of_a_run_opens_its_own_group() {
+    fn consecutive_calls_share_one_card_across_turns() {
         let mut reducer = TranscriptReducer::new();
         run_started(&mut reducer, "run-1");
         turn(&mut reducer);
         reducer.apply_agent_update(step_started("tool-1"), &context(1));
+        reducer.apply_agent_update(step_finished("tool-1"), &context(1));
         turn(&mut reducer);
         reducer.apply_agent_update(step_started("tool-2"), &context(1));
 
         let groups = group_rows(&reducer);
-        assert_eq!(groups.len(), 2, "each turn draws its own card");
+        assert_eq!(groups.len(), 1, "back-to-back calls stay in one card");
         assert_eq!(
-            groups[0].loop_id, groups[1].loop_id,
-            "every card of the run names the same loop"
+            groups[0].loop_id,
+            Some(LoopId(0)),
+            "the card names the run's loop"
         );
         assert!(matches!(
             &groups[0].body,
-            RowBody::ToolGroup(group) if group.items.len() == 1
-        ));
-        assert!(matches!(
-            &groups[1].body,
-            RowBody::ToolGroup(group) if group.items.len() == 1
+            RowBody::ToolGroup(group) if group.items.len() == 2
         ));
     }
 
@@ -2247,13 +2253,16 @@ mod tests {
         ));
 
         reducer.apply_agent_update(step_finished("tool-2"), &context(1));
-        turn(&mut reducer);
+        reducer.apply_agent_update(
+            AgentUpdate::ThinkingChunk(tact_protocol::ThinkingChunk::Started),
+            &context(1),
+        );
         assert!(
             matches!(
                 &group_rows(&reducer)[0].body,
                 RowBody::ToolGroup(group) if group.collapsed
             ),
-            "the next turn settles the card the previous turn left open"
+            "a row landing after the card settles it"
         );
     }
 
