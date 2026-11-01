@@ -756,9 +756,16 @@ pub(crate) fn handle_log_triple_click(app: &mut App, line_idx: usize, expand_cod
     app.mouse.dragging_log = true;
 }
 
-/// Legacy double-click on a tool's clickable text opens its detail popup: the detail
-/// card when one is drawn, or the header text itself for a collapsed command
-/// (`col` counts from the block's left edge).
+/// Click handling for a tool block's text.
+///
+/// One click only arms a drag — a press that never moves leaves no selection
+/// behind, the same rule Markdown and Thinking cards follow. A double click on
+/// a **subagent** card selects its text (its log rows are placeholders for the
+/// live card, so the semantic text lives on the card); the card footer
+/// (`Click for buffered output` / `[Open]`) stays the popup control, which the
+/// renderer registers as an open action. Other tool blocks keep their legacy
+/// double click: it opens the detail popup when the click is on the popup's
+/// own region (the detail card or a collapsed command's hint).
 pub(crate) fn handle_tool_block_click(
     app: &mut App,
     tool_idx: usize,
@@ -767,7 +774,6 @@ pub(crate) fn handle_tool_block_click(
     col: usize,
 ) {
     if app.mouse.click_count == 2 && app.mouse.last_click_tool == Some(tool_idx) {
-        // Subagent tools open a dedicated live/markdown popup.
         let is_subagent = app
             .tools_mut()
             .active
@@ -783,7 +789,7 @@ pub(crate) fn handle_tool_block_click(
             })
             .unwrap_or(false);
         if is_subagent {
-            app.open_subagent_popup_at_physical_index(phys_idx);
+            start_card_selection(app, phys_idx);
         } else {
             app.open_diff_popup_at_physical_index(phys_idx, relative_row, col);
         }
@@ -791,7 +797,7 @@ pub(crate) fn handle_tool_block_click(
     }
     if app.mouse.click_count == 1 {
         app.mouse.last_click_tool = Some(tool_idx);
-        start_card_selection(app, phys_idx);
+        arm_card_selection(app, phys_idx);
     }
 }
 
@@ -2483,9 +2489,10 @@ mod tests {
         assert!(app.tools_mut().popup.is_none());
     }
 
-    /// A tool that still draws a card keeps its header rows inert: only clicks
-    /// inside the card open the popup. A finished subagent is the one successful
-    /// tool left that draws one (everything else collapses its card).
+    /// A tool that still draws a card keeps its header rows out of the popup
+    /// gesture: only the card's own footer opens it. A finished subagent is the
+    /// one successful tool left that draws one (everything else collapses its
+    /// card).
     #[test]
     fn double_click_subagent_header_does_not_open_diff_popup() {
         let mut app = make_app();
@@ -2522,6 +2529,64 @@ mod tests {
         assert!(app.tools_mut().popup.is_none());
         handle_tool_block_click(&mut app, 0, phys_idx, TOOL_HEADER_ROWS - 1, 10);
         assert!(app.tools_mut().popup.is_none());
+    }
+
+    /// A subagent card follows the Thinking selection rule: the press only
+    /// arms a drag (nothing is highlighted), and the second click selects the
+    /// card's text. The view moved to the card footer, which the renderer
+    /// registers as an open action.
+    #[test]
+    fn subagent_card_selects_on_double_click_not_on_press() {
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+            "audit",
+            "spawn_subagent",
+            "s1",
+            HashMap::from([("prompt".to_string(), "audit the repo".to_string())]),
+        )));
+        app.handle_agent_update(
+            StepCall::new(0, "s1", "spawn_subagent", "audit the repo").started(),
+        );
+        app.handle_agent_update(
+            StepCall::new(0, "s1", "spawn_subagent", "audit the repo")
+                .message("done")
+                .detail("child summary")
+                .finished(),
+        );
+
+        let phys_idx = app.tools_mut().blocks.last().unwrap().phys_idx;
+
+        app.mouse.click_count = 1;
+        app.mouse.last_click_tool = None;
+        handle_tool_block_click(&mut app, 0, phys_idx, TOOL_HEADER_ROWS, 4);
+        let armed = app
+            .mouse
+            .card_selection
+            .as_ref()
+            .expect("press arms a drag");
+        assert!(
+            armed.selected_phys_indices.is_empty(),
+            "a single press must leave no selection behind"
+        );
+        assert!(app.mouse.dragging_log);
+
+        app.mouse.click_count = 2;
+        app.mouse.last_click_tool = Some(0);
+        handle_tool_block_click(&mut app, 0, phys_idx, TOOL_HEADER_ROWS, 4);
+        let selected = app
+            .mouse
+            .card_selection
+            .as_ref()
+            .expect("double click selects");
+        assert_eq!(selected.selected_phys_indices, vec![phys_idx]);
+        assert!(
+            !selected.selected_text().is_empty(),
+            "the whole card text is selected"
+        );
+        assert!(
+            !app.has_subagent_popup(),
+            "a double click on the card text no longer opens the view"
+        );
     }
 
     #[test]

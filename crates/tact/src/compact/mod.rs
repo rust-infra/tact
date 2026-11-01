@@ -89,13 +89,20 @@ pub(crate) fn context_pressure_advisory(
 /// Built rather than `const` so the stated percentage is the threshold constant
 /// itself: a literal "60%" here would silently disagree the day the threshold
 /// moves, and the model would be quoting a number nobody uses.
+///
+/// The last sentence spells out *how* to parallelize: `spawn_subagent` sits on
+/// a barrier, so a model told only "delegate" would fan out serially, one
+/// blocking spawn after another.
 pub(crate) fn subagent_advisory() -> String {
     format!(
         "Context window is over {SUBAGENT_ADVISORY_THRESHOLD_PERCENT}% full. Prefer delegating \
          large or self-contained work to a subagent (`spawn_subagent`), which runs in its own \
          fresh context and returns only a summary — the parent window then pays for the summary, \
          not the work. Keep work whose intermediate results you need in this conversation here; \
-         delegate the parts you only need the answer to."
+         delegate the parts you only need the answer to. To split the work across several \
+         subagents, set `run_in_background: true` on every spawn of the same message so they \
+         run in parallel, then collect each summary with `wait_subagent`; blocking spawns run \
+         one at a time."
     )
 }
 
@@ -839,6 +846,16 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("spawn_subagent"), "{text}");
+    }
+
+    /// "Delegate" alone fans out serially, because the tool sits on a barrier:
+    /// the advice has to name the switch that makes the children concurrent.
+    #[test]
+    fn the_advisory_text_says_how_to_run_subagents_in_parallel() {
+        let text = subagent_advisory();
+        assert!(text.contains("run_in_background"), "{text}");
+        assert!(text.contains("wait_subagent"), "{text}");
+        assert!(text.contains("parallel"), "{text}");
     }
 
     #[test]

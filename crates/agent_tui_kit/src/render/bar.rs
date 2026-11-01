@@ -10,6 +10,7 @@ use tact_protocol::{BalanceEntry, PermissionMode};
 use crate::{
     state::{FocusedPanel, InputMode, Status},
     theme::Theme,
+    widgets::tool_widget::ToolPhase,
 };
 
 use crate::render::ctx::RenderCtx;
@@ -557,7 +558,14 @@ pub fn render_status_bar(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
                 .filter(|s| s.output.as_ref().is_some())
                 .count()
                 .min(*total);
-            let running = ctx.tools.active.len();
+            // Queued cards exist in `active` too (so a dispatched call is
+            // visible), but the count is "how many tools are executing".
+            let running = ctx
+                .tools
+                .active
+                .iter()
+                .filter(|tool| tool.output.phase == ToolPhase::Running)
+                .count();
             let display_step = if *total == 0 {
                 0
             } else if running > 0 {

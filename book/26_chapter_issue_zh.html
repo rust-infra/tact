@@ -725,6 +725,7 @@
 <li class="toc-l2"><a href="#19-2026-10-29--%E8%BD%BB%E9%87%8F%E6%8E%A5%E5%85%A5%E6%94%B6%E5%8F%A3%E4%B8%8E-200-%E5%8F%91%E5%B8%83" title="19. 2026-10-29 — 轻量接入收口与 2.0.0 发布"><span class="toc-label">19. 2026-10-29 — 轻量接入收口与 2.0.0 发布</span></a></li>
 <li class="toc-l2"><a href="#20-2026-10-29--%E6%8A%BD%E7%A6%BB-ui-%E6%97%A0%E5%85%B3%E7%9A%84-host-service" title="20. 2026-10-29 — 抽离 UI 无关的 host service"><span class="toc-label">20. 2026-10-29 — 抽离 UI 无关的 host service</span></a></li>
 <li class="toc-l2"><a href="#22-2026-10-31--%E5%90%8E%E5%8F%B0%E5%AD%90%E4%BB%A3%E7%90%86%E7%9A%84%E5%83%B5%E5%B0%B8-run-%E4%B8%8E%E6%B0%B8%E4%B8%8D%E6%8E%A5%E7%BA%BF%E7%9A%84%E7%BB%93%E6%9E%9C%E9%98%9F%E5%88%97" title="22. 2026-10-31 — 后台子代理的僵尸 run 与永不接线的结果队列"><span class="toc-label">22. 2026-10-31 — 后台子代理的僵尸 run 与永不接线的结果队列</span></a></li>
+<li class="toc-l2"><a href="#23-2026-11-01--%E6%8E%92%E9%98%9F%E4%B8%AD%E7%9A%84%E5%B7%A5%E5%85%B7%E5%8D%A1%E4%B8%8E%E5%AD%90%E4%BB%A3%E7%90%86%E5%8D%A1%E7%89%87%E7%9A%84%E5%8F%8C%E5%87%BB%E9%80%89%E6%8B%A9" title="23. 2026-11-01 — 排队中的工具卡 与子代理卡片的双击选择"><span class="toc-label">23. 2026-11-01 — 排队中的工具卡 与子代理卡片的双击选择</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -21456,6 +21457,47 @@ lease owner 与 session-lock 错误不再写死 <code>tact-ui</code>；
 拒绝的派发不留记录（撤销修复即失败并打印
 <code>…: Running (no summary)</code>），一条用
 <code>Arc::ptr_eq</code> 证明工具侧与父代理侧是同一个队列。</p>
+<hr />
+<h2 id="23-2026-11-01--排队中的工具卡与子代理卡片的双击选择">23. 2026-11-01 — 排队中的工具卡
+与子代理卡片的双击选择</h2>
+<p><strong>现象一：</strong> 一轮里要求 spawn 多个子代理时，Log 下方
+Subagent sticky 总览只显示 1 个「运行中」，而工具卡与状态行把每个
+<code>spawn_subagent</code> 都算作并行运行——两处状态对不上，用户会以为其它
+子代理卡死。</p>
+<p><strong>根因：</strong> <code>spawn_subagent</code> 声明
+<code>ResourcePolicy::Barrier</code>，内核按 wave 分组时每个 barrier
+独占一波，于是多个 spawn 串行执行；而 <code>ToolStarted</code>
+在派发阶段就对全部调用发出，卡片提前显示「运行中」。sticky
+按真实 <code>subagent_runs</code> 行计数，自然只有 1 条 Running。</p>
+<p><strong>决策：</strong> 保留 <code>Barrier</code>——阻塞型 spawn
+的效果无法界定，并行与否该由模型用 <code>run_in_background</code>
+自己选；<code>worktree: true</code> 仍是唯一能进同一 wave
+的 spawn。真正修的是事件粒度：内核在派发时对每个调用发
+<code>AgentEvent::ToolQueued</code>，卡片立刻出现并画成暗色的
+<code>⏳ 排队中</code>；等到它的 wave 真正开始才发
+<code>ToolStarted</code>，卡片<strong>原地</strong>翻成「运行中」，占位行
+不移动。状态行「并行中 N」改为只数 Running 相位，与 sticky
+一致。被权限门拒绝的调用补发一次 <code>ToolStarted</code> 再
+<code>ToolFinished</code>，不会停在排队态；legacy baseline 的归一化把
+<code>StepQueued</code> 过滤掉（旧循环没有这个阶段，fixture 的其余顺序不变）。</p>
+<p><strong>现象二：</strong> 子代理卡片上单击一下就选中了文字，与 Thinking
+卡片「单击只起手、双击才选中」的交互不一致，双击反而被丢弃。</p>
+<p><strong>改后行为：</strong> 工具块单击只 arm 一次拖选（按下不动、不拖动就
+不留下选区），双击子代理卡片才选中其文字；卡片页脚
+（<code>Click for buffered output</code> / <code>[Open]</code> /
+<code>Click for full error</code>）仍是子代理弹窗的单击入口，并且改为在
+运行中 / 已完成 / 失败三种相位都注册命中矩形（此前运行中的卡片页脚不可点）。
+其它工具块的双击语义不变：仍落在详情弹窗自己的区域上。</p>
+<p><strong>Pointers：</strong>
+<code>crates/agent_core/src/kernel.rs</code>（<code>ToolQueued</code> 与
+<code>emit_tool_started</code>；测试 <code>a_queued_barrier_call_starts_only_when_its_wave_runs</code>）、
+<code>crates/agent_api/src/event.rs</code>、<code>crates/protocol/src/agent.rs</code>（<code>StepQueued</code>）、
+<code>crates/tact/src/runtime/event_adapter.rs</code>、
+<code>crates/agent_tui_kit/src/components/tool.rs</code>（<code>queued_card_flips_to_running_in_place</code>）、
+<code>widgets/tool_widget.rs</code>、<code>render/cells/tool.rs</code>、<code>render/bar.rs</code>、
+<code>crates/tui/src/handlers/mouse.rs</code>（<code>handle_tool_block_click</code>）；
+文档 <code>docs/parallel_tool_execution.md</code> 与本章第
+<a href="./12_chapter_subagent_zh.html">12 章</a> §7。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>

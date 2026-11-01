@@ -136,7 +136,7 @@ pub use endpoint::{Endpoint, EndpointError};
 pub use error::{HttpErrorClass, LlmError, MessageError};
 #[cfg(feature = "legacy-tact")]
 pub use hook_select::body_hook_for;
-pub use limits::{LimitError, ModelLimits, SessionId, SessionIdError};
+pub use limits::{DEFAULT_MAX_OUTPUT_TOKENS, LimitError, ModelLimits, SessionId, SessionIdError};
 pub use metadata::{ProviderMetadata, WireProtocol};
 #[cfg(any(feature = "legacy-tact", feature = "test-support", test))]
 pub use mock::MockClient;

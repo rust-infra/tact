@@ -322,8 +322,11 @@ Defaults:
 - a built-in provider without explicit auth fails with
   `BuildError::AuthenticationRequired`;
 - a custom provider without explicit auth is anonymous;
-- `limits` is required;
-- `session_id` is optional;
+- `limits` defaults to `ModelLimits::default()`: unknown context window plus
+  `DEFAULT_MAX_OUTPUT_TOKENS` (8K, the CLI's `[agent].max_tokens` default);
+- `session_id` defaults to a fresh random `SessionId` per build;
+- `chat_dialect` stays unset by default so the provider profile picks the
+  dialect per request model; `ChatDialect::default()` is `Standard`;
 - native compaction, vision, and reasoning replay resolve from provider policy
   unless explicitly overridden.
 
@@ -451,6 +454,10 @@ impl ModelLimits {
     pub fn max_output_tokens(self) -> u32;
 }
 
+impl Default for ModelLimits {
+    // unknown window + DEFAULT_MAX_OUTPUT_TOKENS
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SessionId(/* private validated header-safe string */);
 
@@ -458,13 +465,20 @@ impl SessionId {
     pub fn new(value: impl Into<String>) -> Result<Self, SessionIdError>;
     pub fn as_str(&self) -> &str;
 }
+
+impl Default for SessionId {
+    // fresh `tact-<uuid>` per call
+}
 ```
 
 `ModelLimits` rejects a known zero context window, zero output tokens, and an
 output limit greater than or equal to the known context window. `None` is the
-only unknown-window representation. `SessionId` rejects empty, newline,
-control, and otherwise HTTP-header-illegal values; an omitted session remains
-distinct from an explicit value.
+only unknown-window representation. The default keeps that window unknown — a
+guess would drive auto-compaction on an unverified number — and caps output at
+`DEFAULT_MAX_OUTPUT_TOKENS`. `SessionId` rejects empty, newline, control, and
+otherwise HTTP-header-illegal values; `Default` generates a random id because
+the value doubles as the cache `user_id` / `x-opencode-session`, so independent
+builds must not share a lane.
 
 ### Authentication
 
@@ -525,7 +539,6 @@ pub enum BuildError {
     InvalidLimits(LimitError),
     InvalidCredential(CredentialError),
     InvalidSession(SessionIdError),
-    MissingLimits,
     AuthenticationRequired { provider: ProviderKind },
     ProviderFeatureDisabled {
         provider: ProviderKind,

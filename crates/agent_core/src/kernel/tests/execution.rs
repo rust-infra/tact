@@ -131,6 +131,62 @@ async fn parallel_tool_results_preserve_assistant_source_order() {
     );
 }
 
+/// A barrier call is queued up front and only reports `ToolStarted` when its
+/// own wave runs, so a host can tell "dispatched" from "executing".
+#[tokio::test]
+async fn a_queued_barrier_call_starts_only_when_its_wave_runs() {
+    let model = ScriptedModel::new(vec![
+        events(tool_response(
+            "a1",
+            &[tool_call("call-1", "slow"), tool_call("call-2", "later")],
+            StopReason::ToolUse,
+        )),
+        events(text_response("a2", "done", StopReason::EndTurn)),
+    ]);
+    let tools = ScriptedTools::new(vec![
+        ToolDefinition::new(
+            "slow",
+            ResourceAccess::barrier(),
+            ToolBehavior::Immediate(success("slow")),
+        ),
+        ToolDefinition::new(
+            "later",
+            ResourceAccess::barrier(),
+            ToolBehavior::Immediate(success("later")),
+        ),
+    ]);
+    let h = harness(model, tools, ScriptedGate::new(), ScriptedContext::new());
+    let mut state = state();
+
+    h.kernel
+        .run(&mut state, input("go"), CancelToken::new())
+        .await
+        .unwrap();
+
+    let lifecycle = h
+        .events
+        .events()
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::ToolQueued { call, .. } => Some(format!("queued:{}", call.id)),
+            AgentEvent::ToolStarted { call, .. } => Some(format!("started:{}", call.id)),
+            AgentEvent::ToolFinished { call_id, .. } => Some(format!("finished:{call_id}")),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lifecycle,
+        [
+            "queued:call-1",
+            "queued:call-2",
+            "started:call-1",
+            "finished:call-1",
+            "started:call-2",
+            "finished:call-2",
+        ]
+    );
+}
+
 #[tokio::test]
 async fn image_bearing_tool_result_keeps_companion_image_after_its_result() {
     let model = ScriptedModel::new(vec![

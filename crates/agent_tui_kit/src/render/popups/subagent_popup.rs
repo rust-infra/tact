@@ -626,6 +626,7 @@ impl<'a> BodyBuilder<'a> {
     fn step_meta(&self, output: &ToolRenderOutput, total: usize) -> (String, Color) {
         let msgs = self.msgs;
         let (glyph, label, color) = match output.phase {
+            ToolPhase::Queued => ("⏳", msgs.tool_phase_queued, self.theme.muted),
             ToolPhase::Running => ("●", msgs.tool_phase_running, self.theme.warning),
             ToolPhase::Success => (
                 msgs.step_success_prefix,
@@ -831,6 +832,7 @@ impl<'a> BodyBuilder<'a> {
             part(&mut spans, format!("⏱ {}", format_duration_us(us)));
         }
         let (status, style) = match source.phase {
+            ToolPhase::Queued => ("⏳ queued", Style::default().fg(self.theme.muted)),
             ToolPhase::Running => ("● running", Style::default().fg(self.theme.warning)),
             ToolPhase::Success => ("✓ Success", Style::default().fg(self.theme.success)),
             ToolPhase::Failed => ("✗ Failed", Style::default().fg(self.theme.error)),
