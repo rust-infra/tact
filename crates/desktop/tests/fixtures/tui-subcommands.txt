@@ -1,0 +1,36 @@
+skill list
+skill reload
+skill disable
+skill enable
+plugin list
+plugin install
+plugin reload
+plugin uninstall
+plugin update
+plugin marketplace
+plugin marketplace add
+plugin marketplace list
+plugin marketplace remove
+plugin marketplace update
+mcp auth
+mcp login
+mcp list
+mcp prompts
+mcp prompt
+hooks list
+hooks trust
+hooks trust --all
+hooks trust --source
+hooks forget
+hooks forget --all
+goal create
+goal list
+goal list --all
+goal show
+goal steer
+goal pause
+goal resume
+goal cancel
+goal accept
+goal archive
+goal unarchive

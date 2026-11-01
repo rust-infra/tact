@@ -52,9 +52,9 @@ pub(crate) use voice::{VoiceEventOutcome, VoicePhase, VoiceStartResult, VoiceSta
 
 mod slash;
 
-pub(crate) use slash::SlashCommand;
 #[allow(unused_imports)] // Re-exported for tui's test code (the subcommand guard)
 pub(crate) use slash::Subcommand;
+pub(crate) use slash::{SlashCommand, catalog_locale};
 
 /// Which agent a `/model` flow targets: the main agent or the configured
 /// subagent. The two-step model/effort/budget flow is expressed once and

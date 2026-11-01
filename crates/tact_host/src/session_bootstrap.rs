@@ -126,6 +126,18 @@ pub enum Frontend {
     Observing(UpdateSender),
 }
 
+/// Explicit session choice for a host launch.
+///
+/// Process flags do not participate in this decision. In particular, a
+/// `--session` flag belongs to the current process invocation and must not pin
+/// every project opened later by a desktop process to that session id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionSelection {
+    New,
+    Resume(String),
+    ResumeLast,
+}
+
 /// Resolve (or start) this run's session, and take its lock.
 ///
 /// Both frontends do this as their first act, and the steps are not separable:
@@ -140,19 +152,45 @@ pub async fn open_session(
     session_store: &DynSessionStore,
     lock_registry: &SessionLockRegistry,
 ) -> anyhow::Result<(String, Arc<SessionLockGuard>)> {
-    let root_dir = tact_path.workdir().display().to_string();
-    let session_id = if let Some(ref id) = args.session {
-        validate_session_id(id)?
+    let selection = if let Some(id) = &args.session {
+        SessionSelection::Resume(id.clone())
     } else if args.resume_last {
-        let sessions = session_store.list_sessions(Some(&root_dir)).await?;
-        let id = sessions
-            .into_iter()
-            .next()
-            .map(|s| s.id)
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        validate_session_id(&id)?
+        SessionSelection::ResumeLast
     } else {
-        validate_session_id(&uuid::Uuid::new_v4().to_string())?
+        SessionSelection::New
+    };
+    open_session_selected(selection, args, tact_path, session_store, lock_registry).await
+}
+
+/// Resolve a session from an explicit selection rather than re-reading process
+/// flags. `args` is retained for the shared launch contract but must not
+/// override `selection`.
+pub async fn open_session_selected(
+    selection: SessionSelection,
+    _args: &CliArgs,
+    tact_path: &TactPath,
+    session_store: &DynSessionStore,
+    lock_registry: &SessionLockRegistry,
+) -> anyhow::Result<(String, Arc<SessionLockGuard>)> {
+    let root_dir = tact_path.workdir().display().to_string();
+    let session_id = match selection {
+        SessionSelection::Resume(id) => validate_session_id(&id)?,
+        SessionSelection::ResumeLast => {
+            let sessions = session_store
+                .list_sessions_filtered(tact::store::SessionListQuery {
+                    root_dir: Some(root_dir.clone()),
+                    archive: tact::store::ArchiveFilter::Active,
+                    search: None,
+                })
+                .await?;
+            let id = sessions
+                .into_iter()
+                .next()
+                .map(|session| session.id)
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            validate_session_id(&id)?
+        }
+        SessionSelection::New => validate_session_id(&uuid::Uuid::new_v4().to_string())?,
     };
 
     session_store
@@ -282,6 +320,7 @@ pub async fn bootstrap_session(
     }
 
     let (events, ui_responder) = frontend_wiring(&frontend);
+    background_manager.set_update_sink(events.clone());
     let tool_context = ToolContext {
         skill_registry: skill_registry.clone(),
         subagent_start_hooks: tact::plugin::plugin_subagent_start_hooks(tact_path.workdir())?,
@@ -527,6 +566,40 @@ mod session_open_tests {
             panic!("unsafe session id must fail");
         };
         assert!(error.to_string().contains("invalid session id"));
+    }
+
+    #[tokio::test]
+    async fn resume_last_skips_archived_sessions() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let tact_path = TactPath::new(tmp.path());
+        let store = tact::store::open_sqlite_session_store(&tact_path.session_db_path())
+            .await
+            .expect("session store");
+        let registry = SessionLockRegistry::new();
+        let root = tact_path.workdir().display().to_string();
+        for id in ["archived-latest", "active-older"] {
+            store
+                .ensure_session_row(id, &root, "")
+                .await
+                .expect("session row");
+        }
+        store
+            .set_session_archived("archived-latest", true)
+            .await
+            .expect("archive latest");
+
+        let args = cli_args(&["--resume-last"]);
+        let (id, lock) = open_session_selected(
+            SessionSelection::ResumeLast,
+            &args,
+            &tact_path,
+            &store,
+            &registry,
+        )
+        .await
+        .expect("resume last");
+        assert_eq!(id, "active-older");
+        lock.release().await.expect("release");
     }
 
     /// Top-level flags precede the subcommand: they are declared on `CliArgs`

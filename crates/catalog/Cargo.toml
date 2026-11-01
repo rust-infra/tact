@@ -1,0 +1,15 @@
+[package]
+name = "tact_catalog"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Frontend-neutral command catalog for Tact"
+repository = "https://github.com/rust-infra/tact"
+
+[dependencies]
+serde = { workspace = true }
+strum = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

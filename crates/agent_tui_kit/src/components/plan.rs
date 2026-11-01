@@ -85,6 +85,7 @@ impl Component for PlanComponent {
                 idx,
                 tool_id,
                 result,
+                ..
             } => {
                 let idx = self.resolve_step_idx(tool_id, *idx);
                 if let Some(step) = self.state.steps.get_mut(idx) {
@@ -194,6 +195,7 @@ mod tests {
         comp.on_update(
             &AgentUpdate::StepFinished {
                 idx: 0,
+                run_id: None,
                 tool_id: "t1".into(),
                 result: StepResult {
                     tool: "read_file".into(),
@@ -235,6 +237,7 @@ mod tests {
         comp.on_update(
             &AgentUpdate::StepFinished {
                 idx: 0,
+                run_id: None,
                 tool_id: "t2".into(),
                 result: StepResult {
                     tool: "read_file".into(),
@@ -277,6 +280,7 @@ mod tests {
         comp.on_update(
             &AgentUpdate::StepFailed {
                 idx: 0,
+                run_id: None,
                 tool_id: "t2".into(),
                 arg_summary: String::new(),
                 error: "boom2".into(),

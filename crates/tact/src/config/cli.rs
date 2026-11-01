@@ -24,7 +24,7 @@ pub struct CliArgs {
     pub model: Option<String>,
 
     /// API key for the provider
-    #[arg(long)]
+    #[arg(long, env = "TACT_API_KEY", hide_env_values = true)]
     pub api_key: Option<String>,
 
     /// Base URL for the provider API

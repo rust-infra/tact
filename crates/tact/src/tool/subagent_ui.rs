@@ -15,7 +15,7 @@ use std::collections::HashMap;
 
 use tact_protocol::{
     AgentUpdate, SubagentStep, SubagentStepStatus, SubagentTranscriptEntry, ToolOutputChunk,
-    ToolPresentationInfo, UpdateSender,
+    ToolPresentationInfo, UiAgentRef, UpdateSender,
 };
 
 use crate::tool::ToolProgressReporter;
@@ -438,6 +438,8 @@ pub fn tagged_ui_channel_with_progress(
                     prompt,
                     options,
                     log_confirm,
+                    purpose,
+                    origin,
                     ..
                 } => {
                     // The child stamps the origin on its own request; the
@@ -445,25 +447,34 @@ pub fn tagged_ui_channel_with_progress(
                     // flag, not a prompt prefix: the popup titles itself with it
                     // (see `SelectPopup::from_subagent`), so a child that writes
                     // "[Subagent]" into its own prompt cannot fake the label.
+                    // It is derived from the origin so the two cannot disagree.
+                    let from_subagent = matches!(origin.agent, UiAgentRef::Subagent { .. });
                     let _ = inner.send(AgentUpdate::RequestSelect {
                         request_id,
                         prompt,
                         options,
                         log_confirm,
-                        from_subagent: true,
+                        from_subagent,
+                        purpose,
+                        origin,
                     });
                 }
                 AgentUpdate::RequestMultiSelect {
                     request_id,
                     prompt,
                     options,
+                    purpose,
+                    origin,
                     ..
                 } => {
+                    let from_subagent = matches!(origin.agent, UiAgentRef::Subagent { .. });
                     let _ = inner.send(AgentUpdate::RequestMultiSelect {
                         request_id,
                         prompt,
                         options,
-                        from_subagent: true,
+                        from_subagent,
+                        purpose,
+                        origin,
                     });
                 }
                 AgentUpdate::TaskComplete(_) | AgentUpdate::TaskCancelled => {
@@ -514,7 +525,9 @@ mod tests {
         let got: Vec<AgentUpdate> = std::iter::from_fn(|| progress_rx.try_recv().ok()).collect();
         assert_eq!(got.len(), 1);
         match &got[0] {
-            AgentUpdate::ToolProgress { tool_id, chunks } => {
+            AgentUpdate::ToolProgress {
+                tool_id, chunks, ..
+            } => {
                 assert_eq!(tool_id, "task-1");
                 assert_eq!(chunks.len(), 1);
                 assert_eq!(chunks[0].text, "hello world\n");
@@ -736,6 +749,7 @@ mod tests {
         tagged
             .send(AgentUpdate::StepFailed {
                 idx: 0,
+                run_id: None,
                 tool_id: "b1".into(),
                 arg_summary: String::new(),
                 error: "not found".into(),
@@ -776,6 +790,7 @@ mod tests {
         tagged
             .send(AgentUpdate::StepFinished {
                 idx: 0,
+                run_id: None,
                 tool_id: "b1".into(),
                 result: StepResult {
                     tool: "bash".into(),
@@ -815,6 +830,7 @@ mod tests {
         tagged
             .send(AgentUpdate::StepFinished {
                 idx: 0,
+                run_id: None,
                 tool_id: "b1".into(),
                 result: StepResult {
                     tool: "bash".into(),
@@ -900,6 +916,8 @@ mod tests {
                 options: vec!["Yes".into()],
                 log_confirm: false,
                 from_subagent: true,
+                purpose: tact_protocol::UiRequestPurpose::Permission,
+                origin: tact_protocol::UiRequestOrigin::subagent("child-1", Some("tool-1".into())),
             })
             .unwrap();
         tokio::task::yield_now().await;
@@ -1150,6 +1168,7 @@ mod tests {
         tagged
             .send(AgentUpdate::StepFinished {
                 idx: 0,
+                run_id: None,
                 tool_id: "c1".into(),
                 result: StepResult {
                     tool: "read_file".into(),
@@ -1209,6 +1228,7 @@ mod tests {
         tagged
             .send(AgentUpdate::StepFailed {
                 idx: 0,
+                run_id: None,
                 tool_id: "c1".into(),
                 arg_summary: String::new(),
                 error: "exit 101".into(),
@@ -1278,6 +1298,7 @@ mod tests {
         tagged
             .send(AgentUpdate::StepFinished {
                 idx: 0,
+                run_id: None,
                 tool_id: "c1".into(),
                 result: StepResult {
                     tool: "read_file".into(),

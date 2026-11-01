@@ -50,6 +50,28 @@ fn kernel_prompt_assembler_matches_legacy_chat_completions_prompt() {
 }
 
 #[test]
+fn preview_system_prompt_assembles_project_context_on_demand() {
+    ensure_config();
+    let mut agent = chat_completions_test_agent("preview_system_prompt");
+    agent.system_prompt = AgentSystemPrompt::Dynamic;
+
+    let source = agent.preview_system_prompt(false).unwrap();
+    let assembled = agent.preview_system_prompt(true).unwrap();
+
+    assert!(!source.contains("Skill loading policy for this Responses request."));
+    assert!(
+        assembled.len() >= source.len(),
+        "{assembled}\n---\n{source}"
+    );
+    assert!(assembled.contains("Current date:"), "{assembled}");
+    assert!(!source.contains("Current date:"), "{source}");
+    assert_ne!(
+        assembled,
+        "Dynamic Tact system prompt. Enable the assembled view to render project context."
+    );
+}
+
+#[test]
 fn kernel_prompt_assembler_keeps_responses_template_without_native_compaction() {
     ensure_config();
     let agent = responses_test_agent(

@@ -489,6 +489,7 @@ fn plan_panel_lists_failed_step_description() {
     app.handle_agent_update(StepCall::new(0, "fail1", "read_file", "nope.txt").started());
     app.handle_agent_update(AgentUpdate::StepFailed {
         idx: 0,
+        run_id: None,
         tool_id: "fail1".into(),
         arg_summary: String::new(),
         error: "file not found".into(),
@@ -701,6 +702,8 @@ fn request_select_update_renders_select_popup() {
         options: vec!["Allow once".into(), "Deny".into()],
         log_confirm: false,
         from_subagent: false,
+        purpose: tact_protocol::UiRequestPurpose::Permission,
+        origin: tact_protocol::UiRequestOrigin::main(),
     });
 
     assert!(matches!(app.input_mode, InputMode::Select));

@@ -7,6 +7,9 @@
     not(feature = "legacy-tact"),
     allow(dead_code, unused_imports, unused_variables)
 )]
+// `async-openai::OpenAIError` is intentionally carried inline across the SDK
+// boundary; boxing it would change the public error API for no caller benefit.
+#![allow(clippy::result_large_err)]
 
 #[cfg(feature = "account")]
 pub mod account;

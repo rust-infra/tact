@@ -1,6 +1,8 @@
 //! Extended harness capabilities: dynamic mock LLM, error injection,
 //! streaming chunks, batch tools, and permission sequences.
 
+#![allow(clippy::result_large_err)]
+
 mod harness;
 
 use std::sync::{Arc, Mutex};

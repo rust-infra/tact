@@ -13,12 +13,15 @@ pub mod subagent_transcript;
 pub mod tool_output;
 
 pub use agent::{
-    AgentErrorKind, AgentUpdate, GoalAcceptanceSnapshot, GoalCriterionSnapshot,
-    GoalCriterionStatusSnapshot, GoalPhaseSnapshot, GoalRunBudgetSnapshot, GoalSnapshot,
-    GoalStatusSnapshot, ModelCallParams, PermissionMode, PlanStep, StepResult, StepStatus,
-    SubagentRunSnapshot, SubagentStatusSnapshot, TaskSnapshot, TaskStatusSnapshot,
-    TasksChangeReason, ThinkingChunk, TokenUsageInfo, ToolDetailKind, ToolPopupKind,
-    ToolPresentationInfo, ToolVisualKind, UiResponse, UserCommand,
+    AgentErrorKind, AgentUpdate, BackgroundTaskSnapshot, BackgroundTaskStatusSnapshot,
+    GoalAcceptanceSnapshot, GoalCriterionSnapshot, GoalCriterionStatusSnapshot, GoalPhaseSnapshot,
+    GoalRunBudgetSnapshot, GoalSnapshot, GoalStatusSnapshot, HistoryEntrySnapshot,
+    HookItemSnapshot, HookSnapshot, McpPromptArgumentSnapshot, McpPromptSnapshot,
+    McpServerSnapshot, McpServerStatusSnapshot, ModelCallParams, PermissionMode, PlanStep,
+    StatsSnapshot, StepResult, StepStatus, SubagentRunSnapshot, SubagentStatusSnapshot,
+    SurfaceQuery, SurfaceSnapshot, TaskSnapshot, TaskStatusSnapshot, TasksChangeReason,
+    ThinkingChunk, TokenUsageInfo, ToolDetailKind, ToolPopupKind, ToolPresentationInfo,
+    ToolVisualKind, UiAgentRef, UiRequestOrigin, UiRequestPurpose, UiResponse, UserCommand,
 };
 pub use biz::{
     AccountError, AccountUpdate, BalanceEntry, BalanceInfo, UsageQuotaInfo, UsageQuotaWindow,

@@ -376,6 +376,7 @@ impl App {
                 idx,
                 tool_id,
                 result,
+                ..
             } => self.on_step_finished_tail(idx, tool_id, result),
             AgentUpdate::StepFailed { .. } => self.on_step_failed_tail(),
             AgentUpdate::TaskComplete(summary) => {
@@ -464,6 +465,7 @@ impl App {
                 request_id,
                 log_confirm,
                 from_subagent,
+                ..
             } => {
                 if self.pending_ui.is_none() {
                     self.select_kind = SelectKind::Agent;
@@ -491,6 +493,7 @@ impl App {
                 options,
                 request_id,
                 from_subagent,
+                ..
             } => {
                 if self.pending_ui.is_none() {
                     self.select_kind = SelectKind::Agent;
@@ -565,10 +568,16 @@ impl App {
             AgentUpdate::TokenUsage(_)
             | AgentUpdate::ModelInfo(_)
             | AgentUpdate::TurnStats { .. }
+            | AgentUpdate::RunStarted { .. }
+            | AgentUpdate::RunFinished { .. }
+            | AgentUpdate::MessageStarted { .. }
             | AgentUpdate::ToolMeta { .. }
             | AgentUpdate::StreamChunk(_)
             | AgentUpdate::SubagentsChanged { .. }
-            | AgentUpdate::GoalsChanged { .. } => {}
+            | AgentUpdate::GoalsChanged { .. }
+            | AgentUpdate::SurfaceSnapshot { .. }
+            | AgentUpdate::BackgroundTasksChanged { .. }
+            | AgentUpdate::UiResponseRejected { .. } => {}
         }
     }
 
@@ -639,6 +648,9 @@ impl App {
             AgentUpdate::ThinkingChunk(_)
             | AgentUpdate::TokenUsage(_)
             | AgentUpdate::TurnStats { .. }
+            | AgentUpdate::RunStarted { .. }
+            | AgentUpdate::RunFinished { .. }
+            | AgentUpdate::MessageStarted { .. }
             | AgentUpdate::ModelInfo(_)
             | AgentUpdate::ToolMeta { .. }
             | AgentUpdate::ToolProgress { .. }
@@ -649,9 +661,12 @@ impl App {
             | AgentUpdate::BackgroundTaskFinished { .. }
             | AgentUpdate::SubagentFinished { .. }
             | AgentUpdate::SubagentsChanged { .. }
+            | AgentUpdate::SurfaceSnapshot { .. }
+            | AgentUpdate::BackgroundTasksChanged { .. }
             | AgentUpdate::PopupMarkdown { .. }
             | AgentUpdate::RequestSelect { .. }
-            | AgentUpdate::RequestMultiSelect { .. } => false,
+            | AgentUpdate::RequestMultiSelect { .. }
+            | AgentUpdate::UiResponseRejected { .. } => false,
         }
     }
 
@@ -1501,21 +1516,25 @@ mod lifecycle_tests {
         let initial_rows = app.tools_mut().active[0].output.visual_rows(false);
 
         app.handle_agent_update(AgentUpdate::ToolProgress {
+            run_id: None,
             tool_id: "b1".into(),
             chunks: vec![ToolOutputChunk::stdout("one\n")],
         });
         let one_row = app.tools_mut().active[0].output.visual_rows(false);
         app.handle_agent_update(AgentUpdate::ToolProgress {
+            run_id: None,
             tool_id: "b1".into(),
             chunks: vec![ToolOutputChunk::stdout("two\n")],
         });
         let two_rows = app.tools_mut().active[0].output.visual_rows(false);
         app.handle_agent_update(AgentUpdate::ToolProgress {
+            run_id: None,
             tool_id: "b1".into(),
             chunks: vec![ToolOutputChunk::stdout("three\n")],
         });
         let three_rows = app.tools_mut().active[0].output.visual_rows(false);
         app.handle_agent_update(AgentUpdate::ToolProgress {
+            run_id: None,
             tool_id: "b1".into(),
             chunks: vec![ToolOutputChunk::stdout("four\n")],
         });
@@ -1549,6 +1568,7 @@ mod lifecycle_tests {
         app.log_scroll.follow = false;
 
         app.handle_agent_update(AgentUpdate::ToolProgress {
+            run_id: None,
             tool_id: "b1".into(),
             chunks: vec![ToolOutputChunk::stdout("line\n")],
         });
@@ -1569,6 +1589,7 @@ mod lifecycle_tests {
         );
 
         app.handle_agent_update(AgentUpdate::ToolProgress {
+            run_id: None,
             tool_id: "b1".into(),
             chunks: vec![ToolOutputChunk::stdout("live line\n")],
         });
@@ -1590,6 +1611,7 @@ mod lifecycle_tests {
         )));
 
         app.handle_agent_update(AgentUpdate::ToolProgress {
+            run_id: None,
             tool_id: "unknown".into(),
             chunks: vec![ToolOutputChunk::stdout("ignored\n")],
         });
@@ -1704,6 +1726,7 @@ mod lifecycle_tests {
         let mut app = make_app();
         seed_running_background(&mut app, "bg1");
         app.handle_agent_update(AgentUpdate::ToolProgress {
+            run_id: None,
             tool_id: "bg1".into(),
             chunks: vec![ToolOutputChunk::stdout("Compiling ...\n")],
         });
@@ -1800,6 +1823,7 @@ mod lifecycle_tests {
         let mut app = make_app();
         seed_running_bash(&mut app, "b1");
         app.handle_agent_update(AgentUpdate::ToolProgress {
+            run_id: None,
             tool_id: "b1".into(),
             chunks: vec![ToolOutputChunk::stdout("live line\n")],
         });
@@ -1821,6 +1845,7 @@ mod lifecycle_tests {
         let mut app = make_app();
         seed_running_bash(&mut app, "b1");
         app.handle_agent_update(AgentUpdate::ToolProgress {
+            run_id: None,
             tool_id: "b1".into(),
             chunks: vec![ToolOutputChunk::stdout("one\ntwo\nthree\nfour\n")],
         });
@@ -1836,6 +1861,7 @@ mod lifecycle_tests {
         let completed_rows = app.tools_mut().blocks[0].output.visual_rows(false);
         let collapsed = app.tools_mut().blocks[0].output.layout.detail_collapsed;
         app.handle_agent_update(AgentUpdate::ToolProgress {
+            run_id: None,
             tool_id: "b1".into(),
             chunks: vec![ToolOutputChunk::stdout("late\n")],
         });
@@ -2258,6 +2284,7 @@ mod lifecycle_tests {
         )));
         app.handle_agent_update(AgentUpdate::StepFailed {
             idx: 0,
+            run_id: None,
             tool_id: "tool_read_1".into(),
             arg_summary: String::new(),
             error: "file not found".into(),
@@ -2277,6 +2304,7 @@ mod lifecycle_tests {
         );
         app.handle_agent_update(AgentUpdate::StepFailed {
             idx: 0,
+            run_id: None,
             tool_id: "ws_1".into(),
             arg_summary: "Rust async".into(),
             error: "web search failed (status: Failed, query: \"Rust async\")".into(),
@@ -2395,6 +2423,8 @@ mod lifecycle_tests {
             options: vec!["Yes".into(), "No".into()],
             log_confirm: false,
             from_subagent: false,
+            purpose: tact_protocol::UiRequestPurpose::Permission,
+            origin: tact_protocol::UiRequestOrigin::main(),
         });
         assert!(matches!(app.input_mode, InputMode::Select));
         assert!(app.select.prompt.contains("Allow bash"));
@@ -2415,6 +2445,8 @@ mod lifecycle_tests {
             options: vec!["Allow once".into(), "Deny".into()],
             log_confirm: false,
             from_subagent: true,
+            purpose: tact_protocol::UiRequestPurpose::Permission,
+            origin: tact_protocol::UiRequestOrigin::subagent("child-1", Some("tool-1".into())),
         });
         assert!(matches!(app.input_mode, InputMode::Select));
         assert!(app.select.from_subagent, "the flag must reach the popup");
@@ -2433,6 +2465,8 @@ mod lifecycle_tests {
             options: vec!["Allow once".into(), "Deny".into()],
             log_confirm: false,
             from_subagent: false,
+            purpose: tact_protocol::UiRequestPurpose::Permission,
+            origin: tact_protocol::UiRequestOrigin::main(),
         });
         assert!(matches!(app.input_mode, InputMode::Select));
 
@@ -2461,7 +2495,8 @@ mod lifecycle_tests {
             "Allow write?".into(),
             vec!["Allow once".into(), "Deny".into()],
             false,
-            false,
+            tact_protocol::UiRequestPurpose::Permission,
+            tact_protocol::UiRequestOrigin::main(),
         );
 
         // No AgentUpdate::RequestSelect was delivered — reconcile still shows
@@ -2490,7 +2525,8 @@ mod lifecycle_tests {
             "Allow write?".into(),
             vec!["Allow once".into(), "Deny".into()],
             false,
-            false,
+            tact_protocol::UiRequestPurpose::Permission,
+            tact_protocol::UiRequestOrigin::main(),
         );
         app.reconcile_pending_ui();
         assert_eq!(app.select.request_id, Some(request_id));
@@ -2507,10 +2543,20 @@ mod lifecycle_tests {
         let responder = tact::ui_responder::UiResponder::new();
         app.set_pending_ui(responder.clone());
 
-        let (first, _rx1) =
-            responder.register_select("first".into(), vec!["1".into()], false, false);
-        let (second, _rx2) =
-            responder.register_select("second".into(), vec!["2".into()], false, false);
+        let (first, _rx1) = responder.register_select(
+            "first".into(),
+            vec!["1".into()],
+            false,
+            tact_protocol::UiRequestPurpose::Permission,
+            tact_protocol::UiRequestOrigin::main(),
+        );
+        let (second, _rx2) = responder.register_select(
+            "second".into(),
+            vec!["2".into()],
+            false,
+            tact_protocol::UiRequestPurpose::Permission,
+            tact_protocol::UiRequestOrigin::main(),
+        );
 
         app.reconcile_pending_ui();
         assert_eq!(app.select.request_id, Some(first));
@@ -2731,6 +2777,7 @@ mod lifecycle_tests {
                     output: String::new(),
                 },
                 5 => AgentUpdate::ToolProgress {
+                    run_id: None,
                     tool_id: "t3".into(),
                     chunks: vec![ToolOutputChunk::other("tick")],
                 },

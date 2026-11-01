@@ -2074,6 +2074,11 @@ mod tests {
             .filter(|(c, _)| c == "help")
             .collect();
         assert_eq!(help_rows.len(), 1, "builtin help only once: {help_rows:?}");
-        assert_eq!(help_rows[0].1, SlashCommand::Help.desc(app.msgs()));
+        assert_eq!(
+            help_rows[0].1,
+            SlashCommand::Help
+                .description()
+                .get(tact_catalog::CatalogLocale::En)
+        );
     }
 }

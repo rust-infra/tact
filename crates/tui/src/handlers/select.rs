@@ -1439,7 +1439,8 @@ thinking_budget = {thinking_budget}
             "Allow write?".into(),
             vec!["Allow once".into(), "Deny".into()],
             false,
-            false,
+            tact_protocol::UiRequestPurpose::Permission,
+            tact_protocol::UiRequestOrigin::main(),
         );
         app.reconcile_pending_ui();
         assert_eq!(app.select.request_id, Some(request_id));
@@ -1472,7 +1473,8 @@ thinking_budget = {thinking_budget}
             "Allow write?".into(),
             vec!["Allow once".into(), "Deny".into()],
             false,
-            false,
+            tact_protocol::UiRequestPurpose::Permission,
+            tact_protocol::UiRequestOrigin::main(),
         );
         app.reconcile_pending_ui();
         assert_eq!(app.select.request_id, Some(request_id));
@@ -1522,6 +1524,8 @@ thinking_budget = {thinking_budget}
             request_id: 2,
             log_confirm: false,
             from_subagent: false,
+            purpose: tact_protocol::UiRequestPurpose::Permission,
+            origin: tact_protocol::UiRequestOrigin::main(),
         });
         assert_eq!(app.select.request_id, Some(1), "first select stays open");
         assert_eq!(app.pending_agent_selects.len(), 1, "second select queued");

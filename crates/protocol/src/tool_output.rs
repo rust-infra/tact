@@ -501,13 +501,18 @@ mod tests {
             ToolOutputChunk::stderr("err"),
         ];
         let event = crate::AgentUpdate::ToolProgress {
+            run_id: None,
             tool_id: "bash-1".to_string(),
             chunks: chunks.clone(),
         };
 
         assert!(matches!(
             event,
-            crate::AgentUpdate::ToolProgress { tool_id, chunks: actual }
+            crate::AgentUpdate::ToolProgress {
+                tool_id,
+                chunks: actual,
+                ..
+            }
                 if tool_id == "bash-1" && actual == chunks
         ));
     }

@@ -10,6 +10,7 @@ test-support = []
 [dependencies]
 agent_tui_kit = { version = "0.1.0", path = "../agent_tui_kit" }
 tact = { version = "2.0.0", path = "../tact" }
+tact_catalog = { version = "2.0.0", path = "../catalog" }
 tact_llm = { version = "2.0.0", path = "../tact_llm", default-features = false, features = ["legacy-tact", "model-discovery"] }
 tact_protocol = { version = "2.0.0", path = "../protocol" }
 anyhow = { workspace = true }

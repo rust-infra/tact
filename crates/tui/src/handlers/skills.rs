@@ -36,82 +36,17 @@ pub(super) fn find_skill<'a>(app: &'a App, cmd: &str) -> Option<&'a SkillEntry> 
     app.skills_data.iter().find(|s| s.name == cmd)
 }
 
-/// True when `$ARGUMENTS` is a bare placeholder at this position (not indexed,
-/// not a longer token like `$ARGUMENTS2`).
-fn is_bare_arguments_placeholder(after: &str) -> bool {
-    match after.chars().next() {
-        None => true,
-        Some('[') => false,
-        Some(c) if c.is_ascii_alphanumeric() || c == '_' => false,
-        Some(_) => true,
-    }
-}
-
-/// True when body has a bare `$ARGUMENTS` placeholder.
-fn has_bare_arguments_placeholder(body: &str) -> bool {
-    let mut rest = body;
-    while let Some(idx) = rest.find("$ARGUMENTS") {
-        let after = &rest[idx + "$ARGUMENTS".len()..];
-        if is_bare_arguments_placeholder(after) {
-            return true;
-        }
-        rest = after;
-    }
-    false
-}
-
-/// Substitute bare `$ARGUMENTS` only — leave `$ARGUMENTS[N]` / `$ARGUMENTS2` untouched.
-fn substitute_arguments(body: &str, args: &str) -> String {
-    let mut out: String = String::with_capacity(body.len() + args.len());
-    let mut rest = body;
-    while let Some(idx) = rest.find("$ARGUMENTS") {
-        out.push_str(&rest[..idx]);
-        let after = &rest[idx + "$ARGUMENTS".len()..];
-        if is_bare_arguments_placeholder(after) {
-            out.push_str(args);
-            rest = after;
-        } else {
-            out.push_str("$ARGUMENTS");
-            rest = after;
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
-/// Escape attribute text for skill name in `<skill name="…">`.
-fn escape_xml_attr(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('"', "&quot;")
-        .replace('<', "&lt;")
-}
-
-/// Render skill body for the agent, Claude Code–style `$ARGUMENTS` / append.
-pub(super) fn render_skill_body(skill: &SkillEntry, args: &str) -> String {
-    let body = skill.body.trim();
-    if has_bare_arguments_placeholder(body) {
-        substitute_arguments(body, args)
-    } else if args.is_empty() {
-        body.to_string()
-    } else {
-        // Claude Code: when `$ARGUMENTS` is absent, append so the model still sees args.
-        format!("{body}\n\nARGUMENTS: {args}")
-    }
-}
-
 /// Build the agent-facing task text with skill body wrapped like `load_skill`.
 ///
 /// Argument framing matches Claude Code (`$ARGUMENTS` or trailing `ARGUMENTS:`).
 /// The system prompt explains that slash-invoked `<skill>` blocks (including
 /// `ARGUMENTS:`) are user invocations, not `load_skill` tool metadata.
 pub(super) fn format_skill_agent_task(skill: &SkillEntry, args: &str) -> String {
-    // Same wrapper shape as `SkillDocument::Display` — the `load_skill` result —
-    // so a skill cannot see its `dir` on one path and not the other.
-    format!(
-        "<skill name=\"{}\" dir=\"{}\">\n{}\n</skill>",
-        escape_xml_attr(&skill.name),
-        escape_xml_attr(&skill.dir),
-        render_skill_body(skill, args)
+    tact::skill::format_skill_task(
+        &skill.name,
+        std::path::Path::new(&skill.dir),
+        &skill.body,
+        args,
     )
 }
 

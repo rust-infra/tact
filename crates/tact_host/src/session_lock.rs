@@ -53,6 +53,16 @@ impl SessionLockRegistry {
         }
     }
 
+    pub async fn unregister_released(&self, session_id: &str) {
+        let mut guards = self.guards.lock().await;
+        if guards
+            .get(session_id)
+            .is_some_and(|guard| guard.is_released())
+        {
+            guards.remove(session_id);
+        }
+    }
+
     /// Listen for process exit signals, release any registered session lock, then exit.
     ///
     /// Releasing without terminating would allow another process to acquire the lock
@@ -198,5 +208,26 @@ mod tests {
                 .expect("reacquire after registry release");
             lock.release().await.expect("release probe");
         }
+    }
+
+    #[tokio::test]
+    async fn released_guard_is_removed_from_the_registry() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db = tmp.path().join("tact.db");
+        let store = tact::store::open_sqlite_session_store(&db)
+            .await
+            .expect("store");
+        store
+            .ensure_session_row("s1", "/tmp", "")
+            .await
+            .expect("session row");
+        let registry = SessionLockRegistry::new();
+        let guard = SessionLockGuard::acquire(store, "s1")
+            .await
+            .expect("lock s1");
+        registry.register(guard.clone()).await.expect("register");
+        guard.release().await.expect("release");
+        registry.unregister_released("s1").await;
+        assert!(!registry.guards.lock().await.contains_key("s1"));
     }
 }

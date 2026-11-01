@@ -246,6 +246,61 @@ async fn successful_session_start_and_user_prompt_context_keep_non_user_origins(
 }
 
 #[tokio::test]
+async fn a_resumed_session_does_not_repeat_an_identical_session_start_context() {
+    let services = services();
+    let hooks = vec![Hook::SessionStart(Arc::new(
+        |_view: &crate::LoopState<'_>, context: &mut SessionStartContext| {
+            Box::pin(async move {
+                context.push_additional_context(Some("test"), "session context");
+                Ok(HookControl::Continue)
+            })
+        },
+    ))];
+    let policy = policy(services, &hooks, true);
+    let session = SessionRef::new("session");
+    // The resume already holds the briefing this hook produced last time.
+    let transcript = vec![AgentMessage::text(
+        AgentRole::User,
+        MessageOrigin::InjectedContext {
+            source: "test".into(),
+        },
+        frame_hook_context(Some("test"), "session context"),
+    )];
+    let model = model();
+    let capabilities = model.capabilities();
+    let state = ContextView {
+        session: &session,
+        transcript: &transcript,
+        cursor: None,
+        total_turns: 1,
+        max_total_turns: None,
+        last_token_total: None,
+        pending_inputs: &[],
+        capabilities: &capabilities,
+        remaining_turns: None,
+    };
+    let input = RunInput {
+        run_id: RunId::new("run-1"),
+        session: session.clone(),
+        inputs: vec![AgentMessage::text(
+            AgentRole::User,
+            MessageOrigin::User,
+            "question",
+        )],
+        max_total_turns: None,
+    };
+    let decision = policy
+        .prepare_run(&input, &state, &model, CancelToken::new())
+        .await
+        .unwrap();
+    let PreparationDecision::Continue(preparation) = decision else {
+        panic!("expected continue");
+    };
+    assert_eq!(preparation.inputs.len(), 1);
+    assert_eq!(preparation.inputs[0].origin, MessageOrigin::User);
+}
+
+#[tokio::test]
 async fn queued_context_is_appended_once_before_the_request() {
     let services = services();
     services

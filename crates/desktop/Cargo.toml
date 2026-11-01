@@ -1,0 +1,68 @@
+[package]
+name = "tact-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Native Tact Desktop frontend"
+repository = "https://github.com/rust-infra/tact"
+
+[lib]
+name = "tact_desktop"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tact-desktop"
+path = "src/main.rs"
+
+[[example]]
+name = "ui_capture"
+path = "examples/ui_capture.rs"
+required-features = ["ui-capture"]
+
+[features]
+# Offscreen render harness used to verify the real shell's pixels without
+# Screen Recording permission.
+ui-capture = [
+    "dep:anyhow",
+    "dep:image",
+    "tact_desktop_core/ui-capture",
+    "gpui/test-support",
+    "gpui_platform/test-support",
+]
+
+[dependencies]
+anyhow = { workspace = true, optional = true }
+chrono = { workspace = true }
+image = { workspace = true, optional = true }
+serde_json = { workspace = true }
+tact_catalog = { version = "2.0.0", path = "../catalog" }
+tact_desktop_core = { version = "2.0.0", path = "../desktop_core" }
+gpui = { workspace = true }
+gpui-ai = { workspace = true }
+gpui_base = { workspace = true }
+gpui_component = { workspace = true }
+gpui_component_assets = { workspace = true }
+gpui-component-macros = { workspace = true }
+gpui_platform = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa = "0.26"
+objc = "0.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[build-dependencies]
+embed-resource = "3"
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+tact_desktop_core = { version = "2.0.0", path = "../desktop_core", features = ["ui-capture"] }
+tact_protocol = { version = "2.0.0", path = "../protocol" }

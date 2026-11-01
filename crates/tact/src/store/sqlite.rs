@@ -227,6 +227,15 @@ async fn open_new_pool(path: &Path) -> Result<SqlitePool> {
         .with_context(|| format!("failed to open sqlite database at {}", path.display()))
 }
 
+/// Connection options for `path`.
+///
+/// The path goes in as a path, never through a `sqlite:` URL: a Windows
+/// verbatim path (`\\?\C:\...`) contains a `?`, which the URL parser reads as
+/// the start of a query string and rejects.
+fn connect_options(path: &Path) -> SqliteConnectOptions {
+    SqliteConnectOptions::new().filename(path)
+}
+
 /// Puts a brand-new database into WAL and reports the mode it will be opened
 /// in.
 ///
@@ -235,8 +244,8 @@ async fn open_new_pool(path: &Path) -> Result<SqlitePool> {
 /// database left behind by an interrupted first initialization is empty and
 /// therefore treated as new — which is what its owner wants.
 async fn prepare_journal_mode(path: &Path) -> Result<SqliteJournalMode> {
-    let url = format!("sqlite:{}", path.display());
-    let mut conn = retry_busy(|| SqliteConnection::connect(&url))
+    let options = connect_options(path);
+    let mut conn = retry_busy(|| SqliteConnection::connect_with(&options))
         .await
         .with_context(|| format!("failed to inspect sqlite database at {}", path.display()))?;
 
@@ -278,8 +287,7 @@ async fn connect_with_pragmas(
     } else {
         SqliteSynchronous::Full
     };
-    let url = format!("sqlite:{}", path.display());
-    let options = SqliteConnectOptions::from_str(&url)?
+    let options = connect_options(path)
         .synchronous(synchronous)
         // Wait for a concurrent writer (cross-process access to the same
         // workdir) instead of failing with SQLITE_BUSY immediately.
@@ -433,6 +441,30 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(level, 1);
+    }
+
+    /// Windows canonicalizes paths to a `\\?\C:\...` verbatim form, and that
+    /// `?` is URL query syntax. The options must take the path literally
+    /// instead of parsing it as a `sqlite:` URL.
+    #[test]
+    fn connection_options_take_the_path_literally() {
+        let path = Path::new(r"\\?\C:\Users\me\project\.tact\tact.db");
+        assert_eq!(connect_options(path).get_filename(), path);
+    }
+
+    /// `?` is a legal Unix filename character, so this reproduces the Windows
+    /// verbatim-path failure on every Unix runner: a URL-built connection
+    /// string reads everything after the `?` as query parameters.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_path_with_url_syntax_opens() {
+        let dir = temp_dir("path?with?syntax");
+        let pool = open_pool(&dir.join("tact.db")).await.unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM sqlite_master")
+            .fetch_one(pool.deref())
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
     }
 
     /// Opening a pool for an initialized database must not try to switch its

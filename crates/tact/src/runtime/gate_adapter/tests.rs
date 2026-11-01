@@ -192,6 +192,24 @@ fn context() -> ToolGateContext {
     }
 }
 
+#[test]
+fn subagent_permission_gate_names_the_child_and_tool() {
+    let mut gate = fixture(PermissionMode::Default, Vec::new(), false).gate;
+    gate.is_subagent = true;
+    let mut child_context = context();
+    child_context.session = SessionRef::new("child-7");
+    child_context.run.session = SessionRef::new("child-7");
+
+    let origin = gate.permission_origin(&child_context, "call-9");
+    assert_eq!(
+        origin.agent,
+        tact_protocol::UiAgentRef::Subagent {
+            child_id: "child-7".into()
+        }
+    );
+    assert_eq!(origin.tool_id.as_deref(), Some("call-9"));
+}
+
 fn call(name: &str, path: &str) -> ToolCall {
     ToolCall {
         id: "call-1".into(),

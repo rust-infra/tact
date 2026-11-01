@@ -731,7 +731,9 @@ RAII，但<strong>没有 <code>Drop</code>
 <td><code>sessions</code></td>
 <td>会话 id、<code>root_dir</code>、<code>ref_id</code>（父会话
 id；<code>''</code> = 顶层）、<code>locked_by</code> +
-<code>lock_epoch</code>（进程锁）、时间戳</td>
+<code>lock_epoch</code>（进程锁）、可空的 <code>title</code> 与
+<code>archived_at</code>、时间戳；按 <code>root_dir</code>、归档状态和更新时间
+建立索引。标题为空时由首条用户消息推导（空会话显示为 “新会话”）</td>
 </tr>
 <tr>
 <td><code>messages</code></td>

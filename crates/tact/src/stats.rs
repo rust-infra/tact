@@ -16,6 +16,12 @@ pub struct SessionStats {
     pub total_prompt_chars: u64,
     /// Total characters across all serialized response content blocks.
     pub total_response_chars: u64,
+    /// Cumulative provider-reported prompt tokens.
+    pub prompt_tokens: u64,
+    /// Cumulative provider-reported completion tokens.
+    pub completion_tokens: u64,
+    /// Cumulative provider-reported total tokens.
+    pub total_tokens: u64,
     /// Number of `ContentBlock::Thinking` blocks returned by the LLM.
     pub thinking_blocks: u64,
     /// Total characters within thinking blocks.
@@ -65,6 +71,9 @@ impl Default for SessionStats {
             prompt_count: 0,
             total_prompt_chars: 0,
             total_response_chars: 0,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
             thinking_blocks: 0,
             total_thinking_chars: 0,
             compactions: 0,
@@ -242,6 +251,11 @@ fn write_metric_table(out: &mut String, rows: &[(&str, String)]) {
 impl SessionStats {
     /// Accumulate token usage info from an LLM call (streaming or compaction).
     pub fn record_token_usage(&mut self, usage: &TokenUsageInfo) {
+        self.prompt_tokens = self.prompt_tokens.saturating_add(u64::from(usage.prompt));
+        self.completion_tokens = self
+            .completion_tokens
+            .saturating_add(u64::from(usage.completion));
+        self.total_tokens = self.total_tokens.saturating_add(u64::from(usage.total));
         self.cache_hit_tokens += usage.prompt_cache_hit_tokens as u64;
         self.cache_miss_tokens += usage.prompt_cache_miss_tokens as u64;
         self.reasoning_tokens += usage.reasoning_tokens as u64;
@@ -289,6 +303,9 @@ impl SessionStats {
             ("Total LLM time", fmt_duration(total_llm)),
             ("Prompt chars sent", self.total_prompt_chars.to_string()),
             ("Response chars rcvd", self.total_response_chars.to_string()),
+            ("Prompt tokens", self.prompt_tokens.to_string()),
+            ("Completion tokens", self.completion_tokens.to_string()),
+            ("Total tokens", self.total_tokens.to_string()),
             ("Thinking blocks", self.thinking_blocks.to_string()),
             ("Thinking chars", self.total_thinking_chars.to_string()),
             ("Compactions", self.compactions.to_string()),
@@ -422,11 +439,16 @@ mod tests {
     fn record_accumulates_all_fields() {
         let mut s = SessionStats::default();
         s.record_token_usage(&TokenUsageInfo {
+            prompt: 120,
+            completion: 30,
+            total: 150,
             prompt_cache_hit_tokens: 1000,
             prompt_cache_miss_tokens: 500,
             reasoning_tokens: 200,
-            ..Default::default()
         });
+        assert_eq!(s.prompt_tokens, 120);
+        assert_eq!(s.completion_tokens, 30);
+        assert_eq!(s.total_tokens, 150);
         assert_eq!(s.cache_hit_tokens, 1000);
         assert_eq!(s.cache_miss_tokens, 500);
         assert_eq!(s.reasoning_tokens, 200);

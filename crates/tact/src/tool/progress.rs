@@ -104,6 +104,7 @@ impl ToolProgressReporter {
             sink.emit(chunks.into_iter().map(neutral_chunk).collect::<Vec<_>>());
         } else {
             self.events.send(AgentUpdate::ToolProgress {
+                run_id: None,
                 tool_id: self.tool_id.clone(),
                 chunks,
             });
@@ -133,6 +134,7 @@ impl ToolProgressReporter {
             sink.emit(chunks.into_iter().map(neutral_chunk).collect());
         } else {
             self.events.send(AgentUpdate::ToolProgress {
+                run_id: None,
                 tool_id: self.tool_id.clone(),
                 chunks,
             });

@@ -199,6 +199,8 @@ fn full_frame_select_popup_overlays() {
         options: vec!["Allow once".into(), "Deny".into()],
         log_confirm: false,
         from_subagent: false,
+        purpose: tact_protocol::UiRequestPurpose::Permission,
+        origin: tact_protocol::UiRequestOrigin::main(),
     });
 
     let text = render_app_text(&mut app, 100, 30);
@@ -224,6 +226,8 @@ fn full_frame_select_popup_wraps_long_prompt() {
         ],
         log_confirm: false,
         from_subagent: false,
+        purpose: tact_protocol::UiRequestPurpose::Permission,
+        origin: tact_protocol::UiRequestOrigin::main(),
     });
 
     let text = render_app_text(&mut app, 80, 28);

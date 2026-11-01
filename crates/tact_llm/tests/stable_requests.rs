@@ -38,17 +38,18 @@ fn limits() -> ModelLimits {
 
 fn assert_golden(name: &str, body: &[u8]) {
     let value: serde_json::Value = serde_json::from_slice(body).unwrap();
-    let actual = format!("{}\n", serde_json::to_string_pretty(&value).unwrap());
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/goldens")
         .join(name);
     if std::env::var_os("UPDATE_GOLDENS").is_some() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, &actual).unwrap();
+        let actual = format!("{}\n", serde_json::to_string_pretty(&value).unwrap());
+        std::fs::write(&path, actual).unwrap();
     }
     let expected = std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
-    assert_eq!(actual, expected, "request golden {}", path.display());
+    let expected: serde_json::Value = serde_json::from_str(&expected).unwrap();
+    assert_eq!(value, expected, "request golden {}", path.display());
 }
 
 fn assert_headers_golden(name: &str, request: &wiremock::Request) {
