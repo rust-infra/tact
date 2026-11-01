@@ -332,8 +332,9 @@ are unchanged.
 The Thinking toggle was a full-width button whose content centred, so a
 thought rendered in the middle of the transcript column. `.justify_start()` on
 the toggle keeps the disclosure chevron and title at the leading edge, matching
-the design's thought row. The trace, disclosure animation and reader event are
-unchanged.
+the design's thought row. The trace and disclosure animation are unchanged;
+the shell now handles `ThinkingEvent::Toggled` by expanding the trace in place
+instead of opening a reader.
 
 ### P2 surfaces (no further vendor patches)
 

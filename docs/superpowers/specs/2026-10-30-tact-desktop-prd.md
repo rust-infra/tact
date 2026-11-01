@@ -101,7 +101,7 @@ Transient surfaces:
 - Model/effort/budget chooser
 - Goal editor and steering sheet
 - Subagent transcript drawer
-- Diff/code/thinking/system-prompt readers
+- Diff/code/system-prompt readers; thinking expands inline
 - Plugin, MCP, Hook, and Skill management sheets
 - Settings and theme/language panels
 
@@ -255,7 +255,7 @@ Two alternatives were evaluated:
   abbreviated queries can match words or acronym-like subsequences, and the
   strongest results remain visible without pagination.
 - Stats, balance, background, system prompt, help, and history readers.
-- Code, diff, thinking, system prompt, and subagent readers.
+- Code, diff, system prompt, and subagent readers; thinking expands in place.
 - Copy/select behavior for transcript and readers.
 - Assistant answers expose stable follow-up prompt chips (`Suggestions`);
   selected Markdown exposes Ask / Explain / Rewrite actions

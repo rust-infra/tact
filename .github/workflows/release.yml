@@ -370,14 +370,15 @@ jobs:
             cp crates/desktop/assets/fonts/IBM-Plex-LICENSE.txt .
             cp crates/desktop/assets/fonts/Lilex-LICENSE.txt .
             cp vendor/gpui-ai/LICENSE gpui-ai-LICENSE-MIT.txt
+            cp crates/desktop/assets/app-icon.png .
             python3 scripts/normalize-mtime.py tact-desktop.exe tact-ui.exe LICENSE \
               LICENSE.tact-ui IBM-Plex-LICENSE.txt Lilex-LICENSE.txt \
               THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt \
-              THIRD-PARTY-LICENSES.txt Cargo.lock gpui-ai-LICENSE-MIT.txt
+              THIRD-PARTY-LICENSES.txt Cargo.lock gpui-ai-LICENSE-MIT.txt app-icon.png
             python3 scripts/package-zip.py --output "${asset}" tact-desktop.exe \
               tact-ui.exe LICENSE LICENSE.tact-ui IBM-Plex-LICENSE.txt \
               Lilex-LICENSE.txt THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt \
-              THIRD-PARTY-LICENSES.txt Cargo.lock gpui-ai-LICENSE-MIT.txt
+              THIRD-PARTY-LICENSES.txt Cargo.lock gpui-ai-LICENSE-MIT.txt app-icon.png
           elif [[ "${{ runner.os }}" == "macOS" ]]; then
             app="Tact Desktop.app"
             mkdir -p "${app}/Contents/MacOS" "${app}/Contents/Resources"
@@ -391,6 +392,7 @@ jobs:
             cp THIRD-PARTY-LICENSES.txt "${app}/Contents/Resources/"
             cp Cargo.lock "${app}/Contents/Resources/"
             cp vendor/gpui-ai/LICENSE "${app}/Contents/Resources/gpui-ai-LICENSE-MIT.txt"
+            cp crates/desktop/assets/app-icon.icns "${app}/Contents/Resources/Tact.icns"
             cat > "${app}/Contents/Info.plist" <<'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -400,6 +402,7 @@ jobs:
             <key>CFBundleIdentifier</key><string>dev.tact.desktop</string>
             <key>CFBundleName</key><string>Tact Desktop</string>
             <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleIconFile</key><string>Tact</string>
             <key>LSMinimumSystemVersion</key><string>13.0</string>
           </dict>
           </plist>
@@ -443,17 +446,18 @@ jobs:
             cp crates/desktop/assets/fonts/IBM-Plex-LICENSE.txt .
             cp crates/desktop/assets/fonts/Lilex-LICENSE.txt .
             cp vendor/gpui-ai/LICENSE gpui-ai-LICENSE-MIT.txt
+            cp crates/desktop/assets/app-icon.png .
             strip tact-desktop || true
             strip tact-ui || true
             python3 scripts/normalize-mtime.py tact-desktop tact-ui LICENSE \
               LICENSE.tact-ui IBM-Plex-LICENSE.txt Lilex-LICENSE.txt \
               THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt \
-              THIRD-PARTY-LICENSES.txt Cargo.lock gpui-ai-LICENSE-MIT.txt
+              THIRD-PARTY-LICENSES.txt Cargo.lock gpui-ai-LICENSE-MIT.txt app-icon.png
             tar --sort=name --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 \
               --numeric-owner -cf - tact-desktop tact-ui LICENSE LICENSE.tact-ui \
               IBM-Plex-LICENSE.txt Lilex-LICENSE.txt THIRD-PARTY-NOTICES.md \
               THIRD-PARTY-APACHE-2.0.txt THIRD-PARTY-LICENSES.txt Cargo.lock \
-              gpui-ai-LICENSE-MIT.txt | gzip -n > "${asset}"
+              gpui-ai-LICENSE-MIT.txt app-icon.png | gzip -n > "${asset}"
           fi
 
           echo "ASSET_PATH=${asset}" >> "${GITHUB_ENV}"
@@ -489,6 +493,7 @@ jobs:
             bin="$verify/extracted/Tact Desktop.app/Contents/MacOS/tact-desktop"
             sidecar="$verify/extracted/Tact Desktop.app/Contents/MacOS/tact-ui"
             test -f "$verify/extracted/Tact Desktop.app/Contents/Resources/THIRD-PARTY-LICENSES.txt"
+            test -f "$verify/extracted/Tact Desktop.app/Contents/Resources/Tact.icns"
             test -f "$verify/extracted/Tact Desktop.app/Contents/Resources/Cargo.lock"
           else
             bin="$verify/extracted/tact-desktop"

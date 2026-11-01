@@ -161,6 +161,8 @@ struct TranscriptRowView {
     snapshot: Arc<DesktopSnapshot>,
     root: WeakEntity<DesktopRoot>,
     assistant_selection: Option<Entity<SelectionActions>>,
+    /// Inline expansion state for a thinking row.
+    thinking_open: bool,
     /// The first action of a pending gate tracks this handle, so Review can
     /// move focus onto the primary allow option without selecting it.
     gate_focus: gpui::FocusHandle,
@@ -175,6 +177,7 @@ impl Render for TranscriptRowView {
             self.assistant_selection.clone(),
             false,
             Some(&self.gate_focus),
+            self.thinking_open,
         )
     }
 }
@@ -189,6 +192,10 @@ pub(crate) struct DesktopRoot {
     assistant_selections: HashMap<(String, RowId), Entity<SelectionActions>>,
     transcript_rows: HashMap<RowId, Entity<TranscriptRowView>>,
     pending_row_updates: HashSet<RowId>,
+    /// Thinking rows the reader expanded inline. The `Thinking` component is
+    /// controlled, so the shell owns this state and the trace stays in the
+    /// transcript instead of opening a reader.
+    expanded_thinking: HashSet<RowId>,
     command_search: Entity<CommandSearch>,
     command_scope: Option<CommandId>,
     command_hit_count: usize,
@@ -557,6 +564,7 @@ impl DesktopRoot {
             assistant_selections: HashMap::new(),
             transcript_rows: HashMap::new(),
             pending_row_updates: HashSet::new(),
+            expanded_thinking: HashSet::new(),
             command_search,
             command_scope: None,
             command_hit_count: 0,
@@ -1032,7 +1040,13 @@ impl DesktopRoot {
                 let became_ready = self.snapshot.session.phase != SessionPhase::Ready
                     && commit.snapshot.session.phase == SessionPhase::Ready;
                 let appearance_changed = self.snapshot.appearance != commit.snapshot.appearance;
+                let session_changed = self.snapshot.session.epoch != commit.snapshot.session.epoch;
                 self.snapshot = commit.snapshot;
+                if session_changed {
+                    // Row ids restart per session; an expansion from the old
+                    // session must not open a same-numbered row here.
+                    self.expanded_thinking.clear();
+                }
                 let pending_gates = self.snapshot.pending_gates.len();
                 if pending_gates != self.last_badge {
                     self.last_badge = pending_gates;
@@ -1306,6 +1320,13 @@ impl DesktopRoot {
             title: title.into(),
             markdown: markdown.into(),
         }
+    }
+
+    #[cfg(feature = "ui-capture")]
+    pub(crate) fn capture_expand_thinking(&mut self, row: RowId, cx: &mut Context<Self>) {
+        self.expanded_thinking.insert(row);
+        self.pending_row_updates.insert(row);
+        cx.notify();
     }
 
     #[cfg(feature = "ui-capture")]
@@ -4459,17 +4480,20 @@ impl DesktopRoot {
             let selection = assistant_selections
                 .get(&("main".to_string(), row.id))
                 .cloned();
+            let thinking_open = self.expanded_thinking.contains(&row.id);
             let needs_update = self.pending_row_updates.contains(&row.id)
                 || !self.transcript_rows.contains_key(&row.id);
             let view = if let Some(view) = self.transcript_rows.get(&row.id).cloned() {
                 let context_changed = view.read(cx).snapshot.appearance != snapshot.appearance
                     || view.read(cx).snapshot.language != snapshot.language
-                    || view.read(cx).snapshot.show_hook_output != snapshot.show_hook_output;
+                    || view.read(cx).snapshot.show_hook_output != snapshot.show_hook_output
+                    || view.read(cx).thinking_open != thinking_open;
                 if needs_update || context_changed {
                     view.update(cx, |view, cx| {
                         view.row = row.clone();
                         view.snapshot = snapshot.clone();
                         view.assistant_selection = selection;
+                        view.thinking_open = thinking_open;
                         cx.notify();
                     });
                 }
@@ -4481,6 +4505,7 @@ impl DesktopRoot {
                     snapshot: snapshot.clone(),
                     root,
                     assistant_selection: selection,
+                    thinking_open,
                     gate_focus: cx.focus_handle(),
                 });
                 self.transcript_rows.insert(row.id, view.clone());
@@ -7381,7 +7406,15 @@ impl DesktopRoot {
                 transcript
                     .iter()
                     .map(|row| {
-                        transcript_row_element(row, &self.snapshot, weak.clone(), None, true, None)
+                        transcript_row_element(
+                            row,
+                            &self.snapshot,
+                            weak.clone(),
+                            None,
+                            true,
+                            None,
+                            false,
+                        )
                     })
                     .collect::<Vec<_>>()
             })
@@ -10939,6 +10972,7 @@ fn transcript_row_element(
     assistant_selection: Option<Entity<SelectionActions>>,
     read_only: bool,
     gate_focus: Option<&gpui::FocusHandle>,
+    thinking_open: bool,
 ) -> AnyElement {
     if !crate::ui::transcript::visible_row(row, snapshot) {
         return div().into_any_element();
@@ -11332,14 +11366,27 @@ fn transcript_row_element(
                 .child(
                     Thinking::new(format!("thinking-{id}"), &progressive)
                         .labels(thinking_labels(snapshot.language))
-                        .open(matches!(
-                            thinking.status,
-                            RowStatus::Running | RowStatus::Pending
-                        ))
-                        .on_event(move |_, window, cx| {
+                        // The trace expands in place. It opens on its own
+                        // while reasoning runs and afterwards stays where the
+                        // reader left it; no reader overlay is involved.
+                        .open(
+                            thinking_open
+                                || matches!(
+                                    thinking.status,
+                                    RowStatus::Running | RowStatus::Pending
+                                ),
+                        )
+                        .on_event(move |event, _, cx| {
+                            let ThinkingEvent::Toggled { open, .. } = event;
+                            let open = *open;
                             let _ = reader_weak.update(cx, |this, cx| {
-                                this.remember_focus(window, cx);
-                                this.open_transcript_reader(ReaderRef::Thinking(row_id), cx);
+                                if open {
+                                    this.expanded_thinking.insert(row_id);
+                                } else {
+                                    this.expanded_thinking.remove(&row_id);
+                                }
+                                this.pending_row_updates.insert(row_id);
+                                cx.notify();
                             });
                         }),
                 )
@@ -12662,15 +12709,33 @@ fn plan_is_a_single_tool_call(
     let Some(tool_name) = step.detail.as_deref() else {
         return false;
     };
-    transcript.iter().any(|candidate| {
-        candidate.loop_id == row.loop_id
-            && match &candidate.body {
-                RowBody::ToolGroup(group) => group.items.iter().any(
-                    |item| matches!(item, ToolGroupItem::Tool(tool) if &*tool.name == tool_name),
-                ),
-                _ => false,
-            }
-    })
+    let rows: Vec<&TranscriptRow> = transcript.iter().map(|row| row.as_ref()).collect();
+    let Some(index) = rows.iter().position(|candidate| candidate.id == row.id) else {
+        return false;
+    };
+    // One run owns one execution group, and a later turn in that run gets a
+    // fresh loop id while appending to the same group. Compare within the run
+    // (the rows between the user turns that surround the plan) rather than by
+    // loop id, so the group still absorbs its plan.
+    let start = rows[..index]
+        .iter()
+        .rposition(|candidate| matches!(&candidate.body, RowBody::User(_)))
+        .map(|position| position + 1)
+        .unwrap_or(0);
+    let end = rows[index..]
+        .iter()
+        .position(|candidate| matches!(&candidate.body, RowBody::User(_)))
+        .map(|offset| index + offset)
+        .unwrap_or(rows.len());
+    rows[start..end]
+        .iter()
+        .any(|candidate| match &candidate.body {
+            RowBody::ToolGroup(group) => group
+                .items
+                .iter()
+                .any(|item| matches!(item, ToolGroupItem::Tool(tool) if &*tool.name == tool_name)),
+            _ => false,
+        })
 }
 
 /// The rail's quick-filter placeholder, short enough for the 250px rail in
@@ -13446,6 +13511,47 @@ mod tests {
     }
 
     #[test]
+    fn a_plan_yields_to_its_run_group_across_turns() {
+        let demo = tact_desktop_core::fixtures::demo_transcript();
+        let group = demo
+            .iter()
+            .find(|row| matches!(&row.body, RowBody::ToolGroup(_)))
+            .cloned()
+            .expect("tool group");
+        let plan = demo
+            .iter()
+            .find(|row| matches!(&row.body, RowBody::Plan(_)))
+            .cloned()
+            .expect("plan");
+        let user = demo
+            .iter()
+            .find(|row| matches!(&row.body, RowBody::User(_)))
+            .cloned()
+            .expect("user turn");
+        let mut plan_row = (*plan).clone();
+        if let RowBody::Plan(body) = &mut plan_row.body {
+            body.steps = Arc::from([tact_desktop_core::PlanStep {
+                label: Arc::from("run the tests"),
+                status: RowStatus::Pending,
+                detail: Some(Arc::from("shell")),
+            }]);
+        }
+        let RowBody::Plan(plan_body) = &plan_row.body else {
+            unreachable!("the row stays a plan");
+        };
+        let same_run = TranscriptView::from_rows(vec![group.clone(), Arc::new(plan_row.clone())]);
+        assert!(
+            plan_is_a_single_tool_call(&plan_row, plan_body, &same_run),
+            "a later turn's plan belongs to the run's existing group"
+        );
+        let next_run = TranscriptView::from_rows(vec![group, user, Arc::new(plan_row.clone())]);
+        assert!(
+            !plan_is_a_single_tool_call(&plan_row, plan_body, &next_run),
+            "a group from an earlier run must not hide a new run's plan"
+        );
+    }
+
+    #[test]
     fn multi_file_review_rows_carry_their_decisions() {
         let files = [
             crate::ui::diff_review::FileDiff {
@@ -13482,6 +13588,58 @@ mod tests {
         );
         let long = "x".repeat(200);
         assert_eq!(evidence_snippet(&long).chars().count(), 161);
+    }
+
+    #[gpui::test]
+    fn thinking_expands_inline_without_a_reader(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = tact_desktop_core::fixtures::demo_transcript();
+                this.snapshot = Arc::new(snapshot);
+                this.transcript_rows.clear();
+                let count = this.snapshot.transcript.len();
+                this.scroller.update(cx, |state, cx| {
+                    state.reset(count, cx);
+                    state.scroll_to_item(2, cx);
+                });
+            });
+            window.draw(cx).clear(cx);
+        });
+        let row = window
+            .debug_bounds("transcript-row-thinking-2")
+            .expect("thinking row");
+        // The disclosure toggle sits at the row's leading edge, just inside
+        // the Thinking component's header padding.
+        let toggle = gpui::point(row.origin.x + px(24.), row.origin.y + px(12.));
+        window.simulate_click(toggle, gpui::Modifiers::default());
+        window.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        window.update(|_, cx| {
+            let root = root.read(cx);
+            assert!(
+                root.expanded_thinking.contains(&RowId::new(2)),
+                "the thought expands in place"
+            );
+            assert!(
+                root.overlay.is_none(),
+                "expanding a thought must not open a reader"
+            );
+        });
+        window.simulate_click(toggle, gpui::Modifiers::default());
+        window.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        window.update(|_, cx| {
+            assert!(
+                !root.read(cx).expanded_thinking.contains(&RowId::new(2)),
+                "a second click collapses the thought"
+            );
+        });
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
     }
 
     #[gpui::test]
@@ -13892,7 +14050,7 @@ mod tests {
                     .filter_map(|index| transcript.iter().find(|row| row.ordinal == index).cloned())
                     .collect::<Vec<_>>();
                 v_flex().size_full().children(rows.into_iter().map(|row| {
-                    transcript_row_element(&row, &snapshot, weak.clone(), None, true, None)
+                    transcript_row_element(&row, &snapshot, weak.clone(), None, true, None, false)
                 }))
             }
         }

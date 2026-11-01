@@ -9075,6 +9075,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "cocoa 0.26.0",
+ "embed-resource",
  "gpui-ai",
  "gpui-base",
  "gpui-component",

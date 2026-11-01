@@ -16,6 +16,24 @@ the microphone appears only when the provider is configured. `PromptBar` is comp
 upstream commands are flat. HTML nodes carry `data-gpui-ai` attributes naming
 the actual mapping.
 
+## App icon
+
+The icon is a Tact-blue squircle with a white `T` and an open agent loop whose
+node sits at the ring's end. The editable source is
+`crates/desktop/assets/app-icon.svg`; generated assets are `app-icon.png`
+(1024px, Linux/archive), `app-icon.icns` (macOS bundle) and `app-icon.ico`
+(Windows executable resource).
+
+```bash
+rsvg-convert -w 1024 -h 1024 crates/desktop/assets/app-icon.svg -o /tmp/icon.png
+# iconset: 16/32/64/128/256/512 plus @2x, then:
+iconutil -c icns /tmp/Tact.iconset -o crates/desktop/assets/app-icon.icns
+```
+
+`crates/desktop/build.rs` embeds the `.ico` into the Windows executable; both
+packaging workflows copy the `.icns` into `Contents/Resources/Tact.icns` and
+set `CFBundleIconFile`, and ship the PNG in the archives.
+
 ## Views
 
 - Default: `prototype.html`

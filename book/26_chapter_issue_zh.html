@@ -21548,8 +21548,7 @@ Allow once，不代替用户作答；<code>ask_user</code> 的单选/多选仍�
 转录标题改用 <code>clamp(24px, 2.25vw, 32px)</code>；暗色会话栏、白色检查器与
 当前步骤左侧色条对齐原型 token。</p>
 <p><strong>交互修复：</strong> 同一 run 内多个 turn 的工具合并到一张执行组卡，
-不再每轮一张；思考行去掉独立的 Open reader 链接，点击标题即打开 reader，并收紧
-行距；New activity 只在运行中且确有未读转录时显示，会话结束后不再误报；
+不再每轮一张；思考行去掉独立的 Open reader 链接，点击标题用 gpui-ai 的 Thinking 组件就地展开/收起，不再弹 reader，并收紧行距；New activity 只在运行中且确有未读转录时显示，会话结束后不再误报；
 会话切换以 180ms 淡入落定；任何弹窗打开后，主页面快捷键被拦截，焦点落在弹窗
 控件上，不会在窗未关闭时操作 chat。</p>
 <p><strong>P2 收尾：</strong> 工具输出里的 ANSI SGR（16/256/真彩色、粗体、暗色、
@@ -21563,7 +21562,12 @@ patch 在 reader 中挂载 <code>DiffTable</code>，按文件列出增删行并�
 上下文检查器在 token 指标下列出本轮仍保留的 hook 上下文与工具输出
 （<code>ContextCard</code>）；macOS Dock 图标显示待决定闸门数量，归零即清除；
 Windows 任务栏用 <code>ITaskbarList3::SetOverlayIcon</code> 标记待决定状态
-（平台没有数字徽标 API，数量仍由闸门横幅与通知承载）。新增截图
+（平台没有数字徽标 API，数量仍由闸门横幅与通知承载）。思考块改为每次运行
+共用一张 Thinking 卡，后续思考以空行续写，不再为每个块新建卡片；点击标题
+就地展开，截图 <code>45-thinking-expanded</code>。桌面图标改为蓝色圆角底、
+白色 T 与开口智能体环（<code>assets/app-icon.svg</code>，生成
+<code>.icns</code> / <code>.ico</code> / <code>.png</code>），macOS 包写入
+<code>CFBundleIconFile</code>，Windows 可执行文件嵌入图标资源。新增截图
 <code>41-reader-ansi</code>、<code>42-reader-search</code>、
 <code>43-reader-diff-review</code>、<code>44-assistant-mermaid</code>。</p>
 <p><strong>验证：</strong> <code>cargo test -p tact-desktop</code>（127 + 10

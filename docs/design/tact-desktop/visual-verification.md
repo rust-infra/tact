@@ -56,6 +56,7 @@ writes one PNG per surface:
 | `40` | Keyboard-shortcuts help reader |
 | `41`–`43` | P2 readers: ANSI tool output, web-search results, multi-file `DiffTable` review |
 | `44` | Inline Mermaid diagram in an assistant answer |
+| `45` | A thinking row expanded in place (no reader overlay) |
 | `39` | Focus-visible tint after one Tab |
 
 `crates/desktop_core/src/fixtures.rs` supplies the representative transcript

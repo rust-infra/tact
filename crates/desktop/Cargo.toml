@@ -59,6 +59,9 @@ windows = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+[build-dependencies]
+embed-resource = "3"
+
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
 tact_desktop_core = { version = "2.0.0", path = "../desktop_core", features = ["ui-capture"] }

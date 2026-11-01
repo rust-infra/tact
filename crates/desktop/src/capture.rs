@@ -563,6 +563,15 @@ pub fn capture_all(out: &Path) -> Result<Vec<PathBuf>> {
     harness.with_root(|root, _, cx| root.capture_scroll_to(2, cx));
     shoot(&mut harness, "44-assistant-mermaid")?;
 
+    let mut snapshot = harness.snapshot();
+    snapshot.transcript = tact_desktop_core::fixtures::demo_transcript();
+    harness.set_snapshot(snapshot);
+    harness.with_root(|root, _, cx| {
+        root.capture_scroll_to(2, cx);
+        root.capture_expand_thinking(RowId::new(2), cx);
+    });
+    shoot(&mut harness, "45-thinking-expanded")?;
+
     let help = tact_desktop_core::help_reader(tact_catalog::CatalogLocale::En);
     harness.with_root(|root, _, cx| root.capture_show_reader(help, cx));
     shoot(&mut harness, "40-help")?;

@@ -214,8 +214,8 @@ structural differences that remained after 4b:
   inspector follow `--canvas`, `--rail` and `--panel`.
 - **Execution grouping.** Every turn in one run appends to the run's single
   `ToolGroup`; the group settles when the run finishes. Thinking rows lost
-  their separate `Open reader` link and open the reader from their title, so a
-  thought between tools is one compact row.
+  their separate `Open reader` link; the title expands the trace in place
+  through the `Thinking` component, so a thought between tools stays one row.
 - **Back to bottom.** The `New activity` chip appears only while the run is
   active and unseen transcript rows arrived; a finished run or a plain
   scroll-up shows only `Back to bottom`.

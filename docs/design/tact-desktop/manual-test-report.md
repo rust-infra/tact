@@ -37,7 +37,7 @@ scripts/check-rust.sh
 | B1 | Every row kind renders (user, assistant, thinking, plan, tools, diff, notice, hook, error, gate) | `every_transcript_row_kind_renders`; captures `26b`–`26d` | pass |
 | B2 | Plan card shows steps and EXECUTING state | capture `26d`; `desktop_shell_renders_all_transcript_row_kinds` | pass |
 | B3 | Tool group expands to rows and output | capture `26c` | pass |
-| B4 | Diff / thinking / tool readers open | captures `16`–`20`; `every_catalog_entry_executes_in_the_shell` | pass |
+| B4 | Diff / tool readers open; thinking expands inline | captures `16`–`20`, `45`; `thinking_expands_inline_without_a_reader` | pass |
 | B5 | Permission gate is sticky; Review scrolls to the inline card and focuses the primary allow option without answering it; the design's card decides in one click | `gate_review_focuses_the_primary_allow_option`, `inline_permission_gate_answers_with_the_clicked_option`; capture `33` | pass |
 | B6 | Multi-select questions keep the toggle surface and confirm only after choosing; single- and multi-select cards use the prototype's horizontal option cards | `multi_select_questions_keep_the_toggle_surface`; reducer `apply_gate_response` tests; capture `33b-questions` | pass |
 | B7 | Back-to-bottom pill floats above sticky tasks | `back_to_bottom_floats_above_the_sticky_strip`; capture `28` | pass |

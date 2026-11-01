@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="canvas" x1="0.15" y1="0" x2="0.75" y2="1">
+      <stop offset="0" stop-color="#4c9bff"/>
+      <stop offset="0.52" stop-color="#1467ea"/>
+      <stop offset="1" stop-color="#083a9e"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.22"/>
+      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="lift" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#03205e" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <!-- Squircle canvas -->
+  <rect x="40" y="40" width="944" height="944" rx="228" fill="url(#canvas)"/>
+  <rect x="40" y="40" width="944" height="472" rx="228" fill="url(#sheen)"/>
+
+  <!-- Agent loop: an open ring with a node at its end -->
+  <path d="M216 683 A342 342 0 1 1 808 683" fill="none" stroke="#ffffff" stroke-opacity="0.20"
+        stroke-width="22" stroke-linecap="round"/>
+  <circle cx="808" cy="683" r="30" fill="#ffffff" fill-opacity="0.62"/>
+
+  <!-- Tact mark -->
+  <g filter="url(#lift)" stroke="#ffffff" stroke-width="128" stroke-linecap="round">
+    <path d="M300 380 H724"/>
+    <path d="M512 380 V690"/>
+  </g>
+</svg>
