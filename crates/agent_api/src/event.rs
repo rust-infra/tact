@@ -44,6 +44,16 @@ pub enum AgentEvent {
     ProviderActivity {
         activity: ProviderActivity,
     },
+    /// A call was accepted into this turn's dispatch and scheduled.
+    ///
+    /// Emitted for every call up front, before the permission gate; a call
+    /// whose resources conflict with an earlier one waits for its wave and
+    /// only then emits [`Self::ToolStarted`]. A host uses the gap to show the
+    /// call as *queued* rather than running.
+    ToolQueued {
+        call: ToolCall,
+        descriptor: Option<ToolDescriptor>,
+    },
     ToolStarted {
         call: ToolCall,
         descriptor: Option<ToolDescriptor>,
@@ -110,6 +120,7 @@ impl AgentEvent {
             | Self::MessageStarted { .. }
             | Self::MessageFinished { .. }
             | Self::ProviderActivity { .. }
+            | Self::ToolQueued { .. }
             | Self::ToolStarted { .. }
             | Self::ToolFinished { .. }
             | Self::Usage { .. }

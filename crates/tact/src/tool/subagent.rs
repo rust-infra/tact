@@ -38,7 +38,13 @@ pub struct SubagentInput {
     /// When true, return `async_launched { id }` immediately; the subagent
     /// keeps running and its result is re-injected into the parent context
     /// on completion.
-    #[schemars(description = "Run the subagent in the background and return an async handle.")]
+    ///
+    /// This is the parallel switch: set it on every call of a batch and the
+    /// children run concurrently, because each call detaches its child and
+    /// returns before any of them finishes. Blocking calls are serialized.
+    #[schemars(
+        description = "Run in parallel: return async_launched { id } at once and let the subagent keep working. Set it on every call of a batch and the children run concurrently; collect each summary with wait_subagent."
+    )]
     #[serde(default)]
     pub run_in_background: Option<bool>,
     /// Cap on nested agent-loop turns (prevents runaway subagents).
@@ -163,9 +169,13 @@ async fn run_subagent_stop_hooks(
 
 pub const SPAWN_SUBAGENT_METADATA: ToolMetadata = ToolMetadata {
     name: "spawn_subagent",
-    description: "Spawn a subagent with its own fresh session that cannot see this conversation, so make the prompt self-contained. By default it runs in the current working directory, blocks until it finishes, and returns the subagent's final summary. Set run_in_background: true to return immediately as async_launched { id } and have the summary re-injected on a later turn; use it to fan out several independent subagents in parallel, then wait_subagent on each (only honored in interactive sessions, otherwise the call degrades to blocking). Set worktree: true to run in an isolated git worktree lane subagent-<id> (requires a git repo), safe for parallel edits; the lane path is appended to the returned summary. Set skill: <name> to attach an isolated subagent skill card from ~/.tact/subagent/<name>.md; its body is appended to the child system prompt as the role.",
+    description: "Spawn a subagent with its own fresh session that cannot see this conversation, so make the prompt self-contained. By default the call blocks until its subagent finishes and returns the final summary, and blocking spawns run one at a time. To run several subagents in parallel, set run_in_background: true on each call of the same message: every call returns async_launched { id } immediately, the children run concurrently, and wait_subagent collects each summary (only honored in interactive sessions, otherwise the call degrades to blocking). Set worktree: true to run in an isolated git worktree lane subagent-<id> (requires a git repo), safe for parallel edits; combine it with run_in_background for parallel editors. The lane path is appended to the summary. Set skill: <name> to attach an isolated subagent skill card from ~/.tact/subagent/<name>.md; its body is appended to the child system prompt as the role.",
     permission: PermissionPolicy::High,
     permission_prompt: PermissionPromptPolicy::Json,
+    // Barrier: a blocking spawn's effects are unscoped, so the wave scheduler
+    // runs it alone. Parallelism is the model's choice through
+    // `run_in_background` (each call detaches its own child), and
+    // `worktree: true` is the isolation lane that lifts the barrier.
     resources: ResourcePolicy::Barrier,
     domain: ToolDomain::Subagent,
     presentation: ToolPresentation {

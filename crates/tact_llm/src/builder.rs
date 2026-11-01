@@ -37,8 +37,6 @@ pub enum BuildError {
     InvalidCredential(CredentialError),
     #[error("invalid session: {0}")]
     InvalidSession(crate::limits::SessionIdError),
-    #[error("model limits are required")]
-    MissingLimits,
     #[error("an endpoint is required")]
     MissingEndpoint,
     #[error("authentication is required for {provider}")]
@@ -129,16 +127,31 @@ impl ProviderBuilder {
         self
     }
 
+    /// Session identity sent as the provider's cache `user_id` and the
+    /// OpenCode `x-opencode-session` header.
+    ///
+    /// Defaults to a fresh random [`SessionId`] per build; set it to
+    /// conversation-level identity to keep cache affinity across rebuilds.
     pub fn session_id(mut self, session_id: SessionId) -> Self {
         self.session_id = Some(session_id);
         self
     }
 
+    /// Token limits fixed on the provider.
+    ///
+    /// Defaults to [`ModelLimits::default`]: an unknown context window and
+    /// [`crate::DEFAULT_MAX_OUTPUT_TOKENS`] output. State the real window when
+    /// you know it — auto-compaction and request validation read it.
     pub fn limits(mut self, limits: ModelLimits) -> Self {
         self.limits = Some(limits);
         self
     }
 
+    /// Force a Chat Completions dialect.
+    ///
+    /// Unset by default, which lets the provider profile pick the dialect per
+    /// request model; [`ChatDialect::default`] (`Standard`) is the neutral
+    /// fallback for OpenAI-compatible endpoints.
     #[cfg(feature = "openai-chat")]
     pub fn chat_dialect(mut self, dialect: ChatDialect) -> Self {
         self.chat_dialect = Some(dialect);
@@ -178,7 +191,7 @@ impl ProviderBuilder {
         if self.model.trim().is_empty() {
             return Err(BuildError::InvalidModel { field: "model" });
         }
-        let limits = self.limits.ok_or(BuildError::MissingLimits)?;
+        let limits = self.limits.unwrap_or_default();
         let policy = crate::policy::ProviderPolicy::for_target(&self.kind, self.protocol);
         let raw_endpoint = self
             .base_url
@@ -257,7 +270,7 @@ impl ProviderBuilder {
             model: self.model,
             endpoint,
             auth,
-            session_id: self.session_id,
+            session_id: Some(self.session_id.unwrap_or_default()),
             limits,
             #[cfg(feature = "openai-chat")]
             chat_dialect: self.chat_dialect,
@@ -1197,6 +1210,23 @@ mod tests {
             .unwrap();
         let model: Arc<dyn ModelPort> = provider.into_model();
         assert_eq!(model.capabilities().context_window, Some(1_000));
+    }
+
+    /// The knobs a minimal host should not have to state: a bare build works,
+    /// with an unknown window, the shared output cap, and a generated session.
+    #[cfg(feature = "openai-chat")]
+    #[test]
+    fn a_bare_custom_provider_builds_with_the_default_limits() {
+        let provider = custom_chat("local", "model", "http://127.0.0.1:8000")
+            .anonymous()
+            .build()
+            .unwrap();
+        let capabilities = provider.into_model().capabilities();
+        assert_eq!(capabilities.context_window, None);
+        assert_eq!(
+            capabilities.max_output_tokens,
+            crate::DEFAULT_MAX_OUTPUT_TOKENS
+        );
     }
 
     #[cfg(feature = "openai-chat")]

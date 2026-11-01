@@ -678,7 +678,8 @@ context——若让估算参与触发，它会在一个已经压缩过的 contex
 还驱动系统提示里的<strong>上下文压力提示</strong>（<a
 href="./04_chapter_prompt_zh.html">系统提示词</a> §3.4）：占用 ≥
 <code>SUBAGENT_ADVISORY_THRESHOLD_PERCENT</code>（<strong>60%</strong>）时，动态段追加一行引导模型把大块工作交给
-<code>spawn_subagent</code>。</p>
+<code>spawn_subagent</code>，并提示同一条消息里每次 spawn 都设
+<code>run_in_background: true</code> 才能并行（阻塞 spawn 逐个执行）。</p>
 <p>两个阈值<strong>刻意不同且必须保持这个顺序</strong>：60% &lt; 80%。到
 80%
 下一步就压缩、窗口回落，建议没机会被采纳；提示只在两者之间那条带里有效。<code>the_subagent_advisory_fires_below_the_compaction_threshold</code>

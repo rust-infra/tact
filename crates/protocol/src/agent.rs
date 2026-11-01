@@ -552,6 +552,24 @@ pub enum BackgroundTaskStatusSnapshot {
 pub enum AgentUpdate {
     /// Dynamically append a step to the existing plan (does not reset selection state)
     StepAdded(PlanStep),
+    /// A step was dispatched but is still waiting for an earlier wave: the
+    /// scheduler runs conflicting calls one wave at a time.
+    ///
+    /// Emitted for every accepted call up front, followed by
+    /// [`Self::StepStarted`] for the same `tool_id` when its wave actually
+    /// begins. The card renders as *queued* (dim, no elapsed clock) in
+    /// between, so a card never claims to be running while the kernel has not
+    /// started it.
+    StepQueued {
+        idx: usize,
+        tool_id: String,
+        tool_name: String,
+        arg_summary: String,
+        /// Full tool argument summary (untruncated), used by detailed UI views.
+        arg_full: String,
+        /// Presentation metadata for the TUI rendering layer.
+        presentation: ToolPresentationInfo,
+    },
     /// A step has started execution.
     StepStarted {
         idx: usize,

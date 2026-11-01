@@ -96,14 +96,6 @@ impl TactEventBridge {
             call_id.to_string(),
             input.as_object().cloned().unwrap_or_default(),
         )));
-        self.events.send(AgentUpdate::StepStarted {
-            idx,
-            tool_id: call_id.to_string(),
-            tool_name: tracked.tool_name.clone(),
-            arg_summary: tracked.arg_summary.clone(),
-            arg_full: tracked.arg_full.clone(),
-            presentation: tracked.presentation.clone(),
-        });
         tracked
     }
 
@@ -246,14 +238,39 @@ impl TactEventBridge {
             AgentEvent::ProviderActivity { activity } => {
                 self.forward_activity(state, activity);
             }
-            AgentEvent::ToolStarted { call, descriptor } => {
-                self.track_tool(
+            AgentEvent::ToolQueued { call, descriptor } => {
+                let tracked = self.track_tool(
                     state,
                     &call.id,
                     &call.name,
                     &call.input,
                     descriptor.as_ref(),
                 );
+                self.events.send(AgentUpdate::StepQueued {
+                    idx: tracked.idx,
+                    tool_id: call.id.clone(),
+                    tool_name: tracked.tool_name.clone(),
+                    arg_summary: tracked.arg_summary.clone(),
+                    arg_full: tracked.arg_full.clone(),
+                    presentation: tracked.presentation.clone(),
+                });
+            }
+            AgentEvent::ToolStarted { call, descriptor } => {
+                let tracked = self.track_tool(
+                    state,
+                    &call.id,
+                    &call.name,
+                    &call.input,
+                    descriptor.as_ref(),
+                );
+                self.events.send(AgentUpdate::StepStarted {
+                    idx: tracked.idx,
+                    tool_id: call.id.clone(),
+                    tool_name: tracked.tool_name.clone(),
+                    arg_summary: tracked.arg_summary.clone(),
+                    arg_full: tracked.arg_full.clone(),
+                    presentation: tracked.presentation.clone(),
+                });
             }
             AgentEvent::ToolProgress {
                 run_id,
@@ -796,6 +813,38 @@ mod tests {
         assert!(matches!(
             &updates[6],
             AgentUpdate::StepFailed { error, .. } if error == "denied"
+        ));
+    }
+
+    /// A dispatched call gets its plan step and a queued card; the wave-start
+    /// event only flips it, adding no second step.
+    #[test]
+    fn a_queued_call_draws_its_card_before_it_starts() {
+        let (bridge, mut rx) = bridge();
+        let call = ToolCall {
+            id: "call-q".into(),
+            name: "spawn_subagent".into(),
+            input: serde_json::json!({"prompt": "work"}),
+        };
+        bridge.emit(AgentEvent::ToolQueued {
+            call: call.clone(),
+            descriptor: None,
+        });
+        bridge.emit(AgentEvent::ToolStarted {
+            call,
+            descriptor: None,
+        });
+
+        let updates = drain(&mut rx);
+        assert_eq!(updates.len(), 3, "{updates:?}");
+        assert!(matches!(updates[0], AgentUpdate::StepAdded(_)));
+        assert!(matches!(
+            &updates[1],
+            AgentUpdate::StepQueued { idx, tool_id, .. } if *idx == 0 && tool_id == "call-q"
+        ));
+        assert!(matches!(
+            &updates[2],
+            AgentUpdate::StepStarted { idx, tool_id, .. } if *idx == 0 && tool_id == "call-q"
         ));
     }
 

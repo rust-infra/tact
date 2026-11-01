@@ -1519,6 +1519,10 @@ impl TranscriptReducer {
     }
 
     fn settle_group(&mut self, row: RowId, finish_run: bool) {
+        // A group still collecting the run's steps stays open: settling it
+        // between two steps would close the card and hide every later step of
+        // the same loop behind its header.
+        let collecting = self.active_group == Some(row);
         self.update_group(row, |group| {
             let status = if group.items.iter().any(|item| {
                 matches!(item, ToolGroupItem::Tool(tool) if tool.status == RowStatus::Failed)
@@ -1537,7 +1541,7 @@ impl TranscriptReducer {
                 RowStatus::Success
             };
             group.status = status;
-            group.collapsed = status == RowStatus::Success;
+            group.collapsed = status == RowStatus::Success && !collecting;
         });
     }
 
@@ -1970,6 +1974,25 @@ mod tests {
         }
     }
 
+    fn step_finished(tool_id: &str) -> AgentUpdate {
+        AgentUpdate::StepFinished {
+            idx: 0,
+            run_id: None,
+            tool_id: tool_id.to_string(),
+            result: StepResult {
+                tool: "read_file".into(),
+                arg_summary: "README.md".into(),
+                arg_full: None,
+                status: StepStatus::Success,
+                message: "ok".into(),
+                detail: None,
+                duration_us: None,
+                permission_label: None,
+                presentation: ToolPresentationInfo::generic("read_file"),
+            },
+        }
+    }
+
     #[test]
     fn step_added_builds_a_plan_row_and_tracks_status() {
         let mut reducer = TranscriptReducer::default();
@@ -2143,6 +2166,40 @@ mod tests {
         assert!(matches!(
             &groups[0].body,
             RowBody::ToolGroup(group) if group.items.len() == 2
+        ));
+    }
+
+    #[test]
+    fn a_running_loop_keeps_its_group_open_between_steps() {
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-1");
+        turn(&mut reducer);
+        reducer.apply_agent_update(step_started("tool-1"), &context(1));
+        reducer.apply_agent_update(step_finished("tool-1"), &context(1));
+        assert!(
+            matches!(
+                &group_rows(&reducer)[0].body,
+                RowBody::ToolGroup(group) if !group.collapsed
+            ),
+            "one step finishing must not hide the rest of the run behind the group header"
+        );
+
+        turn(&mut reducer);
+        reducer.apply_agent_update(step_started("tool-2"), &context(1));
+        assert!(matches!(
+            &group_rows(&reducer)[0].body,
+            RowBody::ToolGroup(group) if !group.collapsed && group.items.len() == 2
+        ));
+
+        reducer.apply_agent_update(
+            AgentUpdate::RunFinished {
+                run_id: "run-1".into(),
+            },
+            &context(1),
+        );
+        assert!(matches!(
+            &group_rows(&reducer)[0].body,
+            RowBody::ToolGroup(group) if group.collapsed
         ));
     }
 

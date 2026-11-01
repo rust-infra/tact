@@ -80,9 +80,19 @@ same server serialize while different servers run in parallel. `read_mcp_resourc
 (`list_mcp_resources`, `list_mcp_prompts`, templates) are barriers because a
 listing may touch every server.
 
-The one input-aware exception lives in `tool_resources_for`:
-`spawn_subagent { worktree: true }` resolves to `Independent` (the child gets its
-own worktree lane, so its file effects are scoped) instead of the static `Barrier`.
+The one input-aware exception lives in `TactToolPort::access`
+(`crates/tact/src/runtime/tool_adapter.rs`): `spawn_subagent { worktree: true }`
+resolves to `Independent` (the child gets its own worktree lane, so its file
+effects are scoped) instead of the static `Barrier`. A plain spawn stays a
+barrier: parallelism there is the model's choice through `run_in_background`,
+which detaches each child from the turn.
+
+**Queued vs started.** The kernel emits `AgentEvent::ToolQueued` for every
+accepted call before the permission gate, then `ToolStarted` when the call's
+wave actually begins (a gate refusal emits `ToolStarted` immediately before
+`ToolFinished`, so nothing stays queued). Hosts use the gap to draw a queued
+card instead of claiming a tool is running while an earlier wave is still
+executing.
 
 Paths are normalised to absolute (lexically, rooted at `work_dir`). Two paths
 **overlap** when they are equal or one is an ancestor of the other (so a write
@@ -100,10 +110,10 @@ wave[i] = max( wave[j] + 1  for every j < i that conflicts with i ),  else 0
 ```
 
 Tools sharing a wave run concurrently; waves run in ascending order. A barrier
-always lands alone in its own wave (so `bash` / subagents / worktree lanes never
-run concurrently with anything), which is also why MCP's stateful `&mut self`
-router fits cleanly — same-server MCP calls serialize through a shared write
-marker.
+always lands alone in its own wave (so `bash` / plain subagents / worktree lanes
+never run concurrently with anything), which is also why MCP's stateful
+`&mut self` router fits cleanly — same-server MCP calls serialize through a
+shared write marker.
 
 ### Example
 

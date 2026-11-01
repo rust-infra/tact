@@ -58,6 +58,7 @@ pub struct ToolCell {
     /// The glyphs that button draws — the tail this row splits off.
     collapsed_action: Option<String>,
     tool_phase_running: &'static str,
+    tool_phase_queued: &'static str,
     tool_phase_success: &'static str,
     tool_phase_failed: &'static str,
     tool_meta_sep: &'static str,
@@ -147,6 +148,7 @@ impl ToolCell {
             collapsed_action_label,
             collapsed_action,
             tool_phase_running: msgs.tool_phase_running,
+            tool_phase_queued: msgs.tool_phase_queued,
             tool_phase_success: msgs.tool_phase_success,
             tool_phase_failed: msgs.tool_phase_failed,
             tool_meta_sep: msgs.tool_meta_sep,
@@ -205,6 +207,7 @@ impl ToolCell {
             ),
             self.spinner_char,
             self.tool_phase_running,
+            self.tool_phase_queued,
             self.tool_phase_success,
             self.tool_phase_failed,
             self.tool_meta_sep,
@@ -222,6 +225,7 @@ impl ToolCell {
             self.collapsed_output_hint.as_deref(),
         ));
         let style = match self.phase {
+            ToolPhase::Queued => Style::default().fg(self.muted),
             ToolPhase::Running => Style::default().fg(self.warning),
             ToolPhase::Success => Style::default().fg(self.success),
             ToolPhase::Failed => Style::default().fg(self.error),
@@ -411,13 +415,12 @@ impl ToolCell {
         })
     }
 
-    /// Returns `None` when the footer is clipped or the card is not a subagent.
+    /// The card footer is the subagent popup's click target in every phase:
+    /// `Click for buffered output` while the child streams, `[Open]` once it
+    /// finished, `Click for full error` when it failed. Returns `None` when the
+    /// footer is clipped or the card is not a subagent.
     pub fn subagent_open_button_rect(&self, area: Rect, skip_lines: usize) -> Option<Rect> {
-        if self.card_only
-            || !self.is_subagent
-            || !self.has_detail_card
-            || self.phase != ToolPhase::Success
-        {
+        if self.card_only || !self.is_subagent || !self.has_detail_card {
             return None;
         }
         let card_total = 1 + self.card_inner_rows() + 1;
@@ -1169,6 +1172,33 @@ mod tests {
             .collect();
         assert!(!row.contains("[Cancel]"), "meta row: {row:?}");
         assert!(cell.subagent_cancel_button_rect(area, 0).is_none());
+    }
+
+    /// The footer is the subagent popup's click target for a live card too —
+    /// its label is literally "Click for buffered output", so the rect must not
+    /// be limited to a finished card.
+    #[test]
+    fn live_subagent_card_footer_is_the_open_target() {
+        let mut output = make_output(true, 2, 2);
+        output.phase = ToolPhase::Running;
+        output.live_detail = true;
+        output.visual_kind = tact_protocol::ToolVisualKind::Subagent;
+        let cell = tool_cell(output);
+        let area = Rect::new(0, 0, 60, (TOOL_HEADER_ROWS + 4) as u16);
+        let rect = cell
+            .subagent_open_button_rect(area, 0)
+            .expect("the live footer is clickable");
+        assert_eq!(rect.y, (TOOL_HEADER_ROWS + 3) as u16);
+
+        // A non-subagent card has no such target, live or finished.
+        let mut plain = make_output(true, 2, 2);
+        plain.phase = ToolPhase::Running;
+        plain.live_detail = true;
+        assert!(
+            tool_cell(plain)
+                .subagent_open_button_rect(area, 0)
+                .is_none()
+        );
     }
 
     #[test]

@@ -44,8 +44,10 @@ pub enum OpenAiProtocol {
 /// DeepSeek and Kimi are not separate providers: they share the
 /// OpenAI-compatible transport and only differ in the body fields injected by
 /// their `OpenAiBodyHook` implementations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ChatCompletionsDialect {
+    /// Plain OpenAI-compatible fields.
+    #[default]
     Standard,
     DeepSeek,
     Kimi,
@@ -665,6 +667,16 @@ mod tests {
             assert_eq!(protocol.to_string(), protocol.as_str());
         }
         assert_eq!(OpenAiProtocol::default(), OpenAiProtocol::ChatCompletions);
+    }
+
+    /// The neutral dialect is the safe default: a deepseek/kimi flavour would
+    /// inject fields an arbitrary OpenAI-compatible endpoint never asked for.
+    #[test]
+    fn chat_dialect_defaults_to_standard() {
+        assert_eq!(
+            ChatCompletionsDialect::default(),
+            ChatCompletionsDialect::Standard
+        );
     }
 
     #[test]

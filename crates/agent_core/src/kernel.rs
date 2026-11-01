@@ -1376,7 +1376,9 @@ impl AgentKernel {
                 .resolve(&raw)
                 .ok()
                 .map(|resolved| resolved.descriptor);
-            self.events.emit(AgentEvent::ToolStarted {
+            // Queued, not started: execution waits for the call's wave, and
+            // the host shows the card as pending until `ToolStarted` below.
+            self.events.emit(AgentEvent::ToolQueued {
                 call: raw.clone(),
                 descriptor,
             });
@@ -1412,6 +1414,10 @@ impl AgentKernel {
                     slots[index].permission_label = label;
                 }
                 Ok(GateDecision::Deny { reason }) => {
+                    // It never runs, but it does leave the queue: the host
+                    // contract (and the card) expects a started/finished pair,
+                    // not a queued card that fails.
+                    self.emit_tool_started(index, &slots);
                     let result = failed_result(ToolExecutionErrorKind::Tool, reason);
                     self.emit_tool_finished(
                         index,
@@ -1427,6 +1433,7 @@ impl AgentKernel {
                     break;
                 }
                 Err(error) => {
+                    self.emit_tool_started(index, &slots);
                     let result = failed_result(ToolExecutionErrorKind::Adapter, error.to_string());
                     self.emit_tool_finished(
                         index,
@@ -1474,6 +1481,10 @@ impl AgentKernel {
         let mut compaction = None;
 
         for wave in waves {
+            // This wave is starting now: every call in it stops being queued.
+            for resource_index in &wave {
+                self.emit_tool_started(approved[*resource_index], &slots);
+            }
             let mut futures: FuturesUnordered<
                 BoxFuture<'static, (usize, Duration, ToolExecutionResult)>,
             > = FuturesUnordered::new();
@@ -1572,6 +1583,21 @@ impl AgentKernel {
             compaction,
             tool_calls: executed,
         })
+    }
+
+    /// Announce that a queued call left the queue.
+    ///
+    /// The wave loop calls this when a wave starts; the gate calls it for a
+    /// call it refuses, which never reaches a wave but still must not stay
+    /// queued in the host's view.
+    fn emit_tool_started(&self, slot_index: usize, slots: &[ToolSlot]) {
+        self.events.emit(AgentEvent::ToolStarted {
+            call: slots[slot_index].raw.clone(),
+            descriptor: slots[slot_index]
+                .resolved
+                .as_ref()
+                .map(|resolved| resolved.descriptor.clone()),
+        });
     }
 
     fn emit_tool_finished(

@@ -85,11 +85,11 @@ use memory::SaveMemoryTool;
 #[cfg(test)]
 use read_file::ReadFileTool;
 pub use registry::{subagent_toolset, toolset, toolset_with_memory};
-// Re-exported so `runtime::tool_adapter` can do per-invocation resource
-// resolution for worktree-isolated `spawn_subagent` calls without naming the
-// private `subagent` module.
 #[cfg(test)]
 use sleep::SleepTool;
+// Re-exported so `runtime::tool_adapter` can lift the barrier for a
+// worktree-isolated `spawn_subagent` without naming the private `subagent`
+// module.
 pub(crate) use subagent::SPAWN_SUBAGENT_METADATA;
 pub use subagent::annotate_spawn_subagent_skill_catalog;
 #[cfg(test)]
