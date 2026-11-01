@@ -501,6 +501,40 @@ pub fn capture_all(out: &Path) -> Result<Vec<PathBuf>> {
     snapshot.transcript = design_transcript();
     harness.set_snapshot(snapshot);
 
+    // A real `bash` summary arrives as a multi-line script. The group header
+    // must flatten it to one label instead of growing to the command's shape.
+    let long_command = tact_desktop_core::TranscriptView::from_rows(
+        design_transcript()
+            .iter()
+            .map(|row| {
+                let mut row = (**row).clone();
+                if let tact_desktop_core::RowBody::ToolGroup(group) = &mut row.body {
+                    let mut items = group.items.to_vec();
+                    if let Some(tact_desktop_core::ToolGroupItem::Tool(tool)) = items.first_mut() {
+                        tool.arg_summary = Arc::from(
+                            "export https_proxy=http://127.0.0.1:7890 \
+                             http_proxy=http://127.0.0.1:7890 all_proxy=http://127.0.0.1:7890\n\
+                             echo \"--- bitcoin\"\n\
+                             bash python3 -c \"\n\
+                             import datetime, time\n\
+                             print('ok ts ->', datetime.datetime.fromtimestamp(1793533960))\"",
+                        );
+                    }
+                    group.items = Arc::from(items);
+                }
+                Arc::new(row)
+            })
+            .collect::<Vec<_>>(),
+    );
+    let mut snapshot = harness.snapshot();
+    snapshot.transcript = long_command;
+    harness.set_snapshot(snapshot);
+    harness.with_root(|root, _, cx| root.capture_scroll_to(5, cx));
+    shoot(&mut harness, "46-tool-group-long-command")?;
+    let mut snapshot = harness.snapshot();
+    snapshot.transcript = design_transcript();
+    harness.set_snapshot(snapshot);
+
     harness.set_appearance(Appearance::Dark);
     harness.with_root(|root, _, cx| root.capture_scroll_to(0, cx));
     shoot(&mut harness, "27-transcript-dark")?;

@@ -54,6 +54,30 @@ pub struct DesktopState {
     active_run: Option<String>,
 }
 
+/// The part of the published state that belongs to one session.
+///
+/// Switching sessions while a run is active parks this alongside the session's
+/// `HostSession`: the shell keeps publishing the visible session, the parked
+/// run keeps consuming its own events into this state, and switching back puts
+/// it in place again instead of replaying the transcript from the store.
+pub(crate) struct SessionUiState {
+    pub session: SessionView,
+    pub runtime: RuntimeView,
+    pub reducer: TranscriptReducer,
+    pub composer: ComposerView,
+    pub inspector: InspectorView,
+    pub tasks: Vec<TaskView>,
+    pub goals: Vec<GoalView>,
+    pub subagents: Vec<SubagentView>,
+    pub subagent_meta: HashMap<String, SubagentMetadata>,
+    pub background: Vec<BackgroundTaskView>,
+    pub failure: Option<FailureView>,
+    pub tail_following: bool,
+    pub surface: Option<tact_protocol::SurfaceSnapshot>,
+    pub pending_run: Option<String>,
+    pub active_run: Option<String>,
+}
+
 /// A model list plus every discovered id it does not already hold.
 ///
 /// Returns `None` when nothing was added, so callers can skip the commit that
@@ -263,6 +287,56 @@ impl DesktopState {
         next
     }
 
+    /// Allocates the next epoch without resetting session state.
+    ///
+    /// Bringing a parked session back is still a switch as far as the shell is
+    /// concerned: it needs the epoch boundary to rebuild its row map. The
+    /// reducer already holds that session's transcript, so nothing is reset.
+    pub(crate) fn adopt_session_epoch(&mut self) -> SessionEpoch {
+        self.next_epoch = self.next_epoch.saturating_add(1);
+        SessionEpoch(self.next_epoch)
+    }
+
+    /// Moves the parts of the state that belong to one session out of the
+    /// shell's visible state, leaving it empty for another session.
+    pub(crate) fn take_session_ui(&mut self) -> SessionUiState {
+        SessionUiState {
+            session: std::mem::take(&mut self.session),
+            runtime: std::mem::take(&mut self.runtime),
+            reducer: std::mem::take(&mut self.reducer),
+            composer: std::mem::take(&mut self.composer),
+            inspector: std::mem::take(&mut self.inspector),
+            tasks: std::mem::take(&mut self.tasks),
+            goals: std::mem::take(&mut self.goals),
+            subagents: std::mem::take(&mut self.subagents),
+            subagent_meta: std::mem::take(&mut self.subagent_meta),
+            background: std::mem::take(&mut self.background),
+            failure: self.failure.take(),
+            tail_following: std::mem::take(&mut self.tail_following),
+            surface: self.surface.take(),
+            pending_run: self.pending_run.take(),
+            active_run: self.active_run.take(),
+        }
+    }
+
+    pub(crate) fn put_session_ui(&mut self, ui: SessionUiState) {
+        self.session = ui.session;
+        self.runtime = ui.runtime;
+        self.reducer = ui.reducer;
+        self.composer = ui.composer;
+        self.inspector = ui.inspector;
+        self.tasks = ui.tasks;
+        self.goals = ui.goals;
+        self.subagents = ui.subagents;
+        self.subagent_meta = ui.subagent_meta;
+        self.background = ui.background;
+        self.failure = ui.failure;
+        self.tail_following = ui.tail_following;
+        self.surface = ui.surface;
+        self.pending_run = ui.pending_run;
+        self.active_run = ui.active_run;
+    }
+
     pub fn refresh_settings(&mut self, config: &crate::DesktopConfig) {
         self.settings = crate::snapshot::settings_from(config);
     }
@@ -278,6 +352,7 @@ impl DesktopState {
         self.observe_agent_update(&update);
         let context = crate::ReduceContext {
             session_epoch: self.session.epoch,
+            show_hook_output: self.show_hook_output,
         };
         let delta = self.reducer.apply_agent_update(update, &context);
         delta.dirty_rows
@@ -292,6 +367,7 @@ impl DesktopState {
         }
         let context = crate::ReduceContext {
             session_epoch: self.session.epoch,
+            show_hook_output: self.show_hook_output,
         };
         self.reducer.apply_batch(updates, &context).dirty_rows
     }
@@ -575,7 +651,7 @@ fn task_view(task: &TaskSnapshot) -> TaskView {
 }
 
 #[derive(Clone, Debug, Default)]
-struct SubagentMetadata {
+pub(crate) struct SubagentMetadata {
     model: Option<Arc<str>>,
     context: UsageView,
     last_activity: Option<Arc<str>>,

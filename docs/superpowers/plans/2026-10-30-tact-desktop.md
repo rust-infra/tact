@@ -45,8 +45,9 @@ below and the repository's Rust/book gates.
 - Pin `gpui-ai = "=0.8.0"`, `gpui-pre = "0.3.3"`,
   `gpui-component = "0.6.0"`, `gpui-base = "0.6.0"`, and
   `gpui-kit-assets = "0.6.0"`.
-- One active `HostSession` per desktop controller. Project switching is a
-  serialized close-then-open transition.
+- One visible `HostSession` per desktop controller, plus one parked host per
+  session left mid-run; switching back adopts the parked state. Project
+  switching is a serialized close-then-open transition.
 - `UiResponder::snapshot()` is authoritative for gates. One-shot gate events
   are hints only.
 - Do not infer tool-group identity from adjacency or wall-clock time.

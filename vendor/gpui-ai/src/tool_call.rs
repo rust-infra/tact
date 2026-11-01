@@ -876,6 +876,10 @@ impl RenderOnce for ToolGroup {
                 // one dominant active-work signal, never two. The title's
                 // text keeps saying "Running…" either way: semantics are
                 // carried by words, not by the highlight.
+                // A group's title is the longest text in the row: it carries
+                // the tool names and their argument summaries. Give it the
+                // spare width and ellipsize rather than letting a long command
+                // wrap the fixed 37px header.
                 {
                     let shimmer = Shimmer::new((root_id.clone(), "title"), title.clone())
                         .active(self.active && !open);
@@ -884,7 +888,10 @@ impl RenderOnce for ToolGroup {
                     } else {
                         shimmer.text_token(tokens.typography.sm)
                     }
-                },
+                }
+                .flex_1()
+                .min_w_0()
+                .truncate(),
             )
             .when(self.count > 0 && !compact, |this| {
                 this.child(

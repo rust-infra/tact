@@ -54,6 +54,6 @@ pub use transcript::{
     BackgroundTaskView, GateCard, GateKind, GateOrigin, GateSelection, GateState, GoalView, LoopId,
     PlanRow, PlanStep, RequestId, RowBody, RowId, RowStatus, SessionEpoch, SubagentView, TaskView,
     ToolBody, ToolGroupItem, ToolGroupRow, ToolMetaView, ToolOutputView, ToolRow, TranscriptRow,
-    TranscriptView, UsageView,
+    TranscriptView, UsageView, one_line_summary,
 };
 pub(crate) use transcript::{ReduceContext, TranscriptReducer};

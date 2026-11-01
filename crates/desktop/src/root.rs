@@ -10736,7 +10736,14 @@ fn tool_group_title(
                 if tool.arg_summary.is_empty() {
                     tool.name.to_string()
                 } else {
-                    format!("{} {}", tool.name, tool.arg_summary)
+                    // The header is one compact row: a summary that kept its
+                    // own line breaks would grow the card to the command's
+                    // shape. Join it as a label; the row ellipsizes the rest.
+                    format!(
+                        "{} {}",
+                        tool.name,
+                        tact_desktop_core::one_line_summary(&tool.arg_summary)
+                    )
                 }
             })
             .collect::<Vec<_>>()
@@ -10991,28 +10998,22 @@ fn transcript_row_element(
             .debug_selector(move || format!("transcript-row-user-{id}"))
             .role(Role::Article)
             .aria_label(i18n::text(snapshot.language, TextKey::UserMessage))
+            .w_full()
+            .min_w_0()
             .items_start()
+            // The reader's own words sit on the right, like a chat bubble;
+            // the mark moves to the trailing edge with them.
+            .justify_end()
             .gap_3()
+            // Keep the trailing mark clear of the scrollbar.
             .py(px(18.))
-            .child(
-                div()
-                    .flex_none()
-                    .size(px(28.))
-                    .rounded(px(8.))
-                    .bg(snapshot_ink(snapshot))
-                    .text_size(px(10.))
-                    .font_family("Lilex")
-                    .font_semibold()
-                    .text_color(snapshot_canvas(snapshot))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(local_user_initials()),
-            )
+            .pr(px(10.))
             .child(
                 v_flex()
                     .flex_1()
+                    .max_w(px(620.))
                     .min_w_0()
+                    .items_end()
                     .gap_1()
                     .child(
                         h_flex()
@@ -11035,10 +11036,23 @@ fn transcript_row_element(
                                 )
                             }),
                     )
-                    .child(div().text_sm().child(TextView::markdown(
-                        format!("user-{id}"),
-                        user.text.to_string(),
-                    )))
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("user-message-{id}")))
+                            .debug_selector(move || format!("user-message-{id}"))
+                            .min_w_0()
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(snapshot_row_border(snapshot))
+                            .bg(snapshot_row_surface(snapshot))
+                            .px(px(14.))
+                            .py(px(10.))
+                            .text_sm()
+                            .child(TextView::markdown(
+                                format!("user-{id}"),
+                                user.text.to_string(),
+                            )),
+                    )
                     .when(!user.attachments.is_empty(), |row| {
                         row.child(
                             AttachmentStrip::new(format!("user-attachments-{id}"))
@@ -11058,6 +11072,21 @@ fn transcript_row_element(
                                 })),
                         )
                     }),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .size(px(28.))
+                    .rounded(px(8.))
+                    .bg(snapshot_ink(snapshot))
+                    .text_size(px(10.))
+                    .font_family("Lilex")
+                    .font_semibold()
+                    .text_color(snapshot_canvas(snapshot))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(local_user_initials()),
             )
             .into_any_element(),
         RowBody::Assistant(assistant) => {
@@ -11828,7 +11857,7 @@ fn tool_row_element(
     weak: WeakEntity<DesktopRoot>,
 ) -> AnyElement {
     let invocation = ToolInvocation::new(tool.tool_id.to_string(), tool.name.to_string())
-        .summary(tool.arg_summary.to_string())
+        .summary(tact_desktop_core::one_line_summary(&tool.arg_summary))
         .input(tool.arg_full.as_deref().unwrap_or(&tool.arg_summary))
         .output(tool_body_markdown(tool, locale))
         // Gate decisions are rendered as first-class gate cards; this inline
@@ -13804,6 +13833,171 @@ mod tests {
             thinking.origin.y - (user.origin.y + user.size.height),
             px(12.),
             "activity rows sit on the shell's tight rhythm, not the scroller default"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn a_long_tool_group_title_keeps_the_header_one_row(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let demo = tact_desktop_core::fixtures::demo_transcript();
+                let mut row = (**demo
+                    .iter()
+                    .find(|row| row.ordinal == 3)
+                    .expect("tool group row"))
+                .clone();
+                if let tact_desktop_core::RowBody::ToolGroup(group) = &mut row.body {
+                    let mut items = group.items.to_vec();
+                    if let Some(tact_desktop_core::ToolGroupItem::Tool(tool)) = items.first_mut() {
+                        tool.arg_summary = Arc::from(
+                            "export https_proxy=http://127.0.0.1:7890\necho \"--- b\"\nbash python3 -c \"\nimport datetime\nprint(1)\n\" ".repeat(3),
+                        );
+                    }
+                    group.items = Arc::from(items);
+                }
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript =
+                    tact_desktop_core::TranscriptView::from_rows(vec![Arc::new(row)]);
+                this.snapshot = Arc::new(snapshot);
+                this.transcript_rows.clear();
+                let count = this.snapshot.transcript.len();
+                this.scroller.update(cx, |state, cx| state.reset(count, cx));
+            });
+            window.draw(cx).clear(cx);
+        });
+        let header = window
+            .debug_bounds("tool-group-toggle-tool-group-3")
+            .expect("tool group header");
+        assert_eq!(
+            header.size.height,
+            px(37.),
+            "a long command must ellipsize, not wrap the compact header"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn the_reader_message_sits_on_the_right(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = tact_desktop_core::TranscriptView::from_rows(vec![Arc::new(
+                    tact_desktop_core::TranscriptRow {
+                        id: RowId::new(0),
+                        ordinal: 0,
+                        loop_id: None,
+                        time: None,
+                        body: tact_desktop_core::RowBody::User(
+                            tact_desktop_core::transcript::UserRow {
+                                text: Arc::from("hi"),
+                                attachments: Arc::from([]),
+                            },
+                        ),
+                    },
+                )]);
+                this.snapshot = Arc::new(snapshot);
+                this.transcript_rows.clear();
+                this.scroller.update(cx, |state, cx| state.reset(1, cx));
+            });
+            window.draw(cx).clear(cx);
+        });
+        let row = window
+            .debug_bounds("transcript-row-user-0")
+            .expect("user row");
+        let bubble = window.debug_bounds("user-message-0").expect("user bubble");
+        let trailing = (row.origin.x + row.size.width) - (bubble.origin.x + bubble.size.width);
+        assert!(
+            trailing > px(40.) && trailing < px(80.),
+            "the bubble must hug the trailing edge beside the mark, {trailing:?} away"
+        );
+        assert!(
+            bubble.origin.x > row.origin.x + row.size.width / 2.,
+            "a short message stays on the right half"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn a_coalesced_commit_remeasures_the_rows_it_did_not_touch(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let demo = tact_desktop_core::fixtures::demo_transcript();
+                let rows = demo
+                    .iter()
+                    .filter(|row| matches!(row.ordinal, 7 | 3))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = tact_desktop_core::TranscriptView::from_rows(rows);
+                this.snapshot = Arc::new(snapshot);
+                this.transcript_rows.clear();
+                this.scroller.update(cx, |state, cx| state.reset(2, cx));
+            });
+            window.draw(cx).clear(cx);
+        });
+        let short = window
+            .debug_bounds("transcript-row-assistant-7")
+            .expect("assistant row");
+
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let demo = tact_desktop_core::fixtures::demo_transcript();
+                let mut assistant = (**demo
+                    .iter()
+                    .find(|row| row.ordinal == 7)
+                    .expect("assistant fixture"))
+                .clone();
+                if let tact_desktop_core::RowBody::Assistant(row) = &mut assistant.body {
+                    row.markdown = Arc::from("A paragraph the commit missed.\n\n".repeat(80));
+                }
+                let tool_group = (**demo
+                    .iter()
+                    .find(|row| row.ordinal == 3)
+                    .expect("tool group fixture"))
+                .clone();
+                let notice = (**demo
+                    .iter()
+                    .find(|row| row.ordinal == 9)
+                    .expect("notice fixture"))
+                .clone();
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = tact_desktop_core::TranscriptView::from_rows(vec![
+                    Arc::new(assistant),
+                    Arc::new(tool_group),
+                    Arc::new(notice),
+                ]);
+                // The shell only sees the newest commit; the rows it skipped
+                // may have changed height too.
+                let revision = this.last_commit_revision.saturating_add(3);
+                snapshot.revision = revision;
+                this.handle_event(
+                    DesktopEvent::Committed(StateCommit {
+                        revision,
+                        snapshot: Arc::new(snapshot),
+                        dirty_rows: Arc::from([RowId::new(7)]),
+                        sections: SectionMask::TRANSCRIPT,
+                    }),
+                    cx,
+                );
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        let grown = window
+            .debug_bounds("transcript-row-assistant-7")
+            .expect("assistant row");
+        assert!(
+            grown.size.height > short.size.height + px(200.),
+            "a coalesced commit kept a stale row height: {} -> {}",
+            short.size.height,
+            grown.size.height
         );
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);

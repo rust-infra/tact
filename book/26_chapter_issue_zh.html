@@ -729,6 +729,7 @@
 <li class="toc-l2"><a href="#23-2026-10-31--%E5%83%B5%E5%B0%B8-run-%E7%9A%84%E8%BF%90%E8%A1%8C%E6%97%B6%E8%87%AA%E6%84%88%E4%B8%8E-fd-%E4%B8%8A%E9%99%90" title="23. 2026-10-31 — 僵尸 run 的运行时自愈与 fd 上限"><span class="toc-label">23. 2026-10-31 — 僵尸 run 的运行时自愈与 fd 上限</span></a></li>
 <li class="toc-l2"><a href="#24-2026-11-01--desktop-%E8%A7%86%E8%A7%89%E5%AF%B9%E9%BD%90%E4%B8%8E%E7%BB%84%E4%BB%B6%E8%A1%A5%E4%B8%81" title="24. 2026-11-01 — Desktop 视觉对齐与组件补丁"><span class="toc-label">24. 2026-11-01 — Desktop 视觉对齐与组件补丁</span></a></li>
 <li class="toc-l2"><a href="#25-2026-11-01--desktop-%E8%BD%AC%E5%BD%95%E8%A1%8C%E8%B7%9D%E6%94%B6%E7%B4%A7" title="25. 2026-11-01 — Desktop 转录行距收紧"><span class="toc-label">25. 2026-11-01 — Desktop 转录行距收紧</span></a></li>
+<li class="toc-l2"><a href="#26-2026-11-01--%E5%B7%A5%E5%85%B7%E7%BB%84%E6%A0%87%E9%A2%98%E4%B8%8E%E5%90%8E%E5%8F%B0%E8%BF%90%E8%A1%8C%E4%BC%9A%E8%AF%9D" title="26. 2026-11-01 — 工具组标题与后台运行会话"><span class="toc-label">26. 2026-11-01 — 工具组标题与后台运行会话</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -21600,6 +21601,53 @@ Mermaid 图（如 <code>sequenceDiagram</code>）保留为代码块，不再从�
 <code>transcript_rows_keep_a_tight_activity_rhythm</code>，直接渲染用户行与其后的
 思考行并断言两行间隙为 12px，防止回退到组件默认值。离屏截图
 <code>26a</code>–<code>26c</code> 与 <code>34</code>–<code>37</code> 重新生成。</p>
+<hr />
+<h2 id="26-2026-11-01--工具组标题与后台运行会话">26. 2026-11-01 —
+工具组标题与后台运行会话</h2>
+<p><strong>现象一：</strong> <code>bash</code> 的 <code>arg_summary</code>
+原样带着换行与缩进，工具组标题把
+<code>2 tools · Loop 1 · bash export … echo … python3 …</code>
+按命令的形状撑成三行，卡片被顶出圆角；单个工具行的摘要同样会折断。</p>
+<p><strong>改后行为一：</strong> 摘要在 reducer 的入口一次性压成单行标签
+（<code>desktop_core::one_line_summary</code> 折叠所有空白，但不截断——搜索类参数
+仍需保持可解析），全文仍保存在 <code>arg_full</code>，展开后的命令块不受影响；
+shell 组装组合标题与工具行摘要时复用同一个函数，gpui-ai 的
+<code>ToolGroup</code> 标题改为 <code>flex_1 + min_w_0 + truncate</code>，窗口再窄
+也以省略号收尾。新增
+<code>a_long_tool_group_title_keeps_the_header_one_row</code> 断言 37px 行高不变，
+以及 reducer 的单行化用例；离屏截图 <code>46-tool-group-long-command</code>。</p>
+<p><strong>现象二：</strong> 切换会话时控制器先 <code>close_host</code>，正在运行
+的会话被中断；回来时只能重新打开会话、重放转录。</p>
+<p><strong>改后行为二：</strong> 运行中的会话随宿主一起「寄存」：切走时把宿主、
+逐会话的界面状态（转录、队列、闸门、任务、用量、失败）、恢复失败与未消费事件
+移进 <code>parked</code>；控制器每轮 tick 用 <code>try_next_event</code> 把寄存
+会话的事件消费到它自己的状态里，期间不向 shell 提交、也不弹 reader，窗口始终
+属于当前会话。切回时分配新 epoch（shell 据此重建行映射）并原样恢复同一宿主，
+闸门卡片因自带 epoch 仍可作答。空闲会话切走时依旧直接关闭，不占进程；项目切换、
+退出与关停会关闭全部寄存宿主。新增
+<code>switching_sessions_keeps_the_running_host_alive</code>、
+<code>switching_away_from_an_idle_session_closes_it</code> 与
+<code>shutdown_closes_parked_hosts</code>。</p>
+<p><strong>现象三：</strong> 每次切换会话，Auto Memory 的 SessionStart 上下文都会再输出
+一次：宿主重开会话时重跑 SessionStart 钩子，注入内容被当作新消息追加并落库，桌面按卡片
+渲染，于是同一段简报越积越多。</p>
+<p><strong>改后行为三：</strong> 两处去重。运行时在 <code>run_session_start</code> 里把
+候选注入与转录中已有的 InjectedContext 正文比对，已经在上下文里的同样文本不再追加
+（模型不会再收到重复简报，钩子有新内容时照常注入）；桌面的转录在播种历史与收到
+<code>HookContext</code> 事件时，若最新一张卡片的内容相同就不再新增，同时播种时剥掉
+<code>&lt;hook-context&gt;</code> 外壳、只显示正文，历史里已经攒下的多份副本也会压成一张。
+新增 <code>a_resumed_session_does_not_repeat_an_identical_session_start_context</code>
+与 <code>a_repeated_hook_briefing_stays_one_card</code>。另外，任何不产生可见行的事件
+（重复的简报、被设置隐藏的钩子状态行）不再切断思考区，避免出现两张相邻的思考卡片、
+中间什么都没有。</p>
+<p><strong>用户消息靠右：</strong> 用户行改为右侧气泡——内容列（最大 620px）与
+RG 头像贴住消息列右缘，「You · 10:42」标签右对齐，正文放进带圆角、边框与表面色的
+气泡里，长消息在 620px 处折行；助手与工具行仍在左侧。行尾留出 10px 避让滚动条。
+离屏截图 <code>26a</code>、<code>27</code> 重新生成。</p>
+<p><strong>没有做的事：</strong> 寄存会话弹出闸门时不更新 Dock 徽标、不弹通知——
+徽标只统计当前会话的待决闸门；后台会话也不能直接从会话栏取消，需要先切回去。
+钩子每次运行仍会留下它自己的状态行（<code>Loading Auto Memory context · 21 ms</code>），
+那表示钩子确实跑了，不再伴随整段简报。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>

@@ -165,6 +165,26 @@ impl TactContextPolicy {
                 blocked = Some(reason);
             }
         }
+        // A resume re-runs the session-start hooks against a transcript that
+        // already holds their last briefing. Injected context is a message the
+        // model keeps, so appending the same text again duplicates it in the
+        // model's context and in every transcript view; a hook with something
+        // new to say still injects.
+        if !contexts.is_empty() {
+            let already: std::collections::HashSet<&str> = state
+                .transcript
+                .iter()
+                .filter(|message| matches!(message.origin, MessageOrigin::InjectedContext { .. }))
+                .filter_map(|message| {
+                    message.content.iter().find_map(|block| match block {
+                        tact_agent_api::AgentContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                })
+                .map(crate::hook::hook_context_body)
+                .collect();
+            contexts.retain(|chunk| !already.contains(chunk.text.trim()));
+        }
         match blocked {
             Some(reason) => Ok(Err(RunStop::Blocked {
                 phase: RunPhase::PrepareRun,

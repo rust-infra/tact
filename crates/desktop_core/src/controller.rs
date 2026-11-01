@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
     sync::{Arc, RwLock},
     time::{Duration, Instant},
@@ -20,7 +20,7 @@ use crate::{
     error::{DesktopClosed, DesktopShutdownError, DesktopStartError, FailureKind, FailureView},
     intent::{DesktopIntent, GateResponse, ReaderRef, ReaderRequest, SettingValue, Submission},
     runtime::{HostBackend, HostFactory, RealHostFactory},
-    state::DesktopState,
+    state::{DesktopState, SessionUiState},
     transcript::GateResponseError,
 };
 
@@ -390,8 +390,25 @@ struct DesktopActor {
     restore_failure: Option<FailureView>,
     /// Commands for the voice worker task, when voice is configured.
     voice: Option<mpsc::UnboundedSender<tact::voice::VoiceCommand>>,
+    /// Sessions whose run was still alive when another session took the
+    /// window. Their hosts keep running and their events keep landing in
+    /// their own parked state.
+    parked: HashMap<String, ParkedSession>,
+    /// True while a parked host's events are being drained into its state.
+    /// The shell is showing another session, so nothing may be published.
+    parked_drain: bool,
     /// Cancels in-flight store reads when the shell asks the controller to stop.
     shutdown: tokio_util::sync::CancellationToken,
+}
+
+/// A running session parked behind the visible one.
+struct ParkedSession {
+    host: Box<dyn HostBackend>,
+    ui: SessionUiState,
+    queue: VecDeque<Submission>,
+    restore_failure: Option<FailureView>,
+    pending_host_event: Option<HostEvent>,
+    host_events_closed: bool,
 }
 
 /// The keyboard-shortcut reader shown by `/help`.
@@ -455,6 +472,8 @@ impl DesktopActor {
             last_gate_reconcile: Instant::now(),
             restore_failure: None,
             voice: None,
+            parked: HashMap::new(),
+            parked_drain: false,
             shutdown,
         };
         if let Some(settings) = tact::config::try_settings()
@@ -548,6 +567,7 @@ impl DesktopActor {
         poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             self.drain_host_events().await;
+            self.drain_parked_events().await;
             let host_open = self.host.is_some() && !self.host_events_closed;
             let wake = {
                 let intents = &mut self.intents;
@@ -580,6 +600,7 @@ impl DesktopActor {
             }
         }
         let _ = self.close_host().await;
+        self.close_parked_hosts().await;
     }
 
     async fn handle_message(&mut self, message: ControllerMessage) -> bool {
@@ -610,11 +631,13 @@ impl DesktopActor {
             }
             ControllerMessage::WaitIdle(ack) => {
                 self.drain_host_events().await;
+                self.drain_parked_events().await;
                 let _ = ack.send(());
                 false
             }
             ControllerMessage::Shutdown(ack) => {
                 let result = self.close_host().await.map_err(DesktopShutdownError::Host);
+                self.close_parked_hosts().await;
                 let closed = result.is_ok();
                 let _ = ack.send(result);
                 closed
@@ -633,6 +656,7 @@ impl DesktopActor {
                 if self.project.as_ref().map(|project| &project.id) == Some(&project_id)
                     && self.close_host().await.is_ok()
                 {
+                    self.close_parked_hosts().await;
                     let epoch = self.state.begin_session_switch();
                     self.project = None;
                     self.catalog = None;
@@ -891,6 +915,11 @@ impl DesktopActor {
                     .as_ref()
                     .map(|id| InitialSession::Resume(id.0.clone()))
                     .unwrap_or(InitialSession::ResumeLast);
+                // A restart replaces this session's run: unlike a switch it
+                // must end the current host, never park it.
+                self.close_host()
+                    .await
+                    .map_err(|error| format!("active session did not close: {error}"))?;
                 self.start_session(initial).await?;
             }
             DesktopIntent::Voice(command) => {
@@ -915,6 +944,9 @@ impl DesktopActor {
                 "active session did not close: {error}"
             )));
         }
+        // Parked hosts belong to the project that is being left; a session id
+        // from another project cannot be resumed here.
+        self.close_parked_hosts().await;
         let project = self
             .registry
             .register(root)
@@ -975,9 +1007,20 @@ impl DesktopActor {
             .project
             .clone()
             .ok_or_else(|| "no project open".to_string())?;
-        self.close_host()
-            .await
-            .map_err(|error| format!("active session did not close: {error}"))?;
+        // Returning to a session that was left running restores it in place:
+        // starting a second host for the same id would collide with the
+        // session lock and lose the run.
+        if let InitialSession::Resume(session_id) = &initial
+            && self.parked.contains_key(session_id)
+        {
+            self.leave_current_session().await?;
+            if let Some(parked) = self.parked.remove(session_id) {
+                self.adopt_session(parked, session_id.clone());
+                self.publish(true);
+                return Ok(());
+            }
+        }
+        self.leave_current_session().await?;
         self.state.begin_session_switch();
         self.clear_queue();
         self.start_host(&project, initial)
@@ -985,6 +1028,146 @@ impl DesktopActor {
             .map_err(start_error_message)?;
         self.publish(true);
         Ok(())
+    }
+
+    /// Takes the visible session's host out of the window without ending it.
+    ///
+    /// A run in flight is parked with its state and keeps consuming its own
+    /// events; an idle host is closed as before so no session keeps a process
+    /// alive for nothing.
+    async fn leave_current_session(&mut self) -> Result<(), String> {
+        let Some(host) = self.host.take() else {
+            return Ok(());
+        };
+        let session_id = host.session_id().to_string();
+        let keep_running = matches!(
+            self.state.session.phase,
+            SessionPhase::Running
+                | SessionPhase::Starting
+                | SessionPhase::Opening
+                | SessionPhase::Switching
+        ) || self.state.runtime.current_phase != RunPhase::Idle
+            || !self.queue.is_empty();
+        if keep_running {
+            self.parked.insert(
+                session_id,
+                ParkedSession {
+                    host,
+                    ui: self.state.take_session_ui(),
+                    queue: std::mem::take(&mut self.queue),
+                    restore_failure: self.restore_failure.take(),
+                    pending_host_event: self.pending_host_event.take(),
+                    host_events_closed: self.host_events_closed,
+                },
+            );
+            self.host_events_closed = false;
+            return Ok(());
+        }
+        self.host = Some(host);
+        self.close_host()
+            .await
+            .map_err(|error| format!("active session did not close: {error}"))
+    }
+
+    /// Puts a parked session back in the window. Its epoch moves so the shell
+    /// rebuilds the row map even though the reducer already holds the rows.
+    fn adopt_session(&mut self, parked: ParkedSession, session_id: String) {
+        let ParkedSession {
+            host,
+            mut ui,
+            queue,
+            restore_failure,
+            pending_host_event,
+            host_events_closed,
+        } = parked;
+        ui.session.epoch = self.state.adopt_session_epoch();
+        self.state.put_session_ui(ui);
+        self.state.sessions.selected = Some(SessionId(session_id));
+        if matches!(
+            self.state.session.phase,
+            SessionPhase::Closing | SessionPhase::Empty | SessionPhase::Switching
+        ) {
+            self.state.session.phase = SessionPhase::Ready;
+        }
+        self.host = Some(host);
+        self.queue = queue;
+        self.restore_failure = restore_failure;
+        self.pending_host_event = pending_host_event;
+        self.host_events_closed = host_events_closed;
+        self.sync_queue();
+        self.reconcile_gate_snapshot_now();
+    }
+
+    /// Drains the events of every parked session into its own state.
+    ///
+    /// The window belongs to the visible session, so no commit and no effect
+    /// leaves here: the parked state is snapshotted again when it is adopted.
+    async fn drain_parked_events(&mut self) {
+        if self.parked.is_empty() {
+            return;
+        }
+        let ids: Vec<String> = self.parked.keys().cloned().collect();
+        for id in ids {
+            let Some(parked) = self.parked.remove(&id) else {
+                continue;
+            };
+            if parked.host_events_closed {
+                self.parked.insert(id, parked);
+                continue;
+            }
+            let ParkedSession {
+                host,
+                ui,
+                queue,
+                restore_failure,
+                pending_host_event,
+                host_events_closed,
+            } = parked;
+            let visible_ui = self.state.take_session_ui();
+            let visible_host = self.host.take();
+            let visible_queue = std::mem::take(&mut self.queue);
+            let visible_restore_failure = self.restore_failure.take();
+            let visible_pending = self.pending_host_event.take();
+            let visible_closed =
+                std::mem::replace(&mut self.host_events_closed, host_events_closed);
+
+            self.state.put_session_ui(ui);
+            self.host = Some(host);
+            self.queue = queue;
+            self.restore_failure = restore_failure;
+            self.pending_host_event = pending_host_event;
+            self.parked_drain = true;
+            self.drain_host_events().await;
+            self.parked_drain = false;
+
+            let host = self.host.take();
+            let queue = std::mem::take(&mut self.queue);
+            let restore_failure = self.restore_failure.take();
+            let pending_host_event = self.pending_host_event.take();
+            let host_events_closed =
+                std::mem::replace(&mut self.host_events_closed, visible_closed);
+            let ui = self.state.take_session_ui();
+
+            self.state.put_session_ui(visible_ui);
+            self.host = visible_host;
+            self.queue = visible_queue;
+            self.restore_failure = visible_restore_failure;
+            self.pending_host_event = visible_pending;
+
+            if let Some(host) = host {
+                self.parked.insert(
+                    id,
+                    ParkedSession {
+                        host,
+                        ui,
+                        queue,
+                        restore_failure,
+                        pending_host_event,
+                        host_events_closed,
+                    },
+                );
+            }
+        }
     }
 
     async fn start_host(
@@ -1040,6 +1223,7 @@ impl DesktopActor {
                     &messages,
                     &crate::ReduceContext {
                         session_epoch: self.state.session.epoch,
+                        show_hook_output: self.state.show_hook_output,
                     },
                 );
                 let history = tokio::select! {
@@ -1131,7 +1315,24 @@ impl DesktopActor {
             _ = self.shutdown.cancelled() => return Ok(()),
         };
         match result {
-            Ok(items) => self.state.set_sessions(items),
+            Ok(items) => {
+                self.state.set_sessions(items);
+                // The store reports a lock for every session this process
+                // holds. A parked session is ours to reopen, so it must not
+                // read as "open in another window" and be disabled in the
+                // session rail; only locks held elsewhere stay flagged.
+                let owned: Vec<String> = self
+                    .parked
+                    .keys()
+                    .cloned()
+                    .chain(self.state.session.id.iter().map(|id| id.0.clone()))
+                    .collect();
+                for item in &mut self.state.sessions.items {
+                    if owned.contains(&item.id) {
+                        item.locked = false;
+                    }
+                }
+            }
             Err(error) => {
                 self.state.sessions.loading = false;
                 self.state.sessions.error = Some(FailureView {
@@ -2109,7 +2310,9 @@ impl DesktopActor {
                         tact_protocol::AgentUpdate::RequestSelect { .. }
                             | tact_protocol::AgentUpdate::RequestMultiSelect { .. }
                     );
-                    if let tact_protocol::AgentUpdate::PopupMarkdown { title, source } = &update {
+                    if let tact_protocol::AgentUpdate::PopupMarkdown { title, source } = &update
+                        && !self.parked_drain
+                    {
                         let _ = self.events.urgent.send(DesktopEvent::Effect(
                             DesktopEffect::OpenReader(ReaderRequest {
                                 title: Arc::from(title.as_str()),
@@ -2305,6 +2508,15 @@ impl DesktopActor {
         }
     }
 
+    /// Closes the sessions parked behind the visible one. Their state is
+    /// dropped with the project they belong to.
+    async fn close_parked_hosts(&mut self) {
+        let parked = std::mem::take(&mut self.parked);
+        for (_, mut session) in parked {
+            let _ = session.host.close().await;
+        }
+    }
+
     fn send_command(&self, command: UserCommand) -> Result<(), String> {
         match self.host.as_ref() {
             Some(host) => host.send(command).map_err(|error| format!("{error:?}")),
@@ -2331,6 +2543,7 @@ impl DesktopActor {
         let pending = host.pending_requests();
         let context = crate::ReduceContext {
             session_epoch: self.state.session.epoch,
+            show_hook_output: self.state.show_hook_output,
         };
         let delta = self.state.reducer.reconcile_gates(&pending, &context);
         if !delta.dirty_rows.is_empty() {
@@ -2386,6 +2599,11 @@ impl DesktopActor {
     }
 
     fn publish_rows(&mut self, dirty: Vec<crate::RowId>, sections: SectionMask) {
+        // A parked session keeps its state current while another one owns the
+        // window; its commits must never reach the shell's watch.
+        if self.parked_drain {
+            return;
+        }
         let commit = self.state.commit(dirty, sections);
         self.write_commit(commit);
     }
@@ -2774,6 +2992,162 @@ mod tests {
                 .count(),
             1,
             "the session was reopened: {log:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn switching_sessions_keeps_the_running_host_alive() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_project(tmp.path());
+        let factory = FakeFactory::new();
+        let (controller, _events) =
+            DesktopController::start_with_factory(config(tmp.path()), factory.clone()).unwrap();
+        wait_ready(&controller).await;
+        let running = controller
+            .snapshot()
+            .session
+            .id
+            .clone()
+            .expect("an open session");
+        controller
+            .dispatch(DesktopIntent::Submit(Submission {
+                text: "long task".into(),
+                attachments: Vec::new(),
+                model: None,
+                permission_mode: None,
+            }))
+            .unwrap();
+        controller.when_idle().await.unwrap();
+        assert_eq!(controller.snapshot().session.phase, SessionPhase::Running);
+
+        // Leave for another session mid-run.
+        controller
+            .dispatch(DesktopIntent::ResumeSession {
+                session_id: SessionId("elsewhere".into()),
+            })
+            .unwrap();
+        controller.when_idle().await.unwrap();
+        assert_ne!(
+            controller.snapshot().session.id.as_ref(),
+            Some(&running),
+            "the switch did not land on a new session"
+        );
+
+        // The parked run keeps consuming its own events.
+        {
+            let events = factory.host_events.lock().unwrap();
+            let parked = events.first().expect("the parked host");
+            parked
+                .send(HostEvent::agent(AgentUpdate::MessageStarted {
+                    message_id: "parked-message".into(),
+                }))
+                .unwrap();
+            parked
+                .send(HostEvent::agent(AgentUpdate::StreamChunk(
+                    "work done while away".into(),
+                )))
+                .unwrap();
+        }
+        controller.when_idle().await.unwrap();
+
+        // Coming back restores the same host and the work it did in the
+        // background, without reopening the session.
+        controller
+            .dispatch(DesktopIntent::ResumeSession {
+                session_id: running.clone(),
+            })
+            .unwrap();
+        controller.when_idle().await.unwrap();
+        let snapshot = controller.snapshot();
+        assert_eq!(snapshot.session.id.as_ref(), Some(&running));
+        assert_eq!(snapshot.session.phase, SessionPhase::Running);
+        assert!(
+            snapshot.transcript.iter().any(|row| matches!(
+                &row.body,
+                crate::RowBody::Assistant(assistant)
+                    if assistant.markdown.contains("work done while away")
+            )),
+            "the parked transcript lost its background events ({} rows)",
+            snapshot.transcript.len()
+        );
+        let log = factory.log.lock().unwrap().clone();
+        assert!(
+            !log.iter()
+                .any(|entry| entry == &format!("close:{}", running.0)),
+            "switching closed the running host: {log:?}"
+        );
+        assert_eq!(
+            log.iter()
+                .filter(|entry| entry.starts_with("open:"))
+                .count(),
+            2,
+            "the session was reopened instead of resumed: {log:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn switching_away_from_an_idle_session_closes_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_project(tmp.path());
+        let factory = FakeFactory::new();
+        let (controller, _events) =
+            DesktopController::start_with_factory(config(tmp.path()), factory.clone()).unwrap();
+        wait_ready(&controller).await;
+        let idle = controller
+            .snapshot()
+            .session
+            .id
+            .clone()
+            .expect("an open session");
+        controller
+            .dispatch(DesktopIntent::ResumeSession {
+                session_id: SessionId("elsewhere".into()),
+            })
+            .unwrap();
+        controller.when_idle().await.unwrap();
+        let log = factory.log.lock().unwrap().clone();
+        assert!(
+            log.iter()
+                .any(|entry| entry == &format!("close:{}", idle.0)),
+            "an idle session must not stay parked: {log:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_closes_parked_hosts() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_project(tmp.path());
+        let factory = FakeFactory::new();
+        let (controller, _events) =
+            DesktopController::start_with_factory(config(tmp.path()), factory.clone()).unwrap();
+        wait_ready(&controller).await;
+        let running = controller
+            .snapshot()
+            .session
+            .id
+            .clone()
+            .expect("an open session");
+        controller
+            .dispatch(DesktopIntent::Submit(Submission {
+                text: "long task".into(),
+                attachments: Vec::new(),
+                model: None,
+                permission_mode: None,
+            }))
+            .unwrap();
+        controller.when_idle().await.unwrap();
+        controller
+            .dispatch(DesktopIntent::ResumeSession {
+                session_id: SessionId("elsewhere".into()),
+            })
+            .unwrap();
+        controller.when_idle().await.unwrap();
+        controller.shutdown().await.expect("shutdown");
+        let log = factory.log.lock().unwrap().clone();
+        assert!(
+            log.iter()
+                .any(|entry| entry == &format!("close:{}", running.0)),
+            "shutdown left the parked host running: {log:?}"
         );
     }
 

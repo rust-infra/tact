@@ -22,6 +22,9 @@ use crate::{
 #[derive(Debug, Clone)]
 pub(crate) struct ReduceContext {
     pub session_epoch: SessionEpoch,
+    /// Whether hook-status rows are drawn. A hidden row must not break the
+    /// reasoning region it would otherwise appear to split.
+    pub show_hook_output: bool,
 }
 
 #[derive(Debug, Default)]
@@ -229,17 +232,23 @@ impl TranscriptReducer {
         expanded
     }
 
-    pub fn apply_agent_update(
-        &mut self,
-        update: AgentUpdate,
-        _context: &ReduceContext,
-    ) -> RowDelta {
+    pub fn apply_agent_update(&mut self, update: AgentUpdate, context: &ReduceContext) -> RowDelta {
         let mut delta = RowDelta::default();
         // Same rule as the TUI: a reasoning region ends before this turn's
         // own output lands at the transcript tail. The next thinking delta
         // then opens a fresh card instead of growing the one above the new
-        // content.
-        if ends_thinking_region(&update) {
+        // content. An event that adds no visible row — a repeated hook
+        // briefing, a hidden hook status — must not split the region: the
+        // reader would see two adjacent thought cards with nothing between.
+        let ends_region = ends_thinking_region(&update)
+            && match &update {
+                AgentUpdate::HookContext { source, text } => {
+                    !self.hook_context_repeats(source.as_deref(), text)
+                }
+                AgentUpdate::HookStatus { .. } => context.show_hook_output,
+                _ => true,
+            };
+        if ends_region {
             self.close_thinking(&mut delta);
         }
         match update {
@@ -607,14 +616,13 @@ impl TranscriptReducer {
                 delta.changed(row);
             }
             AgentUpdate::HookContext { source, text } => {
-                let row = self.push_row(
-                    None,
-                    RowBody::HookContext(HookContextRow {
-                        source: source.map(Arc::from),
-                        markdown: Arc::from(text),
-                    }),
-                );
-                delta.changed(row);
+                if let Some(row) = self.push_hook_context(
+                    source.map(Arc::from),
+                    Arc::from(text),
+                    Some(now_label()),
+                ) {
+                    delta.changed(row);
+                }
             }
             AgentUpdate::HookStatus {
                 id,
@@ -986,15 +994,19 @@ impl TranscriptReducer {
                     delta.changed(row);
                 }
                 MessageOrigin::InjectedContext { source } => {
-                    let row = self.push_row_at(
+                    // The stored message keeps the `<hook-context>` frame that
+                    // marks it as data rather than user speech; the card shows
+                    // the body, and repeats of the same briefing collapse into
+                    // the one already on screen.
+                    let text = message_text(message);
+                    let body = tact::hook::hook_context_body(&text);
+                    if let Some(row) = self.push_hook_context(
+                        Some(Arc::from(source.clone())),
+                        Arc::from(body),
                         None,
-                        RowBody::HookContext(HookContextRow {
-                            source: Some(Arc::from(source.clone())),
-                            markdown: Arc::from(message_text(message)),
-                        }),
-                        None,
-                    );
-                    delta.changed(row);
+                    ) {
+                        delta.changed(row);
+                    }
                 }
                 MessageOrigin::ToolResult => {
                     for block in &message.content {
@@ -1213,7 +1225,7 @@ impl TranscriptReducer {
             id: row,
             tool_id: Arc::from(tool_id),
             name: Arc::from(name),
-            arg_summary: Arc::from(arg_summary),
+            arg_summary: Arc::from(one_line_summary(arg_summary)),
             arg_full: (!arg_full.is_empty()).then(|| Arc::from(arg_full)),
             status: RowStatus::Running,
             body,
@@ -1306,7 +1318,7 @@ impl TranscriptReducer {
                         id: next_row_id,
                         tool_id: Arc::from(step.tool_id),
                         name: Arc::from(step.tool_name),
-                        arg_summary: Arc::from(step.arg_summary),
+                        arg_summary: Arc::from(one_line_summary(&step.arg_summary)),
                         arg_full: (!step.arg_full.is_empty()).then(|| Arc::from(step.arg_full)),
                         status,
                         body: ToolBody::Text(Arc::from(step.detail.unwrap_or(step.message))),
@@ -1725,6 +1737,42 @@ impl TranscriptReducer {
         id
     }
 
+    /// Appends a hook-context card unless the latest one already carries the
+    /// same briefing.
+    ///
+    /// A resume re-runs the session-start hooks. A plugin that injects an
+    /// unchanged briefing would otherwise add a card every time the session is
+    /// opened, and the restored history would show one per past open. The card
+    /// already on screen stays where the briefing first arrived; the model
+    /// still receives every injection.
+    fn hook_context_repeats(&self, source: Option<&str>, markdown: &str) -> bool {
+        let mut latest = None;
+        for row in self.rows.iter() {
+            if let RowBody::HookContext(context) = &row.body {
+                latest = Some(context);
+            }
+        }
+        latest.is_some_and(|context| {
+            context.source.as_deref() == source && context.markdown.as_ref() == markdown
+        })
+    }
+
+    fn push_hook_context(
+        &mut self,
+        source: Option<Arc<str>>,
+        markdown: Arc<str>,
+        time: Option<Arc<str>>,
+    ) -> Option<RowId> {
+        if self.hook_context_repeats(source.as_deref(), &markdown) {
+            return None;
+        }
+        Some(self.push_row_at(
+            None,
+            RowBody::HookContext(HookContextRow { source, markdown }),
+            time,
+        ))
+    }
+
     fn ensure_plan(&mut self) -> RowId {
         if let Some(row) = self.active_plan {
             return row;
@@ -1796,6 +1844,25 @@ pub enum GateResponseError {
 }
 
 /// The local `HH:MM` a live row carries into its label.
+/// The one-line form of a tool's argument summary.
+///
+/// `bash` commands arrive with their own newlines and indentation, and a
+/// summary that keeps them makes every header that shows it grow to the
+/// command's shape. The full text still travels in `arg_full`; the summary is
+/// a label, so its whitespace is flattened here, once, for every surface. The
+/// length stays intact — callers truncate for display, and a search query
+/// must remain parseable.
+pub fn one_line_summary(text: &str) -> String {
+    let mut collapsed = String::with_capacity(text.len());
+    for word in text.split_whitespace() {
+        if !collapsed.is_empty() {
+            collapsed.push(' ');
+        }
+        collapsed.push_str(word);
+    }
+    collapsed
+}
+
 fn now_label() -> Arc<str> {
     Arc::from(chrono::Local::now().format("%H:%M").to_string())
 }
@@ -1869,6 +1936,7 @@ mod tests {
     fn context(epoch: u64) -> ReduceContext {
         ReduceContext {
             session_epoch: SessionEpoch(epoch),
+            show_hook_output: true,
         }
     }
 
@@ -3270,5 +3338,181 @@ mod tests {
                 RowBody::ToolGroup(group) if group.status == RowStatus::Success
             )
         }));
+    }
+
+    #[test]
+    fn tool_summaries_flatten_to_one_line() {
+        assert_eq!(one_line_summary("echo  a\n\nb\tc"), "echo a b c");
+        assert_eq!(one_line_summary(""), "");
+        // The length is the display layer's business: a search query stays
+        // intact so it can still be parsed.
+        let long = "cargo ".repeat(40);
+        let summary = one_line_summary(&long);
+        assert_eq!(summary, "cargo ".repeat(40).trim_end());
+        assert!(!summary.contains('\n'));
+    }
+
+    #[test]
+    fn a_command_summary_stays_one_line_on_the_tool_row() {
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-1");
+        turn(&mut reducer);
+        reducer.apply_agent_update(
+            AgentUpdate::StepStarted {
+                idx: 0,
+                tool_id: "tool-1".into(),
+                tool_name: "bash".into(),
+                arg_summary: "export A=1\nexport B=2\npython3 -c 'print(1)'".into(),
+                arg_full: "export A=1\nexport B=2\npython3 -c 'print(1)'".into(),
+                presentation: ToolPresentationInfo::generic("bash"),
+            },
+            &context(1),
+        );
+        let tool = group_rows(&reducer)
+            .iter()
+            .find_map(|row| match &row.body {
+                RowBody::ToolGroup(group) => group.items.iter().find_map(|item| match item {
+                    ToolGroupItem::Tool(tool) => Some(tool.clone()),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .expect("tool row");
+        assert_eq!(
+            tool.arg_summary.as_ref(),
+            "export A=1 export B=2 python3 -c 'print(1)'"
+        );
+    }
+
+    #[test]
+    fn a_repeated_hook_briefing_stays_one_card() {
+        let mut reducer = TranscriptReducer::new();
+        let briefing = |text: &str| {
+            AgentMessage::text(
+                AgentRole::User,
+                MessageOrigin::InjectedContext {
+                    source: "plugin auto-memory".into(),
+                },
+                tact::hook::frame_hook_context(Some("plugin auto-memory"), text),
+            )
+        };
+        let live = |text: &str| AgentUpdate::HookContext {
+            source: Some("plugin auto-memory".into()),
+            text: text.into(),
+        };
+        // Every open of the session stored another copy of the same briefing.
+        reducer.seed_persisted(&[briefing("briefing"), briefing("briefing")], &context(1));
+        reducer.apply_agent_update(live("briefing"), &context(1));
+        let cards = |reducer: &TranscriptReducer| {
+            reducer
+                .rows
+                .iter()
+                .filter_map(|row| match &row.body {
+                    RowBody::HookContext(card) => Some(card.markdown.to_string()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(cards(&reducer), vec!["briefing".to_string()]);
+
+        // A hook with fresh context still adds its card.
+        reducer.apply_agent_update(live("new briefing"), &context(1));
+        assert_eq!(
+            cards(&reducer),
+            vec!["briefing".to_string(), "new briefing".to_string()]
+        );
+    }
+
+    #[test]
+    fn an_invisible_hook_event_keeps_the_thinking_region_open() {
+        let mut reducer = TranscriptReducer::new();
+        reducer.push_hook_context(
+            Some(Arc::from("plugin auto-memory")),
+            Arc::from("briefing"),
+            None,
+        );
+        run_started(&mut reducer, "run-1");
+        turn(&mut reducer);
+        reducer.apply_agent_update(
+            AgentUpdate::ThinkingChunk(ThinkingChunk::Started),
+            &context(1),
+        );
+        reducer.apply_agent_update(
+            AgentUpdate::ThinkingChunk(ThinkingChunk::Delta("before ".into())),
+            &context(1),
+        );
+        // The same briefing arrives mid-thought and adds no card.
+        reducer.apply_agent_update(
+            AgentUpdate::HookContext {
+                source: Some("plugin auto-memory".into()),
+                text: "briefing".into(),
+            },
+            &context(1),
+        );
+        reducer.apply_agent_update(
+            AgentUpdate::ThinkingChunk(ThinkingChunk::Delta("after".into())),
+            &context(1),
+        );
+        let thinking = reducer
+            .rows
+            .iter()
+            .filter_map(|row| match &row.body {
+                RowBody::Thinking(thinking) => Some(thinking.markdown.to_string()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(thinking, ["before after"]);
+
+        // A hidden hook status must not split the card either.
+        let hidden = ReduceContext {
+            session_epoch: SessionEpoch(1),
+            show_hook_output: false,
+        };
+        reducer.apply_agent_update(
+            AgentUpdate::HookStatus {
+                id: 1,
+                source: Some("plugin auto-memory".into()),
+                message: "Loading Auto Memory context".into(),
+                elapsed_ms: Some(21),
+            },
+            &hidden,
+        );
+        reducer.apply_agent_update(
+            AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(" - still one".into())),
+            &hidden,
+        );
+        let thinking = reducer
+            .rows
+            .iter()
+            .filter_map(|row| match &row.body {
+                RowBody::Thinking(thinking) => Some(thinking.markdown.to_string()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(thinking, ["before after - still one"]);
+
+        // With hook output shown, the status row is real output and ends it.
+        reducer.apply_agent_update(
+            AgentUpdate::HookStatus {
+                id: 2,
+                source: Some("plugin auto-memory".into()),
+                message: "Loading Auto Memory context".into(),
+                elapsed_ms: Some(22),
+            },
+            &context(1),
+        );
+        reducer.apply_agent_update(
+            AgentUpdate::ThinkingChunk(ThinkingChunk::Delta("next".into())),
+            &context(1),
+        );
+        let thinking = reducer
+            .rows
+            .iter()
+            .filter_map(|row| match &row.body {
+                RowBody::Thinking(thinking) => Some(thinking.markdown.to_string()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(thinking, ["before after - still one", "next"]);
     }
 }

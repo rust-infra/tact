@@ -336,6 +336,15 @@ the design's thought row. The trace and disclosure animation are unchanged;
 the shell now handles `ThinkingEvent::Toggled` by expanding the trace in place
 instead of opening a reader.
 
+### P21. `ToolGroup` title ellipsizes
+
+A group's title carries the tool names and their argument summaries, and a
+`bash` summary is as long as the command. The title now takes the row's spare
+width (`flex_1`, `min_w_0`) and truncates with an ellipsis, so a long command
+cannot wrap the fixed 37px compact header; the shell also flattens summaries to
+one line before assembling the title, and the full command still opens in the
+call's input block. Layout, disclosure and events are unchanged.
+
 ### P2 surfaces (no further vendor patches)
 
 The P2 components ship unmodified; the shell only chooses when to mount them.

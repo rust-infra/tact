@@ -56,7 +56,7 @@ the live tail.
 | D7 | Make the mixed transcript a Tact-owned virtualized row model; use real `gpui-ai` components for leaf AI surfaces. |
 | D8 | Group tools by a kernel-provided run/message identity, never by adjacency or wall-clock time. |
 | D9 | Reconcile gates from `UiResponder::snapshot()`, not from one-shot `RequestSelect` events. |
-| D10 | Keep one active `HostSession` per desktop controller; a project switch is a serialized close-then-open transition. |
+| D10 | Keep one visible `HostSession` per desktop controller; a session whose run is in flight is parked with its own state and keeps running when another session takes the window, while an idle session is closed. A project switch is a serialized close-then-open transition that closes parked hosts too. |
 | D11 | Treat Tact configuration as process-global for v1. Desktop loads it once; project switching does not reinstall provider settings. Permission mode is always re-applied per session because it is a safety control, not a provider preference. |
 | D12 | Use Light and Dark desktop appearances with shared component geometry and a reduced-motion policy on macOS, Windows, and Linux. |
 | D13 | Split settings into startup-global settings (require a restart) and live session settings (routed through `UserCommand`). A settings surface must show which kind it is. |
@@ -1546,10 +1546,16 @@ Projection rules:
   thinking row. Consecutive deltas share one card; a repeated `Started` keeps
   the open card, and the TUI's `ends_thinking_region` rule closes it when a
   tool, streamed answer, notice, hook, error, or completion arrives.
-  `MessageStarted` and `TurnStats` do not close it.
+  `MessageStarted` and `TurnStats` do not close it, and neither does a hook
+  event that adds no row (a repeated briefing, a hook status hidden by the
+  show-hook-output setting): an invisible row must not split the card.
 - `Info`, `MdInfo`, `HookContext`, `HookStatus`, `Error`, completion, and
   cancellation create typed notice/error rows. `HookStatus` is rewritten in
-  place without changing row order.
+  place without changing row order. A `HookContext` card is only added when it
+  differs from the latest one: a resume re-runs `SessionStart` hooks, and an
+  unchanged briefing must not add a card per open — seeded
+  `InjectedContext` messages are collapsed the same way and shown as their
+  `<hook-context>` body, not the framed cell.
 - `TasksChanged`, `GoalsChanged`, `SubagentsChanged`, and
   `BackgroundTasksChanged` replace their complete views. They are not appended
   as transcript rows.
@@ -1604,8 +1610,11 @@ Rules:
 - A response is rejected unless `card.session_epoch == snapshot.session.epoch`.
   `request_id` restarts at zero per session, so an old card's id can collide
   with a live request in the new session; the epoch is the discriminator.
-- A session switch clears `pending_gates` and marks every old card `Withdrawn`
-  before the new epoch is published; late clicks then fail the epoch check.
+- A switch to a different session clears `pending_gates` and marks every old
+  card `Withdrawn` before the new epoch is published; late clicks then fail
+  the epoch check. Returning to a parked session also moves the epoch so the
+  shell rebuilds its row map, but keeps that session's live gate cards: each
+  carries the epoch it was rendered under, and a click on it still matches.
 - A resolved gate keeps its row and collapses its prompt/options to a compact
   summary line.
 - `UiRequestOrigin` supplies the main/subagent and tool attribution. Prompt
@@ -2252,9 +2261,13 @@ does not reinstall provider settings.
 
 Consequences:
 
-- One active `HostSession` per controller.
+- One visible `HostSession` per controller. Switching sessions parks a run
+  in flight — host, transcript state, queue, and gates — so it keeps going
+  and comes back in place; switching away from an idle session closes it.
+  Parked hosts are drained on the actor's tick with no commit reaching the
+  shell.
 - Project switching is close-then-open; two projects never own live Agents at
-  the same time.
+  the same time, and the project being left closes its parked hosts.
 - Project-local `config.toml` is not hot-reloaded during the app lifetime. The
   app-level config path and overrides are the source for the session.
 - A future per-session configuration refactor is required before project-local
@@ -2321,8 +2334,9 @@ Candidate 1's stronger transcript identity contract.
   one matcher shared by sessions, commands, and extensions.
 - We accept title derivation as a first-user-prompt heuristic; manual rename
   remains authoritative.
-- We accept one active session per controller in exchange for a simple,
-  auditable lock and teardown lifecycle.
+- We accept one *visible* session per controller in exchange for a simple,
+  auditable lock and teardown lifecycle; keeping a run alive across a switch
+  costs one extra parked `HostSession` per session left mid-run.
 - We accept process-global Tact configuration for v1 and document the
   project-local config limitation.
 
@@ -2361,8 +2375,9 @@ Candidate 1's stronger transcript identity contract.
   explicit `--archived`/`--all` flag?
 - Should desktop appearance live only in desktop settings, or should
   `config.example.toml` grow a `[desktop]` section?
-- Is one active session per window acceptable for the first release, or does
-  the product need multiple independent windows with separate locks?
+- Is one visible session per window still acceptable now that switching keeps
+  a running session alive, or does the product need multiple independent
+  windows with separate locks?
 - Real AccessKit and reduced-motion verification must happen on each target
   machine; the 125%/150% layout assertions run in the shell test suite.
 
