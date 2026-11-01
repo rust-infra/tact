@@ -272,6 +272,10 @@ pub struct DesktopSnapshot {
     pub account_supported: bool,
     pub show_hook_output: bool,
     pub notifications: bool,
+    /// Voice input is configured and its worker may be started.
+    pub voice_enabled: bool,
+    /// Voice is configured but the provider has no credential.
+    pub voice_missing_api_key: bool,
     pub failure: Option<FailureView>,
     pub appearance: Appearance,
     pub motion: ReducedMotion,
@@ -341,6 +345,8 @@ impl DesktopSnapshot {
             account_supported: false,
             show_hook_output: true,
             notifications: true,
+            voice_enabled: false,
+            voice_missing_api_key: false,
             failure: None,
             appearance: config.appearance,
             motion: config.reduced_motion,
@@ -364,6 +370,7 @@ impl SectionMask {
     pub const COMMANDS: Self = Self(1 << 4);
     pub const EXTENSIONS: Self = Self(1 << 5);
     pub const FAILURE: Self = Self(1 << 6);
+    pub const VOICE: Self = Self(1 << 7);
 
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)

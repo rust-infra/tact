@@ -268,7 +268,7 @@ impl Render for SemanticsProbe {
                     .iter()
                     .map(|row| {
                         let control = if row.header {
-                            sidebar_section_control(&component_id, row, false, cx)
+                            sidebar_section_control(&component_id, row, false, false, cx)
                         } else {
                             sidebar_item_control(
                                 &component_id,

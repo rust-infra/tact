@@ -28,6 +28,7 @@ scripts/check-rust.sh
 | A8 | Archive/restore filters the manager | `session_manager_filters_active_and_archived`; capture `06` | pass |
 | A9 | Fuzzy search in the session manager | `session_manager_fuzzy_search_finds_abbreviations` | pass |
 | A10 | Rename / archive actions restore trigger focus | `multistep_forms_restore_the_original_trigger_focus`; capture `06` | pass |
+| A11 | DURABLE rail shortcuts open Goals, Subagents and Background | capture `01`; `rail-durable` | pass |
 
 ## B. Transcript and run control
 
@@ -37,14 +38,16 @@ scripts/check-rust.sh
 | B2 | Plan card shows steps and EXECUTING state | capture `26d`; `desktop_shell_renders_all_transcript_row_kinds` | pass |
 | B3 | Tool group expands to rows and output | capture `26c` | pass |
 | B4 | Diff / thinking / tool readers open | captures `16`–`20`; `every_catalog_entry_executes_in_the_shell` | pass |
-| B5 | Permission gate is sticky, Review focuses the first option, Confirm stays disabled until a choice | `permission_review_starts_empty_and_focuses_the_first_option`, `gate_close_restores_trigger_focus`; capture `33` | pass |
-| B6 | Multi-select gate keeps every clicked choice | `multiselect_gate_keeps_every_clicked_choice` | pass |
+| B5 | Permission gate is sticky; Review scrolls to the inline card and focuses the primary allow option without answering it; the design's card decides in one click | `gate_review_focuses_the_primary_allow_option`, `inline_permission_gate_answers_with_the_clicked_option`; capture `33` | pass |
+| B6 | Multi-select questions keep the toggle surface and confirm only after choosing; single- and multi-select cards use the prototype's horizontal option cards | `multi_select_questions_keep_the_toggle_surface`; reducer `apply_gate_response` tests; capture `33b-questions` | pass |
 | B7 | Back-to-bottom pill floats above sticky tasks | `back_to_bottom_floats_above_the_sticky_strip`; capture `28` | pass |
 | B8 | Hook output toggle hides hook rows | `hook_output_toggle_hides_hook_status_rows` | pass |
 | B9 | Error row exposes Retry | capture `26b` | pass |
 | B10 | Assistant suggestions and selection actions | captures `26c`; `localized_answer_and_suggestion_labels_are_not_english` | pass |
 | B11 | Long runs keep the tail anchored while scrolling back | captures `26a`–`26c`; `back_to_bottom_floats_above_the_sticky_strip` | pass |
 | B12 | Run header shows the headline plus the prompt's summary line | capture `26a`; `run_titles_split_a_second_line_into_the_summary` | pass |
+| B13 | All tools in one run share one execution group | `tools_from_every_turn_in_a_run_share_one_group`; capture `26c` | pass |
+| B14 | New activity appears only for unseen content during a run | `new_activity_only_tracks_unseen_running_content`; capture `26a` shows Back to bottom alone | pass |
 
 ## C. Inspector
 
@@ -67,9 +70,9 @@ scripts/check-rust.sh
 | D4 | Attachments as removable chips | `localized_component_labels_are_not_english` (AttachmentStrip labels); `composer_controls_live_inside_the_prompt_frame` | pass |
 | D5 | Queue starts as a count badge | `queued_prompts_start_as_a_count_badge` | pass |
 | D6 | Up/Down recall input history | `composer_recalls_input_history_with_arrow_keys` | pass |
-| D7 | Model picker and keyboard activation | capture `21`; picker focus is tracked by `gate_primary_focus`-style focus handles (`activate_model_picker` wired in the shell; no dedicated test) | pass (capture) |
+| D7 | Model picker and keyboard activation | capture `21`; the picker tracks its own focus handles and arrow-key navigation | pass (capture) |
 | D8 | Permission picker | capture `21`; permission tests | pass |
-| D9 | Voice control absent until the P2 pipeline | `voice_controls_absent_until_p2_pipeline` | pass |
+| D9 | Voice mic drives the worker and inserts the transcript; a keyless provider explains itself | `voice_transcript_lands_in_the_composer`; capture `01` (mic); `voice_controls_absent_until_p2_pipeline` still guards the unmounted component | pass |
 
 ## E. Overlays and commands
 
@@ -80,10 +83,13 @@ scripts/check-rust.sh
 | E3 | Settings rows show live and startup-global modes | `startup_global_settings_display_their_values`; capture `05` | pass |
 | E4 | Extensions popover and manager (MCP/Skills/Plugins) | captures `07`–`10b`; `extension_subcommands_open_their_manager`, `extensions_manager_carries_query_into_full_dialog` | pass |
 | E5 | Hook review sheet with trust/forget | capture `10c`; hooks route tests | pass |
-| E6 | Gate review dialog (keyboard) | capture `33`; gate tests | pass |
+| E6 | Gate review is inline: Review scrolls to the card and focuses the allow option; a click answers it | capture `33`; `gate_review_focuses_the_primary_allow_option`, `inline_permission_gate_answers_with_the_clicked_option` | pass |
 | E7 | Subagent drawer | capture `30b` | pass |
 | E8 | Readers: system prompt, stats, history, tasks, balance | captures `16`–`20`, `38` | pass |
 | E9 | Help / keyboard shortcuts reader | capture `40-help`; `help_reader_lists_the_primary_shortcuts` (content), `help_and_save_entries_are_executable` (route) | pass |
+| E10 | An open overlay owns focus and blocks page shortcuts | `session_manager_takes_focus_away_from_the_composer`, `global_shortcuts_do_not_act_behind_an_overlay` | pass |
+| E11 | Native menus expose the primary actions | `cx.set_menus` File/View/Session in `app.rs` | pass |
+| E12 | An existing Tact theme migrates on first launch | `existing_tact_themes_migrate_to_the_desktop_appearance` | pass |
 
 ## F. Appearance, accessibility, i18n
 
@@ -109,10 +115,27 @@ scripts/check-rust.sh
    (`help_reader`) shared by the controller and the off-screen harness, so
    capture `40-help` renders the real shortcut list.
 
+## P2 surfaces (implemented 2026-11-01)
+
+| Surface | Evidence |
+|---|---|
+| ANSI terminal output | `ansi::tests`; capture `41-reader-ansi` |
+| Web-search results | `web_search::tests`; capture `42-reader-search` |
+| Multi-file review | `diff_review::tests`; capture `43-reader-diff-review` |
+| Mermaid diagram | `mermaid::tests`; capture `44-assistant-mermaid` |
+| Retained evidence | `retained_evidence` in the Context inspector; capture `31-inspector-context-populated` |
+| Artifact preview/source | `transcript_readers_mount_their_typed_surfaces` |
+| Dock badge | `badge_labels_clear_at_zero_and_bound_at_ninety_nine` |
+
+`transcript_readers_mount_their_typed_surfaces` renders seeded ANSI,
+web-search and multi-file rows and asserts the coloured reader, the
+`SearchResults` surface and the `DiffTable` are mounted instead of Markdown.
+
 ## Residual (non-blocking)
 
-- P2 components stay explicitly deferred: `SearchResults`, `ArtifactPanel`,
-  `DiffTable`, `ContextCard` (`p2_components_are_explicitly_deferred`).
-- The Task DAG graph renderer is P2; the dependency list is the P1 surface.
+- Windows taskbar overlay badges need the window `HWND`, which GPUI does not
+  expose; the in-app gate banner and OS notification carry the count there.
+- The Task DAG graph renderer stays a dependency list; the flowchart adapter
+  covers Mermaid diagrams.
 - The capture harness seeds design copy from `26a` onward; production content
   comes from the live controller.

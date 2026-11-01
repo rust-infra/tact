@@ -13,6 +13,11 @@ licenses. The primary UI dependencies are:
   `crates/desktop/assets/fonts/IBM-Plex-LICENSE.txt`.
 - Lilex: SIL Open Font License 1.1. See
   `crates/desktop/assets/fonts/Lilex-LICENSE.txt`.
+- Lucide icons (the composer's `send` glyph, copied into
+  `crates/desktop/assets/icons/send.svg`): ISC. The pinned
+  `gpui-kit-assets` bundle ships the same icon set.
+- `cocoa` 0.26.0 (macOS Dock badge): MIT / Apache-2.0.
+- `objc` 0.2.7 (macOS Dock badge): MIT.
 
 The Apache License 2.0 text is included in
 `THIRD-PARTY-APACHE-2.0.txt`. Release archives also include

@@ -18,7 +18,7 @@ use gpui_component::Root;
 use tact_catalog::SettingId;
 use tact_desktop_core::{
     Appearance, DesktopConfig, DesktopController, DesktopSnapshot, ExtensionsTab, HookItemSnapshot,
-    HookSnapshot, InspectorTab, SessionPhase, SurfaceSnapshot,
+    HookSnapshot, InspectorTab, ReaderRef, RowId, SessionPhase, SurfaceSnapshot,
 };
 
 use crate::root::{DesktopRoot, ReaderKind};
@@ -52,10 +52,8 @@ impl Harness {
         height: f32,
     ) -> Result<Self> {
         let platform = gpui_platform::current_platform(true);
-        let mut cx = VisualTestAppContext::with_asset_source(
-            platform,
-            Arc::new(gpui_component_assets::Assets),
-        );
+        let mut cx =
+            VisualTestAppContext::with_asset_source(platform, Arc::new(crate::assets::Assets));
 
         let data_dir = std::env::temp_dir().join(format!(
             "tact-ui-capture-{}-{}",
@@ -488,10 +486,20 @@ pub fn capture_all(out: &Path) -> Result<Vec<PathBuf>> {
     let last_row = harness.snapshot().transcript.len().saturating_sub(1);
     harness.with_root(|root, _, cx| root.capture_scroll_to(last_row, cx));
     shoot(&mut harness, "26b-transcript-bottom")?;
-    harness.with_root(|root, _, cx| root.capture_scroll_to(3, cx));
-    shoot(&mut harness, "26c-transcript-tools")?;
     harness.with_root(|root, _, cx| root.capture_scroll_to(4, cx));
+    shoot(&mut harness, "26c-transcript-tools")?;
+    harness.with_root(|root, _, cx| root.capture_scroll_to(3, cx));
     shoot(&mut harness, "26d-transcript-plan")?;
+    // The design transcript above shortens the answer; this capture keeps the
+    // fixture's Markdown heading and lists so the prose scale is reviewable.
+    let mut snapshot = harness.snapshot();
+    snapshot.transcript = tact_desktop_core::fixtures::demo_transcript();
+    harness.set_snapshot(snapshot);
+    harness.with_root(|root, _, cx| root.capture_scroll_to(3, cx));
+    shoot(&mut harness, "26e-assistant-markdown")?;
+    let mut snapshot = harness.snapshot();
+    snapshot.transcript = design_transcript();
+    harness.set_snapshot(snapshot);
 
     harness.set_appearance(Appearance::Dark);
     harness.with_root(|root, _, cx| root.capture_scroll_to(0, cx));
@@ -513,15 +521,47 @@ pub fn capture_all(out: &Path) -> Result<Vec<PathBuf>> {
     shoot(&mut harness, "32-background-populated")?;
     harness.with_root(|root, _, cx| root.capture_close_overlay(cx));
 
-    harness.with_root(|root, _, _| {
-        root.capture_open_gate(tact_desktop_core::fixtures::demo_gate());
+    // The design reviews a gate in the transcript; scroll to the gate row
+    // instead of opening a dialog over it.
+    harness.with_root(|root, _, cx| {
+        let last = root.snapshot().transcript.len().saturating_sub(1);
+        root.capture_scroll_to(last, cx);
     });
     shoot(&mut harness, "33-gate")?;
-    harness.with_root(|root, _, cx| root.capture_close_overlay(cx));
+    let mut snapshot = harness.snapshot();
+    snapshot.transcript = tact_desktop_core::fixtures::demo_questions();
+    snapshot.pending_gates = std::sync::Arc::from([]);
+    harness.set_snapshot(snapshot);
+    harness.with_root(|root, _, cx| root.capture_scroll_to(0, cx));
+    shoot(&mut harness, "33b-questions")?;
 
     harness.with_root(|root, _, _| root.capture_open_reader(ReaderKind::TasksDag));
     shoot(&mut harness, "38-reader-tasks-dag-populated")?;
     harness.with_root(|root, _, cx| root.capture_close_overlay(cx));
+
+    // P2 readers: ANSI terminal output, web-search results, a multi-file
+    // review and an inline Mermaid diagram.
+    let mut snapshot = harness.snapshot();
+    snapshot.transcript = tact_desktop_core::fixtures::demo_reader_transcript();
+    snapshot.pending_gates = std::sync::Arc::from([]);
+    harness.set_snapshot(snapshot);
+    harness.with_root(|root, _, cx| {
+        root.capture_show_transcript_reader(ReaderRef::ToolOutput(RowId::new(1)), cx);
+    });
+    shoot(&mut harness, "41-reader-ansi")?;
+    harness.with_root(|root, _, cx| root.capture_close_overlay(cx));
+    harness.with_root(|root, _, cx| {
+        root.capture_show_transcript_reader(ReaderRef::ToolOutput(RowId::new(2)), cx);
+    });
+    shoot(&mut harness, "42-reader-search")?;
+    harness.with_root(|root, _, cx| root.capture_close_overlay(cx));
+    harness.with_root(|root, _, cx| {
+        root.capture_show_transcript_reader(ReaderRef::Diff(RowId::new(3)), cx);
+    });
+    shoot(&mut harness, "43-reader-diff-review")?;
+    harness.with_root(|root, _, cx| root.capture_close_overlay(cx));
+    harness.with_root(|root, _, cx| root.capture_scroll_to(2, cx));
+    shoot(&mut harness, "44-assistant-mermaid")?;
 
     let help = tact_desktop_core::help_reader(tact_catalog::CatalogLocale::En);
     harness.with_root(|root, _, cx| root.capture_show_reader(help, cx));

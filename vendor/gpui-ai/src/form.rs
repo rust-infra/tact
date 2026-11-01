@@ -29,8 +29,8 @@ use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt a
 /// One option in a single-choice set.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChoiceOption {
-    id: SharedString,
-    label: SharedString,
+    pub(crate) id: SharedString,
+    pub(crate) label: SharedString,
     description: Option<SharedString>,
     disabled: bool,
 }
@@ -92,6 +92,9 @@ pub struct ChoiceGroup {
     options: Vec<ChoiceOption>,
     selected: Option<SharedString>,
     on_event: Option<SharedHandler<ChoiceEvent>>,
+    /// Options are bordered cards in a wrapping row, the decision-card
+    /// grammar, rather than full-width list rows.
+    cards: bool,
     style: StyleRefinement,
 }
 
@@ -104,6 +107,7 @@ impl ChoiceGroup {
             options: Vec::new(),
             selected: None,
             on_event: None,
+            cards: false,
             style: StyleRefinement::default(),
         }
     }
@@ -117,8 +121,15 @@ impl ChoiceGroup {
             options: Vec::new(),
             selected: None,
             on_event: None,
+            cards: false,
             style: StyleRefinement::default(),
         }
+    }
+
+    /// Draws each option as a bordered card in a wrapping row.
+    pub fn cards(mut self, cards: bool) -> Self {
+        self.cards = cards;
+        self
     }
 
     /// Sets the options, in the order they are offered.
@@ -163,13 +174,14 @@ impl RenderOnce for ChoiceGroup {
         let handler = self.on_event;
         let selected = self.selected;
         let label = self.label.clone();
+        let cards = self.cards;
         let rows: Vec<AnyElement> = self
             .options
             .into_iter()
             .enumerate()
             .map(|(position, option)| {
                 let chosen = selected.as_ref() == Some(&option.id);
-                choice_row(
+                let row = choice_row(
                     &root_id,
                     &group,
                     option,
@@ -178,7 +190,24 @@ impl RenderOnce for ChoiceGroup {
                     handler.clone(),
                     window,
                     cx,
-                )
+                );
+                if cards {
+                    div()
+                        .flex_1()
+                        .min_w(gpui::px(160.))
+                        .rounded(gpui::px(8.))
+                        .border_1()
+                        .border_color(if chosen {
+                            cx.theme().primary
+                        } else {
+                            cx.theme().border
+                        })
+                        .bg(tokens.colors.surface)
+                        .child(row)
+                        .into_any_element()
+                } else {
+                    row
+                }
             })
             .collect();
         let set_size = rows.len();
@@ -198,7 +227,14 @@ impl RenderOnce for ChoiceGroup {
                         .child(label),
                 )
             })
-            .children(rows)
+            .child(
+                div()
+                    .flex()
+                    .gap(tokens.spacing.xs)
+                    .when(cards, |list| list.flex_wrap().items_stretch())
+                    .when(!cards, |list| list.flex_col())
+                    .children(rows),
+            )
     }
 }
 

@@ -25,9 +25,6 @@ actions!(
         SlashExecute,
         SlashDismiss,
         NewSession,
-        GateNext,
-        GatePrevious,
-        ToggleGateOption,
         Dismiss
     ]
 );
@@ -79,11 +76,7 @@ const BOUND_SHORTCUTS: &[&str] = &[
     "shift-tab",
     "enter",
     "escape",
-    "down",
-    "up",
-    "space",
     "secondary-shift-l",
-    "secondary-.",
     "secondary-n",
 ];
 
@@ -110,11 +103,7 @@ pub fn bindings() -> Vec<gpui::KeyBinding> {
         gpui::KeyBinding::new("shift-tab", SlashPrevious, Some("SlashOverlay")),
         gpui::KeyBinding::new("enter", SlashExecute, Some("SlashOverlay")),
         gpui::KeyBinding::new("escape", SlashDismiss, Some("SlashOverlay")),
-        gpui::KeyBinding::new("down", GateNext, Some("Gate")),
-        gpui::KeyBinding::new("up", GatePrevious, Some("Gate")),
-        gpui::KeyBinding::new("space", ToggleGateOption, Some("Gate")),
         gpui::KeyBinding::new("secondary-shift-l", BackToBottom, None),
-        gpui::KeyBinding::new("secondary-.", CancelRun, Some("Gate")),
     ]
 }
 

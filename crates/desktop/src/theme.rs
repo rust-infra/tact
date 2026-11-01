@@ -54,7 +54,7 @@ fn apply_palette(theme: &mut Theme, dark: bool) {
         theme.secondary_foreground = color(0xf5f5f7);
         theme.selection = alpha(0x0a84ff, 0.28);
         theme.ring = alpha(0x0a84ff, 0.55);
-        theme.sidebar = color(0x242426);
+        theme.sidebar = alpha(0x1c1c1e, 0.82);
         theme.sidebar_foreground = color(0xf5f5f7);
         theme.sidebar_border = alpha(0xffffff, 0.08);
         theme.sidebar_accent = alpha(0x0a84ff, 0.22);

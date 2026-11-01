@@ -9074,6 +9074,7 @@ version = "2.0.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "cocoa 0.26.0",
  "gpui-ai",
  "gpui-base",
  "gpui-component",
@@ -9082,6 +9083,8 @@ dependencies = [
  "gpui-pre",
  "gpui-pre-platform",
  "image",
+ "objc",
+ "serde_json",
  "tact_catalog",
  "tact_desktop_core",
  "tact_protocol",

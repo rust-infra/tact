@@ -22,10 +22,18 @@ use crate::transcript::{
 const SESSION_EPOCH: u64 = 7;
 
 fn row(id: u64, body: RowBody) -> TranscriptRow {
+    // The design's message labels carry a clock time; the fixture pins the
+    // two the prototype draws so the capture is deterministic.
+    let time = match &body {
+        RowBody::User(_) => Some(Arc::from("10:42")),
+        RowBody::Assistant(_) => Some(Arc::from("10:43")),
+        _ => None,
+    };
     TranscriptRow {
         id: RowId(id),
         ordinal: id,
         loop_id: Some(LoopId(1)),
+        time,
         body,
     }
 }
@@ -60,6 +68,90 @@ fn tool(
     }
 }
 
+fn tool_with_detail(id: u64, name: &str, summary: &str, preview: &str, detail: &str) -> ToolRow {
+    let mut row = tool(
+        id,
+        name,
+        summary,
+        RowStatus::Success,
+        ToolBody::None,
+        preview,
+    );
+    row.output.detail = Some(Arc::from(detail));
+    row
+}
+
+/// Rows whose readers exercise the P2 surfaces: ANSI output, web-search
+/// results, a multi-file patch and a Mermaid diagram.
+pub fn demo_reader_transcript() -> TranscriptView {
+    let ansi = "\x1b[32m✓\x1b[0m store::tests::titles_backfill\n\
+                \x1b[31m✗\x1b[0m store::tests::archive_roundtrip\n\
+                \x1b[1;33mwarning\x1b[0m: unused import: `std::fmt`\n\
+                \x1b[2mtest result: \x1b[0m\x1b[1;31mFAILED\x1b[0m. 1 passed; 1 failed";
+    let search = r#"{"results":[
+        {"title":"GPUI Component — Web Gallery","url":"https://longbridge.github.io/gpui-ai/components"},
+        {"title":"zed-industries/zed: crates/gpui","url":"https://github.com/zed-industries/zed"}
+    ]}"#;
+    let multi = "diff --git a/crates/desktop/src/root.rs b/crates/desktop/src/root.rs\n\
+                 --- a/crates/desktop/src/root.rs\n\
+                 +++ b/crates/desktop/src/root.rs\n\
+                 @@ -1 +1,2 @@\n-old\n+new\n+extra\n\
+                 diff --git a/crates/desktop/src/ui/ansi.rs b/crates/desktop/src/ui/ansi.rs\n\
+                 --- a/crates/desktop/src/ui/ansi.rs\n\
+                 +++ b/crates/desktop/src/ui/ansi.rs\n\
+                 @@ -1 +1 @@\n-gone\n+kept\n";
+    let rows = vec![
+        row(
+            0,
+            RowBody::ToolGroup(ToolGroupRow {
+                loop_id: LoopId(1),
+                items: Arc::from([
+                    ToolGroupItem::Tool(tool_with_detail(
+                        1,
+                        "shell",
+                        "cargo test -p tact store",
+                        "test result: FAILED. 1 passed; 1 failed",
+                        ansi,
+                    )),
+                    ToolGroupItem::Tool(tool_with_detail(
+                        2,
+                        "web_search",
+                        r#"{"query":"gpui wasm support"}"#,
+                        "2 results",
+                        search,
+                    )),
+                ]),
+                summary: Arc::from("shell · web_search"),
+                status: RowStatus::Success,
+                collapsed: false,
+            }),
+        ),
+        row(
+            3,
+            RowBody::Diff(DiffRow {
+                path: Some(Arc::from("2 files")),
+                patch: Arc::from(multi),
+                status: RowStatus::Success,
+            }),
+        ),
+        row(
+            4,
+            RowBody::Assistant(AssistantRow {
+                markdown: Arc::from(
+                    "The migration order is fixed:\n\n```mermaid\ngraph TD\n  \
+                     A[Probe schema] --> B[Add columns]\n  B --> C[Backfill titles]\n  \
+                     C --> D[Show in manager]\n```",
+                ),
+                status: RowStatus::Success,
+                suggestions: Arc::from([]),
+            }),
+        ),
+    ];
+    TranscriptView {
+        rows: rows.into_iter().map(Arc::new).collect(),
+    }
+}
+
 fn gate(id: u64, purpose: UiRequestPurpose, prompt: &str, options: &[&str]) -> GateCard {
     GateCard {
         id: RowId(id),
@@ -83,6 +175,50 @@ pub fn demo_gate() -> GateCard {
         "Allow Tact to run `cargo test --workspace`?",
         &["Allow once", "Allow for session", "Deny"],
     )
+}
+
+/// The `ask_user` question cards: one single-select, one multi-select.
+pub fn demo_questions() -> TranscriptView {
+    let single = GateCard {
+        id: RowId(1),
+        request_id: RequestId(21),
+        session_epoch: SessionEpoch(SESSION_EPOCH),
+        purpose: UiRequestPurpose::Question,
+        kind: GateKind::Select,
+        prompt: Arc::from("Choose the migration target"),
+        options: Arc::from([
+            Arc::from("SQLite"),
+            Arc::from("Postgres"),
+            Arc::from("Both"),
+        ]),
+        selection: GateSelection::Single(None),
+        origin: GateOrigin::Main,
+        status: GateState::Pending,
+    };
+    let multi = GateCard {
+        id: RowId(2),
+        request_id: RequestId(22),
+        session_epoch: SessionEpoch(SESSION_EPOCH),
+        purpose: UiRequestPurpose::Question,
+        kind: GateKind::MultiSelect,
+        prompt: Arc::from("Which checks should the child run?"),
+        options: Arc::from([
+            Arc::from("Unit tests"),
+            Arc::from("Clippy"),
+            Arc::from("UI smoke"),
+            Arc::from("Accessibility"),
+        ]),
+        selection: GateSelection::Multiple(Vec::new()),
+        origin: GateOrigin::Subagent {
+            child_id: Arc::from("child-1"),
+            tool_id: None,
+        },
+        status: GateState::Pending,
+    };
+    let rows = vec![row(1, RowBody::Gate(single)), row(2, RowBody::Gate(multi))];
+    TranscriptView {
+        rows: rows.into_iter().map(Arc::new).collect(),
+    }
 }
 
 /// A transcript that exercises every row kind the shell can render.

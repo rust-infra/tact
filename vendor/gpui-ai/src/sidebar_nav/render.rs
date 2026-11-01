@@ -10,9 +10,10 @@ use gpui::{
     div, percentage, prelude::FluentBuilder as _,
 };
 use gpui_component::{
-    ActiveTheme as _, Icon, IconName, h_flex, v_flex,
+    ActiveTheme as _, Icon, IconName, StyledExt as _, h_flex,
     sidebar::{SidebarItem as _, SidebarMenuItem},
     tooltip::Tooltip,
+    v_flex,
 };
 
 use crate::theme::SemanticStyledExt as _;
@@ -137,6 +138,12 @@ pub(super) fn sidebar_item_control(
         this.bg(cx.theme().sidebar_accent)
             .text_color(cx.theme().sidebar_accent_foreground)
     })
+    // The expanded rail marks the chosen row with a filled row, not only a
+    // dot: the row is a target the pointer can hit, and the design's rail
+    // shows the whole row tinted while it is active.
+    .when(!collapsed && row.active, |this| {
+        this.bg(cx.theme().sidebar_accent)
+    })
     // This control blocks pointer input for the whole row — it owns the
     // tooltip and AccessKit activation — so the presentation beneath it
     // can never see hover. Hover is therefore this layer's to paint:
@@ -180,6 +187,7 @@ pub(super) fn sidebar_section_control(
     component_id: &SharedString,
     row: &VisibleRow,
     focused: bool,
+    compact: bool,
     cx: &mut App,
 ) -> gpui_base::Button {
     let tokens = cx.theme().semantic_tokens();
@@ -210,7 +218,11 @@ pub(super) fn sidebar_section_control(
     } else {
         cx.theme().transparent
     })
-    .text_token(tokens.typography.xs)
+    .when(compact, |this| {
+        this.text_size(gpui::px(10.))
+            .font_family(cx.theme().mono_font_family.clone())
+    })
+    .when(!compact, |this| this.text_token(tokens.typography.xs))
     .text_color(cx.theme().sidebar_foreground.opacity(0.7))
     .child(label)
 }
@@ -233,6 +245,8 @@ pub(super) struct RowContext<'a> {
     pub(super) component_id: &'a SharedString,
     /// Whether the rail is collapsed to icons.
     pub(super) collapsed: bool,
+    /// Whether rows use the design's dense two-line rhythm.
+    pub(super) compact: bool,
     /// Whether this row holds the tree's roving focus.
     pub(super) focused: bool,
     /// Where a row's intent travels back to.
@@ -243,10 +257,10 @@ pub(super) struct RowContext<'a> {
     pub(super) labels: &'a SidebarNavLabels,
 }
 
-
 fn sidebar_item_with_detail(
     row: &VisibleRow,
     detail: SharedString,
+    compact: bool,
     cx: &mut App,
 ) -> AnyElement {
     let tokens = cx.theme().semantic_tokens();
@@ -256,7 +270,8 @@ fn sidebar_item_with_detail(
         .items_center()
         .gap(tokens.spacing.xs)
         .px(tokens.spacing.sm)
-        .py(gpui::px(7.))
+        .when(compact, |this| this.py(gpui::px(5.)))
+        .when(!compact, |this| this.py(gpui::px(7.)))
         .when(row.active, |this| {
             this.child(
                 div()
@@ -285,14 +300,21 @@ fn sidebar_item_with_detail(
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
-                                .text_token(tokens.typography.sm)
+                                .when(compact, |this| {
+                                    this.text_size(gpui::px(12.)).font_semibold()
+                                })
+                                .when(!compact, |this| this.text_token(tokens.typography.sm))
                                 .child(row.label.clone()),
                         )
                         .when_some(row.trailing.clone(), |line, trailing| {
                             line.child(
                                 div()
                                     .flex_none()
-                                    .text_token(tokens.typography.xs)
+                                    .when(compact, |this| {
+                                        this.text_size(gpui::px(10.))
+                                            .font_family(cx.theme().mono_font_family.clone())
+                                    })
+                                    .when(!compact, |this| this.text_token(tokens.typography.xs))
                                     .text_color(cx.theme().muted_foreground)
                                     .child(trailing),
                             )
@@ -301,7 +323,8 @@ fn sidebar_item_with_detail(
                 .child(
                     div()
                         .truncate()
-                        .text_token(tokens.typography.xs)
+                        .when(compact, |this| this.text_size(gpui::px(10.)))
+                        .when(!compact, |this| this.text_token(tokens.typography.xs))
                         .text_color(cx.theme().muted_foreground)
                         .child(detail),
                 ),
@@ -328,6 +351,7 @@ pub(super) fn render_row(
     let RowContext {
         component_id,
         collapsed,
+        compact,
         focused,
         owner,
         glide,
@@ -335,7 +359,7 @@ pub(super) fn render_row(
     } = *context;
     let (collapsed, focused) = (collapsed, focused);
     if row.header {
-        return sidebar_section_control(component_id, row, focused, cx).into_any_element();
+        return sidebar_section_control(component_id, row, focused, compact, cx).into_any_element();
     }
 
     let tokens = cx.theme().semantic_tokens();
@@ -441,7 +465,7 @@ pub(super) fn render_row(
                         // A row with a second line needs the application's
                         // own two-line layout: the pinned menu item has one
                         // label slot and no detail line.
-                        this.child(sidebar_item_with_detail(row, detail, cx))
+                        this.child(sidebar_item_with_detail(row, detail, compact, cx))
                     } else {
                         this.child(menu_item.render(
                             format!("sidebar-nav-menu.{component_id}.{}", row.id),

@@ -29,6 +29,8 @@ pub struct DesktopState {
     pub account_supported: bool,
     pub show_hook_output: bool,
     pub notifications: bool,
+    pub voice_enabled: bool,
+    pub voice_missing_api_key: bool,
     pub failure: Option<FailureView>,
     pub appearance: Appearance,
     pub motion: ReducedMotion,
@@ -152,6 +154,14 @@ impl DesktopState {
             account_supported: settings.is_some() && tact_host::account::is_supported(),
             show_hook_output: config.show_hook_output,
             notifications: config.notifications,
+            voice_enabled: settings
+                .as_ref()
+                .is_some_and(|settings| settings.voice.enabled),
+            voice_missing_api_key: settings.as_ref().is_some_and(|settings| {
+                settings.voice.enabled
+                    && matches!(settings.voice.provider, tact::config::VoiceProvider::OpenAi)
+                    && settings.voice.api_key.is_none()
+            }),
             failure: None,
             appearance: config.appearance,
             motion: config.reduced_motion,
@@ -505,6 +515,8 @@ impl DesktopState {
             account_supported: self.account_supported,
             show_hook_output: self.show_hook_output,
             notifications: self.notifications,
+            voice_enabled: self.voice_enabled,
+            voice_missing_api_key: self.voice_missing_api_key,
             failure: self.failure.clone(),
             appearance: self.appearance,
             motion: self.motion,

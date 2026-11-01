@@ -103,6 +103,9 @@ pub struct DesktopConfig {
     pub update_batch: Duration,
     pub gate_reconcile: Duration,
     pub appearance: Appearance,
+    /// Whether the desktop settings file already chose an appearance. A
+    /// first launch inherits the existing Tact theme instead.
+    pub appearance_explicit: bool,
     pub language: CatalogLocale,
     pub reduced_motion: ReducedMotion,
     pub text_scale: f32,
@@ -124,6 +127,31 @@ struct DesktopSettingsFile {
     show_hook_output: bool,
     #[serde(default)]
     host: HostLaunchOptions,
+}
+
+/// Maps an existing Tact theme name to the desktop appearance.
+///
+/// The desktop ships Light and Dark only; themes whose names identify them as
+/// dark variants migrate to Dark, everything else to Light.
+pub fn configured_theme() -> Option<String> {
+    tact::config::try_settings().map(|settings| settings.ui.theme)
+}
+
+pub fn appearance_from_theme(theme: &str) -> Appearance {
+    let theme = theme.to_ascii_lowercase();
+    let dark = theme.contains("dark")
+        || theme.contains("midnight")
+        || theme.contains("night")
+        || theme.contains("nord")
+        || theme.contains("dracula")
+        || theme.contains("monokai")
+        || theme.contains("mocha")
+        || theme.contains("black");
+    if dark {
+        Appearance::Dark
+    } else {
+        Appearance::Light
+    }
 }
 
 impl DesktopConfig {
@@ -153,6 +181,7 @@ impl DesktopConfig {
                 .as_ref()
                 .map(|settings| settings.appearance)
                 .unwrap_or_default(),
+            appearance_explicit: persisted.is_some(),
             language: persisted
                 .as_ref()
                 .map(|settings| match settings.language.as_str() {
@@ -303,7 +332,16 @@ pub fn app_support_dir() -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::ReducedMotion;
+    use super::{Appearance, ReducedMotion, appearance_from_theme};
+
+    #[test]
+    fn existing_tact_themes_migrate_to_the_desktop_appearance() {
+        assert_eq!(appearance_from_theme("default"), Appearance::Light);
+        assert_eq!(appearance_from_theme("solarized-light"), Appearance::Light);
+        assert_eq!(appearance_from_theme("dark"), Appearance::Dark);
+        assert_eq!(appearance_from_theme("tokyo-night"), Appearance::Dark);
+        assert_eq!(appearance_from_theme("catppuccin-mocha"), Appearance::Dark);
+    }
 
     #[test]
     fn reduced_motion_preference_composes_with_the_system_signal() {

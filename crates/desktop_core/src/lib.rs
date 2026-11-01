@@ -27,7 +27,7 @@ pub use command_router::{
 };
 pub use config::{
     Appearance, DesktopConfig, HostLaunchOptions, InitialSession, PermissionModeView,
-    ReducedMotion, app_support_dir,
+    ReducedMotion, app_support_dir, appearance_from_theme, configured_theme,
 };
 pub use controller::{DesktopController, DesktopEvents, help_reader, tact_ui_binary_path};
 pub use effect::{DesktopEffect, DesktopEvent};
@@ -43,6 +43,7 @@ pub use snapshot::{
 };
 pub use state::DesktopState;
 pub use tact::store::ArchiveFilter;
+pub use tact::voice::{VoiceCommand, VoiceEvent};
 pub use tact_catalog::{CatalogLocale, CommandCatalog, CommandId, LocalizedText};
 pub use tact_protocol::{
     BackgroundTaskStatusSnapshot, GoalCriterionStatusSnapshot, GoalPhaseSnapshot,

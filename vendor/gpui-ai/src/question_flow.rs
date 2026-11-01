@@ -146,6 +146,12 @@ pub struct QuestionFlow {
     finish_label: SharedString,
     question_prefix: SharedString,
     counter_of: SharedString,
+    /// A mono kicker above the title, the decision-card header.
+    kicker: Option<SharedString>,
+    /// Options are bordered cards in a wrapping row.
+    card_options: bool,
+    /// Footer text while nothing is chosen, in the card layout.
+    no_selection_label: SharedString,
     on_event: Option<SharedHandler<QuestionFlowEvent>>,
     style: StyleRefinement,
     decoration: Decoration,
@@ -174,6 +180,9 @@ impl QuestionFlow {
             finish_label: "Done".into(),
             question_prefix: "Question".into(),
             counter_of: "of".into(),
+            kicker: None,
+            card_options: false,
+            no_selection_label: "No selection".into(),
             on_event: None,
             style: StyleRefinement::default(),
             decoration: Decoration::default(),
@@ -213,6 +222,24 @@ impl QuestionFlow {
     /// Renames the accessible prefix for the question counter.
     pub fn question_prefix(mut self, label: impl Into<SharedString>) -> Self {
         self.question_prefix = label.into();
+        self
+    }
+
+    /// Adds a mono kicker above the title.
+    pub fn kicker(mut self, kicker: impl Into<SharedString>) -> Self {
+        self.kicker = Some(kicker.into());
+        self
+    }
+
+    /// Draws options as bordered cards in a wrapping row.
+    pub fn card_options(mut self, cards: bool) -> Self {
+        self.card_options = cards;
+        self
+    }
+
+    /// Sets the footer text shown before an option is chosen.
+    pub fn no_selection_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.no_selection_label = label.into();
         self
     }
 
@@ -257,6 +284,9 @@ impl RenderOnce for QuestionFlow {
         let handler = self.on_event;
         let card_title = self.title.clone();
         let debug_id = self.id.clone();
+        let kicker = self.kicker.clone();
+        let card_options = self.card_options;
+        let no_selection_label = self.no_selection_label.clone();
 
         let Some(question) = self.questions.into_iter().nth(shown) else {
             // A flow with nothing to ask draws nothing rather than an empty
@@ -267,8 +297,16 @@ impl RenderOnce for QuestionFlow {
         let answered = question.answer.is_some();
         let last = shown + 1 == total;
         let question_id = question.id.clone();
+        let answer_label = question.answer.as_ref().and_then(|answer| {
+            question
+                .options
+                .iter()
+                .find(|option| &option.id == answer)
+                .map(|option| option.label.clone())
+        });
         let group = ChoiceGroup::unlabelled(format!("{flow}-{question_id}"))
             .options(question.options.clone())
+            .cards(card_options)
             .selection(question.answer.clone())
             .on_event({
                 let handler = handler.clone();
@@ -327,6 +365,15 @@ impl RenderOnce for QuestionFlow {
             )
             .decoration_over(&mut decoration)
             .refine_style(&self.style)
+            .when_some(kicker, |card, kicker| {
+                card.child(
+                    div()
+                        .text_size(gpui::px(10.))
+                        .font_family(cx.theme().mono_font_family.clone())
+                        .text_color(cx.theme().muted_foreground)
+                        .child(kicker),
+                )
+            })
             .when_some(card_title, |card, text| card.child(title(text, cx)))
             .child(
                 v_flex()
@@ -343,19 +390,28 @@ impl RenderOnce for QuestionFlow {
                     .items_center()
                     .justify_between()
                     .gap(tokens.spacing.sm)
-                    .child(
-                        // The place in the sequence is a status, not a
-                        // decoration: it is the only thing that says how much
-                        // is left to answer.
+                    .child({
+                        // The card layout names the pending/selected state;
+                        // the flow layout uses the sequence counter.
+                        let status = if card_options {
+                            answer_label.unwrap_or(no_selection_label)
+                        } else {
+                            SharedString::from(counter.clone())
+                        };
+                        let aria = if card_options {
+                            status.clone()
+                        } else {
+                            SharedString::from(format!("{} {counter}", self.question_prefix))
+                        };
                         div()
                             .id(ElementId::from((root_id.clone(), "counter")))
                             .debug_selector(move || {
                                 format!("question-flow-counter-{counter_debug}")
                             })
                             .role(Role::Status)
-                            .aria_label(format!("{} {counter}", self.question_prefix))
-                            .child(meta(counter, cx)),
-                    )
+                            .aria_label(aria)
+                            .child(meta(status, cx))
+                    })
                     .child(
                         h_flex()
                             .gap(tokens.spacing.sm)

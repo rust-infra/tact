@@ -306,14 +306,10 @@ impl TranscriptReducer {
                     .unwrap_or_else(|| "fallback-run".to_string());
                 self.active_run = Some(run_id);
                 self.active_plan = None;
-                if let Some(group) = self.active_group.take() {
-                    self.update_group(group, |group| {
-                        group.status = RowStatus::Success;
-                        group.collapsed = true;
-                    });
-                    self.last_group = Some(group);
-                    delta.changed(group);
-                }
+                // One run is one execution group: a later model turn in the
+                // same run appends its tools to the group the run already
+                // owns instead of opening a second card. The group settles
+                // when the run finishes.
                 let loop_id = LoopId(self.next_loop_id);
                 self.next_loop_id += 1;
                 self.active_loop = Some(loop_id);
@@ -474,7 +470,16 @@ impl TranscriptReducer {
                 if let Some((group, row)) = self.current_tool(&tool_id).copied() {
                     self.update_tool_by_row(row, |tool| {
                         tool.status = RowStatus::Failed;
-                        tool.output = output_view(&error);
+                        // Keep the streamed output: the error is appended to
+                        // what the tool already produced, not a replacement
+                        // for it.
+                        let previous = tool.output.detail.as_deref().unwrap_or("");
+                        let combined = if previous.is_empty() {
+                            error.clone()
+                        } else {
+                            format!("{previous}\n\n{error}")
+                        };
+                        tool.output = output_view(&combined);
                         tool.expanded = true;
                     });
                     self.settle_group(group, false);
@@ -950,22 +955,24 @@ impl TranscriptReducer {
             match &message.origin {
                 MessageOrigin::User => {
                     let text = message_text(message);
-                    let row = self.push_row(
+                    let row = self.push_row_at(
                         None,
                         RowBody::User(UserRow {
                             text: Arc::from(text),
                             attachments: Arc::from([]),
                         }),
+                        None,
                     );
                     delta.changed(row);
                 }
                 MessageOrigin::InjectedContext { source } => {
-                    let row = self.push_row(
+                    let row = self.push_row_at(
                         None,
                         RowBody::HookContext(HookContextRow {
                             source: Some(Arc::from(source.clone())),
                             markdown: Arc::from(message_text(message)),
                         }),
+                        None,
                     );
                     delta.changed(row);
                 }
@@ -990,26 +997,28 @@ impl TranscriptReducer {
                         if let AgentContentBlock::Thinking { thinking, .. } = block
                             && !thinking.trim().is_empty()
                         {
-                            let row = self.push_row(
+                            let row = self.push_row_at(
                                 None,
                                 RowBody::Thinking(ThinkingRow {
                                     markdown: Arc::from(thinking.as_str()),
                                     status: RowStatus::Success,
                                     duration_ms: None,
                                 }),
+                                None,
                             );
                             delta.changed(row);
                         }
                     }
                     let text = message_text(message);
                     if !text.trim().is_empty() {
-                        let row = self.push_row(
+                        let row = self.push_row_at(
                             None,
                             RowBody::Assistant(AssistantRow {
                                 markdown: Arc::from(text),
                                 status: RowStatus::Success,
                                 suggestions: Arc::from([]),
                             }),
+                            None,
                         );
                         delta.changed(row);
                     }
@@ -1312,6 +1321,7 @@ impl TranscriptReducer {
                 id: next_row_id,
                 ordinal: next_ordinal,
                 loop_id: None,
+                time: None,
                 body,
             }));
             tool.subagent = Some(nested);
@@ -1340,6 +1350,7 @@ impl TranscriptReducer {
                     id: next_row_id,
                     ordinal: next_ordinal,
                     loop_id: None,
+                    time: None,
                     body: RowBody::Assistant(AssistantRow {
                         markdown: Arc::from(text),
                         status: RowStatus::Running,
@@ -1670,8 +1681,17 @@ impl TranscriptReducer {
     }
 
     fn push_row(&mut self, loop_id: Option<LoopId>, body: RowBody) -> RowId {
+        self.push_row_at(loop_id, body, Some(now_label()))
+    }
+
+    fn push_row_at(
+        &mut self,
+        loop_id: Option<LoopId>,
+        body: RowBody,
+        time: Option<Arc<str>>,
+    ) -> RowId {
         let id = self.alloc_id();
-        self.push_existing(id, loop_id, body);
+        self.push_existing_at(id, loop_id, body, time);
         id
     }
 
@@ -1715,12 +1735,23 @@ impl TranscriptReducer {
     }
 
     fn push_existing(&mut self, id: RowId, loop_id: Option<LoopId>, body: RowBody) {
+        self.push_existing_at(id, loop_id, body, Some(now_label()));
+    }
+
+    fn push_existing_at(
+        &mut self,
+        id: RowId,
+        loop_id: Option<LoopId>,
+        body: RowBody,
+        time: Option<Arc<str>>,
+    ) {
         let ordinal = self.ordinal;
         self.ordinal += 1;
         self.rows.push_back(Arc::new(TranscriptRow {
             id,
             ordinal,
             loop_id,
+            time,
             body,
         }));
     }
@@ -1732,6 +1763,11 @@ pub enum GateResponseError {
     Stale,
     KindMismatch,
     AlreadyAnswered,
+}
+
+/// The local `HH:MM` a live row carries into its label.
+fn now_label() -> Arc<str> {
+    Arc::from(chrono::Local::now().format("%H:%M").to_string())
 }
 
 fn message_text(message: &AgentMessage) -> String {
@@ -1953,6 +1989,23 @@ mod tests {
     }
 
     #[test]
+    fn tools_from_every_turn_in_a_run_share_one_group() {
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-1");
+        turn(&mut reducer);
+        reducer.apply_agent_update(step_started("tool-1"), &context(1));
+        turn(&mut reducer);
+        reducer.apply_agent_update(step_started("tool-2"), &context(1));
+
+        let groups = group_rows(&reducer);
+        assert_eq!(groups.len(), 1, "one run draws one execution group");
+        assert!(matches!(
+            &groups[0].body,
+            RowBody::ToolGroup(group) if group.items.len() == 2
+        ));
+    }
+
+    #[test]
     fn session_reset_keeps_row_ids_monotonic() {
         let mut reducer = TranscriptReducer::new();
         run_started(&mut reducer, "run-1");
@@ -2083,6 +2136,53 @@ mod tests {
         assert!(matches!(
             tools[0],
             ToolGroupItem::Tool(tool) if tool.output.detail.as_deref() == Some("onetwothree")
+        ));
+    }
+
+    #[test]
+    fn failed_tool_keeps_its_streamed_output() {
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-1");
+        turn(&mut reducer);
+        reducer.apply_agent_update(step_started("tool-1"), &context(1));
+        reducer.apply_agent_update(
+            AgentUpdate::ToolProgress {
+                run_id: Some("run-1".into()),
+                tool_id: "tool-1".into(),
+                chunks: vec![ToolOutputChunk::stdout("partial output")],
+            },
+            &context(1),
+        );
+        reducer.apply_agent_update(
+            AgentUpdate::StepFailed {
+                idx: 0,
+                run_id: Some("run-1".into()),
+                tool_id: "tool-1".into(),
+                arg_summary: "README.md".into(),
+                error: "exit status 1".into(),
+            },
+            &context(1),
+        );
+        let groups = group_rows(&reducer);
+        let tools: Vec<_> = match &groups[0].body {
+            RowBody::ToolGroup(group) => group
+                .items
+                .iter()
+                .filter(|item| matches!(item, ToolGroupItem::Tool(_)))
+                .collect(),
+            _ => unreachable!(),
+        };
+        assert!(matches!(
+            tools[0],
+            ToolGroupItem::Tool(tool)
+                if tool.status == RowStatus::Failed
+                    && tool.expanded
+                    && tool
+                        .output
+                        .detail
+                        .as_deref()
+                        .is_some_and(|output| output.contains("partial output")
+                            && output.contains("exit status 1"))
         ));
     }
 

@@ -47,12 +47,15 @@ writes one PNG per surface:
 | `23-narrow-window` | 900×700 layout |
 | `24-text-scale-150` | 150% text scale |
 | `25-chinese` | Chinese catalog |
-| `26a`–`26c`, `27` | Seeded transcript top, tail, tool cards, and dark |
+| `26a`–`26c`, `26e`, `27` | Seeded transcript top, tail, tool cards, Markdown prose, and dark |
 | `28`–`31` | Populated inspector tabs |
 | `32`–`33` | Populated background list and a permission gate |
+| `33b-questions` | `ask_user` single- and multi-select question cards |
 | `34`–`37` | Tall transcript: bottom, top, and middle in both appearances |
 | `38` | Populated task-dependency reader |
 | `40` | Keyboard-shortcuts help reader |
+| `41`–`43` | P2 readers: ANSI tool output, web-search results, multi-file `DiffTable` review |
+| `44` | Inline Mermaid diagram in an assistant answer |
 | `39` | Focus-visible tint after one Tab |
 
 `crates/desktop_core/src/fixtures.rs` supplies the representative transcript

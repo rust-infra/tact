@@ -237,6 +237,9 @@ pub struct ToolCall {
     open: Option<bool>,
     on_event: Option<SharedHandler<ToolCallEvent>>,
     labels: ToolCallLabels,
+    /// Whether the call is one row of a [`ToolGroup`]'s card rather than a
+    /// card of its own: a 37px header, 10px type and no status badge.
+    grouped: bool,
 }
 
 impl ToolCall {
@@ -252,7 +255,17 @@ impl ToolCall {
             open: None,
             on_event: None,
             labels: ToolCallLabels::default(),
+            grouped: false,
         }
+    }
+
+    /// Draws the call as a row inside its group's card.
+    ///
+    /// The group owns the border, background and radius; the row keeps the
+    /// disclosure, status glyph and body, at the design's 37px rhythm.
+    pub fn grouped(mut self) -> Self {
+        self.grouped = true;
+        self
     }
 
     /// Replaces the card's user-visible labels.
@@ -342,7 +355,12 @@ impl RenderOnce for ToolCall {
         // opens. It rides the disclosure sample the body already animates
         // on, so it costs no clock and snaps whenever the disclosure
         // snaps. The header's own states are drawn inside it.
-        let card_radius = tokens.radius.lg + tokens.radius.lg * (1.0 - disclosure);
+        let grouped = self.grouped;
+        let card_radius = if grouped {
+            gpui::Pixels::ZERO
+        } else {
+            tokens.radius.lg + tokens.radius.lg * (1.0 - disclosure)
+        };
         let accessibility_label = self.accessibility_label();
         let interactive = self.on_event.is_some();
         let handler = self.on_event.clone();
@@ -372,7 +390,11 @@ impl RenderOnce for ToolCall {
             .w_full()
             .min_w_0()
             .items_center()
-            .gap(tokens.spacing.sm)
+            .gap(if grouped {
+                gpui::px(9.)
+            } else {
+                tokens.spacing.sm
+            })
             .child(
                 // A fixed square slot: spinner, check, cross, and the
                 // pending dot all centre in the same box, so a lifecycle
@@ -389,8 +411,14 @@ impl RenderOnce for ToolCall {
             .child(
                 div()
                     .flex_none()
-                    .text_token(tokens.typography.sm)
-                    .font_weight(FontWeight::MEDIUM)
+                    .when(grouped, |this| {
+                        this.text_size(gpui::px(10.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                    })
+                    .when(!grouped, |this| {
+                        this.text_token(tokens.typography.sm)
+                            .font_weight(FontWeight::MEDIUM)
+                    })
                     .font_family(cx.theme().mono_font_family.clone())
                     .text_color(cx.theme().foreground)
                     .child(self.invocation.name.clone()),
@@ -401,7 +429,8 @@ impl RenderOnce for ToolCall {
                         .flex_1()
                         .min_w_0()
                         .truncate()
-                        .text_token(tokens.typography.sm)
+                        .when(grouped, |this| this.text_size(gpui::px(10.)))
+                        .when(!grouped, |this| this.text_token(tokens.typography.sm))
                         .text_color(cx.theme().muted_foreground)
                         .child(summary),
                 )
@@ -412,7 +441,7 @@ impl RenderOnce for ToolCall {
             .when_some(self.invocation.elapsed, |this, elapsed| {
                 this.child(meta(format_elapsed(elapsed), cx).flex_none())
             })
-            .child(badge)
+            .when(!grouped, |this| this.child(badge))
             .when(interactive, |this| {
                 this.child(
                     crate::surface::disclosure_chevron(disclosure)
@@ -430,8 +459,14 @@ impl RenderOnce for ToolCall {
                     .debug_selector(move || format!("tool-call-toggle-{toggle_debug_id}"))
                     .aria_expanded(open)
                     .w_full()
-                    .px(tokens.spacing.md)
-                    .py(tokens.spacing.sm)
+                    .when(grouped, |this| {
+                        this.px(gpui::px(12.))
+                            .py(gpui::Pixels::ZERO)
+                            .min_h(gpui::px(37.))
+                    })
+                    .when(!grouped, |this| {
+                        this.px(tokens.spacing.md).py(tokens.spacing.sm)
+                    })
                     .border_1()
                     .border_color(cx.theme().transparent)
                     // The header's states are drawn inside the card's own
@@ -455,8 +490,14 @@ impl RenderOnce for ToolCall {
                     .into_any_element()
             }
             None => header
-                .px(tokens.spacing.md)
-                .py(tokens.spacing.sm)
+                .when(grouped, |this| {
+                    this.px(gpui::px(12.))
+                        .py(gpui::Pixels::ZERO)
+                        .min_h(gpui::px(37.))
+                })
+                .when(!grouped, |this| {
+                    this.px(tokens.spacing.md).py(tokens.spacing.sm)
+                })
                 .into_any_element(),
         };
 
@@ -611,13 +652,15 @@ impl RenderOnce for ToolCall {
             .when_some(failure, |this, reason| this.aria_description(reason))
             .w_full()
             .min_w_0()
-            .bg(tokens.colors.surface)
-            .border_1()
-            .border_color(match approval {
-                ToolApproval::Requested => cx.theme().warning,
-                _ => cx.theme().border,
+            .when(!grouped, |this| {
+                this.bg(tokens.colors.surface)
+                    .border_1()
+                    .border_color(match approval {
+                        ToolApproval::Requested => cx.theme().warning,
+                        _ => cx.theme().border,
+                    })
+                    .rounded(card_radius)
             })
-            .rounded(card_radius)
             .overflow_hidden()
             .child(header)
             .when(showing, |this| {
@@ -679,6 +722,9 @@ pub struct ToolGroup {
     open: Option<bool>,
     children: Vec<AnyElement>,
     on_event: Option<Handler<ToolGroupEvent>>,
+    /// Whether the group uses the design's dense card: a 37px header and
+    /// 10px mono labels, with a hairline above the rows.
+    compact: bool,
 }
 
 impl ToolGroup {
@@ -693,7 +739,15 @@ impl ToolGroup {
             open: None,
             children: Vec::new(),
             on_event: None,
+            compact: false,
         }
+    }
+
+    /// Uses the design's dense grouped card: a 37px header, 10px mono labels
+    /// and a hairline between the header and its rows.
+    pub fn compact(mut self) -> Self {
+        self.compact = true;
+        self
     }
 
     /// Overrides the generated "N tool calls" title.
@@ -769,6 +823,7 @@ impl Styled for ToolGroup {
 impl RenderOnce for ToolGroup {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let tokens = cx.theme().semantic_tokens();
+        let compact = self.compact;
         let open = self.is_open();
         let title = self.resolved_title();
         let root_id = ElementId::from(self.id.clone());
@@ -783,15 +838,33 @@ impl RenderOnce for ToolGroup {
         let call_count = self.children.len();
         let mut calls = Vec::with_capacity(if showing { call_count } else { 0 });
         if showing {
-            for child in self.children {
-                calls.push(div().w_full().min_w_0().child(child));
+            for (index, child) in self.children.into_iter().enumerate() {
+                calls.push(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        // Grouped rows are siblings in one card, so the
+                        // separator belongs to the row after the first.
+                        .when(compact && index > 0, |this| {
+                            this.border_t_1().border_color(crate::surface::hairline(cx))
+                        })
+                        .child(child),
+                );
             }
         }
         let interactive = self.on_event.is_some();
         let header = h_flex()
+            // The button that owns the header centres its child; a full-width
+            // header keeps the group's identity left-aligned like the design.
+            .w_full()
             .items_center()
-            .gap(tokens.spacing.sm)
-            .text_token(tokens.typography.sm)
+            .gap(if compact {
+                gpui::px(9.)
+            } else {
+                tokens.spacing.sm
+            })
+            .when(compact, |this| this.text_size(gpui::px(10.)))
+            .when(!compact, |this| this.text_token(tokens.typography.sm))
             .text_color(cx.theme().muted_foreground)
             .when(interactive, |this| {
                 this.child(crate::surface::disclosure_chevron(disclosure))
@@ -803,17 +876,24 @@ impl RenderOnce for ToolGroup {
                 // one dominant active-work signal, never two. The title's
                 // text keeps saying "Running…" either way: semantics are
                 // carried by words, not by the highlight.
-                Shimmer::new((root_id.clone(), "title"), title.clone())
-                    .active(self.active && !open)
-                    .text_token(tokens.typography.sm),
+                {
+                    let shimmer = Shimmer::new((root_id.clone(), "title"), title.clone())
+                        .active(self.active && !open);
+                    if compact {
+                        shimmer.text_size(gpui::px(10.))
+                    } else {
+                        shimmer.text_token(tokens.typography.sm)
+                    }
+                },
             )
-            .when(self.count > 0, |this| {
+            .when(self.count > 0 && !compact, |this| {
                 this.child(
                     div()
                         .px(tokens.spacing.xs)
                         .rounded(tokens.radius.full)
                         .bg(cx.theme().muted)
-                        .text_token(tokens.typography.xs)
+                        .when(compact, |this| this.text_size(gpui::px(10.)))
+                        .when(!compact, |this| this.text_token(tokens.typography.xs))
                         .font_family(cx.theme().mono_font_family.clone())
                         .text_color(cx.theme().muted_foreground)
                         .child(self.count.to_string()),
@@ -829,8 +909,14 @@ impl RenderOnce for ToolGroup {
                 composed_button((root_id.clone(), "toggle"), title.clone())
                     .debug_selector(move || format!("tool-group-toggle-{group_debug_id}"))
                     .aria_expanded(open)
-                    .px(tokens.spacing.xs)
-                    .py(tokens.spacing.xxs)
+                    .when(compact, |this| {
+                        this.px(gpui::px(12.))
+                            .py(gpui::Pixels::ZERO)
+                            .min_h(gpui::px(37.))
+                    })
+                    .when(!compact, |this| {
+                        this.px(tokens.spacing.xs).py(tokens.spacing.xxs)
+                    })
                     .quiet_press_surface(
                         ElementId::from((root_id.clone(), "toggle")),
                         tokens.radius.md,
@@ -865,11 +951,18 @@ impl RenderOnce for ToolGroup {
                         .aria_label(title.clone())
                         .w_full()
                         .min_w_0()
-                        .gap(tokens.spacing.xs)
-                        .pl(tokens.spacing.md)
-                        .ml(tokens.spacing.xs)
-                        .border_l_1()
-                        .border_color(cx.theme().border)
+                        .when(compact, |this| {
+                            this.gap(gpui::Pixels::ZERO)
+                                .border_t_1()
+                                .border_color(crate::surface::hairline(cx))
+                        })
+                        .when(!compact, |this| {
+                            this.gap(tokens.spacing.xs)
+                                .pl(tokens.spacing.md)
+                                .ml(tokens.spacing.xs)
+                                .border_l_1()
+                                .border_color(cx.theme().border)
+                        })
                         .opacity(disclosure_opacity)
                         .top(tokens.spacing.xxs * (1.0 - disclosure) * crate::motion::travel(cx))
                         .children(calls),

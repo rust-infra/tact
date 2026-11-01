@@ -240,3 +240,131 @@ The completion label read `"{list_name}: {done}/{total} {completion_label}"`,
 which a screen reader announces as a single run-on token. It is now
 `"{list_name}, {done} of {total} {completion_label}"`, so the counts are
 spoken as words.
+
+### P11. `SidebarNav::with_compact_rows`
+
+The rail is chrome, not component content: the design draws session rows at
+12px over 10px with a 10px monospace trailing time and 10px monospace section
+labels, while the pinned two-line row renders 14px over 12px. `with_compact_rows(true)`
+switches only type and padding (5px vertical) for the rail; selection, the
+keyboard model, filtering and events are unchanged. The default stays the
+component's own rhythm for every other host.
+
+### P12. `SelectionActions::frameless`
+
+The pinned surface always drew a bordered, padded, minimum-height panel around
+selectable Markdown. The design draws an assistant answer as plain prose on the
+transcript canvas, with only the floating selection toolbar as a surface.
+`frameless()` drops the frame, background and inner padding while keeping
+selection, actions and the toolbar. The default keeps the framed panel.
+
+### P13. `PromptSubmit::Plane`
+
+The glyph submit was a round button with an arrow. The design's send control is
+a rounded square with Lucide's paper plane. `PromptSubmit::Plane` adds that
+shape; the host that opts in serves `icons/send.svg`, which the pinned
+`gpui-kit-assets` bundle does not carry. The stop control beside it now uses
+the design's 7px corner instead of a circle.
+
+### P14. `ToolCall::grouped` and `ToolGroup::compact`
+
+The design makes the tool group the card: one border, a 37px header and the
+calls as hairline-separated rows at 10px type with no status pill. The pinned
+`ToolCall` always drew its own card with a `StatusBadge`. `ToolCall::grouped()`
+removes the row's frame and badge and uses the dense header metrics;
+`ToolGroup::compact()` uses the same type scale, a left-aligned header and a
+hairline above the rows. The desktop wraps the group in the card. Defaults are
+unchanged for other hosts.
+
+### P15. The inline permission card is Tact-owned
+
+The prototype's `ApprovalCard` gate is a 38px signal column, a mono kicker, the
+prompt, an optional command block, and three actions with `↵` / `esc` hints.
+The pinned `ApprovalCard` renders a title/description/footer with exactly
+three fixed actions and no signal or command slot. The runtime can also offer
+four permission choices (allow once, deny, always for this tool, always for
+this pattern), which the three-button component cannot express. The desktop
+therefore keeps `ApprovalCard`'s semantics (one click decides) but owns the
+visual shell in `gate_element`, the same way Tact owns the nested slash overlay
+around `PromptBar`. `QuestionFlow` and `Toggle` remain the mounted components
+for `ask_user` single- and multi-select, including their Confirm rules.
+
+### P16. `ChoiceGroup::cards` and the `QuestionFlow` card header
+
+The prototype's `ask_user` cards put options side by side as bordered cards
+under a mono kicker, title and description. The pinned `ChoiceGroup` drew a
+vertical radio list, and `QuestionFlow` drew its title and question prompt in
+two places. `ChoiceGroup::cards(true)` wraps each option in a bordered card in
+a wrapping row (selection, keyboard model and events unchanged);
+`QuestionFlow::kicker`, `card_options` and `no_selection_label` add the
+decision-card header and replace the "1 of 1" counter with the pending/selected
+state. Defaults keep the previous flow layout for other hosts.
+
+### P17. `CommandSearch` row grammar and caption
+
+`CommandSearch::set_caption` wraps the items in a labelled `CommandGroup`, so
+the "RECENT COMMANDS · N OF M" heading renders between the search field and
+the rows without forking the upstream `Command`.
+
+The prototype draws a 28px rounded icon tile and a plain monospace shortcut at
+the row's trailing edge; the pinned component drew a bare glyph and a boxed
+keycap. `row_content` now wraps the icon in the tile and drops the keycap
+border/background. Search, filtering, selection and accesskit labels are
+unchanged.
+
+### P18. `SelectionActions::text_style`
+
+The transcript's answer is prose on the canvas, so Tact needs the design's
+Markdown scale (h1 21px, h2 18px, h3 16px, 9px paragraph gap, dark code
+highlighting) without forking the Markdown renderer. `text_style` forwards a
+`TextViewStyle` to the pinned `TextView`; the default keeps the component's
+own typography.
+
+### P19. Active rail row fill
+
+`SidebarNav` marked the chosen expanded row with a dot only. The design fills
+the whole row; the render now applies `sidebar_accent` to an active expanded
+row as well as the collapsed icon row. Selection, hover and keyboard behavior
+are unchanged.
+
+### P20. `Thinking` toggle alignment
+
+The Thinking toggle was a full-width button whose content centred, so a
+thought rendered in the middle of the transcript column. `.justify_start()` on
+the toggle keeps the disclosure chevron and title at the leading edge, matching
+the design's thought row. The trace, disclosure animation and reader event are
+unchanged.
+
+### P2 surfaces (no further vendor patches)
+
+The P2 components ship unmodified; the shell only chooses when to mount them.
+
+- **ANSI output.** `ui/ansi.rs` parses SGR (16/256/truecolour, bold, dim,
+  italic, underline), drops non-SGR CSI/OSC sequences, and renders monospace
+  spans. The tool reader uses it whenever the output carries an escape.
+- **Mermaid.** `ui/mermaid.rs` parses `graph`/`flowchart` blocks
+  (`TD`/`TB`/`LR`/`RL`, `A[Label]`, `A(Label)`, `A{Label}`, `A((Label))`, edge
+  labels), lays nodes out by longest-path layer, and removes the source fence
+  from the answer so the diagram is the answer's only representation.
+- **SearchResults.** `ui/web_search.rs` reads JSON (`title`/`url`/`link`),
+  Markdown links, or bare URLs; the tool reader mounts `SearchResults` for
+  search tools and opens the selected URL.
+- **ArtifactPanel.** A write/edit tool's code body opens in `ArtifactPanel`
+  with Preview/Source switching; no vendor change was needed.
+- **DiffTable.** A patch with more than one file opens a per-file table with
+  added/removed counts and accept/reject decisions. The reader owns the
+  decision epoch and rebuilds rows when a decision lands.
+- **ContextCard.** The Context inspector lists the newest hook contexts and
+  tool outputs still in the run; selecting a card opens its reader.
+- **Dock badge.** macOS sets the Dock tile label from the pending-gate count
+  through `NSDockTile`; zero clears it. Windows has no GPUI `HWND` hook, so
+  the count stays in the gate banner and notification there.
+
+### Vendor test note
+
+These host patches deliberately express the prototype's metrics as raw pixels
+(the 37px grouped tool header, the 29px gate controls, the 28px command icon
+tile). `gpui-ai`'s own `pixel_discipline` integration audit is not part of the
+desktop gate and would ask for an exception for each such metric; the vendor
+library's 307 unit tests pass. The desktop workspace gate (`scripts/check-rust.sh`)
+is the release gate for this repository.

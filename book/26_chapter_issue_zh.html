@@ -727,6 +727,7 @@
 <li class="toc-l2"><a href="#21-2026-10-31--desktop-%E9%97%B8%E9%97%A8%E4%B8%8E%E5%8F%91%E5%B8%83%E4%BA%A4%E4%BB%98%E6%94%B6%E5%8F%A3" title="21. 2026-10-31 — Desktop 闸门与发布交付收口"><span class="toc-label">21. 2026-10-31 — Desktop 闸门与发布交付收口</span></a></li>
 <li class="toc-l2"><a href="#22-2026-10-31--%E5%90%8E%E5%8F%B0%E5%AD%90%E4%BB%A3%E7%90%86%E7%9A%84%E5%83%B5%E5%B0%B8-run-%E4%B8%8E%E6%B0%B8%E4%B8%8D%E6%8E%A5%E7%BA%BF%E7%9A%84%E7%BB%93%E6%9E%9C%E9%98%9F%E5%88%97" title="22. 2026-10-31 — 后台子代理的僵尸 run 与永不接线的结果队列"><span class="toc-label">22. 2026-10-31 — 后台子代理的僵尸 run 与永不接线的结果队列</span></a></li>
 <li class="toc-l2"><a href="#23-2026-10-31--%E5%83%B5%E5%B0%B8-run-%E7%9A%84%E8%BF%90%E8%A1%8C%E6%97%B6%E8%87%AA%E6%84%88%E4%B8%8E-fd-%E4%B8%8A%E9%99%90" title="23. 2026-10-31 — 僵尸 run 的运行时自愈与 fd 上限"><span class="toc-label">23. 2026-10-31 — 僵尸 run 的运行时自愈与 fd 上限</span></a></li>
+<li class="toc-l2"><a href="#24-2026-11-01--desktop-%E8%A7%86%E8%A7%89%E5%AF%B9%E9%BD%90%E4%B8%8E%E7%BB%84%E4%BB%B6%E8%A1%A5%E4%B8%81" title="24. 2026-11-01 — Desktop 视觉对齐与组件补丁"><span class="toc-label">24. 2026-11-01 — Desktop 视觉对齐与组件补丁</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -21507,6 +21508,67 @@ tokio runtime 与 skill registry。预算中途耗尽后，libtest 把
 <code>?</code> 和更靠后的 <code>result?</code>」，没有残余泄漏点；在异步上下文里
 引入 <code>Drop</code> 只会新增一条无测试覆盖、失败也无人观察的路径。按
 「先减法」的原则不做。</p>
+<hr />
+<h2 id="24-2026-11-01--desktop-视觉对齐与组件补丁">24. 2026-11-01 —
+Desktop 视觉对齐与组件补丁</h2>
+<p><strong>现象：</strong> 自动化锚点全绿，但运行中的桌面壳与设计稿仍不一致：
+计划卡从内容列最左边开始，而助手正文缩进在头像右侧；助手回答被包在带边框的
+<code>SelectionActions</code> 面板里；工具组每行都是独立卡片并带
+<code>Completed</code> 徽标；会话栏字号比设计稿大一档（14/12 对 12/10），
+列表把扩展区挤到底部；发送按钮是圆形箭头，而不是设计稿的纸飞机。</p>
+<p><strong>改后行为：</strong> 转录行统一按设计稿的「头像列 + 12px 间距」排布，
+计划、思考、工具、diff、闸门等行从消息列开始；计划步骤改为左侧状态圆点、
+右侧序号；工具组改为一张卡片内 37px 行高、发丝线分隔的紧凑行；助手正文恢复为
+画布上的纯文本，只保留浮动选择工具条；会话栏改为 12/10 字号、等宽时间、
+列表高度上限 32% 窗口；发送改为纸飞机，停止按钮改为 7px 圆角。组件侧新增四个
+可选项（P11–P14：<code>SidebarNav</code> 紧凑行、<code>SelectionActions</code>
+无框模式、<code>PromptSubmit::Plane</code>、<code>ToolCall::grouped</code> /
+<code>ToolGroup::compact</code>），默认行为不变，补丁清单记录在
+<code>component-reproducibility-audit.md</code>。行标签显示 shell 收到该行时的
+本地时间（<code>You 10:42</code>），持久化历史没有逐消息时间，种子行留空；
+思考行的 <code>∴</code>、工具组的竖轨与闸门的警示标记由行首装饰列绘制。
+单步计划如果唯一一步就是同一 loop 里的工具调用，不再单独绘制计划卡，只保留
+承载状态、输出与展开的工具卡。</p>
+<p><strong>没有做的事：</strong> 协议级的逐消息事件时间仍缺——<code>AgentUpdate</code>
+不携带时间戳，行标签只能显示 shell 的本地到达时间，补真正的消息时间需要改协议与
+TUI。</p>
+<p><strong>复审补充：</strong> 权限闸门按设计稿保持一键决定（Allow once /
+Allow for session / Deny），<code>Review</code> 只滚动到内联卡并把焦点放到
+Allow once，不代替用户作答；<code>ask_user</code> 的单选/多选仍走
+<code>QuestionFlow</code> 的 Confirm 规则。工具失败时保留已流式输出的内容并把
+错误追加在其后；已解决的闸门改用工具组的紧凑行；Hooks 面板、标题栏会话标签、
+账户标签与运行等待原因都改走消息目录。</p>
+<p><strong>逐屏对照：</strong> 第二遍按原型预览逐屏比较后，会话管理器改为扁平
+发丝行 + 相对时间 / 消息数 / 图标操作与项目图标；命令中心改为 28px 图标块、
+等宽提示、上偏 700px 面板，并把 RECENT COMMANDS 说明作为分组标题放在搜索与
+列表之间；扩展面板改为贴住会话栏的锚定弹层，管理器补齐
+<code>Done</code> 页脚；输入条去掉内层边框，<code>@</code>/<code>/</code>、
+模型与权限改为纯文本控件，发送键恢复实心蓝；<code>ask_user</code> 卡改为
+设计稿的横向选项卡；返回底部拆成 New activity 与 Back to bottom 两个控件；
+转录标题改用 <code>clamp(24px, 2.25vw, 32px)</code>；暗色会话栏、白色检查器与
+当前步骤左侧色条对齐原型 token。</p>
+<p><strong>交互修复：</strong> 同一 run 内多个 turn 的工具合并到一张执行组卡，
+不再每轮一张；思考行去掉独立的 Open reader 链接，点击标题即打开 reader，并收紧
+行距；New activity 只在运行中且确有未读转录时显示，会话结束后不再误报；
+会话切换以 180ms 淡入落定；任何弹窗打开后，主页面快捷键被拦截，焦点落在弹窗
+控件上，不会在窗未关闭时操作 chat。</p>
+<p><strong>P2 收尾：</strong> 工具输出里的 ANSI SGR（16/256/真彩色、粗体、暗色、
+斜体、下划线）由 <code>ui/ansi.rs</code> 转成等宽色块，非 SGR 的 CSI/OSC 序列被
+丢弃而不是显示成乱码；助手回答里的 <code>```mermaid</code> 流程图由
+<code>ui/mermaid.rs</code> 解析并按最长路径分层绘制，源码围栏从正文移除；
+<code>web_search</code> 的 JSON / Markdown / 裸 URL 输出挂载
+<code>SearchResults</code>，点击结果打开链接；写入类工具产生的代码体在 reader 中
+挂载 <code>ArtifactPanel</code>，可切换 Preview / Source；一次改动多个文件的
+patch 在 reader 中挂载 <code>DiffTable</code>，按文件列出增删行并可接受/拒绝；
+上下文检查器在 token 指标下列出本轮仍保留的 hook 上下文与工具输出
+（<code>ContextCard</code>）；macOS Dock 图标显示待决定闸门数量，归零即清除。
+新增截图 <code>41-reader-ansi</code>、<code>42-reader-search</code>、
+<code>43-reader-diff-review</code>、<code>44-assistant-mermaid</code>。</p>
+<p><strong>验证：</strong> <code>cargo test -p tact-desktop</code>（127 + 10
+通过）、<code>cargo test -p tact_desktop_core</code>（113 通过）、重新生成的全套
+离屏截图、<code>scripts/check-ui.sh</code> 的锚点
+（rail 498、titlebar 114、composer 631..2428）与 Light/Dark 区域均值
+（rail 12.69 / 17.19）。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>

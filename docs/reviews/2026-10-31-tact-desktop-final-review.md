@@ -247,3 +247,56 @@ upgrades.
 - The design's summary line is now the second line of the first prompt
   (`split_run_text`), so no new `SessionView` field was needed.
 - Keep the P2 surfaces deferred until their data sources exist.
+
+### 2026-11-01 reconciliation
+
+The visual-alignment pass changed the gate review surface, so three statements
+above were superseded:
+
+- Permission gates are reviewed inline, as the prototype draws them. Review
+  scrolls to the card and focuses Allow once; the card then decides in one
+  click. `ask_user` single-select keeps `QuestionFlow` with Confirm disabled
+  until a choice.
+- `permission_review_starts_empty_and_focuses_the_first_option` and
+  `gate_close_restores_trigger_focus` no longer exist. The replacements are
+  `gate_review_focuses_the_primary_allow_option`,
+  `inline_permission_gate_answers_with_the_clicked_option` and
+  `multi_select_questions_keep_the_toggle_surface`.
+- The `root.rs:7391` Confirm guard cited above belongs to the `ask_user`
+  question flow, not the permission card.
+- Resolved gates now use the group's compact row anatomy instead of a bordered
+  summary card.
+- Tool failures append the error to the streamed output instead of replacing it
+  (`failed_tool_keeps_its_streamed_output`).
+- The Hooks sheet, title-bar session label, account label and runtime wait
+  reasons now come from the message catalog; the hard-coded-string guard lists
+  them.
+
+### 2026-11-01 second-pass verification
+
+- `scripts/check-rust.sh`: pass (fmt, clippy `-D warnings`, workspace tests,
+  book check 28 pages / 630 links / 863 anchors, 0 problems).
+- `cargo test -p tact-desktop`: 127 + 10 pass; `cargo test -p
+  tact_desktop_core`: 113 pass.
+- `scripts/check-ui.sh`: pass; anchors rail 498, titlebar 114, composer
+  630..2429 within ±1px; Light/Dark region means recorded in
+  `visual-baseline.md`.
+- Captures: 52 PNGs, including `33b-questions`, `26e-assistant-markdown` and
+  the P2 readers `41`–`44`.
+- A prototype-vs-capture audit closed Session Manager, Command Center,
+  Extensions, composer, question-card, nested-gate, rail/pill, color and
+  typography differences. The remaining deviations (persistent permission
+  banner, Windows taskbar badge) are listed in `visual-baseline.md` §4c.
+- **P2 closure (2026-11-01):** ANSI output, Mermaid diagrams, `SearchResults`,
+  `ArtifactPanel`, `DiffTable`, `ContextCard` and the macOS Dock badge are
+  implemented and guarded by `ansi::tests`, `mermaid::tests`,
+  `web_search::tests`, `diff_review::tests`,
+  `transcript_readers_mount_their_typed_surfaces` and
+  `badge_labels_clear_at_zero_and_bound_at_ninety_nine`. The P2 table in the
+  PRD records each item's evidence.
+- The vendor library's 307 unit tests pass; its `pixel_discipline` audit is not
+  part of the desktop gate and is noted in the component audit.
+- Interaction fixes after the visual pass: one execution group per run,
+  compact thinking rows that open the reader from their title, a New activity
+  cue gated on unseen running content, a 180ms session-switch fade, and modal
+  focus/shortcut isolation.

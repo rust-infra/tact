@@ -10,7 +10,7 @@ use gpui::{
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, ElementExt as _, Icon, IconName, IndexPath,
-    command::{Command, CommandItem, CommandState},
+    command::{Command, CommandGroup, CommandItem, CommandState},
     h_flex,
     label::Label,
     v_flex,
@@ -226,7 +226,17 @@ fn row_content(
         .min_w_0()
         .gap(tokens.spacing.sm)
         .when_some(item.icon.clone(), |this, icon| {
-            this.child(Icon::default().path(icon).size_4())
+            this.child(
+                gpui::div()
+                    .flex_none()
+                    .size(gpui::px(28.))
+                    .rounded(gpui::px(8.))
+                    .bg(cx.theme().muted)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(Icon::default().path(icon).size_4()),
+            )
         })
         .child(
             v_flex()
@@ -246,12 +256,6 @@ fn row_content(
             this.child(
                 div()
                     .flex_none()
-                    .px(tokens.spacing.xs)
-                    .py(tokens.spacing.xxs)
-                    .rounded(tokens.radius.sm)
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().muted.opacity(0.4))
                     .text_token(tokens.typography.xs)
                     .font_family(cx.theme().mono_font_family.clone())
                     .text_color(cx.theme().muted_foreground)
@@ -315,6 +319,10 @@ pub struct CommandSearch {
     items_revision: u64,
     applied_selection_revision: u64,
     labels: CommandSearchLabels,
+    /// A heading rendered above the list, between search and items. The
+    /// upstream `Command` has no header slot, but a labelled group places the
+    /// text exactly there.
+    caption: Option<SharedString>,
 }
 
 impl CommandSearch {
@@ -331,7 +339,17 @@ impl CommandSearch {
             items_revision: 0,
             applied_selection_revision: 0,
             labels: CommandSearchLabels::default(),
+            caption: None,
         }
+    }
+
+    /// Sets a heading above the command list.
+    pub fn set_caption(&mut self, caption: Option<SharedString>, cx: &mut Context<Self>) {
+        if self.caption == caption {
+            return;
+        }
+        self.caption = caption;
+        cx.notify();
     }
 
     /// Replaces user-visible copy for this command search.
@@ -520,8 +538,17 @@ impl Render for CommandSearch {
         let select_items = installed_items.clone();
         let confirm_items = installed_items;
         let should_restore_selection = self.applied_selection_revision != revision;
-        let command = Command::new(&self.state)
-            .items(self.upstream_items.iter().cloned())
+        let caption = self.caption.clone();
+        let mut command = Command::new(&self.state);
+        command = match caption {
+            Some(caption) => command.group(
+                CommandGroup::new()
+                    .label(caption)
+                    .items(self.upstream_items.iter().cloned()),
+            ),
+            None => command.items(self.upstream_items.iter().cloned()),
+        };
+        let command = command
             .placeholder(labels.placeholder.clone())
             .max_h(tokens.spacing.xxl * 10.)
             .empty({

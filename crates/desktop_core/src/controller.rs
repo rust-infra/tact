@@ -376,6 +376,8 @@ struct DesktopActor {
     request_id: u64,
     last_gate_reconcile: Instant,
     restore_failure: Option<FailureView>,
+    /// Commands for the voice worker task, when voice is configured.
+    voice: Option<mpsc::UnboundedSender<tact::voice::VoiceCommand>>,
 }
 
 /// The keyboard-shortcut reader shown by `/help`.
@@ -435,7 +437,33 @@ impl DesktopActor {
             request_id: 1,
             last_gate_reconcile: Instant::now(),
             restore_failure: None,
+            voice: None,
         };
+        if let Some(settings) = tact::config::try_settings()
+            .map(|settings| settings.voice)
+            .filter(|voice| voice.enabled)
+        {
+            let (commands, mut command_rx) = mpsc::unbounded_channel();
+            let worker = tact::voice::spawn_worker(settings);
+            let command_tx = worker.command_tx.clone();
+            let mut event_rx = worker.event_rx;
+            let urgent = actor.events.urgent.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        Some(command) = command_rx.recv() => {
+                            let _ = command_tx.send(command);
+                        }
+                        Some(event) = event_rx.recv() => {
+                            let _ = urgent.send(DesktopEvent::Voice(event));
+                        }
+                        else => break,
+                    }
+                }
+                let _ = command_tx.send(tact::voice::VoiceCommand::Shutdown);
+            });
+            actor.voice = Some(commands);
+        }
         actor.state.set_projects(actor.registry.records());
         actor.spawn_model_discovery();
         if let Some(root) = actor.config.initial_project.clone()
@@ -819,6 +847,11 @@ impl DesktopActor {
                     .map(|id| InitialSession::Resume(id.0.clone()))
                     .unwrap_or(InitialSession::ResumeLast);
                 self.start_session(initial).await?;
+            }
+            DesktopIntent::Voice(command) => {
+                if let Some(voice) = &self.voice {
+                    let _ = voice.send(command);
+                }
             }
             DesktopIntent::Shutdown => {}
         }

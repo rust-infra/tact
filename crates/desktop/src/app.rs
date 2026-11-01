@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, Condvar, Mutex},
 };
 
-use gpui::{App, AppContext as _, Bounds, WindowBounds, px, size};
+use gpui::{App, AppContext as _, Bounds, Menu, MenuItem, WindowBounds, px, size};
 use gpui_component::{Root, TitleBar};
 use tact_desktop_core::{DesktopConfig, DesktopController, DesktopStartError};
 
@@ -128,6 +128,11 @@ fn run_inner(smoke: bool) -> Result<(), DesktopStartError> {
         config.initial_project = std::env::current_dir().ok();
     }
     config.install_process_config()?;
+    if !config.appearance_explicit
+        && let Some(theme) = tact_desktop_core::configured_theme()
+    {
+        config.appearance = tact_desktop_core::appearance_from_theme(&theme);
+    }
     tact_desktop_core::install_exit_listener()?;
     let (controller, events) = DesktopController::start(config)?;
     let shutdown_state = Arc::new(ShutdownState::default());
@@ -135,7 +140,7 @@ fn run_inner(smoke: bool) -> Result<(), DesktopStartError> {
     let shutdown_for_quit = shutdown_state.clone();
 
     gpui_platform::application()
-        .with_assets(gpui_component_assets::Assets)
+        .with_assets(crate::assets::Assets)
         .run(move |cx: &mut App| {
             gpui_ai::init(cx);
             if let Err(error) = cx.text_system().add_fonts(vec![
@@ -150,6 +155,22 @@ fn run_inner(smoke: bool) -> Result<(), DesktopStartError> {
                 cx.reduce_motion() || crate::platform::system_reduced_motion();
             cx.set_reduce_motion(initial.motion.reduce(system_reduce_motion));
             cx.bind_keys(crate::keymap::bindings());
+            cx.set_menus([
+                Menu::new("File").items([
+                    MenuItem::action("New Session", crate::keymap::NewSession),
+                    MenuItem::action("Command Center", crate::keymap::CommandCenter),
+                    MenuItem::action("Settings", crate::keymap::OpenSettings),
+                ]),
+                Menu::new("View").items([
+                    MenuItem::action("Toggle Sessions", crate::keymap::ToggleLeft),
+                    MenuItem::action("Toggle Inspector", crate::keymap::ToggleRight),
+                    MenuItem::action("Back to Bottom", crate::keymap::BackToBottom),
+                ]),
+                Menu::new("Session").items([
+                    MenuItem::action("Send", crate::keymap::SubmitComposer),
+                    MenuItem::action("Stop", crate::keymap::CancelRun),
+                ]),
+            ]);
             let shutdown_controller = controller.clone();
             let quit_subscription = cx.on_app_quit(move |cx| {
                 let shutdown = shutdown_for_quit.clone();

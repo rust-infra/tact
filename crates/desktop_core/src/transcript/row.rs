@@ -10,6 +10,11 @@ use tact_protocol::{
 pub struct RowId(pub(crate) u64);
 
 impl RowId {
+    /// Builds a row identity for host-side fixtures and capture harnesses.
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
     /// Stable numeric identity, for host-side bookkeeping.
     pub const fn value(self) -> u64 {
         self.0
@@ -36,6 +41,11 @@ pub struct TranscriptRow {
     pub id: RowId,
     pub ordinal: u64,
     pub loop_id: Option<LoopId>,
+    /// Local `HH:MM` stamped when the row arrived, for the message labels.
+    ///
+    /// Persisted history carries no per-message time through `AgentMessage`,
+    /// so seeded rows leave this empty rather than inventing the load time.
+    pub time: Option<Arc<str>>,
     pub body: RowBody,
 }
 

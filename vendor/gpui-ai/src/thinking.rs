@@ -411,6 +411,7 @@ impl RenderOnce for Thinking {
         let toggle = match self.on_event {
             Some(handler) => composed_button(format!("{}-toggle", self.id), title.clone())
                 .aria_expanded(open)
+                .justify_start()
                 .px(tokens.spacing.xs)
                 .py(tokens.spacing.xxs)
                 .quiet_press_surface(

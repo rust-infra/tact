@@ -137,6 +137,8 @@ pub enum PromptSubmit {
     /// An arrow, square, at the control's own height — a compact composer
     /// where the affordance is the shape rather than the word.
     Glyph,
+    /// A paper plane in a rounded square, the design's send affordance.
+    Plane,
 }
 
 /// One `@`-mention suggestion.
@@ -1111,7 +1113,7 @@ impl Render for PromptBar {
                 div()
                     .debug_selector(|| "prompt-bar-editor".to_owned())
                     .w_full()
-                    .child(Textarea::new(&self.editor)),
+                    .child(Textarea::new(&self.editor).appearance(false).bordered(false)),
             )
             .when(!suggestions.is_empty(), |this| {
                 this.child(
@@ -1201,7 +1203,6 @@ impl Render for PromptBar {
                                             cx,
                                         )
                                         .debug_selector(|| "prompt-bar-model-trigger".to_owned())
-                                        .border_color(cx.theme().border)
                                         .when(self.model_menu_open, |button| {
                                             button.bg(cx.theme().accent)
                                         })
@@ -1269,33 +1270,34 @@ impl Render for PromptBar {
                             .flex_none()
                             .items_center()
                             .gap(gpui::px(6.))
-                            .when(running && matches!(self.submit, PromptSubmit::Glyph), |row| {
-                                row.child(
-                                    gpui_base::Button::new("prompt-bar-stop")
-                                        .debug_selector(|| "prompt-bar-stop-control".to_owned())
-                                        .aria_label(labels.cancel.clone())
-                                        .w(crate::sizing::control_lg(cx))
-                                        .h(crate::sizing::control_lg(cx))
-                                        .justify_center()
-                                        .rounded(cx.theme().radius_full())
-                                        .bg(cx.theme().danger.opacity(0.14))
-                                        .text_color(cx.theme().danger)
-                                        .child(
-                                            div()
-                                                .size(gpui::px(9.))
-                                                .rounded(gpui::px(1.5))
-                                                .bg(cx.theme().danger),
-                                        )
-                                        .on_click(cx.listener(
-                                            |this, _, _, cx| {
+                            .when(
+                                running && !matches!(self.submit, PromptSubmit::Label),
+                                |row| {
+                                    row.child(
+                                        gpui_base::Button::new("prompt-bar-stop")
+                                            .debug_selector(|| "prompt-bar-stop-control".to_owned())
+                                            .aria_label(labels.cancel.clone())
+                                            .w(crate::sizing::control_lg(cx))
+                                            .h(crate::sizing::control_lg(cx))
+                                            .justify_center()
+                                            .rounded(gpui::px(7.))
+                                            .bg(cx.theme().danger.opacity(0.14))
+                                            .text_color(cx.theme().danger)
+                                            .child(
+                                                div()
+                                                    .size(gpui::px(9.))
+                                                    .rounded(gpui::px(1.5))
+                                                    .bg(cx.theme().danger),
+                                            )
+                                            .on_click(cx.listener(|this, _, _, cx| {
                                                 cx.emit(PromptBarEvent::CancelRequested {
                                                     id: this.id.clone(),
                                                 });
                                                 cues::emit(cx, Cue::Cancelled);
-                                            },
-                                        )),
-                                )
-                            })
+                                            })),
+                                    )
+                                },
+                            )
                             .child(
                                 prompt_control_shell(
                                     (gpui::ElementId::from(root_id.clone()), "submit"),
@@ -1306,18 +1308,32 @@ impl Render for PromptBar {
                                 .map(|button| match self.submit {
                                     // A glyph composer says what it does with a
                                     // shape: an arrow to send.
-                                    PromptSubmit::Glyph => button
-                                        .w(crate::sizing::control_lg(cx))
-                                        .px(gpui::Pixels::ZERO)
-                                        .justify_center()
-                                        .rounded(cx.theme().radius_full())
-                                        .bg(cx.theme().primary)
-                                        .text_color(cx.theme().primary_foreground)
-                                        .child(
-                                            div()
-                                                .opacity(submit_ack)
-                                                .child(Icon::new(IconName::ArrowUp).small()),
-                                        ),
+                                    PromptSubmit::Glyph | PromptSubmit::Plane => {
+                                        let plane = matches!(self.submit, PromptSubmit::Plane);
+                                        button
+                                            .w(crate::sizing::control_lg(cx))
+                                            .px(gpui::Pixels::ZERO)
+                                            .justify_center()
+                                            .rounded(if plane {
+                                                tokens.radius.md
+                                            } else {
+                                                cx.theme().radius_full()
+                                            })
+                                            .bg(cx.theme().primary)
+                                            .text_color(cx.theme().primary_foreground)
+                                            .child(div().opacity(submit_ack).child(if plane {
+                                                // The pinned component icon
+                                                // enum and its asset bundle
+                                                // carry only the default
+                                                // subset, which has no paper
+                                                // plane; the host that opts
+                                                // into this shape serves
+                                                // `icons/send.svg`.
+                                                Icon::default().path("icons/send.svg").small()
+                                            } else {
+                                                Icon::new(IconName::ArrowUp).small()
+                                            }))
+                                    }
                                     PromptSubmit::Label => button.child(
                                         v_flex()
                                             .relative()
@@ -1333,13 +1349,13 @@ impl Render for PromptBar {
                                                     },
                                                 ),
                                             )
-                                            .child(
-                                                div().opacity(submit_ack).child(if label_cancel {
+                                            .child(div().opacity(submit_ack).child(
+                                                if label_cancel {
                                                     labels.cancel.clone()
                                                 } else {
                                                     labels.send.clone()
-                                                }),
-                                            ),
+                                                },
+                                            )),
                                     ),
                                 })
                                 .debug_selector(move || {
@@ -1349,10 +1365,15 @@ impl Render for PromptBar {
                                         "prompt-bar-send-control".to_owned()
                                     }
                                 })
-                                .disabled(
-                                    !label_cancel
-                                        && (running || draft.trim().is_empty()),
-                                )
+                                .disabled(!label_cancel && (running || draft.trim().is_empty()))
+                                .styles(|styles| {
+                                    styles.disabled(|style| {
+                                        style
+                                            .bg(cx.theme().primary)
+                                            .text_color(cx.theme().primary_foreground)
+                                            .opacity(1.0)
+                                    })
+                                })
                                 .on_click(cx.listener(
                                     move |this, _, window, cx| {
                                         if label_cancel {

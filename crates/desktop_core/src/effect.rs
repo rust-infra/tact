@@ -27,4 +27,7 @@ pub enum DesktopEvent {
     Committed(crate::StateCommit),
     Effect(DesktopEffect),
     Fatal(FailureView),
+    /// One step of the voice worker's lifecycle, forwarded off the actor's
+    /// critical path so dictation feedback never waits for a snapshot.
+    Voice(tact::voice::VoiceEvent),
 }

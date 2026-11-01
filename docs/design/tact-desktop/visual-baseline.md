@@ -98,9 +98,11 @@ whole loop (capture, prototype render, anchors, overlay).
 
 Current anchors at 1280x840: rail edge 498px (249 logical), titlebar edge
 114px (57 + 1px border = 58), composer 630..2429px (315..1214.5 logical,
-900px wide, centered). Latest 2026-10-31 region means (0-255): Light titlebar
-10.26, rail 18.53, composer 8.81, inspector 5.67; Dark 9.90, 23.12, 7.29,
-7.30.
+900px wide, centered). Latest 2026-11-01 second-pass region means (0-255):
+Light titlebar 10.09, rail 12.87, transcript 14.66, composer 6.31, inspector
+5.23; Dark 9.83, 13.47, 17.96, 4.76, 6.86. The transcript figure compares the
+empty shell with the prototype's seeded thread, so it measures content, not
+chrome.
 
 ## 3. Review protocol
 
@@ -132,6 +134,131 @@ These tests fail when the reviewed geometry regresses:
 The remaining P0/P1 gaps are tracked in the remediation plan, not hidden in a
 green test run.
 
+## 4b. Alignment pass (2026-11-01)
+
+A review of the running shell found it still diverged from the prototype even
+though every anchor passed. The differences were structural and typographic,
+not missing surfaces:
+
+- **Message column.** Plan, thinking, tool, diff, gate, notice, hook and error
+  rows now start at the message column (avatar 28px + 12px gap), so a plan
+  card lines up with the answer above it instead of running to the column
+  edge. `row_starts_at_message_column` guards the rule.
+- **Assistant prose.** An assistant answer is plain Markdown on the canvas,
+  with the selection toolbar floating on demand (`SelectionActions::frameless`,
+  P12). It had been wrapped in a bordered panel.
+- **Plan steps.** The state mark leads (check, ringed dot, empty circle), the
+  label follows, and the ordinal sits at the right edge, matching the design's
+  `22px / 1fr / auto` grid. The kicker agrees with the count (`PLAN / 1 STEP`,
+  `plan_step_label`).
+- **Tool groups.** One card with a 37px header and hairline-separated rows at
+  10px type, no per-row status pill (`ToolCall::grouped`,
+  `ToolGroup::compact`, P14).
+- **Rail scale.** Project card 11/10px, session rows 12/10px with a monospace
+  time and 5px padding (P11), 10px monospace section and extension labels, the
+  list capped at 32% of the window height (190–330px), and the quota card
+  pinned to the bottom.
+- **Composer.** The send control is the design's paper plane in a rounded
+  square and the stop control a 7px-corner square (P13); the host serves
+  `icons/send.svg` because the pinned asset bundle has no plane.
+- **Row chrome.** User and assistant marks are the design's 28px rounded
+  squares (dark stamp / bordered panel), labels are 11px ink, the run eyebrow
+  is uppercase, and the lede is 14px.
+- **Plan and tool cards.** A one-step plan whose only step is the tool it
+  describes no longer draws a plan card above that tool's card; the tool card
+  is the single surface for its status, output and disclosure.
+- **Permission card.** The inline card carries the signal inside its border
+  (not in the transcript gutter), 29px decision buttons with `↵` / `esc`
+  hints, and a 19px prompt. Review scrolls to the card and focuses Allow once
+  without answering it.
+- **Resolved gates.** A settled gate keeps the group's compact row anatomy:
+  status glyph, `approval` / `ask_user`, prompt and outcome.
+- **Command Center.** The extra title row is gone; the order is search, list,
+  caption, then labelled hints (`↑↓ move`, `↵ run`, `Esc close`), matching the
+  prototype.
+
+## 4c. Second alignment pass (2026-11-01, prototype audit)
+
+The review compared every capture with its prototype preview and closed the
+structural differences that remained after 4b:
+
+- **Session Manager.** Flat hairline session rows with a status dot,
+  `branch · session xxxx` subtitle, relative time, message count and
+  icon actions; a project pane with icon tiles, counts and `Add project`; the
+  search field and segmented Active/Archived/All filters share one row; the
+  header ends in `×`.
+- **Command Center.** Search, a top-biased 700px panel, 28px icon tiles, plain
+  mono shortcut hints, and the `RECENT COMMANDS · N OF M` caption rendered as
+  a labelled list group, so it sits between search and rows as the prototype
+  draws it.
+- **Extensions.** Rail-anchored popover at the rail edge with no scrim, tab
+  title, underline tabs, `N enabled` footer and Manage; the manager keeps a
+  centered dialog with half-width search, `Done` footer and `EXTENSIONS
+  MANAGER` kicker; the Hooks sheet's source card hugs its rows.
+- **Composer.** Flat textarea, plain `@` / `/` icons, plain model label with a
+  chevron, permission label with an orange dot and chevron, and a solid blue
+  plane submit control.
+- **Transcript.** Hero title uses `clamp(24px, 2.25vw, 32px)` (CJK 1.12 line
+  height, 840px measure); question cards use the design's kicker, title,
+  description, horizontal option cards and pending/selected footer; a settled
+  gate uses the group row anatomy.
+- **Back to bottom.** Separate `New activity` chip and `Back to bottom`
+  control with a chevron.
+- **Rail and inspector.** Active rail rows carry a fill, section labels align
+  with row text, the session list is capped at 20% of the viewport (190px
+  floor) so the DURABLE block, Extensions, quota and Settings stay visible at
+  840px,
+  the inspector is a white panel and its current-step card uses a left accent
+  bar rather than a full outline.
+- **Colors.** Dark rail uses the prototype's `#1c1c1e`; light canvas, rail and
+  inspector follow `--canvas`, `--rail` and `--panel`.
+- **Execution grouping.** Every turn in one run appends to the run's single
+  `ToolGroup`; the group settles when the run finishes. Thinking rows lost
+  their separate `Open reader` link and open the reader from their title, so a
+  thought between tools is one compact row.
+- **Back to bottom.** The `New activity` chip appears only while the run is
+  active and unseen transcript rows arrived; a finished run or a plain
+  scroll-up shows only `Back to bottom`.
+- **Session switch.** A new epoch fades the transcript in over 180ms (reduced
+  motion settles directly), so the one-frame row replacement does not flash.
+- **Modal isolation.** While an overlay is open, focus moves into it and the
+  page-level shortcuts (submit, cancel, panel toggles, inspector tabs, queue
+  navigation, new session) are ignored until it closes.
+
+### Deliberate deviations from the prototype
+
+These remain visible in a pixel comparison but are product decisions, not
+unfinished work:
+
+- The permission card and the sticky warning banner can both be visible while
+  the card is on screen; the PRD requires the banner to persist until the
+  decision.
+- Windows taskbar overlay badges are not drawn (GPUI exposes no `HWND`); the
+  gate banner and OS notification carry the pending count there.
+
+Message labels carry the shell's local arrival time (`You 10:42`); persisted
+history has no per-message time, so seeded rows leave it out. The decorative
+gutter is drawn as well: the thinking row's `∴`, the tool group's vertical rail
+and the pending gate's alert mark. Protocol-level message timestamps remain out
+of scope because `AgentUpdate` does not carry them.
+
+## 4d. P2 surfaces (2026-11-01)
+
+The polish surfaces have no prototype screens of their own; they reuse the
+reader and inspector grammar the prototype already defines. Captures `41`–`44`
+record them:
+
+- **ANSI tool output** — SGR colours and attributes on the 11.5px Lilex scale,
+  with a dark terminal panel in both appearances.
+- **Web-search results** — `SearchResults` with the query header, title, and
+  source domain; selecting a hit opens it.
+- **Multi-file review** — `DiffTable` with File / + / − columns, a Decision
+  column, and a 260px body.
+- **Mermaid** — layered node boxes with ↓/→ separators under a `MERMAID`
+  kicker; the source fence no longer appears in the answer.
+- **Retained evidence** — `ContextCard` rows under the Context inspector's
+  token metrics (capture `31`).
+
 ## 5. Known gaps at baseline (2026-10-31)
 
 | Surface | Gap | Status |
@@ -147,8 +274,8 @@ green test run.
 | Extensions | Empty tabs render nothing; `Refresh MCP` is a bare link | Fixed: MCP shows `No MCP servers yet` above Refresh |
 | Transcript | Hook context rendered as bare markdown; tool groups and diff were outside the capture window | Fixed: hook context card; captures now cover tool cards (`26c`) and the transcript tail |
 | Inspector | Run tab was a flat key/value list with no current step or signal rows | Fixed: Run map header, gauge, Current step, Thread signals, Latest activity |
-| Gate | Centered review modal with full-width buttons instead of the inline card | Deferred: the review surface is the documented keyboard flow (README "Pending permission"); the inline card remains the transcript summary |
-| Account avatar | Title bar has no account avatar | Deferred: `AccountView` carries plan/quota but no user identity to derive initials from |
+| Gate | Centered review modal with full-width buttons instead of the inline card | Fixed: inline amber card with the signal inside it, one-click Allow once / Allow for session / Deny with keyboard hints; Review scrolls to it and focuses Allow once |
+| Account avatar | Title bar has no account avatar | Fixed: local account initials in the title-bar stamp; plan/quota still come from `AccountView` |
 | Command Center icons | Rows have no leading icon | Fixed: group icons via the `CommandSearchItem::icon` patch |
 | Session Manager | Layout was a single narrow column | Fixed: 1040x720 dialog with a 232px project pane, header and list |
 | Overlays | Palette was 640px; manager 760px | Fixed: palette 700px, manager 1040x720 |

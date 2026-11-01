@@ -27,6 +27,33 @@ pub fn supported_platform() -> bool {
     TARGET.is_some()
 }
 
+/// The dock/taskbar badge for `count` pending decisions.
+///
+/// Zero clears the badge; anything above 99 reads `99+`, the same bound
+/// macOS applies. `None` means "no badge".
+pub fn badge_label(count: usize) -> Option<String> {
+    match count {
+        0 => None,
+        1..=99 => Some(count.to_string()),
+        _ => Some("99+".to_string()),
+    }
+}
+
+/// Shows the pending-decision count on the app's dock icon (macOS) or
+/// taskbar button (Windows). Other platforms have no supported badge API and
+/// keep the count in the in-app gate banner only.
+pub fn set_dock_badge(count: usize) {
+    if cfg!(test) {
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    macos::set_dock_badge(badge_label(count));
+    #[cfg(target_os = "windows")]
+    windows::set_taskbar_badge(badge_label(count));
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let _ = badge_label(count);
+}
+
 pub fn app_data_is_clean(path: &std::path::Path) -> bool {
     !path.join("desktop-settings.json").exists() && !path.join("projects.json").exists()
 }
@@ -171,6 +198,14 @@ mod tests {
         std::fs::create_dir_all(&path).unwrap();
         assert!(app_data_is_clean(&path));
         let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn badge_labels_clear_at_zero_and_bound_at_ninety_nine() {
+        assert_eq!(badge_label(0), None);
+        assert_eq!(badge_label(1).as_deref(), Some("1"));
+        assert_eq!(badge_label(99).as_deref(), Some("99"));
+        assert_eq!(badge_label(100).as_deref(), Some("99+"));
     }
 
     #[test]

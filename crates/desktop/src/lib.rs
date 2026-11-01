@@ -1,6 +1,7 @@
 //! Native Tact Desktop shell.
 
 mod app;
+mod assets;
 // GPUI's deterministic off-screen compositor currently exists only on macOS.
 // Linux and Windows verification uses the real packaged window, as documented
 // in `docs/design/tact-desktop/visual-verification.md`.

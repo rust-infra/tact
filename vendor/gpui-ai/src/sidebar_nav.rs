@@ -332,6 +332,9 @@ pub struct SidebarNav {
     /// Hosts with their own rail chrome turn this off and dock the row tree
     /// below their header.
     chrome_visible: bool,
+    /// Whether rows use the design's dense two-line rhythm (12px label,
+    /// 10px detail and trailing time) instead of the component default.
+    compact_rows: bool,
     expanded: HashSet<SharedString>,
     /// Flattened visible rows, recomputed only where state changes.
     rows: Arc<[VisibleRow]>,
@@ -382,6 +385,7 @@ impl SidebarNav {
             resolved_layout: ResolvedLayoutKey::default(),
             constructed_rows: Rc::new(Cell::new(0)),
             presentation: SidebarNavPresentation::default(),
+            compact_rows: false,
             _input_subscription: subscription,
         }
     }
@@ -401,6 +405,17 @@ impl SidebarNav {
     /// ```
     pub fn with_presentation(mut self, presentation: SidebarNavPresentation) -> Self {
         self.presentation = presentation;
+        self
+    }
+
+    /// Uses the dense two-line row rhythm the desktop rail is drawn at.
+    ///
+    /// The default row is 14px label over 12px detail; the design's rail is
+    /// 12px over 10px with a 10px monospace trailing time and 10px
+    /// monospace section labels. Selection, keyboard model and events are
+    /// unchanged — only type and padding differ.
+    pub fn with_compact_rows(mut self, compact: bool) -> Self {
+        self.compact_rows = compact;
         self
     }
 
@@ -703,6 +718,7 @@ impl SidebarNav {
         let row_owner = cx.weak_entity();
         let key_owner = cx.weak_entity();
         let collapsed = self.collapsed;
+        let compact_rows = self.compact_rows;
         let input = self.input.clone();
         let id = self.id.clone();
         let rows = self.rows.clone();
@@ -837,6 +853,7 @@ impl SidebarNav {
                                         &render::RowContext {
                                             component_id: &row_component_id,
                                             collapsed,
+                                            compact: compact_rows,
                                             focused: tree_focused
                                                 && roving_row.as_ref() == Some(&row.id),
                                             owner: &row_owner,

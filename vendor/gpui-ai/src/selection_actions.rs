@@ -17,7 +17,7 @@ use gpui_base::{Align, Placement, Positioner};
 use gpui_component::{
     ActiveTheme as _,
     scroll::ScrollableMask,
-    text::{TextView, TextViewState},
+    text::{TextView, TextViewState, TextViewStyle},
 };
 
 /// One application-owned action offered for the current text selection.
@@ -283,6 +283,12 @@ pub struct SelectionActions {
     style: gpui::StyleRefinement,
     id: SharedString,
     markdown: SharedString,
+    /// Whether the surface draws its own bordered panel. A transcript that
+    /// renders the message as plain prose turns this off and keeps the
+    /// selection toolbar.
+    framed: bool,
+    /// Component-level Markdown typography (heading scale, paragraph gap).
+    text_style: Option<TextViewStyle>,
     text: Entity<TextViewState>,
     actions: Vec<SelectionAction>,
     selected_text: SharedString,
@@ -338,6 +344,8 @@ impl SelectionActions {
             style: gpui::StyleRefinement::default(),
             id: id.into(),
             markdown,
+            framed: true,
+            text_style: None,
             text,
             actions: Vec::new(),
             selected_text: SharedString::default(),
@@ -354,6 +362,22 @@ impl SelectionActions {
             toolbar_generation: 0,
             _subscriptions: vec![observation],
         }
+    }
+
+    /// Uses the caller's Markdown typography.
+    pub fn text_style(mut self, style: TextViewStyle) -> Self {
+        self.text_style = Some(style);
+        self
+    }
+
+    /// Renders the Markdown as plain prose instead of a bordered panel.
+    ///
+    /// Selection, actions and the floating toolbar stay intact; only the
+    /// frame, its background and its inner padding are dropped, so a message
+    /// sits on the transcript canvas the way the design draws it.
+    pub fn frameless(mut self) -> Self {
+        self.framed = false;
+        self
     }
 
     /// Replaces the Markdown and clears any stale selection and toolbar.
@@ -605,7 +629,13 @@ impl Render for SelectionActions {
                     entity.update(cx, |this, cx| this.settle_selection(None, cx));
                 });
             }))
-            .child(TextView::new(&self.text).selectable(true));
+            .child({
+                let text = TextView::new(&self.text).selectable(true);
+                match self.text_style.clone() {
+                    Some(style) => text.style(style),
+                    None => text,
+                }
+            });
 
         div()
             .id(ElementId::from(root_id))
@@ -614,11 +644,13 @@ impl Render for SelectionActions {
             .aria_label("Selectable content with actions")
             .relative()
             .w_full()
-            .min_h(tokens.spacing.xxl * 3.)
-            .border_1()
-            .border_color(tokens.colors.border)
-            .rounded(tokens.radius.lg)
-            .bg(tokens.colors.background)
+            .when(self.framed, |this| {
+                this.min_h(tokens.spacing.xxl * 3.)
+                    .border_1()
+                    .border_color(tokens.colors.border)
+                    .rounded(tokens.radius.lg)
+                    .bg(tokens.colors.background)
+            })
             .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
                 if event.button == MouseButton::Left {
                     this.clear_selection(cx);
@@ -649,7 +681,11 @@ impl Render for SelectionActions {
                     .w_full()
                     .overflow_y_scroll()
                     .track_scroll(&self.content_scroll)
-                    .p(tokens.spacing.md)
+                    .p(if self.framed {
+                        tokens.spacing.md
+                    } else {
+                        gpui::Pixels::ZERO
+                    })
                     .child(text_surface),
             )
             .child(

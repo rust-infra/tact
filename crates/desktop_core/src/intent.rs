@@ -87,6 +87,8 @@ pub enum DesktopIntent {
     },
     RetryProvider,
     RestartSession,
+    /// Starts, stops, or cancels the voice worker.
+    Voice(tact::voice::VoiceCommand),
     Shutdown,
 }
 

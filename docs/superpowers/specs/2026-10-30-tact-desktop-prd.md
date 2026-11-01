@@ -241,9 +241,10 @@ Two alternatives were evaluated:
   them above the transcript.
 - Pending permission is surfaced as a persistent sticky warning banner, not a
   transcript-header chip. Review expands the approval tool, scrolls it into view
-  and focuses the primary allow option without selecting it; Confirm stays
-  disabled until the user explicitly chooses. The banner clears after the
-  decision.
+  and focuses the primary allow option without selecting it; the approval card
+  decides in one click (Allow once / Allow for session / Deny), as the prototype
+  draws it. `ask_user` single-select uses `QuestionFlow` with Confirm disabled
+  until an option is picked. The banner clears after the decision.
 - MCP list/auth/prompts, Hook list/trust/forget, Plugin and Skill management.
 - The rail MCP, Skills and Plugins entries open a shared Extensions popover with
   MCP / Skills / Plugins tabs, live status and row actions. The roomy popover
@@ -264,17 +265,21 @@ Two alternatives were evaluated:
 
 ### P2: Desktop Polish
 
-- Mermaid diagrams and the Task DAG graph view (the `/tasks-dag` command entry
-  and dependency-list fallback are P1; the graph renderer is P2).
-- ANSI-to-GPUI text rendering for terminal output.
-- Web-search result reader using `SearchResults`.
-- Artifact preview/source panel using `ArtifactPanel`.
-- Multi-file review using `DiffTable`.
-- Retained-evidence cards using `ContextCard`.
-- Native menus and global shortcuts.
-- OS notifications and dock/taskbar badges.
-- Voice recording and transcription controls.
-- Theme migration for existing Tact themes.
+All items below are implemented; the evidence column names the test or capture
+that guards each one.
+
+| Item | Status | Evidence |
+|---|---|---|
+| Mermaid diagrams (the `/tasks-dag` dependency list stays the P1 graph fallback) | Implemented: `ui/mermaid.rs` parses `graph`/`flowchart` blocks and renders layered nodes; the raw fence is removed from the answer | `mermaid::tests`; capture `44-assistant-mermaid` |
+| ANSI-to-GPUI text rendering for terminal output | Implemented: `ui/ansi.rs` maps SGR colours/attributes to monospace spans and drops non-SGR sequences; the tool reader paints it | `ansi::tests`; capture `41-reader-ansi` |
+| Web-search result reader using `SearchResults` | Implemented: `ui/web_search.rs` reads JSON, Markdown links and bare URLs; the tool reader mounts the component and opens a hit's URL | `web_search::tests`; capture `42-reader-search` |
+| Artifact preview/source panel using `ArtifactPanel` | Implemented: a write/edit tool's code body opens in the panel with Preview/Source switching | `transcript_readers_mount_their_typed_surfaces` |
+| Multi-file review using `DiffTable` | Implemented: a patch touching several files opens a per-file table with line counts and accept/reject decisions | `diff_review::tests`; capture `43-reader-diff-review` |
+| Retained-evidence cards using `ContextCard` | Implemented: the Context inspector lists the newest hook contexts and tool outputs still in the run | capture `31-inspector-context-populated` |
+| Native menus and global shortcuts | Implemented: `cx.set_menus` File/View/Session menus; keymap matches the PRD interaction table | `keymap_matches_prd_interaction_table` |
+| OS notifications and dock/taskbar badges | Implemented: system notifications from `DesktopEffect::Notify`; the macOS Dock tile shows the pending-decision count and clears at zero (Windows has no GPUI HWND hook, documented) | `badge_labels_clear_at_zero_and_bound_at_ninety_nine` |
+| Voice recording and transcription controls | Implemented: `tact::voice` worker, composer microphone, status row and transcript insertion | `voice_transcript_lands_in_the_composer`; capture `26b` |
+| Theme migration for existing Tact themes | Implemented: an existing Tact theme name maps to Light/Dark on first launch | `existing_tact_themes_migrate_to_the_desktop_appearance` |
 
 ### Entry Parity Contract
 
@@ -292,8 +297,9 @@ entry and reports its output in a result surface).
   mode, notifications, context window, theme, project snapshot size,
   micro-compaction, tokio diagnostics, and skill-body injection.
 - Composer P1 entries include `@file`, image attachments, queued messages,
-  stop, compact, and session actions. Voice input remains a P2 capability and
-  is not mounted as a dead microphone in the P1 composer.
+  stop, compact, and session actions. Voice input is implemented end to end
+  (recording, transcription, transcript insertion) and the microphone only
+  appears when the voice provider is configured.
 - The Command Center is the canonical discovery surface. Every entry has a
   stable ID, group, title, description, shortcut/CLI alias, availability state,
   and an executable action.
@@ -322,12 +328,16 @@ entry and reports its output in a result surface).
 | Context usage | `ContextMeter` | Direct |
 | Task and plugin tables | `TaskRow`, `TodoList`, `FilterTable` | Compose |
 | Stats / balance summaries | `InsightCard` | Compose |
-| Voice controls | `VoiceControls` | P2 deferred until recording plus transcription state exists |
+| Voice controls | `VoiceControls` | Mounted when the voice worker is configured; hidden when no credential exists |
 | Goal panel | none | Build locally |
 | Subagent transcript | none | Build locally |
 | Mixed transcript | `Chat` is insufficient | Build a virtualized row list |
-| Mermaid / Task DAG | none | Build or defer |
-| ANSI output | none | Build or strip in v1 |
+| Mermaid / Task DAG | none | Built: `ui/mermaid.rs` layered flowchart adapter; Task DAG keeps the dependency list |
+| ANSI output | none | Built: `ui/ansi.rs` SGR spans in the tool reader |
+| Web search | `SearchResults` | Direct: tool reader for `web_search` output |
+| Artifact preview | `ArtifactPanel` | Direct: write/edit tool body reader |
+| Multi-file review | `DiffTable` | Direct: diff reader when a patch touches several files |
+| Retained evidence | `ContextCard` | Direct: Context inspector |
 
 ### Component Contract
 

@@ -50,8 +50,8 @@ the actual mapping.
 - Typing `@` opens the workspace mention popup with files and images.
 - The composer model and permission controls open native-style selection menus.
 - Composer attachments render as removable `AttachmentStrip` chips; the queue
-  exposes send-now, remove and clear actions. Voice input is P2 and is not part
-  of the P1 desktop composer.
+  exposes send-now, remove and clear actions. The microphone appears only when
+  the voice provider is configured and inserts the transcript on stop.
 - Consecutive tools from one loop render as one compact ToolGroup; expand the
   group for the tool list, then expand one row for terminal output or diff.
 - ToolGroup membership is by agent-loop iteration, not tool kind: commands,
