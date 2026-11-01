@@ -732,6 +732,7 @@
 <li class="toc-l2"><a href="#26-2026-11-01--%E5%B7%A5%E5%85%B7%E7%BB%84%E6%A0%87%E9%A2%98%E4%B8%8E%E5%90%8E%E5%8F%B0%E8%BF%90%E8%A1%8C%E4%BC%9A%E8%AF%9D" title="26. 2026-11-01 — 工具组标题与后台运行会话"><span class="toc-label">26. 2026-11-01 — 工具组标题与后台运行会话</span></a></li>
 <li class="toc-l2"><a href="#27-2026-11-01--%E6%8E%92%E9%98%9F%E4%B8%AD%E7%9A%84%E5%B7%A5%E5%85%B7%E5%8D%A1%E4%B8%8E%E5%AD%90%E4%BB%A3%E7%90%86%E5%8D%A1%E7%89%87%E7%9A%84%E5%8F%8C%E5%87%BB%E9%80%89%E6%8B%A9" title="27. 2026-11-01 — 排队中的工具卡 与子代理卡片的双击选择"><span class="toc-label">27. 2026-11-01 — 排队中的工具卡 与子代理卡片的双击选择</span></a></li>
 <li class="toc-l2"><a href="#28-2026-11-01--windows-%E8%B7%AF%E5%BE%84%E4%B8%8E%E4%BC%9A%E8%AF%9D%E5%BA%93%E7%9A%84-sqlite-url" title="28. 2026-11-01 — Windows 路径与会话库的 sqlite URL"><span class="toc-label">28. 2026-11-01 — Windows 路径与会话库的 sqlite URL</span></a></li>
+<li class="toc-l2"><a href="#29-2026-11-01--%E5%8F%96%E6%B6%88%E8%BF%90%E8%A1%8C%E5%90%8E%E9%98%9F%E5%88%97%E4%B8%8D%E5%86%8D%E6%8A%A2%E8%B7%91" title="29. 2026-11-01 — 取消运行后队列不再抢跑"><span class="toc-label">29. 2026-11-01 — 取消运行后队列不再抢跑</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -21710,6 +21711,21 @@ URL 解析；打开池与探测 journal mode 两处共用同一个 <code>connect
 <code>cpal</code>/<code>alsa-sys</code>。</p>
 <p><strong>Pointers：</strong> <code>crates/tact/src/store/sqlite.rs</code>、
 <code>.github/workflows/rust.yml</code>。</p>
+<hr />
+<h2 id="29-2026-11-01--取消运行后队列不再抢跑">29. 2026-11-01 — 取消运行后队列不再抢跑</h2>
+<p><strong>现象：</strong> Windows CI 上
+<code>manual_submit_after_cancel_keeps_the_queue_paused</code> 偶尔失败，提交序列里多出
+<code>queued after cancel</code>；同一时序下，真实用户取消后，排队的提示也可能自己发出去。</p>
+<p><strong>根因：</strong> 运行时先发 <code>RunFinished</code>，随后才发
+<code>TaskCancelled</code>（内核在取消时先结束 run，driver 再补发取消）。控制器只在看到
+<code>TaskCancelled</code> 时置位 <code>queue_paused</code>；两次事件若落在不同的
+drain，<code>RunFinished</code> 触发的那次 <code>flush_queue</code> 已经把队列送出去了。</p>
+<p><strong>决策：</strong> 在用户发出 <code>CancelRun</code> 的意图时就暂停队列，而不是等运行时的取消事件；
+<code>TaskCancelled</code> 的置位保留，覆盖其它来源的取消。测试改为显式派发
+<code>CancelRun</code>，并在两次事件之间 <code>when_idle</code>，把竞态变成每次都复现。</p>
+<p><strong>Pointers：</strong> <code>crates/desktop_core/src/controller.rs</code>
+（<code>DesktopIntent::CancelRun</code>、
+<code>manual_submit_after_cancel_keeps_the_queue_paused</code>）。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>

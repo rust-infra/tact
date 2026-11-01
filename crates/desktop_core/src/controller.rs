@@ -775,6 +775,11 @@ impl DesktopActor {
                 }
                 self.send_command(UserCommand::Cancel)?;
                 self.state.runtime.current_phase = RunPhase::Cancelling;
+                // Pause here, not on the `TaskCancelled` update: the runtime
+                // reports the run finished before it reports the cancellation,
+                // and a drain that lands between the two would otherwise flush
+                // the queue the user just stopped.
+                self.state.runtime.queue_paused = true;
                 self.publish(false);
             }
             DesktopIntent::RespondGate {
@@ -3720,9 +3725,16 @@ mod tests {
         factory.emit(HostEvent::agent(AgentUpdate::RunStarted {
             run_id: "run-1".into(),
         }));
+        controller.when_idle().await.unwrap();
+        controller.dispatch(DesktopIntent::CancelRun).unwrap();
+        controller.when_idle().await.unwrap();
+        // The runtime reports the run finished before it reports the
+        // cancellation. Drain the first update on its own so the race is
+        // deterministic here instead of depending on CI scheduling.
         factory.emit(HostEvent::agent(AgentUpdate::RunFinished {
             run_id: "run-1".into(),
         }));
+        controller.when_idle().await.unwrap();
         factory.emit(HostEvent::agent(AgentUpdate::TaskCancelled));
         controller.when_idle().await.unwrap();
         assert!(controller.snapshot().runtime.queue_paused);
