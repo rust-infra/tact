@@ -16,7 +16,8 @@ Stable facade and vocabulary:
 
 - `ProviderBuilder`, `Provider`, `BuildError`, `TransportSetupStage`
 - `ProviderMetadata`, `WireProtocol`, `Endpoint`, `EndpointError`
-- `ModelLimits`, `LimitError`, `SessionId`, `SessionIdError`
+- `ModelLimits`, `LimitError`, `DEFAULT_MAX_OUTPUT_TOKENS`, `SessionId`,
+  `SessionIdError`
 - `Credential`, `CredentialSource`, `Authentication`, `CredentialError`
 - `ProviderKind`, `ChatDialect`, `ChatCompletionsDialect`
 - `tact_agent_api` model contract re-exports
