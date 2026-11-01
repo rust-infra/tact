@@ -545,8 +545,17 @@ impl TranscriptReducer {
                             });
                         }
                         tool.meta.context_window = context_window;
-                        tool.meta.task_id = task_id.map(Arc::from);
-                        tool.meta.subagent_id = subagent_id.map(Arc::from);
+                        // A partial metadata update (token usage, model, …)
+                        // must not erase an identity that the tool already
+                        // published. The spawn tool stamps the child id
+                        // before the child exists, and later child updates
+                        // arrive without it.
+                        if let Some(task_id) = task_id {
+                            tool.meta.task_id = Some(Arc::from(task_id));
+                        }
+                        if let Some(subagent_id) = subagent_id {
+                            tool.meta.subagent_id = Some(Arc::from(subagent_id));
+                        }
                     });
                     delta.changed(group);
                 }
@@ -2281,6 +2290,46 @@ mod tests {
         assert!(matches!(
             &group.body,
             RowBody::ToolGroup(row) if row.items.len() == 2
+        ));
+    }
+
+    #[test]
+    fn subagent_identity_survives_partial_tool_meta_updates() {
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-1");
+        turn(&mut reducer);
+        reducer.apply_agent_update(step_started("tool-1"), &context(1));
+        reducer.apply_agent_update(
+            AgentUpdate::ToolMeta {
+                tool_id: "tool-1".into(),
+                model: None,
+                token_usage: None,
+                context_window: None,
+                task_id: None,
+                subagent_id: Some("child-1".into()),
+            },
+            &context(1),
+        );
+        // Child token/model updates carry no child id; they must not erase it.
+        reducer.apply_agent_update(
+            AgentUpdate::ToolMeta {
+                tool_id: "tool-1".into(),
+                model: Some("mock".into()),
+                token_usage: None,
+                context_window: None,
+                task_id: None,
+                subagent_id: None,
+            },
+            &context(1),
+        );
+        let group = &group_rows(&reducer)[0];
+        let RowBody::ToolGroup(row) = &group.body else {
+            panic!("expected a tool group");
+        };
+        assert!(matches!(
+            &row.items[0],
+            ToolGroupItem::Tool(tool)
+                if tool.meta.subagent_id.as_deref() == Some("child-1")
         ));
     }
 

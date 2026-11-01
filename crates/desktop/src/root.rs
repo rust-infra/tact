@@ -11722,6 +11722,59 @@ fn gate_prompt_command(prompt: &str) -> Option<SharedString> {
     (!rest[..end].trim().is_empty()).then(|| SharedString::from(rest[..end].trim()))
 }
 
+/// The tool that raised a gate, when the gate carries a tool identity.
+fn gate_tool_name<'a>(snapshot: &'a DesktopSnapshot, gate: &GateCard) -> Option<&'a str> {
+    let tool_id = match &gate.origin {
+        tact_desktop_core::GateOrigin::Tool { tool_id } => tool_id.as_ref(),
+        tact_desktop_core::GateOrigin::Subagent {
+            tool_id: Some(tool_id),
+            ..
+        } => tool_id.as_ref(),
+        _ => return None,
+    };
+    let mut found = None;
+    for row in snapshot.transcript.iter() {
+        let RowBody::ToolGroup(group) = &row.body else {
+            continue;
+        };
+        for item in group.items.iter() {
+            if let ToolGroupItem::Tool(tool) = item
+                && tool.tool_id.as_ref() == tool_id
+            {
+                found = Some(tool.name.as_ref());
+            }
+        }
+    }
+    found
+}
+
+/// Help text under a gate title. A command, a question, and a subagent are
+/// different promises; the command wording must not leak onto the others.
+fn gate_description(
+    locale: tact_catalog::CatalogLocale,
+    tool_name: Option<&str>,
+) -> Option<&'static str> {
+    match tool_name {
+        Some("bash") => Some(match locale {
+            tact_catalog::CatalogLocale::En => {
+                "This command runs in the current worktree and may write files."
+            }
+            tact_catalog::CatalogLocale::Zh => "该命令会在当前工作树中运行，并可能写入文件。",
+        }),
+        Some("ask_user") => Some(match locale {
+            tact_catalog::CatalogLocale::En => {
+                "This asks you a question and waits for your answer."
+            }
+            tact_catalog::CatalogLocale::Zh => "这会向你提问，并等待你的回答。",
+        }),
+        Some("spawn_subagent") => Some(match locale {
+            tact_catalog::CatalogLocale::En => "This runs a subagent in its own session.",
+            tact_catalog::CatalogLocale::Zh => "这会在独立会话中运行一个子代理。",
+        }),
+        _ => None,
+    }
+}
+
 fn tool_group_item_element(
     item: &ToolGroupItem,
     group_id: RowId,
@@ -12240,12 +12293,7 @@ fn gate_element(
         let prompt_command = preview
             .clone()
             .or_else(|| gate_prompt_command(&gate.prompt));
-        let command_description = prompt_command.as_ref().map(|_| match locale {
-            tact_catalog::CatalogLocale::En => {
-                "This command runs in the current worktree and may write files."
-            }
-            tact_catalog::CatalogLocale::Zh => "该命令会在当前工作树中运行，并可能写入文件。",
-        });
+        let command_description = gate_description(locale, gate_tool_name(snapshot, gate));
         let signal = div()
             .flex_none()
             .size(px(34.))
@@ -15071,6 +15119,29 @@ mod tests {
         );
         assert_eq!(gate_prompt_command("Allow this action?"), None);
         assert_eq!(gate_prompt_command("Run `  `?"), None);
+    }
+
+    #[test]
+    fn gate_help_matches_the_tool_kind() {
+        use tact_desktop_core::CatalogLocale::{En, Zh};
+        assert!(
+            gate_description(En, Some("bash"))
+                .unwrap()
+                .contains("command")
+        );
+        assert!(
+            gate_description(En, Some("ask_user"))
+                .unwrap()
+                .contains("question")
+        );
+        assert!(
+            gate_description(En, Some("spawn_subagent"))
+                .unwrap()
+                .contains("subagent")
+        );
+        assert_eq!(gate_description(En, Some("read_file")), None);
+        assert_eq!(gate_description(En, None), None);
+        assert!(gate_description(Zh, Some("ask_user")).is_some());
     }
 
     #[test]
