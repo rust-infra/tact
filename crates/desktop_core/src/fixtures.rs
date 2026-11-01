@@ -120,6 +120,17 @@ pub fn demo_reader_transcript() -> TranscriptView {
                         "2 results",
                         search,
                     )),
+                    ToolGroupItem::Tool(tool(
+                        5,
+                        "write",
+                        "src/main.rs",
+                        RowStatus::Success,
+                        ToolBody::Code {
+                            language: Some(Arc::from("rust")),
+                            text: Arc::from("fn main() {\n    println!(\"hi\");\n}\n"),
+                        },
+                        "wrote src/main.rs",
+                    )),
                 ]),
                 summary: Arc::from("shell · web_search"),
                 status: RowStatus::Success,

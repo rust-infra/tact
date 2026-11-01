@@ -13499,6 +13499,33 @@ mod tests {
             window.debug_bounds("reader-diff-table").is_some(),
             "a multi-file patch must mount DiffTable"
         );
+        // `scoped_diff_id` prefixes the table-id length (11 for "reader-diff").
+        let accept = window
+            .debug_bounds("diff-table-accept-11:reader-difffile-0")
+            .expect("accept action for the first file");
+        window.simulate_click(accept.center(), gpui::Modifiers::default());
+        window.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        window.update(|_, cx| {
+            let decision = root.read(cx).overlay.as_ref().and_then(|overlay| {
+                let Overlay::Reader(reader) = overlay else {
+                    return None;
+                };
+                reader.decisions.first().copied()
+            });
+            assert_eq!(decision, Some(DiffProposalState::Accepted));
+        });
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.open_transcript_reader_for_test(ReaderRef::ToolOutput(RowId::new(5)), cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+        assert!(
+            window.debug_bounds("reader-artifact-panel").is_some(),
+            "a written file must mount ArtifactPanel"
+        );
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
     }
