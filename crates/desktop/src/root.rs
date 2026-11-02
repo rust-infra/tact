@@ -646,6 +646,7 @@ pub(crate) struct DesktopRoot {
     pending_voice_text: Option<String>,
     history_cursor: Option<usize>,
     session_project_filter: Option<ProjectId>,
+    reset_session_search_on_open: bool,
     toast: Option<Toast>,
     focus_restore: crate::ui::shell::FocusRestoration<gpui::FocusHandle>,
     last_surface_revision: Option<String>,
@@ -1005,6 +1006,7 @@ impl DesktopRoot {
             pending_voice_text: None,
             history_cursor: None,
             session_project_filter: None,
+            reset_session_search_on_open: false,
             toast: None,
             focus_restore: crate::ui::shell::FocusRestoration::default(),
             last_surface_revision: None,
@@ -1346,6 +1348,13 @@ impl DesktopRoot {
     }
 
     fn close_overlay(&mut self) {
+        if matches!(self.overlay, Some(Overlay::SessionManager)) {
+            // The manager's query is controller state, not overlay-local
+            // state. Closing the manager must not leave the rail silently
+            // filtered behind an empty rail-search field.
+            self.dispatch(DesktopIntent::SetSessionQuery(String::new()));
+            self.reset_session_search_on_open = true;
+        }
         self.overlay = self.overlay_stack.pop();
     }
 
@@ -3964,9 +3973,16 @@ impl DesktopRoot {
         // (190–330px) instead of letting it eat the rail's spare space. The
         // DURABLE block below it also needs room at 840px, so the cap is
         // taken slightly lower there.
-        let session_list_height = (f32::from(window.viewport_size().height) * 0.20)
-            .clamp(190., 330.)
-            * self.snapshot.text_scale;
+        let viewport_height = f32::from(window.viewport_size().height);
+        let requested_session_height =
+            (viewport_height * 0.20).clamp(190., 330.) * self.snapshot.text_scale;
+        // The rail's remaining sections scale with text too. At 150% in a
+        // 700px window, a 285px session viewport pushed the pinned Settings
+        // row below the window. Leave 422px per text scale for that chrome;
+        // the session list still scrolls and keeps a useful minimum.
+        let scalable_chrome_height = 422. * self.snapshot.text_scale;
+        let session_list_height = requested_session_height
+            .min((viewport_height - scalable_chrome_height).max(36. * self.snapshot.text_scale));
         let project = self
             .snapshot
             .project
@@ -4496,6 +4512,7 @@ impl DesktopRoot {
             .child(
                 h_flex()
                     .id("open-settings")
+                    .debug_selector(|| "open-settings".into())
                     .role(Role::Button)
                     .focusable()
                     .tab_stop(true)
@@ -5509,8 +5526,10 @@ impl DesktopRoot {
             .map(|task| {
                 let elapsed = task
                     .finished_at
-                    .unwrap_or_else(|| chrono::Utc::now().timestamp())
-                    .saturating_sub(task.started_at);
+                    .unwrap_or_else(|| chrono::Utc::now().timestamp_millis())
+                    .saturating_sub(task.started_at)
+                    .max(0) as u64;
+                let elapsed = format_duration_ms(elapsed);
                 v_flex()
                     .id(SharedString::from(format!(
                         "inspector-background-{}",
@@ -5518,7 +5537,7 @@ impl DesktopRoot {
                     )))
                     .role(Role::Status)
                     .aria_label(format!(
-                        "{} · {} · {}s",
+                        "{} · {} · {}",
                         background_status_label(task.status, self.snapshot.language),
                         task.command,
                         elapsed
@@ -5538,12 +5557,16 @@ impl DesktopRoot {
                         h_flex()
                             .gap_1()
                             .child(div().text_xs().child(format!(
-                                "{} · {elapsed}s",
+                                "{} · {elapsed}",
                                 background_status_label(task.status, self.snapshot.language)
                             )))
                             .child(
                                 div()
                                     .id(SharedString::from(format!("open-background-{}", task.id)))
+                                    .debug_selector({
+                                        let selector = format!("open-background-{}", task.id);
+                                        move || selector.clone()
+                                    })
                                     .role(Role::Button)
                                     .focusable()
                                     .tab_stop(true)
@@ -5557,9 +5580,10 @@ impl DesktopRoot {
                                         let id = task.id.to_string();
                                         move |this, _: &ClickEvent, window, cx| {
                                             this.remember_focus(window, cx);
-                                            this.dispatch(DesktopIntent::OpenReader(
+                                            this.open_transcript_reader(
                                                 ReaderRef::Background(id.clone()),
-                                            ));
+                                                cx,
+                                            );
                                         }
                                     })),
                             )
@@ -6683,7 +6707,10 @@ impl DesktopRoot {
         let weak = cx.weak_entity();
         let open_weak = weak.clone();
         Popover::new("permission-picker-popover")
-            .anchor(Anchor::TopLeft)
+            // The permission chip sits on the composer's bottom edge. Anchor
+            // the menu above it so the third choice is not clipped by the
+            // window.
+            .anchor(Anchor::BottomLeft)
             .open(self.permission_picker_open)
             .on_open_change(move |open, _, cx| {
                 let _ = open_weak.update(cx, |this, cx| {
@@ -7548,6 +7575,59 @@ impl DesktopRoot {
                     if ansi::contains_ansi(detail) {
                         return ansi::element("reader-ansi", &ansi::parse(detail), dark);
                     }
+                }
+                reader_markdown_element(reader, window, cx)
+            }
+            Some(ReaderRef::Background(id)) if !id.is_empty() => {
+                if let Some(task) = self
+                    .snapshot
+                    .inspector
+                    .background
+                    .iter()
+                    .find(|task| task.id.as_ref() == id)
+                    && ansi::contains_ansi(&task.output_tail)
+                {
+                    let elapsed = task
+                        .finished_at
+                        .unwrap_or_else(|| chrono::Utc::now().timestamp_millis())
+                        .saturating_sub(task.started_at)
+                        .max(0) as u64;
+                    let elapsed = format_duration_ms(elapsed);
+                    return v_flex()
+                        .debug_selector(|| "reader-background-ansi".into())
+                        .w_full()
+                        .min_w_0()
+                        .gap_2()
+                        .child(
+                            h_flex()
+                                .min_w_0()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_sm()
+                                        .child(task.command.to_string()),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!(
+                                            "{} · {elapsed}",
+                                            background_status_label(
+                                                task.status,
+                                                self.snapshot.language
+                                            )
+                                        )),
+                                ),
+                        )
+                        .child(ansi::element(
+                            "reader-ansi",
+                            &ansi::parse(&task.output_tail),
+                            dark,
+                        ))
+                        .into_any_element();
                 }
                 reader_markdown_element(reader, window, cx)
             }
@@ -10151,6 +10231,12 @@ impl Render for DesktopRoot {
                     input.focus(window, cx);
                 });
             } else if matches!(self.overlay, Some(Overlay::SessionManager)) {
+                if self.reset_session_search_on_open {
+                    self.session_search.update(cx, |input, cx| {
+                        input.set_value(String::new(), window, cx);
+                    });
+                    self.reset_session_search_on_open = false;
+                }
                 self.session_search
                     .update(cx, |input, cx| input.focus(window, cx));
             } else {
@@ -15121,6 +15207,63 @@ mod tests {
     }
 
     #[gpui::test]
+    fn background_readers_preserve_ansi_output(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |this, _| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.inspector.background =
+                    Arc::from([tact_desktop_core::BackgroundTaskView {
+                        id: Arc::from("ansi-background"),
+                        command: Arc::from("echo colored output"),
+                        status: tact_protocol::BackgroundTaskStatusSnapshot::Completed,
+                        started_at: 0,
+                        finished_at: Some(1),
+                        output_tail: Arc::from("\u{1b}[31mRED normal\u{1b}[0m"),
+                        output_path: None,
+                    }]);
+                this.snapshot = Arc::new(snapshot);
+                this.open_overlay(Overlay::Background);
+            });
+            window.draw(cx).clear(cx);
+        });
+        let open = window
+            .debug_bounds("open-background-ansi-background")
+            .expect("the background task open action");
+        window.simulate_click(open.center(), gpui::Modifiers::default());
+        window.update(|_, cx| {
+            assert_eq!(
+                root.read(cx).pending_reader,
+                Some(ReaderRef::Background("ansi-background".into())),
+                "the background task action must preserve its typed reader reference"
+            );
+        });
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.open_transcript_reader_for_test(
+                    ReaderRef::Background("ansi-background".into()),
+                    cx,
+                );
+            });
+            window.draw(cx).clear(cx);
+        });
+        window.run_until_parked();
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        window.run_until_parked();
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            window.debug_bounds("reader-background-ansi").is_some(),
+            "background output with ANSI escapes must use the coloured reader"
+        );
+        assert!(
+            window.debug_bounds("reader-ansi").is_some(),
+            "the coloured background surface must mount"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
     fn snapshot_refreshes_workspace_mentions(cx: &mut TestAppContext) {
         let (root, window, shutdown, data_dir) = probe_root(cx);
         let project = probe_dir("project");
@@ -15263,9 +15406,13 @@ mod tests {
             .expect("permission picker trigger");
         window.simulate_click(trigger.center(), gpui::Modifiers::default());
         window.update(|window, cx| window.draw(cx).clear(cx));
+        let menu = window
+            .debug_bounds("permission-picker-menu")
+            .expect("clicking the permission trigger must open the anchored menu");
+        let viewport = window.update(|window, _| window.viewport_size());
         assert!(
-            window.debug_bounds("permission-picker-menu").is_some(),
-            "clicking the permission trigger must open the anchored menu"
+            menu.origin.y >= px(0.0) && menu.origin.y + menu.size.height <= viewport.height,
+            "permission menu must fit above the composer trigger: menu={menu:?}, viewport={viewport:?}"
         );
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
@@ -16393,6 +16540,45 @@ mod tests {
     }
 
     #[gpui::test]
+    fn closing_session_manager_discards_its_search_query(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.open_overlay(Overlay::SessionManager);
+                this.session_search.update(cx, |input, cx| {
+                    input.set_value("spawn", window, cx);
+                });
+                this.close_overlay();
+                assert!(
+                    this.reset_session_search_on_open,
+                    "closing the manager must schedule the visible query to clear"
+                );
+            });
+        });
+
+        window.update(|window, cx| {
+            root.update(cx, |this, _cx| {
+                this.open_overlay(Overlay::SessionManager);
+            });
+            window.draw(cx).clear(cx);
+            window.draw(cx).clear(cx);
+        });
+
+        window.update(|_, cx| {
+            let root = root.read(cx);
+            assert_eq!(
+                root.session_search.read(cx).value().as_ref(),
+                "",
+                "the next manager opening must start with the stale query cleared"
+            );
+            assert!(!root.reset_session_search_on_open);
+        });
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
     fn global_shortcuts_do_not_act_behind_an_overlay(cx: &mut TestAppContext) {
         let (root, window, shutdown, data_dir) = probe_root(cx);
         window.update(|window, cx| {
@@ -16833,6 +17019,31 @@ mod tests {
             permission.origin.y + permission.size.height
                 <= composer.origin.y + composer.size.height,
             "permission chip escapes the composer area: permission={permission:?}, composer={composer:?}"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn short_window_keeps_rail_settings_visible_at_150_percent(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(900.), px(700.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.text_scale = 1.5;
+                this.snapshot = Arc::new(snapshot);
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        let settings = window
+            .debug_bounds("open-settings")
+            .expect("rail settings row");
+        let viewport = window.update(|window, _| window.viewport_size());
+        assert!(
+            settings.origin.y + settings.size.height <= viewport.height,
+            "rail settings must stay visible: settings={settings:?}, viewport={viewport:?}"
         );
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);

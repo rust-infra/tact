@@ -718,7 +718,7 @@ fn subagent_view(run: &SubagentRunSnapshot, metadata: Option<&SubagentMetadata>)
         elapsed_ms: run
             .finished_at
             .zip(run.started_at)
-            .map(|(finished, started)| (finished - started).max(0) as u64 * 1000)
+            .map(|(finished, started)| (finished - started).max(0) as u64)
             .unwrap_or(0),
         last_activity: Some(Arc::from(run.summary_first.as_str())),
     };
@@ -876,5 +876,17 @@ mod tests {
             run_id: "run-1".into(),
         });
         assert_eq!(state.runtime.current_phase, RunPhase::Complete);
+    }
+
+    #[test]
+    fn subagent_elapsed_uses_millisecond_timestamps() {
+        let run = SubagentRunSnapshot {
+            child_id: "child".into(),
+            status: tact_protocol::SubagentStatusSnapshot::Completed,
+            summary_first: "done".into(),
+            started_at: Some(1_000),
+            finished_at: Some(4_308),
+        };
+        assert_eq!(subagent_view(&run, None).elapsed_ms, 3_308);
     }
 }
