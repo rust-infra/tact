@@ -60,6 +60,7 @@ impl Component for StatusBarComponent {
             AgentUpdate::TurnStats {
                 turns_taken,
                 max_turns,
+                ..
             } => {
                 self.state.turn_llm = *turns_taken;
                 self.state.turn_llm_cap = *max_turns;
@@ -158,6 +159,7 @@ mod tests {
         );
         let dirty = comp.on_update(
             &AgentUpdate::TurnStats {
+                run_id: Some("run-1".into()),
                 turns_taken: 3,
                 max_turns: Some(50),
             },
@@ -169,6 +171,7 @@ mod tests {
         // Unbounded (main-agent) runs report `None` and must clear any stale cap.
         comp.on_update(
             &AgentUpdate::TurnStats {
+                run_id: Some("run-1".into()),
                 turns_taken: 4,
                 max_turns: None,
             },

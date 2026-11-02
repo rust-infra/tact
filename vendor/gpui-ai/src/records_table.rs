@@ -1647,6 +1647,20 @@ impl Render for RecordsTable {
                     format!("Records unavailable: {reason}").into(),
                     cx,
                 )),
+                ProgressState::Cancelled => Some(records_inline_state_frame(
+                    &self.id,
+                    "records-cancelled",
+                    Role::Status,
+                    "Records cancelled".into(),
+                    cx,
+                )),
+                ProgressState::Unknown => Some(records_inline_state_frame(
+                    &self.id,
+                    "records-unknown",
+                    Role::Status,
+                    "Records status unknown".into(),
+                    cx,
+                )),
                 ProgressState::Complete => None,
             })
             .flatten();

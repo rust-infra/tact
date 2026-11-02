@@ -145,6 +145,7 @@ pub struct ToolExecutionContext {
 pub enum ToolExecutionStatus {
     Succeeded,
     Failed,
+    Cancelled,
 }
 
 /// Stable source of an operational tool failure.
@@ -192,8 +193,8 @@ impl ToolOutcome {
     }
 }
 
-/// A tool result. `Ok(ToolExecutionResult)` may represent an ordinary failed
-/// tool; `Err(ToolError)` is an adapter/contract failure.
+/// A tool result. `Ok(ToolExecutionResult)` may represent an ordinary failed or
+/// cancelled tool; `Err(ToolError)` is an adapter/contract failure.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolExecutionResult {
     pub status: ToolExecutionStatus,
@@ -219,6 +220,14 @@ impl ToolExecutionResult {
             status: ToolExecutionStatus::Failed,
             outcome: ToolOutcome::text(error.message.clone()),
             error: Some(error),
+        }
+    }
+
+    pub fn cancelled(message: impl Into<String>) -> Self {
+        Self {
+            status: ToolExecutionStatus::Cancelled,
+            outcome: ToolOutcome::text(message),
+            error: None,
         }
     }
 }

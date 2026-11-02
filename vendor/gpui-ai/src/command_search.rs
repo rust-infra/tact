@@ -556,10 +556,7 @@ impl Render for CommandSearch {
                 move |state, _, cx| {
                     let (message, selector): (SharedString, &'static str) =
                         if state.query(cx).is_empty() {
-                            (
-                                labels.empty.clone(),
-                                "command-search-empty-catalog",
-                            )
+                            (labels.empty.clone(), "command-search-empty-catalog")
                         } else {
                             (labels.no_results.clone(), "command-search-no-results")
                         };
@@ -746,8 +743,7 @@ mod tests {
 
     #[test]
     fn production_frame_exposes_a_named_search_landmark() {
-        let frame =
-            command_search_frame(&"palette".into(), "Command search").into_element();
+        let frame = command_search_frame(&"palette".into(), "Command search").into_element();
         let mut node = accesskit::Node::new(Role::Unknown);
         frame.write_a11y_info(&mut node);
 

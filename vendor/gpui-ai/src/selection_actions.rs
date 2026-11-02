@@ -9,7 +9,7 @@ use gpui::{
     KeyDownEvent, LayoutId, MouseButton, MouseDownEvent, MouseUpEvent, ParentElement as _, Pixels,
     Point, Render, Role, ScrollHandle, SharedString, Size, Stateful,
     StatefulInteractiveElement as _, Styled, Subscription, Window, div, point,
-    prelude::FluentBuilder as _,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_base::InteractiveElementExt as _;
 use gpui_base::StyledExt as _;
@@ -250,6 +250,18 @@ fn defer_selection_settle(
     });
 }
 
+/// A press and release at the same spot is a click, not a drag selection.
+///
+/// The native TextView can keep a participant-local multi-click range after
+/// the window selection has already cleared. Treating the plain click as a
+/// clear operation prevents that stale range from remaining painted.
+fn is_plain_click(click_count: usize, end: Point<Pixels>, start: Option<Point<Pixels>>) -> bool {
+    click_count == 1
+        && start.is_some_and(|start| {
+            (end.x - start.x).abs() <= px(3.) && (end.y - start.y).abs() <= px(3.)
+        })
+}
+
 /// Selectable Markdown with application-owned actions anchored to a settled selection.
 ///
 /// The entity owns one upstream [`TextViewState`], preserving native GPUI
@@ -287,6 +299,10 @@ pub struct SelectionActions {
     /// renders the message as plain prose turns this off and keeps the
     /// selection toolbar.
     framed: bool,
+    /// Whether the surface owns a scrolling viewport. Transcript rows and
+    /// reader bodies sit inside a scroll owner supplied by their host, so a
+    /// nested empty viewport here would swallow wheel input.
+    scrollable: bool,
     /// Component-level Markdown typography (heading scale, paragraph gap).
     text_style: Option<TextViewStyle>,
     text: Entity<TextViewState>,
@@ -345,6 +361,7 @@ impl SelectionActions {
             id: id.into(),
             markdown,
             framed: true,
+            scrollable: true,
             text_style: None,
             text,
             actions: Vec::new(),
@@ -377,6 +394,12 @@ impl SelectionActions {
     /// sits on the transcript canvas the way the design draws it.
     pub fn frameless(mut self) -> Self {
         self.framed = false;
+        self
+    }
+
+    /// Lets the host own scrolling instead of nesting another viewport here.
+    pub fn natural_height(mut self) -> Self {
+        self.scrollable = false;
         self
     }
 
@@ -613,14 +636,28 @@ impl Render for SelectionActions {
             )
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|_, event: &MouseUpEvent, window, cx| {
-                    defer_selection_settle(cx.entity().clone(), event.position, window, cx);
+                cx.listener(|this, event: &MouseUpEvent, window, cx| {
+                    if is_plain_click(event.click_count, event.position, this.last_text_pointer) {
+                        let entity = cx.entity().clone();
+                        window.defer(cx, move |_, cx| {
+                            entity.update(cx, |this, cx| this.clear_selection(cx));
+                        });
+                    } else {
+                        defer_selection_settle(cx.entity().clone(), event.position, window, cx);
+                    }
                 }),
             )
             .on_mouse_up_out(
                 MouseButton::Left,
-                cx.listener(|_, event: &MouseUpEvent, window, cx| {
-                    defer_selection_settle(cx.entity().clone(), event.position, window, cx);
+                cx.listener(|this, event: &MouseUpEvent, window, cx| {
+                    if is_plain_click(event.click_count, event.position, this.last_text_pointer) {
+                        let entity = cx.entity().clone();
+                        window.defer(cx, move |_, cx| {
+                            entity.update(cx, |this, cx| this.clear_selection(cx));
+                        });
+                    } else {
+                        defer_selection_settle(cx.entity().clone(), event.position, window, cx);
+                    }
                 }),
             )
             .on_key_up(cx.listener(|_, _, window, cx| {
@@ -675,23 +712,33 @@ impl Render for SelectionActions {
                     _ => {}
                 }
             }))
-            .child(
-                div()
+            .child({
+                let content = div()
                     .id((ElementId::from(self.id.clone()), "content-scroll"))
+                    .debug_selector(|| "selection-actions-content".to_owned())
                     .w_full()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.content_scroll)
+                    .min_h_0()
                     .p(if self.framed {
                         tokens.spacing.md
                     } else {
                         gpui::Pixels::ZERO
                     })
-                    .child(text_surface),
-            )
-            .child(
-                ScrollableMask::new(Axis::Vertical, &self.content_scroll)
-                    .id((ElementId::from(self.id.clone()), "content-scroll-mask")),
-            )
+                    .child(text_surface);
+                if self.scrollable {
+                    content
+                        .h_full()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.content_scroll)
+                } else {
+                    content
+                }
+            })
+            .when(self.scrollable, |surface| {
+                surface.child(
+                    ScrollableMask::new(Axis::Vertical, &self.content_scroll)
+                        .id((ElementId::from(self.id.clone()), "content-scroll-mask")),
+                )
+            })
             .when(
                 !self.drag_active && !self.selected_text.is_empty() && !self.actions.is_empty(),
                 |surface| surface.child(self.toolbar(window, cx)),
@@ -1282,6 +1329,93 @@ mod tests {
 
         assert!(selection.read_with(cx, |selection, _| { selection.selected_text().is_empty() }));
         assert!(cx.debug_bounds("selection-actions-toolbar").is_none());
+    }
+
+    #[gpui::test]
+    fn a_plain_click_clears_a_multi_click_selection(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (probe, cx) = cx.add_window_view(SelectionProbe::new);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let surface = cx
+            .debug_bounds("selection-actions-surface")
+            .expect("selection surface should render");
+        let position = point(surface.origin.x + px(28.), surface.origin.y + px(18.));
+        cx.simulate_event(MouseDownEvent {
+            position,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count: 2,
+            first_mouse: false,
+        });
+        cx.simulate_event(MouseUpEvent {
+            position,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count: 2,
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let selection = probe.read_with(cx, |probe, _| probe.selection.clone());
+        assert!(
+            !selection
+                .read_with(cx, |selection, _| { selection.selected_text().to_string() })
+                .trim()
+                .is_empty()
+        );
+
+        let clear_position = position;
+        cx.simulate_event(MouseDownEvent {
+            position: clear_position,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count: 1,
+            first_mouse: true,
+        });
+        cx.simulate_event(MouseUpEvent {
+            position: clear_position,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count: 1,
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(
+            selection.read_with(cx, |selection, _| selection.selected_text().to_string()),
+            ""
+        );
+    }
+
+    #[test]
+    fn plain_click_predicate_leaves_drags_alone() {
+        let start = point(px(24.), px(16.));
+        assert!(is_plain_click(1, start, Some(start)));
+        assert!(is_plain_click(1, point(px(26.), px(18.)), Some(start)));
+        assert!(!is_plain_click(1, point(px(120.), px(60.)), Some(start)));
+        assert!(!is_plain_click(2, start, Some(start)));
+    }
+
+    #[gpui::test]
+    fn press_alone_does_not_start_a_selection(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let (probe, cx) = cx.add_window_view(SelectionProbe::new);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let surface = cx
+            .debug_bounds("selection-actions-surface")
+            .expect("selection surface should render");
+        let start = point(surface.origin.x + px(24.), surface.origin.y + px(16.));
+        let selection = probe.read_with(cx, |probe, _| probe.selection.clone());
+
+        cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(
+            selection.read_with(cx, |selection, _| selection.selected_text().to_string()),
+            "",
+            "mouse down alone must not start a selection"
+        );
+        assert!(
+            !cx.update(|window, cx| gpui_base::TextSelection::has_selection(window, cx)),
+            "mouse down alone must not leave a native text selection"
+        );
     }
 
     struct ControlProbe {

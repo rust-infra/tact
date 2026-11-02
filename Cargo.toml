@@ -117,4 +117,5 @@ gpui-ai = { path = "vendor/gpui-ai" }
 [profile.dev]
 #debug = "line-tables-only"
 debug = false
+opt-level = 1
 incremental = false

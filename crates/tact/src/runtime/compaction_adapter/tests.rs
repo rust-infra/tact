@@ -421,6 +421,7 @@ async fn micro_replacement_keeps_recent_results_without_full_post_state() {
             .map(|index| AgentContentBlock::ToolResult {
                 tool_use_id: format!("call-{index}"),
                 content: "x".repeat(160),
+                status: tact_agent_api::ToolResultStatus::Failed,
             })
             .collect(),
     )];

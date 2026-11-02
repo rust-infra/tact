@@ -16,6 +16,10 @@ pub enum ProgressState {
     Running,
     /// Work completed successfully.
     Complete,
+    /// Work was cancelled before producing a terminal outcome.
+    Cancelled,
+    /// Legacy persisted work whose terminal outcome was not recorded.
+    Unknown,
     /// Work stopped with a user-visible reason.
     Failed(SharedString),
 }
@@ -45,6 +49,16 @@ impl<T> Progressive<T> {
     /// Creates completed progressive content.
     pub fn complete(content: T) -> Self {
         Self::with_state(content, ProgressState::Complete)
+    }
+
+    /// Creates cancelled progressive content.
+    pub fn cancelled(content: T) -> Self {
+        Self::with_state(content, ProgressState::Cancelled)
+    }
+
+    /// Creates progressive content whose terminal state was not recorded.
+    pub fn unknown(content: T) -> Self {
+        Self::with_state(content, ProgressState::Unknown)
     }
 
     /// Creates failed progressive content.

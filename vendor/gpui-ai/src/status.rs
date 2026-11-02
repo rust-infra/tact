@@ -52,6 +52,8 @@ impl StatusTone {
             ProgressState::Pending => Self::Neutral,
             ProgressState::Running => Self::Info,
             ProgressState::Complete => Self::Success,
+            ProgressState::Cancelled => Self::Warning,
+            ProgressState::Unknown => Self::Neutral,
             ProgressState::Failed(_) => Self::Danger,
         }
     }
@@ -117,7 +119,9 @@ pub(crate) fn progress_glyph(
         ProgressState::Pending => 0,
         ProgressState::Running => 1,
         ProgressState::Complete => 2,
-        ProgressState::Failed(_) => 3,
+        ProgressState::Cancelled => 3,
+        ProgressState::Unknown => 4,
+        ProgressState::Failed(_) => 5,
     };
     let acknowledged = crate::motion::acknowledged_state(ack_slot, ordinal, window, cx);
     let roomy = slot >= crate::sizing::slot_md(cx);
@@ -150,6 +154,20 @@ pub(crate) fn progress_glyph(
                 .opacity(acknowledged)
                 .into_any_element()
         }
+        ProgressState::Cancelled => {
+            let icon = Icon::new(IconName::CircleX).text_color(cx.theme().warning);
+            if roomy { icon.small() } else { icon.xsmall() }
+                .opacity(acknowledged)
+                .into_any_element()
+        }
+        ProgressState::Unknown => div()
+            .when(roomy, |dot| dot.size_2())
+            .when(!roomy, |dot| dot.size_1p5())
+            .rounded(tokens.radius.full)
+            .border_1()
+            .border_color(cx.theme().muted_foreground)
+            .opacity(acknowledged)
+            .into_any_element(),
     };
     crate::surface::leading_glyph_slot(slot, glyph)
 }
@@ -160,6 +178,8 @@ pub fn progress_label(state: &ProgressState) -> &'static str {
         ProgressState::Pending => "Pending",
         ProgressState::Running => "Running",
         ProgressState::Complete => "Completed",
+        ProgressState::Cancelled => "Cancelled",
+        ProgressState::Unknown => "Unknown",
         ProgressState::Failed(_) => "Failed",
     }
 }
@@ -398,7 +418,14 @@ impl RenderOnce for StatusBadge {
 /// Every label [`progress_label`] can produce, for the lifecycle slot's
 /// width reservation. A new lifecycle label joins both or the reservation
 /// silently under-measures.
-const LIFECYCLE_LABELS: [&str; 4] = ["Pending", "Running", "Completed", "Failed"];
+const LIFECYCLE_LABELS: [&str; 6] = [
+    "Pending",
+    "Running",
+    "Completed",
+    "Cancelled",
+    "Unknown",
+    "Failed",
+];
 
 /// The settled dot's diameter, which is `size_1p5`. Named because the
 /// badge's leading inset is measured against the slack the dot leaves in
@@ -527,6 +554,8 @@ mod tests {
             ProgressState::Pending,
             ProgressState::Running,
             ProgressState::Complete,
+            ProgressState::Cancelled,
+            ProgressState::Unknown,
             ProgressState::Failed("offline".into()),
         ] {
             assert!(
@@ -542,6 +571,8 @@ mod tests {
             (ProgressState::Pending, StatusTone::Neutral, "Pending"),
             (ProgressState::Running, StatusTone::Info, "Running"),
             (ProgressState::Complete, StatusTone::Success, "Completed"),
+            (ProgressState::Cancelled, StatusTone::Warning, "Cancelled"),
+            (ProgressState::Unknown, StatusTone::Neutral, "Unknown"),
             (
                 ProgressState::Failed("offline".into()),
                 StatusTone::Danger,

@@ -789,14 +789,15 @@ groups are required:
 
 #### Run and message identity
 
-`TactEventBridge` already receives `AgentEvent::RunStarted`, `RunFinished`,
-`RunFailed`, and `MessageStarted` but drops them. Emit them as host hints:
+`TactEventBridge` receives `AgentEvent::RunStarted`, `RunFinished`, `RunFailed`,
+and `MessageStarted` and emits them as host hints:
 
 ```rust
 pub enum AgentUpdate {
     // existing variants omitted
     RunStarted { run_id: String },
     RunFinished { run_id: String },
+    RunFailed { run_id: String },
     MessageStarted { message_id: String },
 }
 ```
@@ -806,13 +807,16 @@ gained `run_id: Option<String>`. The option keeps synthetic/legacy producers
 compatible, while the real kernel bridge always fills it so a late event from a
 completed run cannot mutate a new run that reused the provider's tool id.
 
-`RunStarted` arrives before the first `TurnStats` of an activation, and
-`RunFinished` arrives for the matching `RunFinished`/`RunFailed` kernel event.
+`RunStarted` arrives before the first `TurnStats` of an activation.
+`RunFinished` means the matching kernel activation completed or was cancelled;
+`RunFailed` means it failed before producing a successful outcome.
 `RunStarted` is only a *pending* boundary: `/compact` also emits it with no
 turns. The reducer promotes a pending run to the active run on the first
 `TurnStats`; a `RunFinished` that closes a pending run that never saw
 `TurnStats` leaves no transcript row. This keeps compaction from opening a
-phantom activation.
+phantom activation. The controller applies terminal phase changes and queue
+flushing only when the terminal event matches the visible active run; a
+pending compaction or Goal activation cannot end the run that owns the window.
 
 `MessageStarted` precedes the first text or thinking delta when the provider
 emits it. The kernel accepts a first delta without a prior `MessageStarted`, so
@@ -1093,11 +1097,23 @@ pub enum SessionPhase {
 pub struct RuntimeView {
     pub run_started_at: Option<DateTime<Utc>>,
     pub current_phase: RunPhase,
+    /// Compatibility label for consumers that only need the rendered name.
     pub latest_tool: Option<Arc<str>>,
+    /// Structured chip state derived from the same transcript row.
+    pub latest_tool_detail: Option<LatestToolView>,
     pub turns_taken: u32,
     pub model: Option<Arc<str>>,
     pub usage: UsageView,
     pub queue_paused: bool,
+}
+
+pub struct LatestToolView {
+    pub tool_id: Arc<str>,
+    pub group: Option<RowId>,
+    pub row: Option<RowId>,
+    pub label: Arc<str>,
+    pub duration_ms: Option<u64>,
+    pub status: RowStatus,
 }
 
 pub enum RunPhase {
@@ -1347,8 +1363,13 @@ pub struct ToolGroupRow {
     pub loop_id: LoopId,
     pub items: Arc<[ToolGroupItem]>,
     pub summary: Arc<str>,
-    pub status: RowStatus,
     pub collapsed: bool,
+    pub collapse_override: Option<bool>,
+}
+
+impl ToolGroupRow {
+    pub fn status(&self) -> RowStatus;
+    pub fn is_active(&self) -> bool;
 }
 
 pub enum ToolGroupItem {
@@ -1459,12 +1480,17 @@ The reducer keys live rows as follows:
 User row       -> session epoch + submission sequence
 Assistant row  -> MessageStarted.message_id
 Thinking row   -> run identity + the open thinking region
-Tool group     -> RunStarted.run_id + TurnStats.turns_taken
+Tool group     -> run identity + contiguous tool region
 Tool row       -> run identity + tool_id
 Gate row       -> request_id
 Hook status    -> hook id
 Notice/error   -> reducer sequence
 ```
+
+`ToolRow.status` is the only stored tool lifecycle. `ToolGroupRow::status()`
+derives the group state from its child tools in the order `Failed`,
+`Cancelled`, `Running`, `Pending`, `Unknown`, `Success`. The inspector chip
+reads the same tool row, so group headers and chips cannot drift apart.
 
 If a producer omits `MessageStarted`, the reducer creates one fallback
 assistant row for the current run and records a protocol warning. It does not
@@ -1517,17 +1543,25 @@ Projection rules:
 
 - `RunStarted` records a *pending* run cursor keyed by `run_id`.
   `MessageStarted` starts a message cursor.
-- The first `TurnStats` after `RunStarted` promotes the pending run to the
-  active run and allocates a new `LoopId`; tool calls are grouped by that ID,
-  not by adjacency or timestamps.
+- The first `TurnStats` whose `run_id` matches the pending run promotes it to
+  the active run and allocates a new `LoopId`. A non-matching pending run is a
+  compaction or Goal activation and must not clear the visible tool state.
 - `RunFinished` closes the matching run cursor. If a pending run never saw
   `TurnStats` (the `/compact` path), it is dropped without creating a row or
   changing `RuntimeView.current_phase`.
-- `StepStarted` creates the tool card and its owning group. `StepFinished`,
+- `RunFailed` closes the matching run cursor and promotes every unfinished,
+  non-keep-live tool to `Failed`. A later `Error` only affects the still-active
+  assistant, thinking, and tool rows.
+- `StepQueued` creates a `Pending` tool row and its owning group.
+  `StepStarted` promotes that same row to `Running`. `StepFinished`,
   `StepFailed`, and `ToolProgress` carry the originating `run_id` when it is
   available and pair by `(run_id, tool_id)`; an explicit event from a completed
   run is ignored. Unknown IDs append a protocol notice instead of corrupting
   another card.
+- A tool group owns one contiguous tool region. Thinking, assistant text,
+  notices, hooks, and errors close it before the next tool starts. A run with
+  several reasoning regions therefore renders several chronological tool
+  cards instead of one run-wide card.
 - A tool row whose run never saw a `TurnStats` is attached to a synthetic
   one-tool group with `loop_id: None`; it is never merged into another run's
   group.
@@ -1535,10 +1569,15 @@ Projection rules:
   `(run_id, tool_id)` identity. Progress for an unknown tool or a non-active
   explicit run is ignored.
 - `StepFinished` with `presentation.keep_live` leaves the card running until
-  `BackgroundTaskFinished` or `SubagentFinished`.
+  `BackgroundTaskFinished` or `SubagentFinished`. Its output stays in
+  `ToolOutputView`; a launch message must not replace the live output body.
+- Tool output keeps a 4,000-character preview and the last 50,000 characters of
+  detail. Append paths retain only that bounded tail, and cards and readers say
+  when only that tail is retained.
 - `ToolMeta`, `ToolTranscript`, and `ToolTranscriptStream` update the same tool
-  card by `tool_id`. A subagent transcript is a scoped `TranscriptReducer`
-  stored on that card.
+  card by `tool_id`. A subagent transcript is a scoped row view stored on that
+  card. Child step completions pair by child `tool_id` across every nested
+  tool group, and a final child assistant entry is terminal.
 - `StreamChunk` appends to the active assistant row. Batches coalesce before
   the reducer sees them. Markdown stays as `Arc<str>`; GPUI renders it through
   `StreamingText` or `TextView::markdown`.
@@ -1572,7 +1611,12 @@ Persisted history uses the same row grammar:
 - `MessageOrigin::User` becomes a user row.
 - `MessageOrigin::Assistant` becomes assistant text, thinking blocks, and tool
   uses.
-- Tool results pair to tool uses by `tool_use_id`.
+- Tool results pair to tool uses by `tool_use_id`. Their persisted
+  `ToolResultStatus` restores `Success`, `Failed`, `Cancelled`, or `Unknown`;
+  legacy rows without a status render Unknown rather than Success.
+- `ToolExecutionStatus::Cancelled` and `StepStatus::Cancelled` are part of the
+  kernel-to-host contract. A cancelled or unexecuted tool emits a paired
+  cancelled result; it is not synthesized as a failed result.
 - Injected context becomes a hook-context row.
 - Goal, continuation, subagent, and compaction origins become typed notice
   rows.
@@ -2098,6 +2142,10 @@ The shell is a controlled renderer:
   `TextView::markdown`.
 - `ToolGroup` and `ToolCall` render Tact tool rows. `ApprovalCard`,
   `QuestionFlow`, `ChoiceGroup`, and `Toggle` render gate semantics.
+- The Run inspector's latest-tool chip opens that exact tool's typed output
+  reader. It also expands the owning group and tool row when possible, but
+  correctness does not depend on scrolling to a nested row inside a variable
+  height virtual-list item.
 - `ContextMeter`, `MessageQueue`, `AttachmentStrip`, `Suggestions`,
   `SelectionActions`, and `VoiceControls` render controlled snapshots.
   `VoiceControls` is mounted only when the P2 transcription pipeline lands;
@@ -2424,6 +2472,15 @@ Focused tests, in build order:
 - `tact_desktop_core::transcript`
   - `run_started_and_message_started_keep_stable_rows`
   - `turn_stats_allocates_one_tool_group`
+  - `a_later_tool_start_reopens_the_group`
+  - `queued_tools_are_visible_before_they_start`
+  - `run_failed_marks_an_interrupted_tool_failed`
+  - `pending_out_of_band_run_does_not_close_the_active_tool`
+  - `keep_live_progress_remains_visible_after_step_finished`
+  - `tool_progress_detail_is_bounded_to_its_tail`
+  - `parallel_subagent_steps_pair_by_tool_id`
+  - `final_subagent_assistant_text_is_not_left_running`
+  - `persisted_tool_result_preserves_failed_and_unknown_status`
   - `stream_chunks_append_to_one_assistant_row`
   - `thinking_lifecycle_creates_one_row_and_finishes`
   - `tool_progress_batches_do_not_duplicate_tool_rows`

@@ -708,6 +708,8 @@ fn diff_record_skeletons(rows: &Progressive<Arc<[DiffRow]>>) -> Progressive<Arc<
         ProgressState::Pending => Progressive::pending(records),
         ProgressState::Running => Progressive::running(records),
         ProgressState::Complete => Progressive::complete(records),
+        ProgressState::Cancelled => Progressive::cancelled(records),
+        ProgressState::Unknown => Progressive::unknown(records),
         ProgressState::Failed(reason) => Progressive::failed(records, reason.clone()),
     }
 }

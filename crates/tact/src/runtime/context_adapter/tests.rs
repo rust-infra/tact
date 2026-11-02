@@ -544,6 +544,7 @@ async fn micro_replacement_still_allows_auto_before_queued_context() {
             .map(|index| tact_agent_api::AgentContentBlock::ToolResult {
                 tool_use_id: format!("call-{index}"),
                 content: "x".repeat(160),
+                status: tact_agent_api::ToolResultStatus::Success,
             })
             .collect(),
     )];

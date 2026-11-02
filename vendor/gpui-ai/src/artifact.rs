@@ -259,6 +259,8 @@ impl Artifact {
                 label.push_str(", failed: ");
                 label.push_str(reason);
             }
+            ProgressState::Cancelled => label.push_str(", cancelled"),
+            ProgressState::Unknown => label.push_str(", status unknown"),
             ProgressState::Complete => {}
         }
         label

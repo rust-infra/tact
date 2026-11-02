@@ -38,8 +38,9 @@ pub use session::{SessionCatalog, SessionSummaryView};
 pub use session_lock::{exit_listener_install_count, install_exit_listener};
 pub use snapshot::{
     AccountView, CommandCatalogView, ComposerView, DesktopSnapshot, ExtensionsTab, ExtensionsView,
-    InspectorTab, InspectorView, ProjectView, QueuedPromptView, Revision, RunPhase, RuntimeView,
-    SectionMask, SessionId, SessionListState, SessionPhase, SessionView, SettingsView, StateCommit,
+    InspectorTab, InspectorView, LatestToolView, ProjectView, QueuedPromptView, Revision, RunPhase,
+    RuntimeView, SectionMask, SessionId, SessionListState, SessionPhase, SessionView, SettingsView,
+    StateCommit,
 };
 pub use state::DesktopState;
 pub use tact::store::ArchiveFilter;

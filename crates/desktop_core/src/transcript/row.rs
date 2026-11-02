@@ -71,6 +71,7 @@ pub enum RowStatus {
     Success,
     Failed,
     Cancelled,
+    Unknown,
     Resolved,
 }
 
@@ -99,8 +100,37 @@ pub struct ToolGroupRow {
     pub loop_id: LoopId,
     pub items: Arc<[ToolGroupItem]>,
     pub summary: Arc<str>,
-    pub status: RowStatus,
     pub collapsed: bool,
+    /// The reader's explicit choice, so an automatic settle never reopens a
+    /// card they folded or folds one they opened.
+    pub collapse_override: Option<bool>,
+}
+
+impl ToolGroupRow {
+    pub fn status(&self) -> RowStatus {
+        let tool_status = |status| {
+            self.items
+                .iter()
+                .any(|item| matches!(item, ToolGroupItem::Tool(tool) if tool.status == status))
+        };
+        if tool_status(RowStatus::Failed) {
+            RowStatus::Failed
+        } else if tool_status(RowStatus::Cancelled) {
+            RowStatus::Cancelled
+        } else if tool_status(RowStatus::Running) {
+            RowStatus::Running
+        } else if tool_status(RowStatus::Pending) {
+            RowStatus::Pending
+        } else if tool_status(RowStatus::Unknown) {
+            RowStatus::Unknown
+        } else {
+            RowStatus::Success
+        }
+    }
+
+    pub fn is_active(&self) -> bool {
+        matches!(self.status(), RowStatus::Running | RowStatus::Pending)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -254,6 +284,9 @@ pub struct PlanRow {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlanStep {
+    /// The concrete tool call this step describes, when it has one. Conceptual
+    /// steps keep `None` and therefore keep the plan card visible.
+    pub tool_id: Option<Arc<str>>,
     pub label: Arc<str>,
     pub status: RowStatus,
     pub detail: Option<Arc<str>>,

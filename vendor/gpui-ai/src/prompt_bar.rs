@@ -1074,6 +1074,8 @@ impl Render for PromptBar {
             ProgressState::Pending => None,
             ProgressState::Running => Some(labels.running.clone()),
             ProgressState::Complete => Some(labels.ready.clone()),
+            ProgressState::Cancelled => Some("Cancelled".into()),
+            ProgressState::Unknown => None,
             ProgressState::Failed(reason) => {
                 Some(format!("{}{reason}", labels.failed_prefix).into())
             }
@@ -1113,7 +1115,11 @@ impl Render for PromptBar {
                 div()
                     .debug_selector(|| "prompt-bar-editor".to_owned())
                     .w_full()
-                    .child(Textarea::new(&self.editor).appearance(false).bordered(false)),
+                    .child(
+                        Textarea::new(&self.editor)
+                            .appearance(false)
+                            .bordered(false),
+                    ),
             )
             .when(!suggestions.is_empty(), |this| {
                 this.child(

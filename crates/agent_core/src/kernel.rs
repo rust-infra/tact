@@ -16,7 +16,7 @@ use tact_agent_api::{
     SessionStateSnapshot, StopReason, StoreError, ToolCall, ToolDirective, ToolError,
     ToolExecutionContext, ToolExecutionError, ToolExecutionErrorKind, ToolExecutionResult,
     ToolExecutionStatus, ToolGateContext, ToolGateError, ToolOutputChunk, ToolProgressSink,
-    ToolSnapshot, UsageError, UsageRecord,
+    ToolResultStatus, ToolSnapshot, UsageError, UsageRecord,
 };
 
 use crate::deps::{AgentKernel, KernelError};
@@ -521,6 +521,7 @@ impl AgentKernel {
                     &input.session,
                     &calls,
                     &CancelToken::new(),
+                    ToolResultStatus::Cancelled,
                     |_| CANCELLED_RESULT.to_owned(),
                 )
                 .await?;
@@ -601,17 +602,18 @@ impl AgentKernel {
             }
 
             if !calls.is_empty() {
-                let reason = match response.stop_reason {
-                    StopReason::Refusal => REFUSED_RESULT,
-                    StopReason::MaxTokens => TRUNCATED_RESULT,
-                    StopReason::Unknown { .. } => UNKNOWN_STOP_RESULT,
-                    _ => TURN_ENDED_RESULT,
+                let (reason, status) = match response.stop_reason {
+                    StopReason::Refusal => (REFUSED_RESULT, ToolResultStatus::Failed),
+                    StopReason::MaxTokens => (TRUNCATED_RESULT, ToolResultStatus::Failed),
+                    StopReason::Unknown { .. } => (UNKNOWN_STOP_RESULT, ToolResultStatus::Failed),
+                    _ => (TURN_ENDED_RESULT, ToolResultStatus::Cancelled),
                 };
                 self.persist_synthetic_results(
                     state,
                     &input.session,
                     &calls,
                     &CancelToken::new(),
+                    status,
                     |_| reason.to_owned(),
                 )
                 .await?;
@@ -1291,7 +1293,7 @@ impl AgentKernel {
             let next_is_results = transcript
                 .get(index + 1)
                 .is_some_and(AgentMessage::is_tool_result_only);
-            let existing: HashMap<String, String> = if next_is_results {
+            let existing: HashMap<String, (String, ToolResultStatus)> = if next_is_results {
                 transcript[index + 1]
                     .content
                     .iter()
@@ -1299,7 +1301,8 @@ impl AgentKernel {
                         AgentContentBlock::ToolResult {
                             tool_use_id,
                             content,
-                        } => Some((tool_use_id.clone(), content.clone())),
+                            status,
+                        } => Some((tool_use_id.clone(), (content.clone(), *status))),
                         _ => None,
                     })
                     .collect()
@@ -1320,8 +1323,12 @@ impl AgentKernel {
                         tool_use_id: id.clone(),
                         content: existing
                             .get(id)
-                            .cloned()
+                            .map(|(content, _)| content.clone())
                             .unwrap_or_else(|| INTERRUPTED_RESULT.to_owned()),
+                        status: existing
+                            .get(id)
+                            .map(|(_, status)| *status)
+                            .unwrap_or(ToolResultStatus::Unknown),
                     })
                     .collect(),
             );
@@ -1625,7 +1632,7 @@ impl AgentKernel {
     ) {
         for index in 0..slots.len() {
             if slots[index].result.is_none() {
-                let result = failed_result(ToolExecutionErrorKind::Tool, reason);
+                let result = ToolExecutionResult::cancelled(reason);
                 self.emit_tool_finished(index, slots, &result, Duration::ZERO, run_id);
                 slots[index].result = Some(result);
             }
@@ -1665,6 +1672,7 @@ impl AgentKernel {
         session: &SessionRef,
         calls: &[ToolCall],
         cancel: &CancelToken,
+        status: ToolResultStatus,
         reason: impl Fn(&ToolCall) -> String,
     ) -> Result<(), KernelError> {
         if calls.is_empty() {
@@ -1678,6 +1686,7 @@ impl AgentKernel {
                 .map(|call| AgentContentBlock::ToolResult {
                     tool_use_id: call.id.clone(),
                     content: reason(call),
+                    status,
                 })
                 .collect(),
         );
@@ -1802,6 +1811,11 @@ fn tool_result_blocks(slot: &ToolSlot) -> Vec<AgentContentBlock> {
             .as_ref()
             .map(render_tool_result)
             .unwrap_or_else(|| TURN_ENDED_RESULT.to_owned()),
+        status: slot
+            .result
+            .as_ref()
+            .map(tool_result_status)
+            .unwrap_or(ToolResultStatus::Cancelled),
     }];
     if let Some(result) = &slot.result {
         blocks.extend(
@@ -1814,6 +1828,14 @@ fn tool_result_blocks(slot: &ToolSlot) -> Vec<AgentContentBlock> {
         );
     }
     blocks
+}
+
+fn tool_result_status(result: &ToolExecutionResult) -> ToolResultStatus {
+    match result.status {
+        ToolExecutionStatus::Succeeded => ToolResultStatus::Success,
+        ToolExecutionStatus::Failed => ToolResultStatus::Failed,
+        ToolExecutionStatus::Cancelled => ToolResultStatus::Cancelled,
+    }
 }
 
 fn tool_calls_from_message(message: &AgentMessage) -> Vec<ToolCall> {

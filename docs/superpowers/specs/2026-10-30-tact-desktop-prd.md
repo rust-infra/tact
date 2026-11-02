@@ -214,7 +214,9 @@ Two alternatives were evaluated:
 ### P0: Run Inspector
 
 - Active run status and elapsed time.
-- Current phase and latest tool.
+- Current phase and latest tool. The tool chip shows pending, running,
+  completed, failed, cancelled, or unknown state; activating it opens that
+  exact tool's output reader.
 - Turn count, token usage, context meter, cache rate, and session budget.
 - Sticky Goal/task/subagent summary while scrolling.
 - Sticky Tasks is a persistent strip between transcript and composer. It shows

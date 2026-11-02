@@ -279,7 +279,7 @@ impl Render for SemanticsProbe {
                                 &SidebarNavLabels::default(),
                                 cx,
                             )
-                                .on_click(|_, _, _| {})
+                            .on_click(|_, _, _| {})
                         }
                         .render(window, cx)
                         .into_element();
@@ -554,19 +554,18 @@ impl Render for RailSemanticsProbe {
                 let nodes = rows
                     .iter()
                     .map(|row| {
-                        let control =
-                            sidebar_item_control(
-                                &component_id,
-                                row,
-                                false,
-                                true,
-                                None,
-                                &SidebarNavLabels::default(),
-                                cx,
-                            )
-                                .on_click(|_, _, _| {})
-                                .render(window, cx)
-                                .into_element();
+                        let control = sidebar_item_control(
+                            &component_id,
+                            row,
+                            false,
+                            true,
+                            None,
+                            &SidebarNavLabels::default(),
+                            cx,
+                        )
+                        .on_click(|_, _, _| {})
+                        .render(window, cx)
+                        .into_element();
                         let mut node = accesskit::Node::new(Role::Unknown);
                         control.write_a11y_info(&mut node);
                         (control.a11y_role(), node)

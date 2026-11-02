@@ -689,19 +689,19 @@ async fn facade_cancel_between_waves_suppresses_later_side_effects_and_pairs_cal
             .count(),
         1
     );
-    assert!(
-        !updates.iter().any(|update| matches!(
-            update,
-            AgentUpdate::StepFinished { tool_id, .. } if tool_id == "w2"
-        )),
-        "the later wave must not execute after cancellation"
-    );
-    assert!(
-        updates.iter().any(|update| matches!(
-            update,
-            AgentUpdate::StepFailed { tool_id, .. } if tool_id == "w2"
-        )),
-        "the suppressed call still needs one paired terminal result"
+    let cancelled = updates
+        .iter()
+        .filter_map(|update| match update {
+            AgentUpdate::StepFinished {
+                tool_id, result, ..
+            } if tool_id == "w2" => Some(result.status),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        cancelled,
+        vec![tact_protocol::StepStatus::Cancelled],
+        "the suppressed call still needs one paired cancelled result"
     );
 
     let messages = store.load_session("session-1").await.unwrap();

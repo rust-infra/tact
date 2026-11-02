@@ -212,7 +212,7 @@ impl RuntimeErrorInfo {
 
 #[cfg(test)]
 mod tests {
-    use crate::{AgentContentBlock, AgentRole, MessageOrigin};
+    use crate::{AgentContentBlock, AgentRole, MessageOrigin, ToolResultStatus};
 
     use super::*;
 
@@ -225,10 +225,12 @@ mod tests {
                 AgentContentBlock::ToolResult {
                     tool_use_id: "call_1".into(),
                     content: "first".into(),
+                    status: ToolResultStatus::Success,
                 },
                 AgentContentBlock::ToolResult {
                     tool_use_id: "call_2".into(),
                     content: "second".into(),
+                    status: ToolResultStatus::Failed,
                 },
             ],
         );

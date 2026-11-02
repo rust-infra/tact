@@ -129,6 +129,13 @@ async fn cancellation_after_complete_tool_response_pairs_every_call() {
         grouped.tool_result_ids().collect::<Vec<_>>(),
         ["call-1", "call-2"]
     );
+    assert!(grouped.content.iter().all(|block| matches!(
+        block,
+        AgentContentBlock::ToolResult {
+            status: tact_agent_api::ToolResultStatus::Cancelled,
+            ..
+        }
+    )));
 }
 
 #[tokio::test]

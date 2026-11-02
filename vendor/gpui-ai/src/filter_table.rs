@@ -283,21 +283,13 @@ impl FilterTable {
     }
 
     /// Replaces the accessible label for row activation.
-    pub fn set_activation_label(
-        &mut self,
-        label: impl Into<SharedString>,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn set_activation_label(&mut self, label: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.records_table
             .update(cx, |table, cx| table.set_activation_label(label, cx));
     }
 
     /// Replaces the label shown when no rows match.
-    pub fn set_empty_label(
-        &mut self,
-        label: impl Into<SharedString>,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn set_empty_label(&mut self, label: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.records_table
             .update(cx, |table, cx| table.set_empty_label(label, cx));
     }
@@ -615,15 +607,13 @@ impl Render for FilterTable {
                                     window,
                                     cx,
                                 )
-                                    .tab_stop(is_focused)
-                                    .when(is_focused, |button| {
-                                        button.track_focus(&self.filter_focus)
-                                    })
-                                    .on_click(move |_, _, cx| {
-                                        let _ = handler_owner.update(cx, |table, cx| {
-                                            table.request_filter(filter_id.clone(), cx);
-                                        });
-                                    })
+                                .tab_stop(is_focused)
+                                .when(is_focused, |button| button.track_focus(&self.filter_focus))
+                                .on_click(move |_, _, cx| {
+                                    let _ = handler_owner.update(cx, |table, cx| {
+                                        table.request_filter(filter_id.clone(), cx);
+                                    });
+                                })
                             }))
                             .on_key_down(move |event, window, cx| {
                                 let delta = match event.keystroke.key.as_str() {

@@ -737,7 +737,11 @@ id；<code>''</code> = 顶层）、<code>locked_by</code> +
 </tr>
 <tr>
 <td><code>messages</code></td>
-<td>序列化的 <code>MessageContent</code> JSON、序号排序</td>
+<td>序列化的 <code>MessageContent</code> JSON、origin、序号排序，以及
+nullable <code>tool_statuses</code> sidecar。工具结果的
+<code>success</code>/<code>failed</code>/<code>cancelled</code> 是模型
+content 之外的执行事实；旧库缺列时自动迁移，旧结果按
+<code>unknown</code> 恢复，不从文本猜成功或失败</td>
 </tr>
 <tr>
 <td><code>token_usages</code></td>

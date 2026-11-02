@@ -204,6 +204,7 @@ mod tests {
                 AgentContentBlock::ToolResult {
                     tool_use_id: "call-image".into(),
                     content: "preview".into(),
+                    status: tact_agent_api::ToolResultStatus::Success,
                 },
                 AgentContentBlock::Image {
                     source: AgentImageSource {
@@ -215,6 +216,7 @@ mod tests {
                 AgentContentBlock::ToolResult {
                     tool_use_id: "call-text".into(),
                     content: "lookup result".into(),
+                    status: tact_agent_api::ToolResultStatus::Failed,
                 },
             ],
         );

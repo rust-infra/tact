@@ -156,6 +156,7 @@ async fn exhausted_max_tokens_synthesizes_truncated_results() {
                 AgentContentBlock::ToolResult {
                     tool_use_id,
                     content,
+                    ..
                 } if tool_use_id == "call-4" && content.contains("truncated")
             ))
     );

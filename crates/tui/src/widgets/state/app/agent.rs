@@ -570,6 +570,7 @@ impl App {
             | AgentUpdate::TurnStats { .. }
             | AgentUpdate::RunStarted { .. }
             | AgentUpdate::RunFinished { .. }
+            | AgentUpdate::RunFailed { .. }
             | AgentUpdate::MessageStarted { .. }
             | AgentUpdate::ToolMeta { .. }
             | AgentUpdate::StreamChunk(_)
@@ -650,6 +651,7 @@ impl App {
             | AgentUpdate::TurnStats { .. }
             | AgentUpdate::RunStarted { .. }
             | AgentUpdate::RunFinished { .. }
+            | AgentUpdate::RunFailed { .. }
             | AgentUpdate::MessageStarted { .. }
             | AgentUpdate::ModelInfo(_)
             | AgentUpdate::ToolMeta { .. }
@@ -2046,6 +2048,7 @@ mod lifecycle_tests {
     fn turn_stats_update_reaches_status_bar() {
         let mut app = make_app();
         app.handle_agent_update(AgentUpdate::TurnStats {
+            run_id: Some("run-1".into()),
             turns_taken: 2,
             max_turns: None,
         });
@@ -2066,6 +2069,7 @@ mod lifecycle_tests {
         app.loading_idx = Some(app.log.items.len().saturating_sub(1));
 
         app.handle_agent_update(AgentUpdate::TurnStats {
+            run_id: Some("run-1".into()),
             turns_taken: 1,
             max_turns: None,
         });

@@ -885,7 +885,7 @@ impl App {
         // off the output: a popup opened after `/lang` must be titled in the
         // language the block on screen is drawn in.
         let card_title = output.card_title(&self.msgs());
-        if output.phase == ToolPhase::Failed {
+        if matches!(output.phase, ToolPhase::Failed | ToolPhase::Cancelled) {
             let content = output.detail_full.clone()?;
             return Some(DiffPopup {
                 tool_name: None,

@@ -110,6 +110,13 @@ async fn parallel_tool_results_preserve_assistant_source_order() {
         })
         .collect::<Vec<_>>();
     assert_eq!(results, ["slow result", "fast result"]);
+    assert!(result_message.content.iter().all(|block| matches!(
+        block,
+        AgentContentBlock::ToolResult {
+            status: tact_agent_api::ToolResultStatus::Success,
+            ..
+        } | AgentContentBlock::Image { .. }
+    )));
 
     let requests = h.model.requests();
     let second = requests.get(1).expect("second request");
@@ -121,6 +128,7 @@ async fn parallel_tool_results_preserve_assistant_source_order() {
             AgentContentBlock::ToolResult {
                 tool_use_id,
                 content,
+                ..
             } => Some((tool_use_id.as_str(), content.as_str())),
             _ => None,
         })
@@ -244,6 +252,7 @@ async fn image_bearing_tool_result_keeps_companion_image_after_its_result() {
             AgentContentBlock::ToolResult {
                 tool_use_id: "call-image".into(),
                 content: "preview".into(),
+                status: tact_agent_api::ToolResultStatus::Success,
             },
             image,
         ]
@@ -298,11 +307,13 @@ async fn mixed_tool_batch_keeps_each_image_next_to_its_result() {
         AgentContentBlock::ToolResult {
             tool_use_id: "call-image".into(),
             content: "preview".into(),
+            status: tact_agent_api::ToolResultStatus::Success,
         },
         image,
         AgentContentBlock::ToolResult {
             tool_use_id: "call-text".into(),
             content: "lookup result".into(),
+            status: tact_agent_api::ToolResultStatus::Success,
         },
     ];
     let grouped = state
@@ -469,17 +480,24 @@ async fn ordinary_failure_preserves_status_and_operational_error() {
         finished.error.as_ref().map(|error| error.message.as_str()),
         Some("boom")
     );
-    assert!(
-        state
-            .transcript
-            .iter()
-            .filter(|message| message.origin == MessageOrigin::ToolResult)
-            .flat_map(|message| &message.content)
-            .any(|block| matches!(
+    let failed = state
+        .transcript
+        .iter()
+        .filter(|message| message.origin == MessageOrigin::ToolResult)
+        .flat_map(|message| &message.content)
+        .find(|block| {
+            matches!(
                 block,
                 AgentContentBlock::ToolResult { content, .. } if content == "boom"
-            ))
-    );
+            )
+        });
+    assert!(matches!(
+        failed,
+        Some(AgentContentBlock::ToolResult {
+            status: tact_agent_api::ToolResultStatus::Failed,
+            ..
+        })
+    ));
 }
 
 #[tokio::test]

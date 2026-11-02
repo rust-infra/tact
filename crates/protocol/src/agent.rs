@@ -76,6 +76,7 @@ impl std::str::FromStr for PermissionMode {
 pub enum StepStatus {
     Success,
     Failed,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -650,6 +651,8 @@ pub enum AgentUpdate {
     /// has one (`Agent::max_turns`; `None` = unbounded, which is the case for
     /// the main agent — only subagents set it today).
     TurnStats {
+        /// The kernel activation this turn belongs to. Older producers may omit it.
+        run_id: Option<String>,
         turns_taken: u32,
         max_turns: Option<u32>,
     },
@@ -659,8 +662,10 @@ pub enum AgentUpdate {
     /// and Goal activations also emit it, so consumers promote it only when a
     /// turn follows.
     RunStarted { run_id: String },
-    /// The matching kernel activation completed or failed.
+    /// The matching kernel activation completed or was cancelled.
     RunFinished { run_id: String },
+    /// The matching kernel activation failed before producing a successful result.
+    RunFailed { run_id: String },
     /// A model response started. It precedes that response's first delta when
     /// the provider emits an identity hint.
     MessageStarted { message_id: String },

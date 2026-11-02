@@ -1074,6 +1074,44 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_step_finishes_as_cancelled_not_failed() {
+        let mut c = comp();
+        step_added(&mut c, "t1");
+        let _ = step_started(&mut c, "t1");
+        let result = StepResult {
+            tool: "bash".into(),
+            arg_summary: "sleep 10".into(),
+            arg_full: None,
+            status: StepStatus::Cancelled,
+            message: "Cancelled by user".into(),
+            detail: None,
+            duration_us: Some(1),
+            permission_label: None,
+            presentation: ToolPresentationInfo::generic("bash"),
+        };
+        let (mut log, mut pending, mut events, mut tool_events) = (
+            LogCoordinator::default(),
+            PendingQueue::default(),
+            Vec::new(),
+            Vec::new(),
+        );
+        c.on_update(
+            &AgentUpdate::StepFinished {
+                idx: 0,
+                run_id: None,
+                tool_id: "t1".into(),
+                result,
+            },
+            &mut ctx(&mut log, &mut pending, &mut events, &mut tool_events),
+        );
+
+        assert!(c.state().active.is_empty());
+        assert_eq!(c.state().blocks.len(), 1);
+        assert_eq!(c.state().blocks[0].output.phase, ToolPhase::Cancelled);
+        assert!(matches!(tool_events[0], ToolEvent::Finalized { .. }));
+    }
+
+    #[test]
     fn keep_live_step_finished_keeps_active() {
         let mut c = comp();
         step_added(&mut c, "t1");

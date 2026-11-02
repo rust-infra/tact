@@ -61,6 +61,7 @@ pub struct ToolCell {
     tool_phase_queued: &'static str,
     tool_phase_success: &'static str,
     tool_phase_failed: &'static str,
+    tool_phase_cancelled: &'static str,
     tool_meta_sep: &'static str,
     step_success_prefix: &'static str,
     step_fail_prefix: &'static str,
@@ -151,6 +152,7 @@ impl ToolCell {
             tool_phase_queued: msgs.tool_phase_queued,
             tool_phase_success: msgs.tool_phase_success,
             tool_phase_failed: msgs.tool_phase_failed,
+            tool_phase_cancelled: msgs.tool_phase_cancelled,
             tool_meta_sep: msgs.tool_meta_sep,
             step_success_prefix: msgs.step_success_prefix,
             step_fail_prefix: msgs.step_fail_prefix,
@@ -210,6 +212,7 @@ impl ToolCell {
             self.tool_phase_queued,
             self.tool_phase_success,
             self.tool_phase_failed,
+            self.tool_phase_cancelled,
             self.tool_meta_sep,
             self.step_success_prefix,
             self.step_fail_prefix,
@@ -229,6 +232,7 @@ impl ToolCell {
             ToolPhase::Running => Style::default().fg(self.warning),
             ToolPhase::Success => Style::default().fg(self.success),
             ToolPhase::Failed => Style::default().fg(self.error),
+            ToolPhase::Cancelled => Style::default().fg(self.muted),
         };
         // The collapsed-output button *is* this row's affordance when the card
         // draws no body, so it is drawn by the shared button widget rather than

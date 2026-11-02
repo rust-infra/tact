@@ -221,6 +221,8 @@ impl Attachment {
                 None => "Uploading".to_owned(),
             },
             ProgressState::Failed(reason) => format!("Failed: {reason}"),
+            ProgressState::Cancelled => "Cancelled".to_owned(),
+            ProgressState::Unknown => "Status unknown".to_owned(),
             ProgressState::Complete => {
                 let mut parts = vec![self.kind.label().to_owned()];
                 if let Some(size) = self.size_bytes {

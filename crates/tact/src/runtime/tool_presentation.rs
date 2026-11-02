@@ -253,7 +253,7 @@ pub(crate) fn step_detail_for_presentation(
     output: &str,
     status: StepStatus,
 ) -> Option<String> {
-    if matches!(status, StepStatus::Failed) {
+    if matches!(status, StepStatus::Failed | StepStatus::Cancelled) {
         return Some(output.to_string());
     }
     match detail {

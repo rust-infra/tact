@@ -97,6 +97,7 @@ pub fn format_event(update: &AgentUpdate) -> Option<String> {
         AgentUpdate::TurnStats {
             turns_taken,
             max_turns,
+            ..
         } => Some(match max_turns {
             Some(max) => format!("[turn] {turns_taken}/{max}"),
             None => format!("[turn] {turns_taken}"),
@@ -125,6 +126,7 @@ fn format_step_result(result: &StepResult) -> String {
     let status = match result.status {
         StepStatus::Success => "ok",
         StepStatus::Failed => "failed",
+        StepStatus::Cancelled => "cancelled",
     };
     let mut line = format!("[tool {status}] {} {}", result.tool, result.message);
     if let Some(duration_us) = result.duration_us {
@@ -280,12 +282,14 @@ mod tests {
     #[test]
     fn turn_and_token_counters_are_reported() {
         let turn = AgentUpdate::TurnStats {
+            run_id: Some("run-1".into()),
             turns_taken: 3,
             max_turns: Some(40),
         };
         assert_eq!(format_event(&turn).as_deref(), Some("[turn] 3/40"));
 
         let unbounded = AgentUpdate::TurnStats {
+            run_id: Some("run-1".into()),
             turns_taken: 3,
             max_turns: None,
         };
