@@ -279,10 +279,7 @@ impl RenderOnce for MessageQueue {
         v_flex()
             .id(root_id)
             .role(Role::List)
-            .aria_label(format!(
-                "{}, {count} {}",
-                labels.queued, labels.waiting
-            ))
+            .aria_label(format!("{}, {count} {}", labels.queued, labels.waiting))
             .debug_selector(move || format!("queue-{root_debug}"))
             .w_full()
             .min_w_0()

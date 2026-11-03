@@ -206,6 +206,8 @@ pub struct ToolCallLabels {
     pub running: SharedString,
     pub completed: SharedString,
     pub failed: SharedString,
+    pub cancelled: SharedString,
+    pub unknown: SharedString,
 }
 
 impl Default for ToolCallLabels {
@@ -224,6 +226,8 @@ impl Default for ToolCallLabels {
             running: "Running".into(),
             completed: "Completed".into(),
             failed: "Failed".into(),
+            cancelled: "Cancelled".into(),
+            unknown: "Unknown".into(),
         }
     }
 }
@@ -308,6 +312,8 @@ impl ToolCall {
                 ProgressState::Running => self.labels.running.clone(),
                 ProgressState::Complete => self.labels.completed.clone(),
                 ProgressState::Failed(_) => self.labels.failed.clone(),
+                ProgressState::Cancelled => self.labels.cancelled.clone(),
+                ProgressState::Unknown => self.labels.unknown.clone(),
             },
         };
         match &self.invocation.summary {
@@ -1160,6 +1166,16 @@ mod tests {
             ToolInvocation::new("send", "send_email").approval(ToolApproval::Rejected),
         ));
         assert_eq!(denied.accessibility_label(), "send_email, Denied");
+        let cancelled = ToolCall::new(&Progressive::cancelled(invocation()));
+        assert_eq!(
+            cancelled.accessibility_label(),
+            "read_file pricing.md, Cancelled"
+        );
+        let unknown = ToolCall::new(&Progressive::unknown(invocation()));
+        assert_eq!(
+            unknown.accessibility_label(),
+            "read_file pricing.md, Unknown"
+        );
     }
 
     #[test]

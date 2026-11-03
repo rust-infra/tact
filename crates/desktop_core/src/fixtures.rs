@@ -133,8 +133,8 @@ pub fn demo_reader_transcript() -> TranscriptView {
                     )),
                 ]),
                 summary: Arc::from("shell · web_search"),
-                status: RowStatus::Success,
                 collapsed: false,
+                collapse_override: None,
             }),
         ),
         row(
@@ -292,21 +292,25 @@ pub fn demo_transcript() -> TranscriptView {
                 title: Arc::from("Desktop kernel first"),
                 steps: Arc::from([
                     PlanStep {
+                        tool_id: None,
                         label: Arc::from("Pin the transcript model"),
                         status: RowStatus::Success,
                         detail: None,
                     },
                     PlanStep {
+                        tool_id: None,
                         label: Arc::from("Wire the run inspector"),
                         status: RowStatus::Success,
                         detail: None,
                     },
                     PlanStep {
+                        tool_id: None,
                         label: Arc::from("Attach permissions, Goals and subagent state"),
                         status: RowStatus::Running,
                         detail: None,
                     },
                     PlanStep {
+                        tool_id: None,
                         label: Arc::from("Verify the desktop shell"),
                         status: RowStatus::Pending,
                         detail: None,
@@ -343,8 +347,8 @@ pub fn demo_transcript() -> TranscriptView {
                     ToolGroupItem::Gate(gate),
                 ]),
                 summary: Arc::from("shell · edit · permission"),
-                status: RowStatus::Running,
                 collapsed: false,
+                collapse_override: None,
             }),
         ),
         row(

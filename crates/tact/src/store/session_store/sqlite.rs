@@ -118,6 +118,7 @@ impl SqliteSessionStore {
                 role TEXT NOT NULL,
                 content JSON NOT NULL,
                 origin TEXT,
+                tool_statuses TEXT,
                 ordinal INTEGER NOT NULL,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
@@ -130,6 +131,9 @@ impl SqliteSessionStore {
         Self::add_nullable_column(&pool, "messages", "origin", "TEXT")
             .await
             .context("failed to migrate messages.origin")?;
+        Self::add_nullable_column(&pool, "messages", "tool_statuses", "TEXT")
+            .await
+            .context("failed to migrate messages.tool_statuses")?;
 
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id);")
             .execute(&*pool)
@@ -260,7 +264,7 @@ impl SqliteSessionStore {
                     Role::User => AgentRole::User,
                     Role::Assistant => continue,
                 };
-                let message = decoded_agent_message(role, content, origin.as_deref())?;
+                let message = decoded_agent_message(role, content, origin.as_deref(), &[])?;
                 if !message.origin.is_user_turn() {
                     continue;
                 }
@@ -434,6 +438,7 @@ fn agent_content_blocks(message: &AgentMessage) -> Vec<ContentBlock> {
             AgentContentBlock::ToolResult {
                 tool_use_id,
                 content,
+                ..
             } => ContentBlock::ToolResult {
                 tool_use_id: tool_use_id.clone(),
                 content: content.clone(),
@@ -456,6 +461,17 @@ fn agent_message_content(message: &AgentMessage) -> MessageContent {
     MessageContent::Blocks {
         content: agent_content_blocks(message),
     }
+}
+
+fn tool_result_statuses(message: &AgentMessage) -> Vec<tact_agent_api::ToolResultStatus> {
+    message
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            AgentContentBlock::ToolResult { status, .. } => Some(*status),
+            _ => None,
+        })
+        .collect()
 }
 
 fn agent_message_text(message: &AgentMessage) -> String {
@@ -488,6 +504,7 @@ fn decoded_agent_message(
     role: AgentRole,
     content: MessageContent,
     origin: Option<&str>,
+    tool_statuses: &[tact_agent_api::ToolResultStatus],
 ) -> Result<AgentMessage> {
     let origin = decoded_message_origin(role, &content, origin)?;
     let blocks = match content {
@@ -496,6 +513,14 @@ fn decoded_agent_message(
     };
     let llm_message = Message::new_blocks(agent_role(role), blocks);
     let mut message = neutral::agent_message(&llm_message);
+    let mut statuses = tool_statuses.iter();
+    for block in &mut message.content {
+        if let AgentContentBlock::ToolResult { status, .. } = block
+            && let Some(persisted) = statuses.next()
+        {
+            *status = *persisted;
+        }
+    }
     message.origin = origin;
     Ok(message)
 }
@@ -733,6 +758,8 @@ impl super::SessionStore for SqliteSessionStore {
             .context("failed to serialize logical message content")?;
         let origin_json = serde_json::to_string(&message.origin)
             .context("failed to serialize logical message origin")?;
+        let tool_statuses_json = serde_json::to_string(&tool_result_statuses(message))
+            .context("failed to serialize logical tool result statuses")?;
         let prepared_state = match provider_state {
             Some(Some(state)) => Some((
                 serde_json::to_string(state).context("failed to serialize provider state")?,
@@ -754,13 +781,15 @@ impl super::SessionStore for SqliteSessionStore {
             .context("failed to begin logical message transaction")?;
 
         let id = sqlx::query(
-            "INSERT INTO messages (session_id, role, content, origin, ordinal, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO messages \
+             (session_id, role, content, origin, tool_statuses, ordinal, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(session_id)
         .bind(role_to_str(agent_role(message.role)))
         .bind(content_json)
         .bind(origin_json)
+        .bind(tool_statuses_json)
         .bind(ordinal)
         .bind(now)
         .execute(&mut *tx)
@@ -849,14 +878,18 @@ impl super::SessionStore for SqliteSessionStore {
                     .context("failed to serialize logical message content")?;
                 let origin_json = serde_json::to_string(&message.origin)
                     .context("failed to serialize logical message origin")?;
+                let tool_statuses_json = serde_json::to_string(&tool_result_statuses(message))
+                    .context("failed to serialize logical tool result statuses")?;
                 sqlx::query(
-                    "INSERT INTO messages (session_id, role, content, origin, ordinal, created_at) \
-                     VALUES (?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO messages \
+                     (session_id, role, content, origin, tool_statuses, ordinal, created_at) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?)",
                 )
                 .bind(session_id)
                 .bind(role_to_str(agent_role(message.role)))
                 .bind(content_json)
                 .bind(origin_json)
+                .bind(tool_statuses_json)
                 .bind(ordinal)
                 .bind(now)
                 .execute(&mut *tx)
@@ -1134,7 +1167,8 @@ impl super::SessionStore for SqliteSessionStore {
 
     async fn load_agent_session(&self, session_id: &str) -> Result<Vec<AgentMessage>> {
         let rows = sqlx::query(
-            "SELECT role, content, origin FROM messages WHERE session_id = ? ORDER BY ordinal ASC, id ASC",
+            "SELECT role, content, origin, tool_statuses FROM messages \
+             WHERE session_id = ? ORDER BY ordinal ASC, id ASC",
         )
         .bind(session_id)
         .fetch_all(&*self.pool)
@@ -1148,11 +1182,23 @@ impl super::SessionStore for SqliteSessionStore {
             let content: MessageContent = serde_json::from_str(&content_json)
                 .context("failed to deserialize message content")?;
             let origin: Option<String> = row.try_get("origin")?;
+            let statuses_json: Option<String> = row.try_get("tool_statuses")?;
+            let statuses: Vec<tact_agent_api::ToolResultStatus> = statuses_json
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()
+                .context("failed to deserialize tool result statuses")?
+                .unwrap_or_default();
             let role = match str_to_role(&role_str)? {
                 Role::User => AgentRole::User,
                 Role::Assistant => AgentRole::Assistant,
             };
-            messages.push(decoded_agent_message(role, content, origin.as_deref())?);
+            messages.push(decoded_agent_message(
+                role,
+                content,
+                origin.as_deref(),
+                &statuses,
+            )?);
         }
 
         Ok(messages)
@@ -2211,6 +2257,7 @@ mod tests {
                 vec![AgentContentBlock::ToolResult {
                     tool_use_id: "call-1".into(),
                     content: "tool output".into(),
+                    status: tact_agent_api::ToolResultStatus::Unknown,
                 }],
             ),
             AgentMessage::text(
@@ -2243,6 +2290,11 @@ mod tests {
             columns
                 .iter()
                 .any(|row| row.try_get::<String, _>("name").unwrap() == "origin")
+        );
+        assert!(
+            columns
+                .iter()
+                .any(|row| row.try_get::<String, _>("name").unwrap() == "tool_statuses")
         );
         let usage_columns = sqlx::query("PRAGMA table_info(token_usages)")
             .fetch_all(&*store.pool)

@@ -176,6 +176,7 @@ fn normalize_block(block: &AgentContentBlock, tool_names: &mut HashMap<String, S
         AgentContentBlock::ToolResult {
             tool_use_id,
             content,
+            ..
         } => {
             let name = tool_names
                 .get(tool_use_id)
@@ -245,6 +246,7 @@ impl UpdateNormalizer {
                     let status = match result.status {
                         tact_protocol::StepStatus::Success => "succeeded",
                         tact_protocol::StepStatus::Failed => "failed",
+                        tact_protocol::StepStatus::Cancelled => "cancelled",
                     };
                     format!("kernel:tool_finished:{}:{status}", result.tool)
                 }

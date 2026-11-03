@@ -58,6 +58,20 @@ pub struct AgentImageSource {
     pub data: String,
 }
 
+/// Persisted tool execution status.
+///
+/// `Unknown` preserves legacy rows that do not carry a trustworthy terminal
+/// outcome.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolResultStatus {
+    #[default]
+    Unknown,
+    Success,
+    Failed,
+    Cancelled,
+}
+
 /// Provider-neutral content block.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -76,6 +90,8 @@ pub enum AgentContentBlock {
     ToolResult {
         tool_use_id: String,
         content: String,
+        #[serde(default)]
+        status: ToolResultStatus,
     },
     Thinking {
         thinking: String,
@@ -196,6 +212,7 @@ mod tests {
                 AgentContentBlock::ToolResult {
                     tool_use_id: "call_1".into(),
                     content: "done".into(),
+                    status: ToolResultStatus::Success,
                 },
                 AgentContentBlock::Image {
                     source: AgentImageSource {
@@ -208,6 +225,43 @@ mod tests {
         );
         assert_eq!(results.tool_result_ids().collect::<Vec<_>>(), ["call_1"]);
         assert!(results.is_tool_result_only());
+    }
+
+    #[test]
+    fn old_tool_results_default_to_unknown_status() {
+        let block: AgentContentBlock = serde_json::from_value(serde_json::json!({
+            "type": "tool_result",
+            "tool_use_id": "call_1",
+            "content": "legacy"
+        }))
+        .unwrap();
+
+        assert_eq!(
+            block,
+            AgentContentBlock::ToolResult {
+                tool_use_id: "call_1".into(),
+                content: "legacy".into(),
+                status: ToolResultStatus::Unknown,
+            }
+        );
+    }
+
+    #[test]
+    fn terminal_tool_result_status_round_trips() {
+        for status in [
+            ToolResultStatus::Success,
+            ToolResultStatus::Failed,
+            ToolResultStatus::Cancelled,
+        ] {
+            let block = AgentContentBlock::ToolResult {
+                tool_use_id: "call_1".into(),
+                content: "result".into(),
+                status,
+            };
+            let json = serde_json::to_string(&block).unwrap();
+            let back: AgentContentBlock = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, block);
+        }
     }
 
     #[test]

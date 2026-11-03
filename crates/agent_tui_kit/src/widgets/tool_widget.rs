@@ -33,6 +33,7 @@ pub enum ToolPhase {
     Running,
     Success,
     Failed,
+    Cancelled,
 }
 
 impl ToolPhase {
@@ -40,7 +41,12 @@ impl ToolPhase {
         match status {
             StepStatus::Success => Self::Success,
             StepStatus::Failed => Self::Failed,
+            StepStatus::Cancelled => Self::Cancelled,
         }
+    }
+
+    fn has_result_detail(self) -> bool {
+        matches!(self, Self::Failed | Self::Cancelled)
     }
 }
 
@@ -193,6 +199,7 @@ pub fn build_meta_text(
     phase_queued: &str,
     phase_success: &str,
     phase_failed: &str,
+    phase_cancelled: &str,
     meta_sep: &str,
     success_prefix: &str,
     fail_prefix: &str,
@@ -202,6 +209,7 @@ pub fn build_meta_text(
         ToolPhase::Running => format!("{spinner_char} {phase_running}"),
         ToolPhase::Success => format!("{success_prefix} {phase_success}"),
         ToolPhase::Failed => format!("{fail_prefix} {phase_failed}"),
+        ToolPhase::Cancelled => format!("⏹ {phase_cancelled}"),
     };
 
     let mut parts = vec![phase_label];
@@ -515,6 +523,9 @@ impl ToolRenderOutput {
         if matches!(self.phase, ToolPhase::Failed) {
             return msgs.tool_error_card_title.to_string();
         }
+        if matches!(self.phase, ToolPhase::Cancelled) {
+            return msgs.tool_cancelled_card_title.to_string();
+        }
         if matches!(self.visual_kind, tact_protocol::ToolVisualKind::Subagent) {
             return format!("Summary ({} lines)", self.detail_total_lines);
         }
@@ -542,6 +553,8 @@ impl ToolRenderOutput {
             msgs.tool_live_output_bottom.to_string()
         } else if matches!(self.phase, ToolPhase::Failed) {
             msgs.tool_error_card_bottom.to_string()
+        } else if matches!(self.phase, ToolPhase::Cancelled) {
+            msgs.tool_cancelled_card_bottom.to_string()
         } else if matches!(self.visual_kind, tact_protocol::ToolVisualKind::Subagent) {
             // Subagent cards open their transcript, not source code. Keep the
             // footer wording identical to the other explicit Open affordances.
@@ -583,6 +596,7 @@ impl ToolRenderOutput {
             msgs.tool_phase_queued,
             msgs.tool_phase_success,
             msgs.tool_phase_failed,
+            msgs.tool_phase_cancelled,
             msgs.tool_meta_sep,
             msgs.step_success_prefix,
             msgs.step_fail_prefix,
@@ -771,7 +785,7 @@ impl ToolWidget {
     /// line is added by [`Self::build`] instead.
     pub fn with_command_detail(mut self, detail: impl Into<String>) -> Self {
         let detail = detail.into();
-        self.detail = Some(if matches!(self.phase, ToolPhase::Failed) {
+        self.detail = Some(if self.phase.has_result_detail() {
             detail
         } else {
             command_detail(
@@ -830,10 +844,11 @@ impl ToolWidget {
     }
 
     pub fn from_step_result(result: &StepResult) -> Self {
-        let failed = matches!(ToolPhase::from_status(&result.status), ToolPhase::Failed);
+        let phase = ToolPhase::from_status(&result.status);
+        let has_result_detail = phase.has_result_detail();
         // ask_user answers compress onto the meta row (same slot as permission labels),
         // not a separate detail card line.
-        let ask_user_label = (!failed
+        let ask_user_label = (!has_result_detail
             && (result.presentation.compact_result_to_meta || result.tool == "ask_user"))
             .then(|| compact_ask_user_meta(&result.message))
             .flatten();
@@ -842,14 +857,14 @@ impl ToolWidget {
             .clone()
             .unwrap_or_else(|| result.arg_summary.clone());
         let detail = result.detail.clone().or_else(|| {
-            if failed && !result.message.is_empty() {
+            if has_result_detail && !result.message.is_empty() {
                 Some(result.message.clone())
             } else {
                 None
             }
         });
         let detail = detail.map(|detail| {
-            if failed {
+            if has_result_detail {
                 detail
             } else {
                 command_detail(
@@ -871,7 +886,7 @@ impl ToolWidget {
             arg_summary: result.arg_summary.clone(),
             arg_full,
             step_index: None,
-            phase: ToolPhase::from_status(&result.status),
+            phase,
             detail,
             duration_us: result.duration_us,
             permission_label,
@@ -1098,7 +1113,7 @@ impl ToolWidget {
     }
 
     fn display_detail(&self) -> Option<&str> {
-        if matches!(self.phase, ToolPhase::Failed) {
+        if self.phase.has_result_detail() {
             self.detail
                 .as_deref()
                 .or(self.error_message.as_deref())
@@ -1112,11 +1127,10 @@ impl ToolWidget {
     /// [`Self::display_detail`]: the popup opens with the call itself (see
     /// [`Self::argument_line`]) above the result it returned.
     ///
-    /// A failed command's card must keep the error first — the failure detail is
-    /// the error report, and the card previews its head — so its
-    /// `$ <command>` line is added here, where only the popup can see it. Every
-    /// other command phase already carries the prefix in its detail (see
-    /// [`Self::with_command_detail`]).
+    /// A failed or cancelled command's card must keep its terminal detail
+    /// first, so its `$ <command>` line is added here, where only the popup can
+    /// see it. Every other command phase already carries the prefix in its
+    /// detail (see [`Self::with_command_detail`]).
     ///
     /// Consequence: the popup can hold up to two more lines than
     /// `detail_preview`, which is what the drawn card shows; nothing on a drawn
@@ -1139,7 +1153,8 @@ impl ToolWidget {
     /// * `Command` — `$ <command>`. Either it is already baked into the detail
     ///   (success and live, through [`Self::with_command_detail`] /
     ///   [`Self::from_step_result`] / [`Self::with_live_output`]), or the card is
-    ///   a failure whose error has to stay first and the line is added here.
+    ///   a failure/cancellation whose terminal detail has to stay first and the
+    ///   line is added here.
     /// * `FileRead` / `FileWrite` / `FileEdit` — the body **is** the call (the
     ///   file, its new content, its diff) and the path is the popup title.
     /// * `Subagent` — the subagent popup prepends `Prompt:` itself, from the same
@@ -1155,7 +1170,7 @@ impl ToolWidget {
         }
         match kind_from_presentation(&self.presentation, &self.tool_name) {
             tact_protocol::ToolVisualKind::Command => {
-                matches!(self.phase, ToolPhase::Failed).then(|| format!("$ {arg}"))
+                self.phase.has_result_detail().then(|| format!("$ {arg}"))
             }
             tact_protocol::ToolVisualKind::FileRead
             | tact_protocol::ToolVisualKind::FileWrite
@@ -1214,7 +1229,7 @@ impl ToolWidget {
         if detail.is_empty() {
             return false;
         }
-        if matches!(self.phase, ToolPhase::Failed) {
+        if self.phase.has_result_detail() {
             return true;
         }
         if self.live_detail {
@@ -1659,6 +1674,7 @@ mod tests {
             msgs.tool_phase_queued,
             msgs.tool_phase_success,
             msgs.tool_phase_failed,
+            msgs.tool_phase_cancelled,
             msgs.tool_meta_sep,
             msgs.step_success_prefix,
             msgs.step_fail_prefix,
@@ -1682,6 +1698,7 @@ mod tests {
             msgs.tool_phase_queued,
             msgs.tool_phase_success,
             msgs.tool_phase_failed,
+            msgs.tool_phase_cancelled,
             msgs.tool_meta_sep,
             msgs.step_success_prefix,
             msgs.step_fail_prefix,
@@ -1689,6 +1706,59 @@ mod tests {
         assert!(text.contains("Failed"));
         assert!(text.contains("Permission denied"));
         assert!(text.contains("42us"));
+    }
+
+    #[test]
+    fn meta_cancelled_uses_stop_marker_and_label() {
+        let msgs = test_msgs();
+        let text = build_meta_text(
+            ToolPhase::Cancelled,
+            None,
+            None,
+            None,
+            Some(42),
+            None,
+            '⠋',
+            msgs.tool_phase_running,
+            msgs.tool_phase_queued,
+            msgs.tool_phase_success,
+            msgs.tool_phase_failed,
+            msgs.tool_phase_cancelled,
+            msgs.tool_meta_sep,
+            msgs.step_success_prefix,
+            msgs.step_fail_prefix,
+        );
+        assert!(text.starts_with(&format!("⏹ {}", msgs.tool_phase_cancelled)));
+        assert!(!text.contains(msgs.tool_phase_failed));
+        assert!(text.contains("42us"));
+    }
+
+    #[test]
+    fn cancelled_step_result_keeps_cancelled_semantics() {
+        let msgs = test_msgs();
+        let result = StepResult {
+            tool: "bash".to_string(),
+            arg_summary: "echo hi".to_string(),
+            arg_full: None,
+            status: StepStatus::Cancelled,
+            message: "Cancelled by user".to_string(),
+            detail: None,
+            duration_us: Some(42),
+            permission_label: None,
+            presentation: ToolPresentationInfo::generic("bash"),
+        };
+        let output = ToolWidget::from_step_result(&result).build();
+
+        assert_eq!(output.phase, ToolPhase::Cancelled);
+        assert_eq!(
+            output.card_title(&msgs).as_deref(),
+            Some(msgs.tool_cancelled_card_title)
+        );
+        assert_eq!(output.card_bottom(&msgs), msgs.tool_cancelled_card_bottom);
+        assert_eq!(
+            output.detail_full.as_deref(),
+            Some("$ echo hi\n\nCancelled by user")
+        );
     }
 
     /// A background task's id sits directly after the phase word, so it is
@@ -1712,6 +1782,7 @@ mod tests {
             msgs.tool_phase_queued,
             msgs.tool_phase_success,
             msgs.tool_phase_failed,
+            msgs.tool_phase_cancelled,
             msgs.tool_meta_sep,
             msgs.step_success_prefix,
             msgs.step_fail_prefix,
@@ -2206,6 +2277,7 @@ mod tests {
             msgs.tool_phase_queued,
             msgs.tool_phase_success,
             msgs.tool_phase_failed,
+            msgs.tool_phase_cancelled,
             msgs.tool_meta_sep,
             msgs.step_success_prefix,
             msgs.step_fail_prefix,

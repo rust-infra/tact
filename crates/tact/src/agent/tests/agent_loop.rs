@@ -874,6 +874,7 @@ async fn agent_loop_emits_turn_stats_each_iteration() {
         if let AgentUpdate::TurnStats {
             turns_taken,
             max_turns,
+            ..
         } = update
         {
             stats.push((turns_taken, max_turns));
@@ -917,6 +918,7 @@ async fn agent_loop_turn_stats_carries_the_cap_and_counts_the_capped_turn() {
         if let AgentUpdate::TurnStats {
             turns_taken,
             max_turns,
+            ..
         } = update
         {
             stats.push((turns_taken, max_turns));

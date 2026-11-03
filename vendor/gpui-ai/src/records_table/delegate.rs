@@ -384,11 +384,7 @@ impl TableDelegate for RecordsDelegate {
                 Role::Alert,
                 SharedString::from(format!("Records unavailable: {reason}")),
             ),
-            _ => (
-                "records-empty",
-                Role::Status,
-                self.empty_label.clone(),
-            ),
+            _ => ("records-empty", Role::Status, self.empty_label.clone()),
         };
 
         records_state_frame(&self.component_id, id, role, label).text_color(match role {

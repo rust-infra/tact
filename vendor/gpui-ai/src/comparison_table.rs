@@ -981,6 +981,8 @@ impl Render for ComparisonTable {
             ProgressState::Pending => Some((Role::ProgressIndicator, "Loading comparison".into())),
             ProgressState::Running => Some((Role::ProgressIndicator, "Updating comparison".into())),
             ProgressState::Failed(reason) => Some((Role::Alert, reason.clone())),
+            ProgressState::Cancelled => Some((Role::Status, "Comparison cancelled".into())),
+            ProgressState::Unknown => Some((Role::Status, "Comparison status unknown".into())),
             ProgressState::Complete if items.is_empty() || features.is_empty() => {
                 Some((Role::Status, "No comparison data".into()))
             }

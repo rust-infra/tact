@@ -1041,6 +1041,12 @@ impl Render for PromptBar {
                     })),
                 )
             })
+            // Number the rows after filtering so the selector tracks the
+            // rendered position rather than the source index.
+            .enumerate()
+            .map(|(index, control)| {
+                control.debug_selector(move || format!("prompt-bar-suggestion-{index}"))
+            })
             .collect::<Vec<_>>();
         let attachments = self.attachments.clone();
         let selected_model_label: SharedString = self
@@ -1074,6 +1080,8 @@ impl Render for PromptBar {
             ProgressState::Pending => None,
             ProgressState::Running => Some(labels.running.clone()),
             ProgressState::Complete => Some(labels.ready.clone()),
+            ProgressState::Cancelled => Some("Cancelled".into()),
+            ProgressState::Unknown => None,
             ProgressState::Failed(reason) => {
                 Some(format!("{}{reason}", labels.failed_prefix).into())
             }
@@ -1113,27 +1121,35 @@ impl Render for PromptBar {
                 div()
                     .debug_selector(|| "prompt-bar-editor".to_owned())
                     .w_full()
-                    .child(Textarea::new(&self.editor).appearance(false).bordered(false)),
+                    .child(
+                        Textarea::new(&self.editor)
+                            .appearance(false)
+                            .bordered(false),
+                    ),
             )
             .when(!suggestions.is_empty(), |this| {
-                this.child(
-                    crate::popup::popover_surface(
-                        prompt_listbox(
-                            (gpui::ElementId::from(root_id.clone()), "suggestions").into(),
-                            labels.suggestions.clone(),
-                        ),
-                        cx,
-                    )
-                    .debug_selector(|| "prompt-bar-suggestions".to_owned())
-                    // A list of mentions and commands is a panel over the
-                    // composer, not part of it. It carried no surface at
-                    // all, so on a dark theme it was invisible: nothing
-                    // said anything had opened.
-                    .p(tokens.spacing.xs)
-                    .max_h(tokens.spacing.xxl + tokens.spacing.xxl + tokens.spacing.xxl)
-                    .overflow_y_scrollbar()
-                    .children(suggestions),
+                let list = prompt_listbox(
+                    (gpui::ElementId::from(root_id.clone()), "suggestions").into(),
+                    labels.suggestions.clone(),
                 )
+                // A list of mentions and commands is a panel over the
+                // composer, not part of it. It carried no surface at
+                // all, so on a dark theme it was invisible: nothing
+                // said anything had opened. The cap belongs on the
+                // wrapper below: on this content it would clamp the
+                // scroll area itself.
+                .w_full()
+                .overflow_y_scrollbar()
+                .p(tokens.spacing.xs)
+                .children(suggestions);
+                this.child(crate::popup::popover_surface(
+                    v_flex()
+                        .debug_selector(|| "prompt-bar-suggestions".to_owned())
+                        .w_full()
+                        .max_h(tokens.spacing.xxl * 3.0)
+                        .child(list),
+                    cx,
+                ))
             })
             .when(self.show_progress, |this| {
                 this.when_some(progress_text, |this, progress_text| {

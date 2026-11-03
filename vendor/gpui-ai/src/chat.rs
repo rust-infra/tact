@@ -440,6 +440,8 @@ impl ChatMessage {
             ProgressState::Pending => "Pending".into(),
             ProgressState::Running => "Streaming".into(),
             ProgressState::Complete => "Complete".into(),
+            ProgressState::Cancelled => "Cancelled".into(),
+            ProgressState::Unknown => "Status unknown".into(),
             ProgressState::Failed(reason) => format!("Failed: {reason}").into(),
         }
     }

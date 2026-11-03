@@ -108,6 +108,8 @@ impl RenderOnce for TaskRow {
             ProgressState::Pending => "pending",
             ProgressState::Running => "in progress",
             ProgressState::Complete => "complete",
+            ProgressState::Cancelled => "cancelled",
+            ProgressState::Unknown => "status unknown",
             ProgressState::Failed(_) => "failed",
         };
         let accessibility_label = format!("{}, {state_label}", self.task.title);

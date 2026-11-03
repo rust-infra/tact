@@ -876,11 +876,19 @@ impl DesktopActor {
             }
             DesktopIntent::ToggleGroup { id } => {
                 self.state.reducer.toggle_group(id);
-                self.publish_rows(vec![id], SectionMask::TRANSCRIPT);
+                let mut dirty = vec![id];
+                if let Some(parent) = self.state.reducer.top_level_row_for(id) {
+                    dirty.push(parent);
+                }
+                self.publish_rows(dirty, SectionMask::TRANSCRIPT);
             }
             DesktopIntent::ToggleTool { group, tool } => {
                 self.state.reducer.toggle_tool(group, tool);
-                self.publish_rows(vec![group, tool], SectionMask::TRANSCRIPT);
+                let mut dirty = vec![group, tool];
+                if let Some(parent) = self.state.reducer.top_level_row_for(group) {
+                    dirty.push(parent);
+                }
+                self.publish_rows(dirty, SectionMask::TRANSCRIPT);
             }
             DesktopIntent::OpenReader(reader) => self.open_reader(reader),
             DesktopIntent::SetTailFollowing(follow) => {
@@ -1440,6 +1448,8 @@ impl DesktopActor {
         id: CommandId,
         args: CommandArguments,
     ) -> Result<(), String> {
+        // A command starts outside the previous run's terminal-repaint window.
+        self.state.reducer.clear_closed_run_rows();
         match route_command(&id, &args) {
             CommandRoute::User(command) => self.send_command(command),
             CommandRoute::Surface(query) => {
@@ -2328,8 +2338,7 @@ impl DesktopActor {
                     run_failed |= matches!(&update, tact_protocol::AgentUpdate::Error(_));
                     run_finished |= matches!(
                         &update,
-                        tact_protocol::AgentUpdate::RunFinished { .. }
-                            | tact_protocol::AgentUpdate::TaskComplete(_)
+                        tact_protocol::AgentUpdate::TaskComplete(_)
                             | tact_protocol::AgentUpdate::TaskIdle
                     );
                     run_cancelled |= matches!(&update, tact_protocol::AgentUpdate::TaskCancelled);
@@ -2382,11 +2391,18 @@ impl DesktopActor {
             }
         }
         let had_agent_updates = !agent_updates.is_empty();
-        let mut dirty = if agent_updates.is_empty() {
-            Vec::new()
+        let (mut dirty, matched_finished, matched_failed) = if agent_updates.is_empty() {
+            (Vec::new(), false, false)
         } else {
-            self.state.apply_agent_batch(agent_updates)
+            let outcome = self.state.apply_agent_batch(agent_updates);
+            (
+                outcome.dirty_rows,
+                outcome.matched_finished,
+                outcome.matched_failed,
+            )
         };
+        run_finished |= matched_finished;
+        run_failed |= matched_failed;
         // Typed snapshots and runtime-only updates do not create transcript
         // rows. Publish them even when the reducer has no dirty row so the
         // shell sees the new surface/runtime state.
@@ -2438,7 +2454,7 @@ impl DesktopActor {
         if became_ready {
             self.flush_queue();
         }
-        if run_finished {
+        if run_finished || run_failed {
             let _ = self.refresh_sessions().await;
         }
         self.reconcile_gate_snapshot();
@@ -3472,6 +3488,12 @@ mod tests {
             run_id: "run-1".into(),
         }));
         controller.when_idle().await.unwrap();
+        factory.emit(HostEvent::agent(AgentUpdate::TurnStats {
+            run_id: Some("run-1".into()),
+            turns_taken: 1,
+            max_turns: None,
+        }));
+        controller.when_idle().await.unwrap();
         controller
             .dispatch(DesktopIntent::Submit(Submission {
                 text: "second".into(),
@@ -3994,7 +4016,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_run_stays_failed_after_run_finished() {
+    async fn failed_run_stays_failed_after_run_failed() {
         let tmp = tempfile::tempdir().unwrap();
         make_project(tmp.path());
         let factory = FakeFactory::new();
@@ -4006,6 +4028,7 @@ mod tests {
                 run_id: "run-1".into(),
             },
             AgentUpdate::TurnStats {
+                run_id: Some("run-1".into()),
                 turns_taken: 1,
                 max_turns: None,
             },
@@ -4013,7 +4036,7 @@ mod tests {
                 message_id: "message-1".into(),
             },
             AgentUpdate::StreamChunk("partial answer".into()),
-            AgentUpdate::RunFinished {
+            AgentUpdate::RunFailed {
                 run_id: "run-1".into(),
             },
             AgentUpdate::Error(AgentErrorKind::Other("provider failed".into())),
@@ -4028,6 +4051,56 @@ mod tests {
         });
         assert_eq!(snapshot.runtime.current_phase, RunPhase::Failed);
         assert_eq!(assistant_status, Some(crate::RowStatus::Failed));
+    }
+
+    #[tokio::test]
+    async fn pending_compaction_finish_does_not_end_the_active_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_project(tmp.path());
+        let factory = FakeFactory::new();
+        let (controller, _events) =
+            DesktopController::start_with_factory(config(tmp.path()), factory.clone()).unwrap();
+        wait_ready(&controller).await;
+        for update in [
+            AgentUpdate::RunStarted {
+                run_id: "run-active".into(),
+            },
+            AgentUpdate::TurnStats {
+                run_id: Some("run-active".into()),
+                turns_taken: 1,
+                max_turns: None,
+            },
+            AgentUpdate::StepStarted {
+                idx: 0,
+                tool_id: "tool-active".into(),
+                tool_name: "bash".into(),
+                arg_summary: "sleep".into(),
+                arg_full: "sleep".into(),
+                presentation: tact_protocol::ToolPresentationInfo::generic("bash"),
+            },
+            AgentUpdate::RunStarted {
+                run_id: "run-compact".into(),
+            },
+            AgentUpdate::RunFinished {
+                run_id: "run-compact".into(),
+            },
+        ] {
+            factory.emit(HostEvent::agent(update));
+        }
+        controller.when_idle().await.unwrap();
+
+        let snapshot = controller.snapshot();
+        assert_eq!(snapshot.runtime.current_phase, RunPhase::RunningTools);
+        assert!(snapshot.transcript.iter().any(|row| matches!(
+            &row.body,
+            crate::RowBody::ToolGroup(group)
+                if group.items.iter().any(|item| matches!(
+                    item,
+                    crate::ToolGroupItem::Tool(tool)
+                        if tool.tool_id.as_ref() == "tool-active"
+                            && tool.status == crate::RowStatus::Running
+                ))
+        )));
     }
 
     #[tokio::test]

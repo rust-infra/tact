@@ -28,15 +28,16 @@ pub enum SubagentStepStatus {
     Running,
     Success,
     Failed,
+    Cancelled,
 }
 
 /// One tool invocation made by a subagent.
 ///
 /// Emitted twice per invocation — once from `StepStarted` with
-/// [`SubagentStepStatus::Running`], once from `StepFinished` / `StepFailed`
-/// with the terminal status. Both halves carry the same `tool_id` (the child's
-/// own), which is how the UI pairs them into one card, exactly like the main
-/// agent's `ActiveToolBlock` → `ToolBlock` transition.
+/// [`SubagentStepStatus::Running`], once from `StepFinished` with the terminal
+/// status. Both halves carry the same `tool_id` (the child's own), which is how
+/// the UI pairs them into one card, exactly like the main agent's
+/// `ActiveToolBlock` → `ToolBlock` transition.
 #[derive(Debug, Clone)]
 pub struct SubagentStep {
     /// The child's local tool id — the key pairing the two halves.
@@ -46,7 +47,7 @@ pub struct SubagentStep {
     /// Full (untruncated) argument summary, used by the card's title.
     pub arg_full: String,
     pub status: SubagentStepStatus,
-    /// Result summary, or the error text when the call failed.
+    /// Result summary, cancellation text, or error text.
     pub message: String,
     /// Full result detail (file content, command output) for the card's
     /// preview and the future `[Open]` affordance.

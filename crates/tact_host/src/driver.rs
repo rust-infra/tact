@@ -22,14 +22,14 @@ use tact::{
     },
     hook::HookControl,
     store::goal_store::GoalStoreError,
-    task::{SharedTaskManager, TaskStatus},
+    task::{SharedTaskManager, TaskStatus, emit_tasks_changed},
     utils::RwLockExt,
 };
 use tact_llm::{Message, Role};
 use tact_protocol::{
     AccountUpdate, AgentErrorKind, AgentUpdate, GoalAcceptanceSnapshot, GoalCriterionSnapshot,
     GoalCriterionStatusSnapshot, GoalPhaseSnapshot, GoalRunBudgetSnapshot, GoalSnapshot,
-    GoalStatusSnapshot, UpdateSink, UserCommand,
+    GoalStatusSnapshot, TasksChangeReason, UpdateSink, UserCommand,
 };
 use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
@@ -249,6 +249,7 @@ pub async fn run_command_loop_with_account(
     // panel (and the `/goal <verb>` completion that reads it) must not stay
     // empty until some later Goal command happens to emit a snapshot.
     emit_goals_changed(&goal_manager, &task_manager, limits, &events).await;
+    emit_session_tasks_changed(&task_manager, background_session_id.as_deref(), &events).await;
 
     let mut agent = Some(agent);
     let mut active: Option<JoinHandle<Agent>> = None;
@@ -877,6 +878,28 @@ pub(crate) async fn emit_goals_changed(
         }
         Err(error) => emit_goal_error(events, format!("Goal snapshot failed: {error:#}")),
     }
+}
+
+/// Publishes the durable task inventory for the session that just started.
+///
+/// `/tasks-dag` is read-only and the task list is persisted, so a resumed
+/// session must not look empty until the next `task_create` or `task_update`.
+async fn emit_session_tasks_changed(
+    task_manager: &SharedTaskManager,
+    session_id: Option<&str>,
+    events: &UpdateSink,
+) {
+    let Ok(tasks) = task_manager.list().await else {
+        return;
+    };
+    let tasks = tasks
+        .into_iter()
+        .filter(|task| {
+            session_id
+                .is_none_or(|session_id| session_id.is_empty() || task.session_id == session_id)
+        })
+        .collect();
+    emit_tasks_changed(events, tasks, TasksChangeReason::Updated);
 }
 
 /// `/goal list` read-out.
@@ -2752,6 +2775,36 @@ mod tests {
             .expect("empty goal snapshot timed out")
             .expect("goal update channel closed");
         assert!(matches!(second, AgentUpdate::GoalsChanged { goals } if goals.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn startup_task_inventory_is_scoped_to_the_session() {
+        install_test_config();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (agent, _work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+        let task_manager = agent.tool_context.task_manager.clone();
+        task_manager
+            .create("mine".into(), None, "session-a".into())
+            .await
+            .unwrap();
+        task_manager
+            .create("other".into(), None, "session-b".into())
+            .await
+            .unwrap();
+
+        super::emit_session_tasks_changed(&task_manager, Some("session-a"), agent.events()).await;
+
+        let update = tokio::time::timeout(std::time::Duration::from_secs(1), agent_rx.recv())
+            .await
+            .expect("startup task snapshot timed out")
+            .expect("task update channel closed");
+        assert!(matches!(
+            update,
+            AgentUpdate::TasksChanged { tasks, .. }
+                if tasks.len() == 1
+                    && tasks[0].subject == "mine"
+                    && tasks[0].session_id == "session-a"
+        ));
     }
 
     /// Creation now runs the Goal's first activation, which must happen off the

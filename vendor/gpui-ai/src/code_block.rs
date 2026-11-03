@@ -69,7 +69,10 @@ impl CodeBlock {
         let mut this = Self::new(id, content.text().to_string());
         match content.state() {
             ProgressState::Running => this.streaming = true,
-            ProgressState::Pending | ProgressState::Complete => {}
+            ProgressState::Pending
+            | ProgressState::Complete
+            | ProgressState::Cancelled
+            | ProgressState::Unknown => {}
             ProgressState::Failed(reason) => this.failed = Some(reason.clone()),
         }
         this

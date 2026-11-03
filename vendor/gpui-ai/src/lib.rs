@@ -133,8 +133,8 @@ pub mod prelude {
         PlanCard, PlanCardLabels, PlanEvent, PlanState, PlanStep, PlanStepStatus,
     };
     pub use crate::prompt_bar::{
-        PromptActions, PromptAttachment, PromptBar, PromptBarEvent, PromptBarLabels,
-        PromptCommand, PromptMention, PromptModel, PromptSubmission, PromptSubmit,
+        PromptActions, PromptAttachment, PromptBar, PromptBarEvent, PromptBarLabels, PromptCommand,
+        PromptMention, PromptModel, PromptSubmission, PromptSubmit,
     };
     pub use crate::question_flow::{Question, QuestionFlow, QuestionFlowEvent};
     pub use crate::queue::{MessageQueue, MessageQueueLabels, QueueEvent, QueuedMessage};

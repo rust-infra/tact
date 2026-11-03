@@ -321,13 +321,14 @@ Add:
 ```rust
 RunStarted { run_id: String }
 RunFinished { run_id: String }
+RunFailed { run_id: String }
 MessageStarted { message_id: String }
 ```
 
-Emit `RunStarted` for `AgentEvent::RunStarted`, `RunFinished` for both
-`AgentEvent::RunFinished` and `AgentEvent::RunFailed`, and `MessageStarted`
-for `AgentEvent::MessageStarted`. Update every exhaustive `AgentUpdate` match
-that must remain compiling, including:
+Emit `RunStarted` for `AgentEvent::RunStarted`, `RunFinished` for
+`AgentEvent::RunFinished`, `RunFailed` for `AgentEvent::RunFailed`, and
+`MessageStarted` for `AgentEvent::MessageStarted`. Update every exhaustive
+`AgentUpdate` match that must remain compiling, including:
 
 - `crates/tui/src/widgets/state/app/agent.rs` (`shell_handle`,
   `ends_thinking_region`, and any other non-wildcard match);
@@ -337,7 +338,7 @@ that must remain compiling, including:
 Ignore the new variants without changing visible behavior. Prefer a shared
 helper such as `AgentUpdate::is_desktop_identity_hint()` only if it keeps the
 matches readable; otherwise add explicit no-op arms.
-All three variants must travel on the reliable `send` lane so a stream delta
+All four variants must travel on the reliable `send` lane so a stream delta
 cannot overtake its identity hint.
 
 - [x] **Step 4: Write the `HostSession` lifecycle tests**
@@ -706,6 +707,24 @@ fn compaction_run_does_not_open_an_activation() {}
 fn turn_stats_allocates_one_tool_group() {}
 
 #[test]
+fn a_later_tool_start_reopens_the_group() {}
+
+#[test]
+fn queued_tools_are_visible_before_they_start() {}
+
+#[test]
+fn run_failed_marks_an_interrupted_tool_failed() {}
+
+#[test]
+fn pending_out_of_band_run_does_not_close_the_active_tool() {}
+
+#[test]
+fn a_cancelled_step_result_stays_cancelled() {}
+
+#[test]
+fn a_queued_tool_moves_below_a_visible_row_before_it_starts() {}
+
+#[test]
 fn stream_chunks_append_to_one_assistant_row() {}
 
 #[test]
@@ -732,16 +751,23 @@ Implement the `TranscriptRow`/`RowBody` model, `RowId` allocation, `LoopId`
 allocation on the first `TurnStats` after `RunStarted`, assistant cursors from
 `MessageStarted`, thinking rows that follow the TUI thinking-region rule (a
 repeated `Started` keeps the open card; tools, streamed answers, notices,
-hooks, errors, and completions close it), tool grouping by loop, standalone
-`RowBody::Gate`/`RowBody::Diff` rows, and typed notices. A `RunFinished` for a
-pending run that never saw `TurnStats` must leave no row.
+hooks, errors, and completions close it), contiguous tool grouping within a
+run, standalone `RowBody::Gate`/`RowBody::Diff` rows, and typed notices. Tool
+rows are the only stored status; group status is derived from them.
+`RunStarted` remains pending until a matching `TurnStats.run_id` arrives, so a
+compaction or Goal activation cannot clear the visible tool state.
+`StepQueued` creates the Pending row that `StepStarted` later promotes.
+`RunFailed` promotes unfinished non-keep-live tools to Failed. A `RunFinished`
+for a pending run that never saw `TurnStats` must leave no row.
+Tool-level cancellation is a first-class `StepStatus::Cancelled` result, and a
+queued row is reparented if visible content lands before its `StepStarted`.
 
 - [x] **Step 4: Implement streaming coalescing**
 
 Coalesce adjacent `StreamChunk`, `ThinkingChunk::Delta`, and `ToolProgress`
 values before the reducer. Store Markdown as `Arc<str>` and tool output as a
-bounded preview plus optional full detail. Do not parse Markdown in the
-reducer.
+4,000-character preview plus at most a 50,000-character detail tail. Do not
+parse Markdown in the reducer.
 
 - [x] **Step 5: Write the gate reconciliation tests**
 
@@ -780,6 +806,9 @@ fn persisted_assistant_tool_uses_form_one_group() {}
 
 #[test]
 fn persisted_tool_results_pair_by_tool_use_id() {}
+
+#[test]
+fn persisted_failed_and_unknown_tools_keep_their_status() {}
 
 #[test]
 fn persisted_injected_context_is_not_a_user_turn() {}

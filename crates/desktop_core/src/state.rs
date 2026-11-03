@@ -96,6 +96,13 @@ fn with_discovered_models(models: &[Arc<str>], discovered: &[String]) -> Option<
     added.then(|| merged.into())
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct AgentBatchOutcome {
+    pub dirty_rows: Vec<RowId>,
+    pub matched_finished: bool,
+    pub matched_failed: bool,
+}
+
 impl DesktopState {
     pub fn new(config: &DesktopConfig) -> Self {
         let catalog = tact_catalog::builtins()
@@ -358,18 +365,33 @@ impl DesktopState {
         delta.dirty_rows
     }
 
-    pub fn apply_agent_batch(&mut self, mut updates: Vec<AgentUpdate>) -> Vec<RowId> {
+    pub(crate) fn apply_agent_batch(&mut self, mut updates: Vec<AgentUpdate>) -> AgentBatchOutcome {
         for update in &mut updates {
             self.localize_agent_update(update);
         }
+        let mut outcome = AgentBatchOutcome::default();
         for update in &updates {
+            match update {
+                AgentUpdate::RunFinished { run_id }
+                    if self.active_run.as_deref() == Some(run_id.as_str()) =>
+                {
+                    outcome.matched_finished = true;
+                }
+                AgentUpdate::RunFailed { run_id }
+                    if self.active_run.as_deref() == Some(run_id.as_str()) =>
+                {
+                    outcome.matched_failed = true;
+                }
+                _ => {}
+            }
             self.observe_agent_update(update);
         }
         let context = crate::ReduceContext {
             session_epoch: self.session.epoch,
             show_hook_output: self.show_hook_output,
         };
-        self.reducer.apply_batch(updates, &context).dirty_rows
+        outcome.dirty_rows = self.reducer.apply_batch(updates, &context).dirty_rows;
+        outcome
     }
 
     fn localize_agent_update(&self, update: &mut AgentUpdate) {
@@ -428,18 +450,29 @@ impl DesktopState {
             | AgentUpdate::ThinkingChunk(tact_protocol::ThinkingChunk::Delta(_)) => {
                 self.runtime.current_phase = RunPhase::Thinking;
             }
-            AgentUpdate::TurnStats { turns_taken, .. } => {
+            AgentUpdate::TurnStats {
+                run_id,
+                turns_taken,
+                ..
+            } => {
                 if self.runtime.run_started_at.is_none() {
                     self.runtime.run_started_at = Some(Utc::now());
                 }
-                if let Some(run_id) = self.pending_run.take() {
+                let run_id = run_id
+                    .clone()
+                    .or_else(|| self.pending_run.take())
+                    .or_else(|| self.active_run.clone());
+                if let Some(run_id) = run_id {
+                    self.pending_run = None;
                     self.active_run = Some(run_id);
                 }
                 self.runtime.turns_taken = *turns_taken;
                 self.runtime.current_phase = RunPhase::RunningTools;
             }
-            AgentUpdate::StepStarted { tool_name, .. } => {
-                self.runtime.latest_tool = Some(Arc::from(tool_name.clone()));
+            AgentUpdate::StepQueued { .. } | AgentUpdate::StepStarted { .. } => {
+                // The chip itself lives on the reducer, which owns the
+                // transcript row and therefore its lifecycle status; the
+                // snapshot reads it back below.
                 self.runtime.current_phase = RunPhase::RunningTools;
             }
             AgentUpdate::TokenUsage(usage) => self.apply_token_usage(usage),
@@ -466,6 +499,17 @@ impl DesktopState {
                 }
                 // A compaction activation that never saw `TurnStats` leaves the
                 // previous phase and timer untouched.
+            }
+            AgentUpdate::RunFailed { run_id } => {
+                let failed_pending = self.pending_run.as_deref() == Some(run_id.as_str());
+                let failed_active = self.active_run.as_deref() == Some(run_id.as_str());
+                if failed_pending {
+                    self.pending_run = None;
+                }
+                if failed_active {
+                    self.active_run = None;
+                    self.runtime.current_phase = RunPhase::Failed;
+                }
             }
             AgentUpdate::TasksChanged { tasks, .. } => {
                 self.tasks = tasks.iter().map(task_view).collect();
@@ -568,13 +612,20 @@ impl DesktopState {
     }
 
     pub fn snapshot(&self) -> Arc<DesktopSnapshot> {
+        let latest_tool_detail = self.reducer.latest_tool_view();
         Arc::new(DesktopSnapshot {
             revision: self.revision,
             projects: self.projects.clone().into(),
             project: self.project.clone(),
             sessions: self.sessions.clone(),
             session: self.session.clone(),
-            runtime: self.runtime.clone(),
+            runtime: RuntimeView {
+                // The reducer owns the live tool row, so the chip is read from
+                // it rather than duplicated on the parked runtime view.
+                latest_tool: latest_tool_detail.as_ref().map(|tool| tool.label.clone()),
+                latest_tool_detail,
+                ..self.runtime.clone()
+            },
             transcript: self.reducer.view(),
             composer: self.composer.clone(),
             inspector: InspectorView {
@@ -667,7 +718,7 @@ fn subagent_view(run: &SubagentRunSnapshot, metadata: Option<&SubagentMetadata>)
         elapsed_ms: run
             .finished_at
             .zip(run.started_at)
-            .map(|(finished, started)| (finished - started).max(0) as u64 * 1000)
+            .map(|(finished, started)| (finished - started).max(0) as u64)
             .unwrap_or(0),
         last_activity: Some(Arc::from(run.summary_first.as_str())),
     };
@@ -719,15 +770,48 @@ mod tests {
     #[test]
     fn compaction_run_does_not_open_an_activation_in_the_runtime_view() {
         let (mut state, _tmp) = state();
-        state.apply_agent_update(AgentUpdate::RunStarted {
-            run_id: "compact-1".into(),
-        });
-        state.apply_agent_update(AgentUpdate::RunFinished {
-            run_id: "compact-1".into(),
-        });
+        let outcome = state.apply_agent_batch(vec![
+            AgentUpdate::RunStarted {
+                run_id: "compact-1".into(),
+            },
+            AgentUpdate::RunFinished {
+                run_id: "compact-1".into(),
+            },
+        ]);
         assert_eq!(state.runtime.current_phase, RunPhase::Idle);
         assert!(state.runtime.run_started_at.is_none());
         assert_eq!(state.runtime.turns_taken, 0);
+        assert!(!outcome.matched_finished);
+        assert!(!outcome.matched_failed);
+    }
+
+    #[test]
+    fn pending_activation_terminal_does_not_match_the_active_run() {
+        let (mut state, _tmp) = state();
+        let started = state.apply_agent_batch(vec![
+            AgentUpdate::RunStarted {
+                run_id: "run-active".into(),
+            },
+            AgentUpdate::TurnStats {
+                run_id: Some("run-active".into()),
+                turns_taken: 1,
+                max_turns: None,
+            },
+        ]);
+        assert!(!started.matched_finished);
+
+        let outcome = state.apply_agent_batch(vec![
+            AgentUpdate::RunStarted {
+                run_id: "run-compact".into(),
+            },
+            AgentUpdate::RunFinished {
+                run_id: "run-compact".into(),
+            },
+        ]);
+        assert!(!outcome.matched_finished);
+        assert!(!outcome.matched_failed);
+        assert_eq!(state.active_run.as_deref(), Some("run-active"));
+        assert_eq!(state.runtime.current_phase, RunPhase::RunningTools);
     }
 
     #[test]
@@ -782,6 +866,7 @@ mod tests {
         });
         assert_eq!(state.runtime.current_phase, RunPhase::Idle);
         state.apply_agent_update(AgentUpdate::TurnStats {
+            run_id: Some("run-1".into()),
             turns_taken: 2,
             max_turns: None,
         });
@@ -791,5 +876,17 @@ mod tests {
             run_id: "run-1".into(),
         });
         assert_eq!(state.runtime.current_phase, RunPhase::Complete);
+    }
+
+    #[test]
+    fn subagent_elapsed_uses_millisecond_timestamps() {
+        let run = SubagentRunSnapshot {
+            child_id: "child".into(),
+            status: tact_protocol::SubagentStatusSnapshot::Completed,
+            summary_first: "done".into(),
+            started_at: Some(1_000),
+            finished_at: Some(4_308),
+        };
+        assert_eq!(subagent_view(&run, None).elapsed_ms, 3_308);
     }
 }

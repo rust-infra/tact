@@ -9,6 +9,7 @@ use tact_protocol::{
 };
 
 use crate::{
+    LatestToolView,
     gates::PendingUiRequest,
     transcript::row::{
         AssistantRow, ErrorRow, GateCard, GateKind, GateOrigin, GateSelection, GateState,
@@ -40,6 +41,43 @@ impl RowDelta {
     }
 }
 
+/// The transcript row the Run inspector chip reads.
+///
+/// Only identity is stored. Status, duration and label come from the row on
+/// every snapshot, so a mutation path that forgets to sync cannot make the
+/// chip disagree with the card.
+#[derive(Clone, Debug)]
+struct LatestToolKey {
+    tool_id: Arc<str>,
+    group: RowId,
+    row: RowId,
+}
+
+fn update_nested_tool(
+    view: &mut TranscriptView,
+    tool_id: &str,
+    mut update: impl FnMut(&mut ToolRow),
+) -> bool {
+    for row in view.rows.iter_mut() {
+        let RowBody::ToolGroup(group) = &mut Arc::make_mut(row).body else {
+            continue;
+        };
+        let mut items = group.items.to_vec();
+        let Some(ToolGroupItem::Tool(tool)) = items.iter_mut().find(
+            |item| matches!(item, ToolGroupItem::Tool(tool) if tool.tool_id.as_ref() == tool_id),
+        ) else {
+            continue;
+        };
+        update(tool);
+        group.items = Arc::from(items);
+        if group.collapse_override.is_none() {
+            group.collapsed = group.status() != RowStatus::Running;
+        }
+        return true;
+    }
+    false
+}
+
 pub(crate) struct TranscriptReducer {
     rows: im::Vector<Arc<TranscriptRow>>,
     next_row_id: u64,
@@ -54,12 +92,13 @@ pub(crate) struct TranscriptReducer {
     active_thinking: Option<RowId>,
     active_plan: Option<RowId>,
     assistant_messages: HashMap<String, RowId>,
-    last_assistant: Option<RowId>,
-    last_group: Option<RowId>,
     last_finished_rows: Vec<RowId>,
     tools: HashMap<(String, String), (RowId, RowId)>,
     gates: HashMap<RequestId, RowId>,
     hook_status: HashMap<u64, RowId>,
+    /// The row the Run inspector chip reads, so its status and duration are
+    /// always the transcript row's own values.
+    latest_tool: Option<LatestToolKey>,
 }
 
 impl Default for TranscriptReducer {
@@ -78,12 +117,11 @@ impl Default for TranscriptReducer {
             active_thinking: None,
             active_plan: None,
             assistant_messages: HashMap::new(),
-            last_assistant: None,
-            last_group: None,
             last_finished_rows: Vec::new(),
             tools: HashMap::new(),
             gates: HashMap::new(),
             hook_status: HashMap::new(),
+            latest_tool: None,
         }
     }
 }
@@ -105,18 +143,46 @@ impl TranscriptReducer {
         self.active_assistant = None;
         self.active_thinking = None;
         self.assistant_messages.clear();
-        self.last_assistant = None;
-        self.last_group = None;
         self.last_finished_rows.clear();
         self.tools.clear();
         self.gates.clear();
         self.hook_status.clear();
+        self.latest_tool = None;
     }
 
     pub fn view(&self) -> TranscriptView {
         TranscriptView {
             rows: self.rows.clone(),
         }
+    }
+
+    /// The latest tool the Run inspector shows, read from its transcript row.
+    ///
+    /// `None` before the run's first `StepQueued` or `StepStarted`, and for a
+    /// session seeded from history. The row lookup keeps the chip and the card
+    /// on one source of truth, so a replayed start or an interrupted run
+    /// cannot leave the chip reporting a status the row no longer has.
+    pub(crate) fn latest_tool_view(&self) -> Option<LatestToolView> {
+        let latest = self.latest_tool.as_ref()?;
+        let row = self
+            .rows
+            .iter()
+            .find(|row| row.id == latest.group)
+            .and_then(|row| match &row.body {
+                RowBody::ToolGroup(group) => group.items.iter().find_map(|item| match item {
+                    ToolGroupItem::Tool(tool) if tool.id == latest.row => Some(tool),
+                    _ => None,
+                }),
+                _ => None,
+            })?;
+        Some(LatestToolView {
+            tool_id: latest.tool_id.clone(),
+            group: Some(latest.group),
+            row: Some(latest.row),
+            label: Arc::from(tool_label(&row.name, &row.arg_summary)),
+            duration_ms: row.duration_ms,
+            status: row.status,
+        })
     }
 
     pub fn apply_batch(
@@ -189,6 +255,10 @@ impl TranscriptReducer {
         text: impl Into<Arc<str>>,
         attachments: Vec<std::path::PathBuf>,
     ) -> RowId {
+        // A new user turn closes the previous run's terminal-repaint window.
+        // The chip belongs to the run that produced the tool, so it clears too.
+        self.clear_closed_run_rows();
+        self.latest_tool = None;
         self.push_row(
             None,
             RowBody::User(UserRow {
@@ -196,6 +266,11 @@ impl TranscriptReducer {
                 attachments: attachments.into(),
             }),
         )
+    }
+
+    /// Drops terminal-row bookkeeping before a later cancel can revisit it.
+    pub(crate) fn clear_closed_run_rows(&mut self) {
+        self.last_finished_rows.clear();
     }
 
     pub fn push_notice(&mut self, text: impl Into<Arc<str>>) -> RowId {
@@ -218,9 +293,19 @@ impl TranscriptReducer {
         let mut collapsed = None;
         self.update_group(id, |group| {
             group.collapsed = !group.collapsed;
+            group.collapse_override = Some(group.collapsed);
             collapsed = Some(group.collapsed);
         });
-        collapsed
+        if collapsed.is_some() {
+            return collapsed;
+        }
+        let mut nested = None;
+        self.update_nested_group(id, |group| {
+            group.collapsed = !group.collapsed;
+            group.collapse_override = Some(group.collapsed);
+            nested = Some(group.collapsed);
+        });
+        nested
     }
 
     pub fn toggle_tool(&mut self, group: RowId, tool: RowId) -> Option<bool> {
@@ -229,7 +314,64 @@ impl TranscriptReducer {
             tool.expanded = !tool.expanded;
             expanded = Some(tool.expanded);
         });
-        expanded
+        if expanded.is_some() {
+            return expanded;
+        }
+        let mut nested = None;
+        self.update_nested_group(group, |group| {
+            let mut items = group.items.to_vec();
+            if let Some(ToolGroupItem::Tool(child)) =
+                items.iter_mut().find(|item| item.id() == tool)
+            {
+                child.expanded = !child.expanded;
+                nested = Some(child.expanded);
+                group.items = Arc::from(items);
+            }
+        });
+        nested
+    }
+
+    /// Applies an update to a tool group inside a subagent transcript.
+    ///
+    /// Nested rows live under their parent tool's `subagent` view, not in the
+    /// top-level row list, so a disclosure from the overlay has to find the
+    /// parent, update the nested copy, and write it back.
+    fn update_nested_group(
+        &mut self,
+        id: RowId,
+        mut update: impl FnMut(&mut ToolGroupRow),
+    ) -> bool {
+        let Some((parent, mut nested)) = self.rows.iter().find_map(|row| match &row.body {
+            RowBody::ToolGroup(group) => group.items.iter().find_map(|item| match item {
+                ToolGroupItem::Tool(parent) => {
+                    let nested = parent.subagent.as_ref()?;
+                    nested
+                        .iter()
+                        .any(|nested_row| nested_row.id == id)
+                        .then(|| (parent.id, nested.clone()))
+                }
+                ToolGroupItem::Gate(_) => None,
+            }),
+            _ => None,
+        }) else {
+            return false;
+        };
+        let mut changed = false;
+        for nested_row in nested.rows.iter_mut() {
+            if nested_row.id != id {
+                continue;
+            }
+            let row = Arc::make_mut(nested_row);
+            if let RowBody::ToolGroup(group) = &mut row.body {
+                update(group);
+                changed = true;
+                break;
+            }
+        }
+        if changed {
+            self.update_tool_by_row(parent, |tool| tool.subagent = Some(nested));
+        }
+        changed
     }
 
     pub fn apply_agent_update(&mut self, update: AgentUpdate, context: &ReduceContext) -> RowDelta {
@@ -254,20 +396,11 @@ impl TranscriptReducer {
         match update {
             AgentUpdate::RunStarted { run_id } => {
                 self.pending_run = Some(run_id);
-                self.active_run = None;
-                self.active_loop = None;
-                self.active_group = None;
-                self.active_assistant = None;
-                self.active_thinking = None;
-                self.assistant_messages.clear();
-                self.last_assistant = None;
-                self.last_group = None;
-                self.last_finished_rows.clear();
             }
             AgentUpdate::RunFinished { run_id } => {
-                let compact_only = self.pending_run.as_deref() == Some(run_id.as_str())
-                    && self.active_run.is_none();
-                if compact_only {
+                if self.pending_run.as_deref() == Some(run_id.as_str())
+                    && self.active_run.as_deref() != Some(run_id.as_str())
+                {
                     self.pending_run = None;
                     return delta;
                 }
@@ -276,7 +409,6 @@ impl TranscriptReducer {
                 {
                     if let Some(group) = self.active_group.take() {
                         self.settle_group(group, true);
-                        self.last_group = Some(group);
                         self.last_finished_rows.push(group);
                         delta.changed(group);
                     }
@@ -284,7 +416,6 @@ impl TranscriptReducer {
                         self.update_assistant(row, |assistant| {
                             assistant.status = RowStatus::Success;
                         });
-                        self.last_assistant = Some(row);
                         self.last_finished_rows.push(row);
                         delta.changed(row);
                     }
@@ -301,6 +432,45 @@ impl TranscriptReducer {
                 }
                 if self.active_run.as_deref() == Some(run_id.as_str()) {
                     self.active_run = None;
+                    self.active_loop = None;
+                }
+            }
+            AgentUpdate::RunFailed { run_id } => {
+                if self.pending_run.as_deref() == Some(run_id.as_str())
+                    && self.active_run.as_deref() != Some(run_id.as_str())
+                {
+                    self.pending_run = None;
+                    return delta;
+                }
+                if self.active_run.as_deref() == Some(run_id.as_str())
+                    || self.pending_run.as_deref() == Some(run_id.as_str())
+                {
+                    if let Some(group) = self.active_group.take() {
+                        self.fail_group(group);
+                        self.last_finished_rows.push(group);
+                        delta.changed(group);
+                    }
+                    if let Some(row) = self.active_assistant.take() {
+                        self.update_assistant(row, |assistant| {
+                            assistant.status = RowStatus::Failed;
+                        });
+                        self.last_finished_rows.push(row);
+                        delta.changed(row);
+                    }
+                    if let Some(row) = self.active_thinking.take() {
+                        self.update_thinking(row, |thinking| {
+                            thinking.status = RowStatus::Failed;
+                        });
+                        self.last_finished_rows.push(row);
+                        delta.changed(row);
+                    }
+                }
+                if self.pending_run.as_deref() == Some(run_id.as_str()) {
+                    self.pending_run = None;
+                }
+                if self.active_run.as_deref() == Some(run_id.as_str()) {
+                    self.active_run = None;
+                    self.active_loop = None;
                 }
             }
             AgentUpdate::MessageStarted { message_id } => {
@@ -315,26 +485,16 @@ impl TranscriptReducer {
                     }
                 }
             }
-            AgentUpdate::TurnStats { .. } => {
-                let promoting = self.active_run.is_none();
-                let run_id = self
-                    .pending_run
-                    .take()
+            AgentUpdate::TurnStats { run_id, .. } => {
+                let run_id = run_id
+                    .or_else(|| self.pending_run.clone())
                     .or_else(|| self.active_run.clone())
                     .unwrap_or_else(|| "fallback-run".to_string());
-                self.active_run = Some(run_id);
-                self.active_plan = None;
-                // A turn boundary is not a card boundary: back-to-back calls
-                // stay in one card even when the loop starts a new turn
-                // between them. A card ends when another visible row lands
-                // after it (see the tail check at the end of this function).
-                // The loop identity belongs to the whole run, so every card
-                // of the run carries it.
-                if promoting {
-                    let loop_id = LoopId(self.next_loop_id);
-                    self.next_loop_id += 1;
-                    self.active_loop = Some(loop_id);
+                if self.active_run.as_deref() != Some(run_id.as_str()) {
+                    self.start_visible_run(run_id);
+                    self.pending_run = None;
                 }
+                self.active_plan = None;
             }
             AgentUpdate::StreamChunk(text) => {
                 let row = self.ensure_assistant();
@@ -390,6 +550,8 @@ impl TranscriptReducer {
                 self.update_plan(row, |plan| {
                     let mut steps = plan.steps.to_vec();
                     steps.push(PlanRowStep {
+                        tool_id: (!step.tool_id.is_empty())
+                            .then(|| Arc::from(step.tool_id.as_str())),
                         label: Arc::from(step.description.clone()),
                         status: RowStatus::Pending,
                         detail: (!step.tool.is_empty()).then(|| Arc::from(step.tool.clone())),
@@ -397,6 +559,39 @@ impl TranscriptReducer {
                     plan.steps = steps.into();
                 });
                 delta.changed(row);
+            }
+            AgentUpdate::StepQueued {
+                idx,
+                tool_id,
+                tool_name,
+                arg_summary,
+                arg_full,
+                presentation,
+                ..
+            } => {
+                if self.set_plan_step(idx, RowStatus::Pending)
+                    && let Some(plan) = self.active_plan
+                {
+                    delta.changed(plan);
+                }
+                let row = self.ensure_tool(
+                    &tool_id,
+                    &tool_name,
+                    &arg_summary,
+                    &arg_full,
+                    presentation.visual_kind,
+                    RowStatus::Pending,
+                );
+                if let Some((group, row)) = self.current_tool(&tool_id).copied() {
+                    self.latest_tool = Some(LatestToolKey {
+                        tool_id: Arc::from(tool_id.as_str()),
+                        group,
+                        row,
+                    });
+                    delta.changed(group);
+                } else {
+                    delta.changed(row);
+                }
             }
             AgentUpdate::StepStarted {
                 idx,
@@ -418,8 +613,24 @@ impl TranscriptReducer {
                     &arg_summary,
                     &arg_full,
                     presentation.visual_kind,
+                    RowStatus::Running,
                 );
-                if let Some((group, _)) = self.current_tool(&tool_id).copied() {
+                self.reparent_queued_tool(&tool_id, row);
+                self.update_tool_by_row(row, |tool| {
+                    if tool.status == RowStatus::Pending {
+                        tool.status = RowStatus::Running;
+                    }
+                    tool.name = Arc::from(tool_name);
+                    tool.arg_summary = Arc::from(one_line_summary(&arg_summary));
+                    tool.arg_full = (!arg_full.is_empty()).then(|| Arc::from(arg_full));
+                });
+                let location = self.current_tool(&tool_id).copied();
+                if let Some((group, row)) = location {
+                    self.latest_tool = Some(LatestToolKey {
+                        tool_id: Arc::from(tool_id.as_str()),
+                        group,
+                        row,
+                    });
                     delta.changed(group);
                 } else {
                     delta.changed(row);
@@ -438,6 +649,7 @@ impl TranscriptReducer {
                 let plan_status = match result.status {
                     StepStatus::Failed => RowStatus::Failed,
                     StepStatus::Success => RowStatus::Success,
+                    StepStatus::Cancelled => RowStatus::Cancelled,
                 };
                 if self.set_plan_step(idx, plan_status)
                     && let Some(plan) = self.active_plan
@@ -453,6 +665,7 @@ impl TranscriptReducer {
                             StepStatus::Failed => RowStatus::Failed,
                             StepStatus::Success if keep_live => RowStatus::Running,
                             StepStatus::Success => RowStatus::Success,
+                            StepStatus::Cancelled => RowStatus::Cancelled,
                         };
                         let text = result
                             .detail
@@ -465,8 +678,6 @@ impl TranscriptReducer {
                                 path: Some(Arc::from(result.arg_summary)),
                                 patch: Arc::from(text.clone()),
                             };
-                        } else if !result.message.is_empty() {
-                            tool.body = ToolBody::Text(Arc::from(result.message));
                         }
                         tool.output = output_view(&text);
                     });
@@ -584,7 +795,9 @@ impl TranscriptReducer {
                             RowStatus::Failed
                         };
                         tool.output = output_view(&output);
-                        tool.body = ToolBody::Text(Arc::from(message));
+                        if output.trim().is_empty() && !message.is_empty() {
+                            tool.output = output_view(&message);
+                        }
                         tool.keep_live = false;
                     });
                     self.settle_group(group, false);
@@ -654,18 +867,25 @@ impl TranscriptReducer {
                 delta.changed(row);
             }
             AgentUpdate::Error(error) => {
-                if let Some(row) = self.active_assistant.take().or(self.last_assistant) {
+                if let Some(row) = self.active_assistant.take() {
                     self.update_assistant(row, |assistant| {
                         assistant.status = RowStatus::Failed;
                     });
-                    self.last_assistant = Some(row);
                     delta.changed(row);
                 }
-                if let Some(group) = self.active_group.take().or(self.last_group) {
+                if let Some(group) = self.active_group.take() {
                     self.update_group(group, |group| {
-                        group.status = RowStatus::Failed;
+                        let mut items = group.items.to_vec();
+                        for item in &mut items {
+                            if let ToolGroupItem::Tool(tool) = item
+                                && matches!(tool.status, RowStatus::Pending | RowStatus::Running)
+                                && !tool.keep_live
+                            {
+                                tool.status = RowStatus::Failed;
+                            }
+                        }
+                        group.items = Arc::from(items);
                     });
-                    self.last_group = Some(group);
                     delta.changed(group);
                 }
                 let row = self.push_row(
@@ -681,14 +901,12 @@ impl TranscriptReducer {
                 self.last_finished_rows.clear();
                 if let Some(group) = self.active_group.take() {
                     self.settle_group(group, true);
-                    self.last_group = Some(group);
                     delta.changed(group);
                 }
                 if let Some(row) = self.active_assistant.take() {
                     self.update_assistant(row, |assistant| {
                         assistant.status = RowStatus::Success;
                     });
-                    self.last_assistant = Some(row);
                     delta.changed(row);
                 }
                 if let Some(row) = self.active_thinking.take() {
@@ -699,6 +917,7 @@ impl TranscriptReducer {
                 }
                 self.pending_run = None;
                 self.active_run = None;
+                self.active_loop = None;
             }
             AgentUpdate::TaskCancelled => {
                 for row in std::mem::take(&mut self.last_finished_rows) {
@@ -723,12 +942,10 @@ impl TranscriptReducer {
                     self.update_assistant(row, |assistant| {
                         assistant.status = RowStatus::Cancelled;
                     });
-                    self.last_assistant = Some(row);
                     delta.changed(row);
                 }
                 if let Some(group) = self.active_group.take() {
                     self.cancel_group(group);
-                    self.last_group = Some(group);
                     delta.changed(group);
                 }
                 if let Some(row) = self.active_thinking.take() {
@@ -739,18 +956,17 @@ impl TranscriptReducer {
                 }
                 self.pending_run = None;
                 self.active_run = None;
+                self.active_loop = None;
             }
             AgentUpdate::TaskIdle => {
                 if let Some(group) = self.active_group.take() {
                     self.settle_group(group, true);
-                    self.last_group = Some(group);
                     delta.changed(group);
                 }
                 if let Some(row) = self.active_assistant.take() {
                     self.update_assistant(row, |assistant| {
                         assistant.status = RowStatus::Success;
                     });
-                    self.last_assistant = Some(row);
                     delta.changed(row);
                 }
                 if let Some(row) = self.active_thinking.take() {
@@ -761,6 +977,7 @@ impl TranscriptReducer {
                 }
                 self.pending_run = None;
                 self.active_run = None;
+                self.active_loop = None;
             }
             AgentUpdate::RequestSelect { .. } | AgentUpdate::RequestMultiSelect { .. } => {}
             AgentUpdate::ToolTranscript { tool_id, entry } => {
@@ -779,16 +996,13 @@ impl TranscriptReducer {
             }
             _ => {}
         }
-        // A card owns only the calls that are consecutive on screen. Once any
-        // other row lands after it, the card settles where it stands and the
-        // next call opens a new one beside that row. The row is marked dirty
-        // so the shell remeasures it at its collapsed height.
+        // Visible content ends a contiguous tool region. The next tool starts
+        // its own card below that content, so transcript order stays causal.
         if let Some(group) = self.active_group
             && !self.rows.last().is_some_and(|row| row.id == group)
         {
             self.active_group = None;
             self.settle_group(group, false);
-            self.last_group = Some(group);
             delta.changed(group);
         }
         delta
@@ -993,6 +1207,12 @@ impl TranscriptReducer {
         let mut delta = RowDelta::default();
         let mut tools = HashMap::<String, RowId>::new();
         for message in messages {
+            if message.origin.is_user_turn() {
+                // A real user message starts the next run: its tools must not
+                // append to the card the previous run left behind. Injected
+                // context is not a user turn and keeps the group.
+                self.active_group = None;
+            }
             match &message.origin {
                 MessageOrigin::User => {
                     let text = message_text(message);
@@ -1018,6 +1238,7 @@ impl TranscriptReducer {
                         Arc::from(body),
                         None,
                     ) {
+                        self.active_group = None;
                         delta.changed(row);
                     }
                 }
@@ -1026,12 +1247,20 @@ impl TranscriptReducer {
                         if let AgentContentBlock::ToolResult {
                             tool_use_id,
                             content,
+                            status,
                         } = block
                             && let Some(row) = tools.get(tool_use_id).copied()
                         {
                             self.update_tool_by_row(row, |tool| {
                                 tool.output = output_view(content);
-                                tool.status = RowStatus::Success;
+                                tool.status = match status {
+                                    tact_agent_api::ToolResultStatus::Success => RowStatus::Success,
+                                    tact_agent_api::ToolResultStatus::Failed => RowStatus::Failed,
+                                    tact_agent_api::ToolResultStatus::Cancelled => {
+                                        RowStatus::Cancelled
+                                    }
+                                    tact_agent_api::ToolResultStatus::Unknown => RowStatus::Unknown,
+                                };
                             });
                             delta.changed(row);
                         }
@@ -1051,6 +1280,7 @@ impl TranscriptReducer {
                                 }),
                                 None,
                             );
+                            self.active_group = None;
                             delta.changed(row);
                         }
                     }
@@ -1065,6 +1295,7 @@ impl TranscriptReducer {
                             }),
                             None,
                         );
+                        self.active_group = None;
                         delta.changed(row);
                     }
                     let tool_uses: Vec<(String, String, serde_json::Value)> = message
@@ -1078,7 +1309,6 @@ impl TranscriptReducer {
                         })
                         .collect();
                     if !tool_uses.is_empty() {
-                        self.active_group = None;
                         let group = self.ensure_group();
                         for (id, name, input) in tool_uses {
                             let row = self.ensure_tool(
@@ -1087,6 +1317,7 @@ impl TranscriptReducer {
                                 &input.to_string(),
                                 &input.to_string(),
                                 ToolVisualKind::Generic,
+                                RowStatus::Pending,
                             );
                             tools.insert(id, row);
                             delta.changed(row);
@@ -1100,6 +1331,7 @@ impl TranscriptReducer {
                 | MessageOrigin::CompactionSummary => {
                     let text = message_text(message);
                     if !text.trim().is_empty() {
+                        self.active_group = None;
                         let row = self.push_row(
                             None,
                             RowBody::Notice(NoticeRow {
@@ -1112,25 +1344,19 @@ impl TranscriptReducer {
                 _ => {}
             }
         }
-        let settled = self
+        // Seeded history is a finished transcript. No group is still
+        // collecting, and a tool with no persisted result never finished, so
+        // it must not spin forever after a reload.
+        self.active_group = None;
+        let groups = self
             .rows
             .iter()
             .filter_map(|row| match &row.body {
-                RowBody::ToolGroup(group)
-                    if !group.items.is_empty()
-                        && group.items.iter().all(|item| match item {
-                            ToolGroupItem::Tool(tool) => {
-                                !matches!(tool.status, RowStatus::Pending | RowStatus::Running)
-                            }
-                            ToolGroupItem::Gate(_) => true,
-                        }) =>
-                {
-                    Some(row.id)
-                }
+                RowBody::ToolGroup(group) if !group.items.is_empty() => Some(row.id),
                 _ => None,
             })
             .collect::<Vec<_>>();
-        for group in settled {
+        for group in groups {
             self.settle_group(group, true);
             delta.changed(group);
         }
@@ -1145,7 +1371,6 @@ impl TranscriptReducer {
             && let Some(row) = self.assistant_messages.get(message_id).copied()
         {
             self.active_assistant = Some(row);
-            self.last_assistant = Some(row);
             return row;
         }
         let row = self.push_row(
@@ -1166,7 +1391,6 @@ impl TranscriptReducer {
             self.assistant_messages.insert(message_id, row);
         }
         self.active_assistant = Some(row);
-        self.last_assistant = Some(row);
         row
     }
 
@@ -1177,7 +1401,6 @@ impl TranscriptReducer {
         if let Some(row) = self.assistant_messages.get(message_id).copied() {
             self.active_message_id = Some(message_id.to_string());
             self.active_assistant = Some(row);
-            self.last_assistant = Some(row);
             return;
         }
         if let Some(row) = self.active_assistant.take() {
@@ -1186,7 +1409,6 @@ impl TranscriptReducer {
                     assistant.status = RowStatus::Success;
                 }
             });
-            self.last_assistant = Some(row);
             delta.changed(row);
         }
         self.active_message_id = Some(message_id.to_string());
@@ -1204,12 +1426,11 @@ impl TranscriptReducer {
                 loop_id: loop_id.unwrap_or(LoopId(u64::MAX)),
                 items: Arc::from([]),
                 summary: Arc::from("0 tools"),
-                status: RowStatus::Running,
                 collapsed: false,
+                collapse_override: None,
             }),
         );
         self.active_group = Some(row);
-        self.last_group = Some(row);
         row
     }
 
@@ -1220,6 +1441,7 @@ impl TranscriptReducer {
         arg_summary: &str,
         arg_full: &str,
         visual_kind: ToolVisualKind,
+        initial_status: RowStatus,
     ) -> RowId {
         let key = self.current_tool_key(tool_id);
         if let Some((_, row)) = self.tools.get(&key) {
@@ -1227,20 +1449,17 @@ impl TranscriptReducer {
         }
         let group = self.ensure_group();
         let row = self.alloc_id();
-        let body = match visual_kind {
-            ToolVisualKind::Command => ToolBody::Code {
-                language: Some(Arc::from("shell")),
-                text: Arc::from(arg_summary),
-            },
-            _ => ToolBody::None,
-        };
+        // The invocation already fills the Input panel. The body is the
+        // output area, so a command must not pre-fill it with its own text or
+        // the streamed output and the failure message have nowhere to show.
+        let body = ToolBody::None;
         let tool = ToolGroupItem::Tool(ToolRow {
             id: row,
             tool_id: Arc::from(tool_id),
             name: Arc::from(name),
             arg_summary: Arc::from(one_line_summary(arg_summary)),
             arg_full: (!arg_full.is_empty()).then(|| Arc::from(arg_full)),
-            status: RowStatus::Running,
+            status: initial_status,
             body,
             output: ToolOutputView::default(),
             meta: ToolMetaView::default(),
@@ -1303,14 +1522,14 @@ impl TranscriptReducer {
                         && let RowBody::Assistant(assistant) = &mut Arc::make_mut(last).body
                     {
                         assistant.markdown = Arc::from(text);
-                        assistant.status = RowStatus::Running;
+                        assistant.status = RowStatus::Success;
                         changed = true;
                         tool.subagent = Some(nested);
                         return;
                     }
                     RowBody::Assistant(AssistantRow {
                         markdown: Arc::from(text),
-                        status: RowStatus::Running,
+                        status: RowStatus::Success,
                         suggestions: Arc::from([]),
                     })
                 }
@@ -1326,7 +1545,27 @@ impl TranscriptReducer {
                         SubagentStepStatus::Running => RowStatus::Running,
                         SubagentStepStatus::Success => RowStatus::Success,
                         SubagentStepStatus::Failed => RowStatus::Failed,
+                        SubagentStepStatus::Cancelled => RowStatus::Cancelled,
                     };
+                    let output = step
+                        .detail
+                        .clone()
+                        .filter(|detail| !detail.is_empty())
+                        .unwrap_or_else(|| step.message.clone());
+                    let folded = update_nested_tool(&mut nested, &step.tool_id, |child| {
+                        child.status = status;
+                        child.name = Arc::from(step.tool_name.clone());
+                        child.arg_summary = Arc::from(one_line_summary(&step.arg_summary));
+                        child.arg_full =
+                            (!step.arg_full.is_empty()).then(|| Arc::from(step.arg_full.clone()));
+                        child.output = output_view(&output);
+                        child.duration_ms = step.duration_us.map(|micros| micros / 1_000);
+                    });
+                    if folded {
+                        changed = true;
+                        tool.subagent = Some(nested);
+                        return;
+                    }
                     let item = ToolGroupItem::Tool(ToolRow {
                         id: next_row_id,
                         tool_id: Arc::from(step.tool_id),
@@ -1334,8 +1573,8 @@ impl TranscriptReducer {
                         arg_summary: Arc::from(one_line_summary(&step.arg_summary)),
                         arg_full: (!step.arg_full.is_empty()).then(|| Arc::from(step.arg_full)),
                         status,
-                        body: ToolBody::Text(Arc::from(step.detail.unwrap_or(step.message))),
-                        output: ToolOutputView::default(),
+                        body: ToolBody::None,
+                        output: output_view(&output),
                         meta: ToolMetaView::default(),
                         subagent: None,
                         expanded: false,
@@ -1347,8 +1586,8 @@ impl TranscriptReducer {
                         loop_id: next_loop_id,
                         items: Arc::from([item]),
                         summary: Arc::from("1 tool"),
-                        status,
                         collapsed: status != RowStatus::Running,
+                        collapse_override: None,
                     })
                 }
                 SubagentTranscriptEntry::Info(text) => RowBody::Notice(NoticeRow {
@@ -1463,6 +1702,29 @@ impl TranscriptReducer {
         })
     }
 
+    /// The top-level transcript row that owns a nested subagent row.
+    ///
+    /// A disclosure inside the subagent overlay changes a copy under the
+    /// parent tool; the shell only remeasures top-level rows, so the intent
+    /// handler has to mark that parent dirty as well as the nested id.
+    pub(crate) fn top_level_row_for(&self, nested: RowId) -> Option<RowId> {
+        self.rows.iter().find_map(|row| match &row.body {
+            RowBody::ToolGroup(group) => group
+                .items
+                .iter()
+                .any(|item| match item {
+                    ToolGroupItem::Tool(tool) => {
+                        tool.subagent.as_ref().is_some_and(|nested_view| {
+                            nested_view.iter().any(|nested_row| nested_row.id == nested)
+                        })
+                    }
+                    ToolGroupItem::Gate(gate) => gate.id == nested,
+                })
+                .then_some(row.id),
+            _ => None,
+        })
+    }
+
     fn update_gate(&mut self, id: RequestId, update: impl FnOnce(&mut GateCard)) {
         let Some(row_id) = self.gates.get(&id).copied() else {
             return;
@@ -1532,43 +1794,64 @@ impl TranscriptReducer {
     }
 
     fn settle_group(&mut self, row: RowId, finish_run: bool) {
-        // A group still collecting its turn's steps stays open: settling it
-        // between two steps would close the card and hide every later step of
-        // the same turn behind its header.
+        // A group still collecting adjacent steps stays open. Visible rows
+        // between tool regions end the group before the next StepQueued or
+        // StepStarted creates another one.
         let collecting = self.active_group == Some(row);
         self.update_group(row, |group| {
-            let status = if group.items.iter().any(|item| {
-                matches!(item, ToolGroupItem::Tool(tool) if tool.status == RowStatus::Failed)
-            }) {
-                RowStatus::Failed
-            } else if group.items.iter().any(|item| {
-                matches!(
-                    item,
-                    ToolGroupItem::Tool(tool)
-                        if tool.status == RowStatus::Running
-                            && (!finish_run || tool.keep_live)
-                )
-            }) {
-                RowStatus::Running
-            } else {
-                RowStatus::Success
-            };
-            group.status = status;
-            group.collapsed = status == RowStatus::Success && !collecting;
+            if finish_run {
+                // A completed run ends every non-keep-live tool that never
+                // reported a result. A keep-live tool still owns its card.
+                let mut items = group.items.to_vec();
+                let mut finalized = false;
+                for item in &mut items {
+                    if let ToolGroupItem::Tool(tool) = item
+                        && matches!(tool.status, RowStatus::Pending | RowStatus::Running)
+                        && !tool.keep_live
+                    {
+                        tool.status = RowStatus::Cancelled;
+                        finalized = true;
+                    }
+                }
+                if finalized {
+                    group.items = Arc::from(items);
+                }
+            }
+            let status = group.status();
+            if group.collapse_override.is_none() {
+                group.collapsed = status == RowStatus::Success && !collecting;
+            }
+        });
+    }
+
+    fn fail_group(&mut self, row: RowId) {
+        self.update_group(row, |group| {
+            let mut items = group.items.to_vec();
+            for item in &mut items {
+                if let ToolGroupItem::Tool(tool) = item
+                    && matches!(tool.status, RowStatus::Pending | RowStatus::Running)
+                    && !tool.keep_live
+                {
+                    tool.status = RowStatus::Failed;
+                }
+            }
+            group.items = Arc::from(items);
+            group.collapsed = false;
+            group.collapse_override = Some(false);
         });
     }
 
     fn cancel_group(&mut self, row: RowId) {
         self.update_group(row, |group| {
-            group.status = RowStatus::Cancelled;
-            group.collapsed = false;
             let mut items = group.items.to_vec();
+            let mut cancelled = false;
             for item in &mut items {
                 match item {
                     ToolGroupItem::Tool(tool)
                         if matches!(tool.status, RowStatus::Pending | RowStatus::Running) =>
                     {
                         tool.status = RowStatus::Cancelled;
+                        cancelled = true;
                     }
                     ToolGroupItem::Gate(gate)
                         if matches!(gate.status, GateState::Pending | GateState::Submitting) =>
@@ -1579,6 +1862,10 @@ impl TranscriptReducer {
                 }
             }
             group.items = Arc::from(items);
+            if cancelled {
+                group.collapsed = false;
+                group.collapse_override = Some(false);
+            }
         });
     }
 
@@ -1589,6 +1876,59 @@ impl TranscriptReducer {
             group.items = Arc::from(items);
             group.summary = Arc::from(format!("{} items", group.items.len()));
         });
+    }
+
+    fn reparent_queued_tool(&mut self, tool_id: &str, row_id: RowId) {
+        let key = self.current_tool_key(tool_id);
+        let Some((old_group, existing_row)) = self.tools.get(&key).copied() else {
+            return;
+        };
+        if existing_row != row_id || self.active_group == Some(old_group) {
+            return;
+        }
+        let queued = self.rows.iter().any(|row| {
+            matches!(
+                &row.body,
+                RowBody::ToolGroup(group)
+                    if group.items.iter().any(|item| {
+                        matches!(
+                            item,
+                            ToolGroupItem::Tool(tool)
+                                if tool.id == row_id && tool.status == RowStatus::Pending
+                        )
+                    })
+            )
+        });
+        if !queued {
+            return;
+        }
+        let Some(item) = self.remove_group_item(old_group, row_id) else {
+            return;
+        };
+        let group = self.ensure_group();
+        self.append_group_item(group, item);
+        self.tools.insert(key, (group, row_id));
+    }
+
+    fn remove_group_item(&mut self, group_id: RowId, item_id: RowId) -> Option<ToolGroupItem> {
+        let index = self.rows.iter().position(|row| row.id == group_id)?;
+        let mut group = match &self.rows[index].body {
+            RowBody::ToolGroup(group) => group.clone(),
+            _ => return None,
+        };
+        let mut items = group.items.to_vec();
+        let item_index = items.iter().position(|item| item.id() == item_id)?;
+        let item = items.remove(item_index);
+        if items.is_empty() {
+            self.rows.remove(index);
+        } else {
+            group.items = Arc::from(items);
+            group.summary = Arc::from(format!("{} items", group.items.len()));
+            let mut row = (*self.rows[index]).clone();
+            row.body = RowBody::ToolGroup(group);
+            self.rows.set(index, Arc::new(row));
+        }
+        Some(item)
     }
 
     fn update_tool_by_row(&mut self, row_id: RowId, update: impl FnOnce(&mut ToolRow)) {
@@ -1633,12 +1973,11 @@ impl TranscriptReducer {
             _ => return,
         };
         let mut items = group.items.to_vec();
-        if let Some(ToolGroupItem::Tool(tool)) = items.iter_mut().find(|item| item.id() == tool_id)
-        {
-            update(tool);
-        } else {
+        let Some(ToolGroupItem::Tool(tool)) = items.iter_mut().find(|item| item.id() == tool_id)
+        else {
             return;
-        }
+        };
+        update(tool);
         group.items = Arc::from(items);
         let mut row = (*self.rows[group_index]).clone();
         row.body = RowBody::ToolGroup(group);
@@ -1731,6 +2070,19 @@ impl TranscriptReducer {
                 })
             })
         })
+    }
+
+    fn start_visible_run(&mut self, run_id: String) {
+        self.active_run = Some(run_id);
+        self.active_loop = Some(LoopId(self.next_loop_id));
+        self.next_loop_id += 1;
+        self.active_group = None;
+        self.active_assistant = None;
+        self.active_thinking = None;
+        self.active_plan = None;
+        self.assistant_messages.clear();
+        self.last_finished_rows.clear();
+        self.latest_tool = None;
     }
 
     fn alloc_id(&mut self) -> RowId {
@@ -1880,6 +2232,17 @@ pub fn one_line_summary(text: &str) -> String {
     collapsed
 }
 
+/// The inspector chip's mono label: the tool name and, when it has one, the
+/// same one-line argument summary the transcript group header shows.
+fn tool_label(name: &str, arg_summary: &str) -> String {
+    let summary = one_line_summary(arg_summary);
+    if summary.is_empty() {
+        name.to_string()
+    } else {
+        format!("{name} {summary}")
+    }
+}
+
 fn now_label() -> Arc<str> {
     Arc::from(chrono::Local::now().format("%H:%M").to_string())
 }
@@ -1900,19 +2263,29 @@ fn chunks_text(chunks: &[ToolOutputChunk]) -> String {
     chunks.iter().map(|chunk| chunk.text.as_str()).collect()
 }
 
+const TOOL_PREVIEW_CHARS: usize = 4_000;
+const TOOL_DETAIL_CHARS: usize = 50_000;
+
 fn output_view(text: &str) -> ToolOutputView {
-    const PREVIEW_CHARS: usize = 4_000;
     let chars = text.chars().count();
+    let detail = tail_chars(text, TOOL_DETAIL_CHARS);
     ToolOutputView {
-        preview: Arc::from(text.chars().take(PREVIEW_CHARS).collect::<String>()),
-        detail: Some(Arc::from(text)),
-        truncated: chars > PREVIEW_CHARS,
+        preview: Arc::from(tail_chars(&detail, TOOL_PREVIEW_CHARS)),
+        detail: (!detail.is_empty()).then(|| Arc::from(detail)),
+        truncated: chars > TOOL_DETAIL_CHARS,
     }
 }
 
 fn append_output(tool: &mut ToolRow, text: &str) {
     let combined = format!("{}{}", tool.output.detail.as_deref().unwrap_or(""), text);
+    let truncated = tool.output.truncated || combined.chars().count() > TOOL_DETAIL_CHARS;
     tool.output = output_view(&combined);
+    tool.output.truncated |= truncated;
+}
+
+fn tail_chars(text: &str, max_chars: usize) -> String {
+    let len = text.chars().count();
+    text.chars().skip(len.saturating_sub(max_chars)).collect()
 }
 
 /// Updates that end an open reasoning region.
@@ -1926,6 +2299,7 @@ fn ends_thinking_region(update: &AgentUpdate) -> bool {
         update,
         AgentUpdate::StreamChunk(_)
             | AgentUpdate::StepAdded(_)
+            | AgentUpdate::StepQueued { .. }
             | AgentUpdate::StepStarted { .. }
             | AgentUpdate::StepFinished { .. }
             | AgentUpdate::StepFailed { .. }
@@ -1967,8 +2341,14 @@ mod tests {
     }
 
     fn turn(reducer: &mut TranscriptReducer) {
+        let run_id = reducer
+            .pending_run
+            .clone()
+            .or_else(|| reducer.active_run.clone())
+            .unwrap_or_else(|| "run-1".to_string());
         reducer.apply_agent_update(
             AgentUpdate::TurnStats {
+                run_id: Some(run_id),
                 turns_taken: 1,
                 max_turns: None,
             },
@@ -2006,6 +2386,19 @@ mod tests {
         }
     }
 
+    fn command_started(tool_id: &str, command: &str) -> AgentUpdate {
+        let mut presentation = ToolPresentationInfo::generic("bash");
+        presentation.visual_kind = ToolVisualKind::Command;
+        AgentUpdate::StepStarted {
+            idx: 0,
+            tool_id: tool_id.to_string(),
+            tool_name: "bash".into(),
+            arg_summary: command.into(),
+            arg_full: command.into(),
+            presentation,
+        }
+    }
+
     #[test]
     fn step_added_builds_a_plan_row_and_tracks_status() {
         let mut reducer = TranscriptReducer::default();
@@ -2038,6 +2431,8 @@ mod tests {
             .expect("plan row");
         assert_eq!(plan.steps.len(), 2);
         assert_eq!(plan.steps[0].label.as_ref(), "Read the shell");
+        assert_eq!(plan.steps[0].tool_id.as_deref(), Some("tool-plan-1"));
+        assert_eq!(plan.steps[1].tool_id.as_deref(), Some("tool-plan-2"));
 
         reducer.apply_agent_update(
             AgentUpdate::StepStarted {
@@ -2068,6 +2463,776 @@ mod tests {
             .filter(|row| matches!(row.body, RowBody::ToolGroup(_)))
             .cloned()
             .collect()
+    }
+
+    fn first_group_status(reducer: &TranscriptReducer) -> RowStatus {
+        match &group_rows(reducer)[0].body {
+            RowBody::ToolGroup(group) => group.status(),
+            _ => panic!("expected a tool group"),
+        }
+    }
+
+    #[test]
+    fn latest_tool_tracks_the_transcript_lifecycle() {
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-latest");
+        turn(&mut reducer);
+        reducer.apply_agent_update(step_started("tool-latest"), &context(1));
+
+        let latest = reducer.latest_tool_view().expect("latest tool");
+        assert_eq!(latest.label.as_ref(), "read_file README.md");
+        assert_eq!(latest.status, RowStatus::Running);
+        let group = latest.group.expect("tool group");
+        let row = latest.row.expect("tool row");
+        assert!(reducer.rows.iter().any(|candidate| {
+            candidate.id == group
+                && matches!(
+                    &candidate.body,
+                    RowBody::ToolGroup(items)
+                        if items.items.iter().any(|item| item.id() == row)
+                )
+        }));
+
+        // A second step replaces the chip; the first row keeps its own life.
+        reducer.apply_agent_update(step_started("tool-second"), &context(1));
+        let second = reducer.latest_tool_view().expect("second latest tool");
+        assert_eq!(second.tool_id.as_ref(), "tool-second");
+        let second_group = second.group.expect("second tool group");
+        let second_row = second.row.expect("second tool row");
+
+        let mut finished = step_finished("tool-second");
+        let AgentUpdate::StepFinished { result, .. } = &mut finished else {
+            unreachable!("step_finished builds a StepFinished")
+        };
+        result.duration_us = Some(1_500_000);
+        reducer.apply_agent_update(finished, &context(1));
+
+        let latest = reducer.latest_tool_view().expect("latest tool");
+        assert_eq!(latest.status, RowStatus::Success);
+        assert_eq!(latest.duration_ms, Some(1_500));
+        assert_eq!(latest.group, Some(second_group));
+        assert_eq!(latest.row, Some(second_row));
+    }
+
+    fn first_tool(reducer: &TranscriptReducer) -> ToolRow {
+        group_rows(reducer)
+            .into_iter()
+            .find_map(|row| match &row.body {
+                RowBody::ToolGroup(group) => group.items.iter().find_map(|item| match item {
+                    ToolGroupItem::Tool(tool) => Some(tool.clone()),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .expect("a tool row")
+    }
+
+    fn nested_tools(reducer: &TranscriptReducer) -> Vec<ToolRow> {
+        let Some(nested) = first_tool(reducer).subagent else {
+            return Vec::new();
+        };
+        nested
+            .iter()
+            .filter_map(|row| match &row.body {
+                RowBody::ToolGroup(group) => group.items.iter().find_map(|item| match item {
+                    ToolGroupItem::Tool(tool) => Some(tool.clone()),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn child_step(
+        status: tact_protocol::subagent_transcript::SubagentStepStatus,
+        message: &str,
+        duration_us: Option<u64>,
+    ) -> AgentUpdate {
+        use tact_protocol::subagent_transcript::{SubagentStep, SubagentTranscriptEntry};
+        AgentUpdate::ToolTranscript {
+            tool_id: "spawn-1".into(),
+            entry: SubagentTranscriptEntry::Step(SubagentStep {
+                tool_id: "child-1".into(),
+                tool_name: "bash".into(),
+                arg_summary: "ls".into(),
+                arg_full: "ls".into(),
+                status,
+                message: message.into(),
+                detail: (!message.is_empty()).then(|| message.into()),
+                duration_us,
+                presentation: ToolPresentationInfo::generic("bash"),
+            }),
+        }
+    }
+
+    #[test]
+    fn an_idle_error_keeps_the_finished_run_green() {
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-idle");
+        turn(&mut reducer);
+        reducer.apply_agent_update(AgentUpdate::StreamChunk("done".into()), &context(1));
+        reducer.apply_agent_update(step_started("tool-idle"), &context(1));
+        reducer.apply_agent_update(step_finished("tool-idle"), &context(1));
+        reducer.apply_agent_update(
+            AgentUpdate::RunFinished {
+                run_id: "run-idle".into(),
+            },
+            &context(1),
+        );
+        reducer.push_user("next prompt", Vec::new());
+
+        reducer.apply_agent_update(
+            AgentUpdate::Error(tact_protocol::AgentErrorKind::Other("idle failure".into())),
+            &context(1),
+        );
+
+        assert!(group_rows(&reducer).iter().all(|row| {
+            matches!(
+                &row.body,
+                RowBody::ToolGroup(group) if group.status() == RowStatus::Success
+            )
+        }));
+        let assistant = reducer.rows.iter().find_map(|row| match &row.body {
+            RowBody::Assistant(assistant) => Some(assistant.status),
+            _ => None,
+        });
+        assert_eq!(assistant, Some(RowStatus::Success));
+        assert!(
+            reducer.latest_tool_view().is_none(),
+            "the next prompt starts a new run and clears the previous chip"
+        );
+    }
+
+    #[test]
+    fn late_error_does_not_rewrite_a_finished_tool() {
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-finished");
+        turn(&mut reducer);
+        reducer.apply_agent_update(step_started("tool-finished"), &context(1));
+        reducer.apply_agent_update(step_finished("tool-finished"), &context(1));
+        reducer.apply_agent_update(
+            AgentUpdate::RunFinished {
+                run_id: "run-finished".into(),
+            },
+            &context(1),
+        );
+
+        reducer.apply_agent_update(
+            AgentUpdate::Error(tact_protocol::AgentErrorKind::Other("late failure".into())),
+            &context(1),
+        );
+
+        assert_eq!(first_tool(&reducer).status, RowStatus::Success);
+        assert_eq!(first_group_status(&reducer), RowStatus::Success);
+    }
+
+    #[test]
+    fn a_duplicate_step_started_does_not_regress_the_chip() {
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-duplicate");
+        turn(&mut reducer);
+        reducer.apply_agent_update(step_started("tool-duplicate"), &context(1));
+        reducer.apply_agent_update(step_finished("tool-duplicate"), &context(1));
+        assert_eq!(
+            reducer.latest_tool_view().map(|latest| latest.status),
+            Some(RowStatus::Success)
+        );
+
+        reducer.apply_agent_update(step_started("tool-duplicate"), &context(1));
+
+        assert_eq!(
+            reducer.latest_tool_view().map(|latest| latest.status),
+            Some(RowStatus::Success),
+            "the chip must mirror the finished row, not the replayed start"
+        );
+    }
+
+    #[test]
+    fn a_late_duplicate_start_does_not_reparent_a_finished_tool() {
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-duplicate-closed");
+        turn(&mut reducer);
+        reducer.apply_agent_update(step_started("tool-duplicate"), &context(1));
+        let group = group_rows(&reducer)[0].id;
+        reducer.apply_agent_update(step_finished("tool-duplicate"), &context(1));
+        reducer.apply_agent_update(
+            AgentUpdate::ThinkingChunk(tact_protocol::ThinkingChunk::Started),
+            &context(1),
+        );
+
+        reducer.apply_agent_update(step_started("tool-duplicate"), &context(1));
+
+        let groups = group_rows(&reducer);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].id, group);
+        assert_eq!(first_tool(&reducer).status, RowStatus::Success);
+    }
+
+    #[test]
+    fn a_run_error_finalizes_the_tool_it_interrupts() {
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-error");
+        turn(&mut reducer);
+        reducer.apply_agent_update(step_started("tool-error"), &context(1));
+
+        reducer.apply_agent_update(
+            AgentUpdate::Error(tact_protocol::AgentErrorKind::Other(
+                "provider failed".into(),
+            )),
+            &context(1),
+        );
+
+        assert_eq!(first_tool(&reducer).status, RowStatus::Failed);
+        assert!(matches!(
+            &group_rows(&reducer)[0].body,
+            RowBody::ToolGroup(group) if group.status() == RowStatus::Failed
+        ));
+        assert_eq!(
+            reducer.latest_tool_view().map(|latest| latest.status),
+            Some(RowStatus::Failed)
+        );
+    }
+
+    #[test]
+    fn a_later_tool_start_reopens_the_group() {
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-1");
+        turn(&mut reducer);
+        reducer.apply_agent_update(step_started("tool-1"), &context(1));
+        reducer.apply_agent_update(step_finished("tool-1"), &context(1));
+        assert_eq!(first_group_status(&reducer), RowStatus::Success);
+
+        reducer.apply_agent_update(step_started("tool-2"), &context(1));
+
+        assert_eq!(first_group_status(&reducer), RowStatus::Running);
+    }
+
+    #[test]
+    fn run_failed_marks_an_interrupted_tool_failed() {
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-1");
+        turn(&mut reducer);
+        reducer.apply_agent_update(step_started("tool-1"), &context(1));
+
+        reducer.apply_agent_update(
+            AgentUpdate::RunFailed {
+                run_id: "run-1".into(),
+            },
+            &context(1),
+        );
+
+        assert_eq!(first_tool(&reducer).status, RowStatus::Failed);
+        assert_eq!(first_group_status(&reducer), RowStatus::Failed);
+        assert_eq!(
+            reducer.latest_tool_view().map(|tool| tool.status),
+            Some(RowStatus::Failed)
+        );
+    }
+
+    #[test]
+    fn a_cancelled_step_result_stays_cancelled() {
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-1");
+        turn(&mut reducer);
+        reducer.apply_agent_update(step_started("tool-1"), &context(1));
+        let result = StepResult {
+            tool: "bash".into(),
+            arg_summary: "sleep 30".into(),
+            arg_full: None,
+            status: StepStatus::Cancelled,
+            message: "Cancelled by user".into(),
+            detail: None,
+            duration_us: Some(1_000),
+            permission_label: None,
+            presentation: ToolPresentationInfo::generic("bash"),
+        };
+        reducer.apply_agent_update(
+            AgentUpdate::StepFinished {
+                idx: 0,
+                run_id: Some("run-1".into()),
+                tool_id: "tool-1".into(),
+                result,
+            },
+            &context(1),
+        );
+
+        assert_eq!(first_tool(&reducer).status, RowStatus::Cancelled);
+        assert_eq!(first_group_status(&reducer), RowStatus::Cancelled);
+        assert_eq!(
+            reducer.latest_tool_view().map(|tool| tool.status),
+            Some(RowStatus::Cancelled)
+        );
+    }
+
+    #[test]
+    fn queued_tools_are_visible_before_they_start() {
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-1");
+        turn(&mut reducer);
+        reducer.apply_agent_update(
+            AgentUpdate::StepQueued {
+                idx: 0,
+                tool_id: "tool-queued".into(),
+                tool_name: "bash".into(),
+                arg_summary: "cargo test".into(),
+                arg_full: "cargo test".into(),
+                presentation: ToolPresentationInfo::generic("bash"),
+            },
+            &context(1),
+        );
+
+        assert_eq!(first_tool(&reducer).status, RowStatus::Pending);
+        assert_eq!(
+            reducer.latest_tool_view().map(|tool| tool.status),
+            Some(RowStatus::Pending)
+        );
+        let row = first_tool(&reducer).id;
+
+        reducer.apply_agent_update(
+            AgentUpdate::StepStarted {
+                idx: 0,
+                tool_id: "tool-queued".into(),
+                tool_name: "bash".into(),
+                arg_summary: "cargo test".into(),
+                arg_full: "cargo test".into(),
+                presentation: ToolPresentationInfo::generic("bash"),
+            },
+            &context(1),
+        );
+
+        assert_eq!(first_tool(&reducer).id, row);
+        assert_eq!(first_tool(&reducer).status, RowStatus::Running);
+    }
+
+    #[test]
+    fn a_queued_tool_moves_below_a_visible_row_before_it_starts() {
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-1");
+        turn(&mut reducer);
+        reducer.apply_agent_update(
+            AgentUpdate::StepQueued {
+                idx: 0,
+                tool_id: "tool-queued".into(),
+                tool_name: "bash".into(),
+                arg_summary: "cargo test".into(),
+                arg_full: "cargo test".into(),
+                presentation: ToolPresentationInfo::generic("bash"),
+            },
+            &context(1),
+        );
+        let old_group = group_rows(&reducer)[0].id;
+        reducer.apply_agent_update(
+            AgentUpdate::HookStatus {
+                id: 1,
+                source: Some("pre-tool".into()),
+                message: "checking".into(),
+                elapsed_ms: Some(1),
+            },
+            &context(1),
+        );
+        reducer.apply_agent_update(
+            AgentUpdate::StepStarted {
+                idx: 0,
+                tool_id: "tool-queued".into(),
+                tool_name: "bash".into(),
+                arg_summary: "cargo test".into(),
+                arg_full: "cargo test".into(),
+                presentation: ToolPresentationInfo::generic("bash"),
+            },
+            &context(1),
+        );
+
+        let kinds = reducer
+            .rows
+            .iter()
+            .filter_map(|row| match row.body {
+                RowBody::HookStatus(_) => Some("hook"),
+                RowBody::ToolGroup(_) => Some("group"),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(kinds, ["hook", "group"]);
+        assert_ne!(group_rows(&reducer)[0].id, old_group);
+        assert_eq!(first_tool(&reducer).status, RowStatus::Running);
+        assert_eq!(first_tool(&reducer).tool_id.as_ref(), "tool-queued");
+    }
+
+    #[test]
+    fn keep_live_progress_remains_visible_after_step_finished() {
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-background");
+        turn(&mut reducer);
+        let mut presentation = ToolPresentationInfo::generic("background_run");
+        presentation.keep_live = true;
+        reducer.apply_agent_update(
+            AgentUpdate::StepStarted {
+                idx: 0,
+                tool_id: "bg-1".into(),
+                tool_name: "background_run".into(),
+                arg_summary: "for i in 1 2 3".into(),
+                arg_full: "for i in 1 2 3".into(),
+                presentation: presentation.clone(),
+            },
+            &context(1),
+        );
+        reducer.apply_agent_update(
+            AgentUpdate::StepFinished {
+                idx: 0,
+                run_id: Some("run-background".into()),
+                tool_id: "bg-1".into(),
+                result: StepResult {
+                    tool: "background_run".into(),
+                    arg_summary: "for i in 1 2 3".into(),
+                    arg_full: None,
+                    status: StepStatus::Success,
+                    message: "Background task bg-1 started".into(),
+                    detail: None,
+                    duration_us: None,
+                    permission_label: None,
+                    presentation,
+                },
+            },
+            &context(1),
+        );
+        reducer.apply_agent_update(
+            AgentUpdate::ToolProgress {
+                run_id: None,
+                tool_id: "bg-1".into(),
+                chunks: vec![ToolOutputChunk::stdout("tick 1\n")],
+            },
+            &context(1),
+        );
+
+        let tool = first_tool(&reducer);
+        assert_eq!(tool.status, RowStatus::Running);
+        assert!(matches!(tool.body, ToolBody::None));
+        assert!(
+            tool.output
+                .detail
+                .as_deref()
+                .is_some_and(|output| output.contains("tick 1")),
+            "live background output must remain in the rendered output"
+        );
+    }
+
+    #[test]
+    fn tool_progress_detail_is_bounded_to_its_tail() {
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-long");
+        turn(&mut reducer);
+        reducer.apply_agent_update(step_started("tool-long"), &context(1));
+        reducer.apply_agent_update(
+            AgentUpdate::ToolProgress {
+                run_id: Some("run-long".into()),
+                tool_id: "tool-long".into(),
+                chunks: vec![ToolOutputChunk::stdout(format!(
+                    "{}TAIL",
+                    "x".repeat(60_000)
+                ))],
+            },
+            &context(1),
+        );
+
+        let tool = first_tool(&reducer);
+        let detail = tool.output.detail.expect("bounded detail");
+        assert_eq!(detail.chars().count(), 50_000);
+        assert!(detail.ends_with("TAIL"));
+        assert!(tool.output.truncated);
+    }
+
+    #[test]
+    fn pending_out_of_band_run_does_not_close_the_active_tool() {
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-active");
+        turn(&mut reducer);
+        reducer.apply_agent_update(step_started("tool-active"), &context(1));
+
+        reducer.apply_agent_update(
+            AgentUpdate::RunStarted {
+                run_id: "run-compact".into(),
+            },
+            &context(1),
+        );
+        reducer.apply_agent_update(
+            AgentUpdate::RunFinished {
+                run_id: "run-compact".into(),
+            },
+            &context(1),
+        );
+
+        assert_eq!(first_tool(&reducer).status, RowStatus::Running);
+        assert_eq!(
+            reducer.latest_tool_view().map(|tool| tool.tool_id),
+            Some(Arc::from("tool-active"))
+        );
+    }
+
+    #[test]
+    fn a_command_card_shows_its_output_not_the_command() {
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-command");
+        turn(&mut reducer);
+        reducer.apply_agent_update(command_started("bash-1", "cargo test"), &context(1));
+
+        assert!(matches!(first_tool(&reducer).body, ToolBody::None));
+        reducer.apply_agent_update(
+            AgentUpdate::ToolProgress {
+                run_id: Some("run-command".into()),
+                tool_id: "bash-1".into(),
+                chunks: vec![ToolOutputChunk::stdout("partial output\n")],
+            },
+            &context(1),
+        );
+        reducer.apply_agent_update(
+            AgentUpdate::StepFailed {
+                idx: 0,
+                run_id: Some("run-command".into()),
+                tool_id: "bash-1".into(),
+                arg_summary: "cargo test".into(),
+                error: "Error: exit 1".into(),
+            },
+            &context(1),
+        );
+
+        let tool = first_tool(&reducer);
+        assert!(matches!(tool.body, ToolBody::None));
+        let output = tool.output.detail.as_deref().unwrap_or("");
+        assert!(output.contains("partial output"), "{output}");
+        assert!(output.contains("Error: exit 1"), "{output}");
+    }
+
+    #[test]
+    fn a_user_collapsed_card_stays_collapsed_when_a_tool_finishes() {
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-collapse");
+        turn(&mut reducer);
+        reducer.apply_agent_update(step_started("tool-collapse"), &context(1));
+        let group = group_rows(&reducer)[0].id;
+        assert_eq!(reducer.toggle_group(group), Some(true));
+
+        reducer.apply_agent_update(step_finished("tool-collapse"), &context(1));
+        assert!(matches!(
+            &group_rows(&reducer)[0].body,
+            RowBody::ToolGroup(group) if group.collapsed
+        ));
+
+        reducer.apply_agent_update(
+            AgentUpdate::RunFinished {
+                run_id: "run-collapse".into(),
+            },
+            &context(1),
+        );
+        assert!(matches!(
+            &group_rows(&reducer)[0].body,
+            RowBody::ToolGroup(group) if group.collapsed
+        ));
+    }
+
+    #[test]
+    fn a_subagent_tool_is_one_row_after_both_halves() {
+        use tact_protocol::subagent_transcript::SubagentStepStatus;
+
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-child");
+        turn(&mut reducer);
+        reducer.apply_agent_update(step_started("spawn-1"), &context(1));
+
+        reducer.apply_agent_update(
+            child_step(SubagentStepStatus::Running, "", None),
+            &context(1),
+        );
+        reducer.apply_agent_update(
+            child_step(SubagentStepStatus::Success, "ok", Some(2_000_000)),
+            &context(1),
+        );
+
+        let nested = nested_tools(&reducer);
+        assert_eq!(nested.len(), 1, "both halves are one child card");
+        assert_eq!(nested[0].status, RowStatus::Success);
+        assert_eq!(nested[0].duration_ms, Some(2_000));
+    }
+
+    #[test]
+    fn parallel_subagent_steps_pair_by_tool_id() {
+        use tact_protocol::subagent_transcript::{
+            SubagentStep, SubagentStepStatus, SubagentTranscriptEntry,
+        };
+
+        let child_step = |tool_id: &str, status: SubagentStepStatus| AgentUpdate::ToolTranscript {
+            tool_id: "spawn-1".into(),
+            entry: SubagentTranscriptEntry::Step(SubagentStep {
+                tool_id: tool_id.into(),
+                tool_name: "bash".into(),
+                arg_summary: tool_id.into(),
+                arg_full: tool_id.into(),
+                status,
+                message: format!("{tool_id} {status:?}"),
+                detail: None,
+                duration_us: None,
+                presentation: ToolPresentationInfo::generic("bash"),
+            }),
+        };
+
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-child");
+        turn(&mut reducer);
+        reducer.apply_agent_update(step_started("spawn-1"), &context(1));
+        reducer.apply_agent_update(
+            child_step("child-a", SubagentStepStatus::Running),
+            &context(1),
+        );
+        reducer.apply_agent_update(
+            child_step("child-b", SubagentStepStatus::Running),
+            &context(1),
+        );
+        reducer.apply_agent_update(
+            child_step("child-a", SubagentStepStatus::Success),
+            &context(1),
+        );
+        reducer.apply_agent_update(
+            child_step("child-b", SubagentStepStatus::Failed),
+            &context(1),
+        );
+
+        let nested = nested_tools(&reducer);
+        assert_eq!(nested.len(), 2, "completion must not create duplicate rows");
+        assert!(matches!(
+            nested.iter().find(|tool| tool.tool_id.as_ref() == "child-a"),
+            Some(tool) if tool.status == RowStatus::Success
+        ));
+        assert!(matches!(
+            nested.iter().find(|tool| tool.tool_id.as_ref() == "child-b"),
+            Some(tool) if tool.status == RowStatus::Failed
+        ));
+    }
+
+    #[test]
+    fn final_subagent_assistant_text_is_not_left_running() {
+        use tact_protocol::subagent_transcript::SubagentTranscriptEntry;
+
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-child");
+        turn(&mut reducer);
+        reducer.apply_agent_update(step_started("spawn-1"), &context(1));
+        reducer.apply_agent_update(
+            AgentUpdate::ToolTranscript {
+                tool_id: "spawn-1".into(),
+                entry: SubagentTranscriptEntry::Assistant("finished".into()),
+            },
+            &context(1),
+        );
+
+        let nested = first_tool(&reducer).subagent.expect("nested transcript");
+        let status = nested.iter().find_map(|row| match &row.body {
+            RowBody::Assistant(assistant) => Some(assistant.status),
+            _ => None,
+        });
+        assert_eq!(status, Some(RowStatus::Success));
+    }
+
+    #[test]
+    fn a_nested_tool_disclosure_reaches_the_child_row() {
+        use tact_protocol::subagent_transcript::SubagentStepStatus;
+
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-nested");
+        turn(&mut reducer);
+        reducer.apply_agent_update(step_started("spawn-1"), &context(1));
+        reducer.apply_agent_update(
+            child_step(SubagentStepStatus::Running, "", None),
+            &context(1),
+        );
+        reducer.apply_agent_update(
+            child_step(SubagentStepStatus::Success, "ok", Some(2_000_000)),
+            &context(1),
+        );
+        let parent = first_tool(&reducer);
+        let nested = parent.subagent.expect("nested transcript");
+        let (group_id, child_id) = nested
+            .iter()
+            .find_map(|row| match &row.body {
+                RowBody::ToolGroup(group) => group.items.iter().find_map(|item| match item {
+                    ToolGroupItem::Tool(tool) if tool.tool_id.as_ref() == "child-1" => {
+                        Some((row.id, tool.id))
+                    }
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .expect("nested child card");
+
+        assert_eq!(reducer.toggle_group(group_id), Some(false));
+        assert_eq!(reducer.toggle_tool(group_id, child_id), Some(true));
+        assert_eq!(
+            reducer.top_level_row_for(group_id),
+            Some(group_rows(&reducer)[0].id)
+        );
+
+        let nested = first_tool(&reducer).subagent.expect("nested transcript");
+        let group = nested
+            .iter()
+            .find(|row| row.id == group_id)
+            .expect("nested group");
+        assert!(matches!(
+            &group.body,
+            RowBody::ToolGroup(group) if !group.collapsed
+        ));
+        let child = nested_tools(&reducer)
+            .into_iter()
+            .find(|tool| tool.id == child_id)
+            .expect("nested child");
+        assert!(child.expanded);
+    }
+
+    #[test]
+    fn an_unpaired_persisted_tool_is_cancelled() {
+        let tool = AgentMessage::new(
+            AgentRole::Assistant,
+            MessageOrigin::Assistant,
+            vec![AgentContentBlock::ToolUse {
+                id: "tool-history".into(),
+                name: "bash".into(),
+                input: json!({"command": "cargo test"}),
+            }],
+        );
+        let mut reducer = TranscriptReducer::new();
+        reducer.seed_persisted(&[tool], &context(1));
+
+        assert_eq!(first_tool(&reducer).status, RowStatus::Cancelled);
+        assert!(matches!(
+            &group_rows(&reducer)[0].body,
+            RowBody::ToolGroup(group) if group.status() == RowStatus::Cancelled
+        ));
+    }
+
+    #[test]
+    fn a_settled_persisted_group_starts_collapsed() {
+        let tool = AgentMessage::new(
+            AgentRole::Assistant,
+            MessageOrigin::Assistant,
+            vec![AgentContentBlock::ToolUse {
+                id: "tool-history".into(),
+                name: "bash".into(),
+                input: json!({"command": "cargo test"}),
+            }],
+        );
+        let result = AgentMessage::new(
+            AgentRole::User,
+            MessageOrigin::ToolResult,
+            vec![AgentContentBlock::ToolResult {
+                tool_use_id: "tool-history".into(),
+                content: "ok".into(),
+                status: tact_agent_api::ToolResultStatus::Success,
+            }],
+        );
+        let mut reducer = TranscriptReducer::new();
+        reducer.seed_persisted(&[tool, result], &context(1));
+
+        assert!(matches!(
+            &group_rows(&reducer)[0].body,
+            RowBody::ToolGroup(group)
+                if group.status() == RowStatus::Success && group.collapsed
+        ));
     }
 
     #[test]
@@ -2119,8 +3284,10 @@ mod tests {
         let group = &group_rows(&reducer)[0];
         assert!(matches!(
             &group.body,
-            RowBody::ToolGroup(group) if group.status == RowStatus::Success && group.collapsed
+            RowBody::ToolGroup(group)
+                if group.status() == RowStatus::Cancelled && !group.collapsed
         ));
+        assert_eq!(first_tool(&reducer).status, RowStatus::Cancelled);
     }
 
     #[test]
@@ -2189,7 +3356,7 @@ mod tests {
     }
 
     #[test]
-    fn each_turn_places_its_tools_between_the_reasoning_regions() {
+    fn reasoning_regions_split_tool_cards() {
         let mut reducer = TranscriptReducer::new();
         run_started(&mut reducer, "run-1");
         turn(&mut reducer);
@@ -2227,12 +3394,17 @@ mod tests {
         assert_eq!(
             kinds,
             ["thinking", "group", "thinking", "group"],
-            "a turn's calls must land beside the reasoning that asked for them"
+            "visible reasoning ends the previous tool region"
+        );
+        assert!(
+            group_rows(&reducer).iter().all(
+                |row| matches!(&row.body, RowBody::ToolGroup(group) if group.items.len() == 1)
+            )
         );
     }
 
     #[test]
-    fn a_running_turn_keeps_its_group_open_between_steps() {
+    fn visible_reasoning_closes_a_tool_group() {
         let mut reducer = TranscriptReducer::new();
         run_started(&mut reducer, "run-1");
         turn(&mut reducer);
@@ -2257,13 +3429,60 @@ mod tests {
             AgentUpdate::ThinkingChunk(tact_protocol::ThinkingChunk::Started),
             &context(1),
         );
-        assert!(
-            matches!(
-                &group_rows(&reducer)[0].body,
-                RowBody::ToolGroup(group) if group.collapsed
-            ),
-            "a row landing after the card settles it"
+        assert_eq!(group_rows(&reducer).len(), 1);
+        assert!(matches!(
+            &group_rows(&reducer)[0].body,
+            RowBody::ToolGroup(group) if group.collapsed
+        ));
+
+        reducer.apply_agent_update(step_started("tool-3"), &context(1));
+        let groups = group_rows(&reducer);
+        assert_eq!(groups.len(), 2);
+        assert!(matches!(
+            &groups[1].body,
+            RowBody::ToolGroup(group) if group.items.len() == 1
+        ));
+    }
+
+    #[test]
+    fn later_visible_rows_do_not_move_the_first_tool() {
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-card");
+        turn(&mut reducer);
+        reducer.apply_agent_update(step_started("tool-1"), &context(1));
+        let first = reducer.latest_tool_view().expect("first tool");
+        let group = first.group.expect("group");
+        let row = first.row.expect("row");
+
+        // Reasoning and an answer close the first region. The next call gets
+        // its own card below those rows.
+        reducer.apply_agent_update(
+            AgentUpdate::ThinkingChunk(tact_protocol::ThinkingChunk::Started),
+            &context(1),
         );
+        reducer.apply_agent_update(AgentUpdate::StreamChunk("answer".into()), &context(1));
+        reducer.apply_agent_update(step_finished("tool-1"), &context(1));
+        reducer.apply_agent_update(step_started("tool-2"), &context(1));
+
+        let groups = group_rows(&reducer);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].id, group, "the card keeps its identity");
+        let RowBody::ToolGroup(items) = &groups[0].body else {
+            panic!("expected a tool group");
+        };
+        assert_eq!(items.items.len(), 1);
+        assert_eq!(items.items[0].id(), row, "the first tool never moved");
+        assert!(matches!(
+            &items.items[0],
+            ToolGroupItem::Tool(tool) if tool.status == RowStatus::Success
+        ));
+        assert!(matches!(
+            &groups[1].body,
+            RowBody::ToolGroup(items) if matches!(
+                &items.items[0],
+            ToolGroupItem::Tool(tool) if tool.id != row && tool.status == RowStatus::Running
+            )
+        ));
     }
 
     #[test]
@@ -2827,7 +4046,102 @@ mod tests {
     }
 
     #[test]
-    fn persisted_history_preserves_thinking_notices_and_message_groups() {
+    fn persisted_consecutive_tool_messages_share_one_group() {
+        let mut reducer = TranscriptReducer::new();
+        let tool = |id: &str| {
+            AgentMessage::new(
+                AgentRole::Assistant,
+                MessageOrigin::Assistant,
+                vec![AgentContentBlock::ToolUse {
+                    id: id.into(),
+                    name: "bash".into(),
+                    input: json!({"command": "true"}),
+                }],
+            )
+        };
+        let result = |tool_id: &str| {
+            AgentMessage::new(
+                AgentRole::User,
+                MessageOrigin::ToolResult,
+                vec![AgentContentBlock::ToolResult {
+                    tool_use_id: tool_id.into(),
+                    content: "ok".into(),
+                    status: tact_agent_api::ToolResultStatus::Success,
+                }],
+            )
+        };
+        // Each model step is its own persisted message; a tool result between
+        // them draws no row, so the two calls are still consecutive on screen.
+        reducer.seed_persisted(
+            &[
+                tool("tool-1"),
+                result("tool-1"),
+                tool("tool-2"),
+                result("tool-2"),
+            ],
+            &context(1),
+        );
+        let groups = group_rows(&reducer);
+        assert_eq!(groups.len(), 1, "consecutive calls share one card");
+        assert!(matches!(
+            &groups[0].body,
+            RowBody::ToolGroup(row) if row.items.len() == 2
+        ));
+    }
+
+    #[test]
+    fn persisted_user_messages_break_the_run_group() {
+        let tool = |id: &str| {
+            AgentMessage::new(
+                AgentRole::Assistant,
+                MessageOrigin::Assistant,
+                vec![AgentContentBlock::ToolUse {
+                    id: id.into(),
+                    name: "bash".into(),
+                    input: json!({"command": "true"}),
+                }],
+            )
+        };
+
+        // Injected context is not a user turn, but it is visible content, so
+        // the next tool starts a new region.
+        let mut reducer = TranscriptReducer::new();
+        reducer.seed_persisted(
+            &[
+                tool("tool-1"),
+                AgentMessage::text(
+                    AgentRole::User,
+                    MessageOrigin::InjectedContext {
+                        source: "hook".into(),
+                    },
+                    "briefing",
+                ),
+                tool("tool-2"),
+            ],
+            &context(1),
+        );
+        assert_eq!(group_rows(&reducer).len(), 2);
+
+        // A real user message starts the next run and its own card.
+        let mut reducer = TranscriptReducer::new();
+        reducer.seed_persisted(
+            &[
+                tool("tool-1"),
+                AgentMessage::text(AgentRole::User, MessageOrigin::User, "next"),
+                tool("tool-2"),
+            ],
+            &context(1),
+        );
+        let groups = group_rows(&reducer);
+        assert_eq!(groups.len(), 2);
+        assert!(groups.iter().all(|row| matches!(
+            &row.body,
+            RowBody::ToolGroup(group) if group.items.len() == 1
+        )));
+    }
+
+    #[test]
+    fn persisted_history_keeps_tool_regions_chronological() {
         let mut reducer = TranscriptReducer::new();
         let assistant = |tool_id: &str| {
             AgentMessage::new(
@@ -2870,7 +4184,12 @@ mod tests {
                 .count(),
             1
         );
-        assert_eq!(group_rows(&reducer).len(), 2);
+        let groups = group_rows(&reducer);
+        assert_eq!(groups.len(), 2);
+        assert!(groups.iter().all(|row| matches!(
+            &row.body,
+            RowBody::ToolGroup(row) if row.items.len() == 1
+        )));
     }
 
     #[test]
@@ -2891,6 +4210,7 @@ mod tests {
             vec![AgentContentBlock::ToolResult {
                 tool_use_id: "tool-1".into(),
                 content: "file body".into(),
+                status: tact_agent_api::ToolResultStatus::Success,
             }],
         );
         reducer.seed_persisted(&[assistant, result], &context(1));
@@ -2904,6 +4224,60 @@ mod tests {
                         if tool.output.detail.as_deref() == Some("file body")
                 )
         ));
+    }
+
+    #[test]
+    fn persisted_tool_result_preserves_failed_and_unknown_status() {
+        let tool = |id: &str| {
+            AgentMessage::new(
+                AgentRole::Assistant,
+                MessageOrigin::Assistant,
+                vec![AgentContentBlock::ToolUse {
+                    id: id.into(),
+                    name: "bash".into(),
+                    input: json!({"command": "false"}),
+                }],
+            )
+        };
+        let result = |id: &str, status| {
+            AgentMessage::new(
+                AgentRole::User,
+                MessageOrigin::ToolResult,
+                vec![AgentContentBlock::ToolResult {
+                    tool_use_id: id.into(),
+                    content: "failed".into(),
+                    status,
+                }],
+            )
+        };
+
+        let mut reducer = TranscriptReducer::new();
+        reducer.seed_persisted(
+            &[
+                tool("failed"),
+                result("failed", tact_agent_api::ToolResultStatus::Failed),
+                tool("cancelled"),
+                result("cancelled", tact_agent_api::ToolResultStatus::Cancelled),
+                tool("legacy"),
+                result("legacy", tact_agent_api::ToolResultStatus::Unknown),
+            ],
+            &context(1),
+        );
+        let statuses = group_rows(&reducer)
+            .into_iter()
+            .flat_map(|row| match &row.body {
+                RowBody::ToolGroup(group) => group.items.iter().cloned().collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .filter_map(|item| match item {
+                ToolGroupItem::Tool(tool) => Some((tool.tool_id.to_string(), tool.status)),
+                ToolGroupItem::Gate(_) => None,
+            })
+            .collect::<HashMap<_, _>>();
+
+        assert_eq!(statuses.get("failed"), Some(&RowStatus::Failed));
+        assert_eq!(statuses.get("cancelled"), Some(&RowStatus::Cancelled));
+        assert_eq!(statuses.get("legacy"), Some(&RowStatus::Unknown));
     }
 
     #[test]
@@ -3445,6 +4819,11 @@ mod tests {
             },
             &context(1),
         );
+        let status_before = match &group_rows(&reducer)[0].body {
+            RowBody::ToolGroup(group) => group.status(),
+            _ => panic!("expected a tool group"),
+        };
+        let tool_before = first_tool(&reducer).status;
         run_started(&mut reducer, "run-2");
         reducer.apply_agent_update(
             AgentUpdate::Error(tact_protocol::AgentErrorKind::Other(
@@ -3452,12 +4831,12 @@ mod tests {
             )),
             &context(1),
         );
-        assert!(group_rows(&reducer).iter().any(|row| {
-            matches!(
-                &row.body,
-                RowBody::ToolGroup(group) if group.status == RowStatus::Success
-            )
-        }));
+        let status_after = match &group_rows(&reducer)[0].body {
+            RowBody::ToolGroup(group) => group.status(),
+            _ => panic!("expected a tool group"),
+        };
+        assert_eq!(status_after, status_before);
+        assert_eq!(first_tool(&reducer).status, tool_before);
     }
 
     #[test]

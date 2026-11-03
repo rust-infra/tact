@@ -164,9 +164,19 @@ not missing surfaces:
 - **Row chrome.** User and assistant marks are the design's 28px rounded
   squares (dark stamp / bordered panel), labels are 11px ink, the run eyebrow
   is uppercase, and the lede is 14px.
-- **Plan and tool cards.** A one-step plan whose only step is the tool it
-  describes no longer draws a plan card above that tool's card; the tool card
-  is the single surface for its status, output and disclosure.
+- **Plan and tool cards.** A plan whose steps all map to visible tool rows does
+  not draw a plan card above the execution group. The tool rows are the single
+  surface for those calls' status, output and disclosure; a plan with a
+  conceptual step keeps its card.
+- **Hook context.** A plugin-injected context is one compact row: source,
+  heading and a two-line plain-text preview. The row opens the full Markdown in
+  the reader instead of expanding every injected line in the transcript.
+- **Overlay scrolling.** Every modal/drawer owns the full pointer and wheel
+  surface. Wheel input scrolls the reader or dialog body and never leaks to the
+  transcript behind the scrim.
+- **Overlay selection.** Reader prose uses the same selection surface as chat:
+  a plain click clears selection, double-click selects a word, triple-click
+  selects a line, and drag selection remains available.
 - **Permission card.** The inline card carries the signal inside its border
   (not in the transcript gutter), 29px decision buttons with `↵` / `esc`
   hints, and a 19px prompt. Review scrolls to the card and focuses Allow once
@@ -276,6 +286,7 @@ record them:
 | Extensions | Empty tabs render nothing; `Refresh MCP` is a bare link | Fixed: MCP shows `No MCP servers yet` above Refresh |
 | Transcript | Hook context rendered as bare markdown; tool groups and diff were outside the capture window | Fixed: hook context card; captures now cover tool cards (`26c`) and the transcript tail |
 | Inspector | Run tab was a flat key/value list with no current step or signal rows | Fixed: Run map header, gauge, Current step, Thread signals, Latest activity |
+| Inspector | Latest activity was a text line and tool cards stored a second lifecycle state | Fixed: status chip reads the tool row, opens its reader, and group headers derive status from child tools |
 | Gate | Centered review modal with full-width buttons instead of the inline card | Fixed: inline amber card with the signal inside it, one-click Allow once / Allow for session / Deny with keyboard hints; Review scrolls to it and focuses Allow once |
 | Account avatar | Title bar has no account avatar | Fixed: local account initials in the title-bar stamp; plan/quota still come from `AccountView` |
 | Command Center icons | Rows have no leading icon | Fixed: group icons via the `CommandSearchItem::icon` patch |

@@ -180,7 +180,7 @@ impl TactEventBridge {
                 });
             }
             AgentEvent::RunFailed { run, .. } => {
-                self.events.send(AgentUpdate::RunFinished {
+                self.events.send(AgentUpdate::RunFailed {
                     run_id: run.run_id.to_string(),
                 });
             }
@@ -191,11 +191,13 @@ impl TactEventBridge {
             }
             AgentEvent::MessageFinished { .. } => {}
             AgentEvent::TurnStarted {
+                run_id,
                 turn,
                 max_total_turns,
                 ..
             } => {
                 self.events.send(AgentUpdate::TurnStats {
+                    run_id: Some(run_id.to_string()),
                     turns_taken: turn,
                     max_turns: max_total_turns,
                 });
@@ -339,6 +341,31 @@ impl TactEventBridge {
                             tool_id: call_id,
                             arg_summary: tracked.arg_summary,
                             error,
+                        });
+                    }
+                    ToolExecutionStatus::Cancelled => {
+                        let output = result_text(&result);
+                        let detail = step_detail_for_presentation(
+                            &tracked.presentation.detail,
+                            &tracked.input,
+                            &output,
+                            StepStatus::Cancelled,
+                        );
+                        self.events.send(AgentUpdate::StepFinished {
+                            idx: tracked.idx,
+                            run_id: Some(run_id.to_string()),
+                            tool_id: call_id,
+                            result: StepResult {
+                                tool: tracked.tool_name,
+                                arg_summary: tracked.arg_summary,
+                                arg_full: Some(tracked.arg_full),
+                                status: StepStatus::Cancelled,
+                                detail,
+                                message: output,
+                                duration_us: Some(duration_micros(duration)),
+                                permission_label,
+                                presentation: tracked.presentation,
+                            },
                         });
                     }
                 }
@@ -540,7 +567,11 @@ mod tests {
         ));
         assert!(matches!(
             &updates[1],
-            AgentUpdate::TurnStats { turns_taken: 1, .. }
+            AgentUpdate::TurnStats {
+                run_id: Some(run_id),
+                turns_taken: 1,
+                ..
+            } if run_id == "run-1"
         ));
     }
 
@@ -572,7 +603,7 @@ mod tests {
         ));
         assert!(matches!(
             &updates[1],
-            AgentUpdate::RunFinished { run_id } if run_id == "run-2"
+            AgentUpdate::RunFailed { run_id } if run_id == "run-2"
         ));
     }
 
@@ -696,7 +727,8 @@ mod tests {
             &updates[0],
             AgentUpdate::TurnStats {
                 turns_taken: 2,
-                max_turns: Some(4)
+                max_turns: Some(4),
+                ..
             }
         ));
         assert!(matches!(
@@ -813,6 +845,26 @@ mod tests {
         assert!(matches!(
             &updates[6],
             AgentUpdate::StepFailed { error, .. } if error == "denied"
+        ));
+    }
+
+    #[test]
+    fn maps_a_cancelled_tool_finish_to_a_cancelled_step() {
+        let (bridge, mut rx) = bridge();
+        bridge.emit(AgentEvent::ToolFinished {
+            run_id: tact_agent_api::RunId::new("run-1"),
+            call_id: "call-cancel".into(),
+            result: ToolExecutionResult::cancelled("Cancelled by user"),
+            permission_label: None,
+            duration: Duration::from_millis(3),
+        });
+
+        let updates = drain(&mut rx);
+        assert!(matches!(
+            &updates[0],
+            AgentUpdate::StepFinished { result, .. }
+                if result.status == StepStatus::Cancelled
+                    && result.message == "Cancelled by user"
         ));
     }
 
@@ -1109,7 +1161,8 @@ mod tests {
             updates[1],
             AgentUpdate::TurnStats {
                 turns_taken: 1,
-                max_turns: None
+                max_turns: None,
+                ..
             }
         ));
         assert!(matches!(updates[2], AgentUpdate::HookContext { .. }));

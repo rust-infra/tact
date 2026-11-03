@@ -618,6 +618,8 @@ mod tests {
                 ProgressState::Pending => Progressive::pending(trace),
                 ProgressState::Running => Progressive::running(trace),
                 ProgressState::Complete => Progressive::complete(trace),
+                ProgressState::Cancelled => Progressive::cancelled(trace),
+                ProgressState::Unknown => Progressive::unknown(trace),
                 ProgressState::Failed(reason) => Progressive::failed(trace, reason.clone()),
             }
         }

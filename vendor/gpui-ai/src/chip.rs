@@ -23,6 +23,10 @@ pub enum ToolStatus {
     Success,
     /// Ended with an error.
     Failed,
+    /// Stopped before it produced a result.
+    Cancelled,
+    /// A legacy record has no trustworthy terminal status.
+    Unknown,
 }
 
 /// A compact, pill-shaped representation of a tool call or code edit.
@@ -42,6 +46,7 @@ pub struct ToolChip {
     label: SharedString,
     detail: Option<SharedString>,
     status: ToolStatus,
+    status_label: Option<SharedString>,
     on_event: Option<SharedHandler<ToolChipEvent>>,
 }
 
@@ -55,6 +60,7 @@ impl ToolChip {
             label: label.into(),
             detail: None,
             status: ToolStatus::default(),
+            status_label: None,
             on_event: None,
         }
     }
@@ -71,6 +77,12 @@ impl ToolChip {
         self
     }
 
+    /// Overrides the accessible status word, typically with a localized label.
+    pub fn status_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.status_label = Some(label.into());
+        self
+    }
+
     /// Makes the chip clickable (for example to open the tool call).
     pub fn on_event(
         mut self,
@@ -81,15 +93,13 @@ impl ToolChip {
     }
 
     fn accessibility_label(&self) -> SharedString {
+        let status = self
+            .status_label
+            .as_deref()
+            .unwrap_or_else(|| self.status.accessibility_label());
         match &self.detail {
-            Some(detail) => format!(
-                "{}, {}, {}",
-                self.label,
-                self.status.accessibility_label(),
-                detail
-            )
-            .into(),
-            None => format!("{}, {}", self.label, self.status.accessibility_label()).into(),
+            Some(detail) => format!("{}, {}, {}", self.label, status, detail).into(),
+            None => format!("{}, {}", self.label, status).into(),
         }
     }
 }
@@ -101,6 +111,8 @@ impl ToolStatus {
             Self::Running => "running",
             Self::Success => "completed",
             Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Unknown => "unknown",
         }
     }
 }
@@ -137,6 +149,8 @@ impl RenderOnce for ToolChip {
             ToolStatus::Running => cx.theme().info,
             ToolStatus::Success => cx.theme().success,
             ToolStatus::Failed => cx.theme().danger,
+            ToolStatus::Cancelled => cx.theme().warning,
+            ToolStatus::Unknown => cx.theme().muted_foreground,
         };
 
         // A status change settles its indicator in rather than popping it:
@@ -191,7 +205,7 @@ impl RenderOnce for ToolChip {
                             .into_any_element(),
                     }),
             )
-            .child(self.label)
+            .child(div().min_w_0().truncate().child(self.label))
             .when_some(self.detail, |this, detail| {
                 this.child(div().text_color(cx.theme().muted_foreground).child(detail))
             })
@@ -258,7 +272,13 @@ mod tests {
         };
         let pending = width_at(cx);
 
-        for status in [ToolStatus::Running, ToolStatus::Success, ToolStatus::Failed] {
+        for status in [
+            ToolStatus::Running,
+            ToolStatus::Success,
+            ToolStatus::Failed,
+            ToolStatus::Cancelled,
+            ToolStatus::Unknown,
+        ] {
             probe.update(cx, |probe, cx| {
                 probe.status = status;
                 cx.notify();
@@ -288,6 +308,13 @@ mod tests {
                 .status(ToolStatus::Success)
                 .accessibility_label(),
             "save changes, completed"
+        );
+        assert_eq!(
+            ToolChip::new("legacy", "legacy call")
+                .status(ToolStatus::Unknown)
+                .status_label("状态未知")
+                .accessibility_label(),
+            "legacy call, 状态未知"
         );
     }
 }

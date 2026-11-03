@@ -9,7 +9,8 @@ use tact_protocol::SurfaceSnapshot;
 
 use crate::{
     Appearance, BackgroundTaskView, FailureView, GateCard, GoalView, ProjectId, ReducedMotion,
-    RowId, SessionEpoch, SessionSummaryView, SubagentView, TaskView, TranscriptView, UsageView,
+    RowId, RowStatus, SessionEpoch, SessionSummaryView, SubagentView, TaskView, TranscriptView,
+    UsageView,
 };
 
 pub type Revision = u64;
@@ -93,11 +94,34 @@ impl Default for SessionListState {
     }
 }
 
+/// The most recent tool selected for the Run inspector.
+///
+/// The chip is a view onto a transcript [`ToolRow`](crate::ToolRow): the reducer
+/// owns the lifecycle status, and the ids let activating the chip open the same
+/// row the transcript renders. It survives a completed run and clears when the
+/// next user prompt starts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LatestToolView {
+    /// Stable tool-call id from the protocol.
+    pub tool_id: Arc<str>,
+    /// Transcript rows the chip opens when activated.
+    pub group: Option<RowId>,
+    pub row: Option<RowId>,
+    /// Short mono label: the tool name and its one-line argument summary.
+    pub label: Arc<str>,
+    /// Muted trailing detail, such as the finished call's duration.
+    pub duration_ms: Option<u64>,
+    pub status: RowStatus,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeView {
     pub run_started_at: Option<DateTime<Utc>>,
     pub current_phase: RunPhase,
+    /// Compatibility label for consumers that only need the rendered name.
     pub latest_tool: Option<Arc<str>>,
+    /// Structured chip state derived from the same transcript row as `latest_tool`.
+    pub latest_tool_detail: Option<LatestToolView>,
     pub turns_taken: u32,
     pub model: Option<Arc<str>>,
     pub usage: UsageView,
@@ -110,6 +134,7 @@ impl Default for RuntimeView {
             run_started_at: None,
             current_phase: RunPhase::Idle,
             latest_tool: None,
+            latest_tool_detail: None,
             turns_taken: 0,
             model: None,
             usage: UsageView::default(),

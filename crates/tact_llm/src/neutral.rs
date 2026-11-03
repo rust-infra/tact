@@ -39,6 +39,7 @@ pub fn agent_content_block(block: &ContentBlock) -> AgentContentBlock {
         } => AgentContentBlock::ToolResult {
             tool_use_id: tool_use_id.clone(),
             content: content.clone(),
+            status: tact_agent_api::ToolResultStatus::Unknown,
         },
         ContentBlock::Thinking {
             thinking,
@@ -71,6 +72,7 @@ pub fn llm_content_block(block: &AgentContentBlock) -> ContentBlock {
         AgentContentBlock::ToolResult {
             tool_use_id,
             content,
+            ..
         } => ContentBlock::ToolResult {
             tool_use_id: tool_use_id.clone(),
             content: content.clone(),

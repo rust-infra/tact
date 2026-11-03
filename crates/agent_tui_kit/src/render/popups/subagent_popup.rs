@@ -638,6 +638,7 @@ impl<'a> BodyBuilder<'a> {
                 msgs.tool_phase_failed,
                 self.theme.error,
             ),
+            ToolPhase::Cancelled => ("⏹", msgs.tool_phase_cancelled, self.theme.muted),
         };
         let mut parts = vec![format!("{glyph} {label}")];
         if let Some(size) = output.size_bytes {
@@ -836,6 +837,7 @@ impl<'a> BodyBuilder<'a> {
             ToolPhase::Running => ("● running", Style::default().fg(self.theme.warning)),
             ToolPhase::Success => ("✓ Success", Style::default().fg(self.theme.success)),
             ToolPhase::Failed => ("✗ Failed", Style::default().fg(self.theme.error)),
+            ToolPhase::Cancelled => ("⏹ Cancelled", Style::default().fg(self.theme.muted)),
         };
         if !spans.is_empty() {
             spans.push(Span::styled(" · ", muted));
@@ -889,15 +891,18 @@ fn build_step_output(step: &SubagentStep, index: usize) -> ToolRenderOutput {
             .with_step_index(index)
             .with_phase(ToolPhase::Running)
             .build(),
-        SubagentStepStatus::Success | SubagentStepStatus::Failed => {
+        SubagentStepStatus::Success
+        | SubagentStepStatus::Failed
+        | SubagentStepStatus::Cancelled => {
             let result = StepResult {
                 tool: step.tool_name.clone(),
                 arg_summary: step.arg_summary.clone(),
                 arg_full: Some(step.arg_full.clone()),
-                status: if matches!(step.status, SubagentStepStatus::Failed) {
-                    StepStatus::Failed
-                } else {
-                    StepStatus::Success
+                status: match step.status {
+                    SubagentStepStatus::Success => StepStatus::Success,
+                    SubagentStepStatus::Failed => StepStatus::Failed,
+                    SubagentStepStatus::Cancelled => StepStatus::Cancelled,
+                    SubagentStepStatus::Running => unreachable!("running handled above"),
                 },
                 message: step.message.clone(),
                 detail: step.detail.clone(),
@@ -1822,6 +1827,22 @@ mod tests {
                 .all(|row| row.spinner.is_none()),
             "a finished block animates nothing"
         );
+    }
+
+    #[test]
+    fn cancelled_step_is_not_rendered_as_failure() {
+        let popup = prepare(
+            vec![SubagentTranscriptEntry::Step(step(
+                "t1",
+                SubagentStepStatus::Cancelled,
+            ))],
+            false,
+            60,
+        );
+        let layout = popup.layout.expect("layout");
+        let text = row_text(&block_segment(&layout)[1]);
+        assert!(text.contains("⏹ Cancelled"), "phase row: {text:?}");
+        assert!(!text.contains("✗ Failed"), "phase row: {text:?}");
     }
 
     /// A block's rows are selectable, and they point at the *content* in the copy

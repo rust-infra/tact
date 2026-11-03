@@ -478,7 +478,15 @@ pub fn capture_all(out: &Path) -> Result<Vec<PathBuf>> {
     snapshot.runtime.usage.cache_hit_tokens = 72_000;
     snapshot.runtime.turns_taken = 7;
     snapshot.runtime.current_phase = tact_desktop_core::RunPhase::RunningTools;
-    snapshot.runtime.latest_tool = Some(std::sync::Arc::from("edit_file bridge.rs +18 -4"));
+    snapshot.runtime.latest_tool = Some("edit_file bridge.rs".into());
+    snapshot.runtime.latest_tool_detail = Some(tact_desktop_core::LatestToolView {
+        tool_id: "call-edit-bridge".into(),
+        group: None,
+        row: None,
+        label: "edit_file bridge.rs".into(),
+        duration_ms: None,
+        status: tact_desktop_core::RowStatus::Running,
+    });
     snapshot.pending_gates = std::sync::Arc::from([tact_desktop_core::fixtures::demo_gate()]);
     harness.set_snapshot(snapshot);
     harness.with_root(|root, _, cx| root.capture_scroll_to(0, cx));

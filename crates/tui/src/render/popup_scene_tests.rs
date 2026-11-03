@@ -2098,6 +2098,7 @@ fn subagent_step(tool_id: &str, status: StepStatus) -> SubagentStep {
         status: match status {
             StepStatus::Success => SubagentStepStatus::Success,
             StepStatus::Failed => SubagentStepStatus::Failed,
+            StepStatus::Cancelled => SubagentStepStatus::Cancelled,
         },
         message: "20 lines".into(),
         // Long enough to be capped: the overflow row that results is also the

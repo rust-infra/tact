@@ -1,19 +1,21 @@
 use std::{
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     path::PathBuf,
+    rc::Rc,
     sync::Arc,
     time::Duration,
 };
 
 use gpui::{
     Anchor, Animation, AnimationExt as _, AnyElement, AppContext as _, ClickEvent, Context, Entity,
-    InteractiveElement as _, IntoElement, ParentElement as _, PathBuilder, Render, Role,
-    ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled, Task, WeakEntity, Window,
-    canvas, div, point, prelude::FluentBuilder as _, px,
+    FollowMode, InteractiveElement as _, IntoElement, ListAlignment, ListOffset, ListState,
+    ParentElement as _, PathBuilder, Render, Role, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled, Task, WeakEntity, Window, canvas, div, list, point,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_ai::prelude::*;
 use gpui_base::FocusTrapElement as _;
-use gpui_component::message_scroller::{MessageScroller, MessageScrollerState};
 use gpui_component::popover::Popover;
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::{
@@ -34,6 +36,7 @@ use tact_desktop_core::{
     RowId, RowStatus, SectionMask, SessionId, SessionPhase, SettingValue, Submission,
     SurfaceSnapshot, ToolGroupItem, ToolRow, TranscriptRow, TranscriptView, is_enabled,
 };
+use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr as _};
 
 use crate::i18n::{self, TextKey};
 use crate::ui::{ansi, diff_review, mermaid, web_search};
@@ -43,6 +46,10 @@ use crate::{keymap, theme};
 const MODEL_PICKER_ROW_HEIGHT: f32 = 30.;
 /// Rows a model picker shows before it scrolls.
 const MODEL_PICKER_VISIBLE_ROWS: usize = 8;
+#[cfg(not(test))]
+const SCROLL_COALESCE_INTERVAL: Duration = Duration::from_millis(24);
+#[cfg(test)]
+const SCROLL_COALESCE_INTERVAL: Duration = Duration::ZERO;
 
 #[derive(Clone)]
 struct Toast {
@@ -54,6 +61,12 @@ struct Toast {
 struct ReaderState {
     title: SharedString,
     markdown: SharedString,
+    /// Shared with the chat transcript's Markdown selection surface so reader
+    /// text follows the same click, double-click and drag semantics.
+    selection: Option<Entity<SelectionActions>>,
+    /// Owns the reader's scroll viewport so wheel input invalidates only the
+    /// Markdown body instead of rebuilding the whole Desktop shell.
+    markdown_view: Option<Entity<ReaderMarkdownView>>,
     typed: Option<ReaderKind>,
     /// Which transcript row (or static surface) produced this reader. The
     /// shell uses it to mount the typed surfaces — ANSI, search results,
@@ -75,6 +88,8 @@ impl ReaderState {
         Self {
             title: title.into(),
             markdown: markdown.into(),
+            selection: None,
+            markdown_view: None,
             typed: None,
             reference: None,
             artifact_view: ArtifactView::Preview,
@@ -182,10 +197,389 @@ impl Render for TranscriptRowView {
     }
 }
 
+struct ReaderMarkdownView {
+    selection: Entity<SelectionActions>,
+    scroll: ScrollHandle,
+    pending_scroll: Rc<Cell<f32>>,
+    scroll_scheduled: Rc<Cell<bool>>,
+    scroll_task: Rc<RefCell<Option<Task<()>>>>,
+}
+
+impl Render for ReaderMarkdownView {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let weak = cx.weak_entity();
+        div()
+            .id("reader-scroll-content")
+            .debug_selector(|| "reader-scroll-content".into())
+            .size_full()
+            .min_h_0()
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll)
+            .child(self.selection.clone())
+            .child(coalesced_wheel_canvas(
+                self.pending_scroll.clone(),
+                self.scroll_scheduled.clone(),
+                self.scroll_task.clone(),
+                move |delta, cx| {
+                    let _ = weak.update(cx, |view, cx| {
+                        let offset = view.scroll.offset();
+                        let minimum = -view.scroll.max_offset().y;
+                        let next = (offset.y + px(delta)).clamp(minimum, px(0.));
+                        view.scroll.set_offset(point(px(0.), next));
+                        cx.notify();
+                    });
+                },
+            ))
+    }
+}
+
+fn coalesced_wheel_canvas(
+    pending: Rc<Cell<f32>>,
+    scheduled: Rc<Cell<bool>>,
+    task: Rc<RefCell<Option<Task<()>>>>,
+    apply: impl Fn(f32, &mut gpui::App) + 'static,
+) -> impl IntoElement {
+    let apply = Rc::new(apply);
+    canvas(
+        // The hitbox lets the capture handler ask gpui's cached hit test
+        // whether the wheel belongs to this surface. A popup painted above
+        // occludes it, so the popup's own scroll area keeps the event.
+        |bounds, window, _| window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
+        move |_, hitbox, window, _| {
+            let apply = apply.clone();
+            let pending = pending.clone();
+            let scheduled = scheduled.clone();
+            let task = task.clone();
+            let hitbox_id = hitbox.id;
+            window.on_mouse_event(move |event: &gpui::ScrollWheelEvent, phase, window, cx| {
+                if !(phase.capture() && hitbox_id.should_handle_scroll(window)) {
+                    return;
+                }
+                let delta = f32::from(event.delta.pixel_delta(window.line_height()).y);
+                pending.set(pending.get() + delta);
+                if !scheduled.replace(true) {
+                    let apply = apply.clone();
+                    let pending = pending.clone();
+                    let scheduled = scheduled.clone();
+                    *task.borrow_mut() = Some(cx.spawn(async move |cx| {
+                        loop {
+                            cx.background_executor()
+                                .timer(SCROLL_COALESCE_INTERVAL)
+                                .await;
+                            let delta = pending.replace(0.);
+                            if delta != 0. {
+                                cx.update(|cx| apply(delta, cx));
+                            }
+                            if pending.get() != 0. {
+                                continue;
+                            }
+                            scheduled.set(false);
+                            if pending.get() == 0. {
+                                break;
+                            }
+                            if scheduled.replace(true) {
+                                break;
+                            }
+                        }
+                    }));
+                }
+                cx.stop_propagation();
+            });
+        },
+    )
+    .absolute()
+    .inset_0()
+}
+
+struct TranscriptListState {
+    list_state: ListState,
+}
+
+impl TranscriptListState {
+    fn new(item_count: usize) -> Self {
+        let list_state = ListState::new(item_count, ListAlignment::Top, px(400.));
+        list_state.set_follow_mode(FollowMode::Tail);
+        Self { list_state }
+    }
+
+    fn item_count(&self) -> usize {
+        self.list_state.item_count()
+    }
+
+    fn is_scrolled_up(&self) -> bool {
+        self.list_state.max_offset_for_scrollbar().y > px(0.)
+            && !self.list_state.is_following_tail()
+            && !self.list_state.is_scrolled_to_end().unwrap_or(false)
+    }
+
+    fn reset(&mut self, item_count: usize, cx: &mut Context<Self>) {
+        self.list_state.reset(item_count);
+        self.list_state.set_follow_mode(FollowMode::Tail);
+        cx.notify();
+    }
+
+    fn splice(
+        &mut self,
+        old_range: std::ops::Range<usize>,
+        count: usize,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if old_range.start > old_range.end || old_range.end > self.list_state.item_count() {
+            return false;
+        }
+        let neighbor = old_range.start.checked_sub(1);
+        self.list_state.splice(old_range, count);
+        if let Some(last) = self.list_state.item_count().checked_sub(1) {
+            self.list_state.remeasure_items(last..last + 1);
+            if let Some(neighbor) = neighbor.filter(|neighbor| *neighbor != last) {
+                self.list_state.remeasure_items(neighbor..neighbor + 1);
+            }
+        }
+        cx.notify();
+        true
+    }
+
+    fn append(&mut self, count: usize, cx: &mut Context<Self>) -> bool {
+        let item_count = self.list_state.item_count();
+        self.splice(item_count..item_count, count, cx)
+    }
+
+    fn remeasure_items(&mut self, range: std::ops::Range<usize>, cx: &mut Context<Self>) -> bool {
+        if range.start > range.end || range.end > self.list_state.item_count() {
+            return false;
+        }
+        self.list_state.remeasure_items(range);
+        cx.notify();
+        true
+    }
+
+    fn scroll_to_item(&mut self, index: usize, cx: &mut Context<Self>) -> bool {
+        if index >= self.list_state.item_count() {
+            return false;
+        }
+        self.list_state.scroll_to(ListOffset {
+            item_ix: index,
+            offset_in_item: px(0.),
+        });
+        cx.notify();
+        true
+    }
+
+    fn scroll_to_end(&mut self, cx: &mut Context<Self>) {
+        self.list_state.set_follow_mode(FollowMode::Tail);
+        self.list_state.scroll_to_end();
+        cx.notify();
+    }
+}
+
+struct TranscriptScrollerView {
+    scroller: Entity<TranscriptListState>,
+    rows: Arc<Vec<Entity<TranscriptRowView>>>,
+    root: WeakEntity<DesktopRoot>,
+    language: tact_catalog::CatalogLocale,
+    tail_following: bool,
+    new_activity: bool,
+    wheel_enabled: bool,
+    pending_scroll: Rc<Cell<f32>>,
+    scroll_scheduled: Rc<Cell<bool>>,
+    scroll_task: Rc<RefCell<Option<Task<()>>>>,
+}
+
+impl TranscriptScrollerView {
+    fn new(
+        scroller: Entity<TranscriptListState>,
+        root: WeakEntity<DesktopRoot>,
+        language: tact_catalog::CatalogLocale,
+        tail_following: bool,
+    ) -> Self {
+        Self {
+            scroller,
+            rows: Arc::new(Vec::new()),
+            root,
+            language,
+            tail_following,
+            new_activity: false,
+            wheel_enabled: true,
+            pending_scroll: Rc::new(Cell::new(0.)),
+            scroll_scheduled: Rc::new(Cell::new(false)),
+            scroll_task: Rc::new(RefCell::new(None)),
+        }
+    }
+
+    fn set_state(
+        &mut self,
+        rows: Vec<Entity<TranscriptRowView>>,
+        language: tact_catalog::CatalogLocale,
+        tail_following: bool,
+        new_activity: bool,
+        wheel_enabled: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let rows_changed = self.rows.len() != rows.len()
+            || self
+                .rows
+                .iter()
+                .zip(rows.iter())
+                .any(|(current, next)| current.entity_id() != next.entity_id());
+        let changed = rows_changed
+            || self.language != language
+            || self.tail_following != tail_following
+            || self.new_activity != new_activity
+            || self.wheel_enabled != wheel_enabled;
+        if rows_changed {
+            self.rows = Arc::new(rows);
+        }
+        self.language = language;
+        self.tail_following = tail_following;
+        self.new_activity = new_activity;
+        self.wheel_enabled = wheel_enabled;
+        if !wheel_enabled {
+            self.pending_scroll.set(0.);
+        }
+        if changed {
+            cx.notify();
+        }
+        changed
+    }
+
+    fn back_to_bottom(&self, cx: &mut Context<Self>) -> AnyElement {
+        let label = format!(
+            "{} · {}",
+            i18n::text(self.language, TextKey::BackToBottom),
+            i18n::text(self.language, TextKey::NewActivity)
+        );
+        let new_activity = self.new_activity;
+        h_flex()
+            .id("back-to-bottom-strip")
+            .absolute()
+            .right_4()
+            .bottom_4()
+            .occlude()
+            .items_center()
+            .gap(px(6.))
+            .when(new_activity, |strip| {
+                strip.child(
+                    div()
+                        .rounded_full()
+                        .bg(cx.theme().accent)
+                        .text_color(cx.theme().link)
+                        .px_3()
+                        .py_2()
+                        .text_xs()
+                        .font_semibold()
+                        .child(i18n::text(self.language, TextKey::NewActivity)),
+                )
+            })
+            .child(
+                div()
+                    .id("back-to-bottom")
+                    .debug_selector(|| "back-to-bottom".into())
+                    .role(Role::Button)
+                    .focusable()
+                    .tab_stop(true)
+                    .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
+                    .aria_label(label)
+                    .cursor_pointer()
+                    .rounded_full()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().popover)
+                    .px_3()
+                    .py_2()
+                    .text_xs()
+                    .text_color(cx.theme().foreground)
+                    .shadow_md()
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap(px(5.))
+                            .child(i18n::text(self.language, TextKey::BackToBottom))
+                            .child(
+                                Icon::new(IconName::ChevronDown)
+                                    .xsmall()
+                                    .text_color(cx.theme().muted_foreground),
+                            ),
+                    )
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.new_activity = false;
+                        this.scroller
+                            .update(cx, |state, cx| state.scroll_to_end(cx));
+                        if let Some(root) = this.root.upgrade() {
+                            root.update(cx, |root, cx| {
+                                root.new_activity = false;
+                                root.dispatch(DesktopIntent::BackToBottom);
+                                cx.notify();
+                            });
+                        }
+                        cx.notify();
+                    })),
+            )
+            .into_any_element()
+    }
+}
+
+impl Render for TranscriptScrollerView {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let rows = self.rows.clone();
+        let list_state = self.scroller.read(cx).list_state.clone();
+        let item_count = list_state.item_count();
+        let list = list(list_state.clone(), move |index, _, _| {
+            div()
+                .w_full()
+                .min_w_0()
+                .px_3()
+                .when(index + 1 < item_count, |this| this.pb_8())
+                .refine_style(&transcript_row_style())
+                .child(
+                    rows.get(index)
+                        .cloned()
+                        .map(IntoElement::into_any_element)
+                        .unwrap_or_else(|| div().into_any_element()),
+                )
+                .into_any_element()
+        })
+        .size_full()
+        .min_h_0()
+        .py_2();
+        let viewport = div()
+            .id("desktop-transcript")
+            .debug_selector(|| "desktop-transcript".to_owned())
+            .role(Role::Log)
+            .size_full()
+            .min_h_0()
+            .min_w_0()
+            .child(list)
+            .vertical_scrollbar(&list_state);
+        let scroll_weak = cx.weak_entity();
+        let scroll = coalesced_wheel_canvas(
+            self.pending_scroll.clone(),
+            self.scroll_scheduled.clone(),
+            self.scroll_task.clone(),
+            move |delta, cx| {
+                let _ = scroll_weak.update(cx, |view, cx| {
+                    view.scroller.read(cx).list_state.scroll_by(px(-delta));
+                    cx.notify();
+                });
+            },
+        );
+        let show_back_to_bottom = self.scroller.read(cx).is_scrolled_up() || !self.tail_following;
+        div()
+            .relative()
+            .size_full()
+            .min_h_0()
+            .child(viewport)
+            .when(self.wheel_enabled, |region| region.child(scroll))
+            .when(show_back_to_bottom, |region| {
+                region.child(self.back_to_bottom(cx))
+            })
+    }
+}
+
 pub(crate) struct DesktopRoot {
     controller: DesktopController,
     snapshot: Arc<DesktopSnapshot>,
-    scroller: Entity<MessageScrollerState>,
+    scroller: Entity<TranscriptListState>,
+    transcript_scroller: Entity<TranscriptScrollerView>,
     prompt: Entity<PromptBar>,
     sidebar_nav: Entity<SidebarNav>,
     extensions_table: Entity<FilterTable>,
@@ -257,6 +651,7 @@ pub(crate) struct DesktopRoot {
     pending_voice_text: Option<String>,
     history_cursor: Option<usize>,
     session_project_filter: Option<ProjectId>,
+    reset_session_search_on_open: bool,
     toast: Option<Toast>,
     focus_restore: crate::ui::shell::FocusRestoration<gpui::FocusHandle>,
     last_surface_revision: Option<String>,
@@ -308,9 +703,17 @@ impl DesktopRoot {
             listening: false,
             transcribing: false,
         };
-        let scroller = cx.new(|cx| MessageScrollerState::new(snapshot.transcript.len(), cx));
-        let prompt = cx.new(|cx| PromptBar::new("tact-composer", window, cx));
+        let scroller = cx.new(|_| TranscriptListState::new(snapshot.transcript.len()));
         let root_weak = cx.weak_entity();
+        let transcript_scroller = cx.new(|_| {
+            TranscriptScrollerView::new(
+                scroller.clone(),
+                root_weak.clone(),
+                snapshot.language,
+                snapshot.tail_following,
+            )
+        });
+        let prompt = cx.new(|cx| PromptBar::new("tact-composer", window, cx));
         let trailing_weak = root_weak.clone();
         prompt.update(cx, |prompt, cx| {
             prompt.set_leading_controls(
@@ -558,6 +961,7 @@ impl DesktopRoot {
             controller,
             snapshot,
             scroller,
+            transcript_scroller,
             prompt,
             sidebar_nav,
             extensions_table,
@@ -607,6 +1011,7 @@ impl DesktopRoot {
             pending_voice_text: None,
             history_cursor: None,
             session_project_filter: None,
+            reset_session_search_on_open: false,
             toast: None,
             focus_restore: crate::ui::shell::FocusRestoration::default(),
             last_surface_revision: None,
@@ -948,6 +1353,13 @@ impl DesktopRoot {
     }
 
     fn close_overlay(&mut self) {
+        if matches!(self.overlay, Some(Overlay::SessionManager)) {
+            // The manager's query is controller state, not overlay-local
+            // state. Closing the manager must not leave the rail silently
+            // filtered behind an empty rail-search field.
+            self.dispatch(DesktopIntent::SetSessionQuery(String::new()));
+            self.reset_session_search_on_open = true;
+        }
         self.overlay = self.overlay_stack.pop();
     }
 
@@ -3566,9 +3978,16 @@ impl DesktopRoot {
         // (190–330px) instead of letting it eat the rail's spare space. The
         // DURABLE block below it also needs room at 840px, so the cap is
         // taken slightly lower there.
-        let session_list_height = (f32::from(window.viewport_size().height) * 0.20)
-            .clamp(190., 330.)
-            * self.snapshot.text_scale;
+        let viewport_height = f32::from(window.viewport_size().height);
+        let requested_session_height =
+            (viewport_height * 0.20).clamp(190., 330.) * self.snapshot.text_scale;
+        // The rail's remaining sections scale with text too. At 150% in a
+        // 700px window, a 285px session viewport pushed the pinned Settings
+        // row below the window. Leave 422px per text scale for that chrome;
+        // the session list still scrolls and keeps a useful minimum.
+        let scalable_chrome_height = 422. * self.snapshot.text_scale;
+        let session_list_height = requested_session_height
+            .min((viewport_height - scalable_chrome_height).max(36. * self.snapshot.text_scale));
         let project = self
             .snapshot
             .project
@@ -4098,6 +4517,7 @@ impl DesktopRoot {
             .child(
                 h_flex()
                     .id("open-settings")
+                    .debug_selector(|| "open-settings".into())
                     .role(Role::Button)
                     .focusable()
                     .tab_stop(true)
@@ -4196,6 +4616,7 @@ impl DesktopRoot {
                 // transcript canvas; only the floating selection toolbar is
                 // a surface.
                 .frameless()
+                .natural_height()
                 .text_style(TextViewStyle {
                     paragraph_gap: gpui::rems(0.56),
                     heading_font_size: Some(std::sync::Arc::new(|level, _base| match level {
@@ -4322,6 +4743,21 @@ impl DesktopRoot {
             &assistant_selections,
             cx,
         );
+        let new_activity = self.new_activity;
+        let wheel_enabled = self.overlay.is_none();
+        let scroller_changed = self.transcript_scroller.update(cx, |view, cx| {
+            view.set_state(
+                row_views,
+                snapshot.language,
+                snapshot.tail_following,
+                new_activity,
+                wheel_enabled,
+                cx,
+            )
+        });
+        if scroller_changed {
+            cx.notify();
+        }
         let run_text = transcript
             .iter()
             .find_map(|row| match &row.body {
@@ -4355,21 +4791,6 @@ impl DesktopRoot {
                 | SessionPhase::Opening
                 | SessionPhase::Switching
         );
-        let scroller = MessageScroller::new(
-            "desktop-transcript",
-            self.scroller.clone(),
-            move |index, _, _| {
-                row_views
-                    .get(index)
-                    .cloned()
-                    .map(IntoElement::into_any_element)
-                    .unwrap_or_else(|| div().into_any_element())
-            },
-        )
-        .scrollbar(true)
-        .jump_button(false)
-        .p_0()
-        .with_row_style(transcript_row_style());
         let column = v_flex()
             .id("transcript-column")
             .flex_1()
@@ -4448,7 +4869,12 @@ impl DesktopRoot {
                         )
                     }),
             )
-            .child(div().flex_1().min_h_0().child(scroller));
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(self.transcript_scroller.clone()),
+            );
         // A session switch replaces the whole row set in one frame; a short
         // settle keeps that swap from reading as a flash.
         if cx.reduce_motion() {
@@ -4986,8 +5412,98 @@ impl DesktopRoot {
                             ))
                             .child(Self::kicker("LIVE", cx)),
                     )
-                    .when_some(runtime.latest_tool.clone(), |column, tool| {
-                        column.child(Self::activity_line(tool.to_string(), true, cx))
+                    .when_some(runtime.latest_tool_detail.clone(), |column, tool| {
+                        let label = truncate_display_text(&tool.label, 34);
+                        let status = match tool.status {
+                            RowStatus::Pending => ToolStatus::Pending,
+                            RowStatus::Running => ToolStatus::Running,
+                            RowStatus::Success | RowStatus::Resolved => ToolStatus::Success,
+                            RowStatus::Failed => ToolStatus::Failed,
+                            RowStatus::Cancelled => ToolStatus::Cancelled,
+                            RowStatus::Unknown => ToolStatus::Unknown,
+                        };
+                        let status_label = match tool.status {
+                            RowStatus::Pending => self.text(TextKey::Pending),
+                            RowStatus::Running => self.text(TextKey::Running),
+                            RowStatus::Success | RowStatus::Resolved => {
+                                self.text(TextKey::Completed)
+                            }
+                            RowStatus::Failed => self.text(TextKey::Failed),
+                            RowStatus::Cancelled => self.text(TextKey::Cancelled),
+                            RowStatus::Unknown => self.text(TextKey::Unknown),
+                        };
+                        let mut chip = ToolChip::new(tool.tool_id.clone(), label)
+                            .status(status)
+                            .status_label(status_label);
+                        if let Some(duration_ms) = tool.duration_ms {
+                            chip = chip.detail(format_duration_ms(duration_ms));
+                        }
+                        if let (Some(group), Some(row)) = (tool.group, tool.row) {
+                            let weak = cx.weak_entity();
+                            chip = chip.on_event(move |_, window, cx| {
+                                let _ = weak.update(cx, |this, cx| {
+                                    let group_row =
+                                        this.snapshot.transcript.iter().find_map(|candidate| {
+                                            let RowBody::ToolGroup(candidate_group) =
+                                                &candidate.body
+                                            else {
+                                                return None;
+                                            };
+                                            if candidate.id != group {
+                                                return None;
+                                            }
+                                            let expanded =
+                                                candidate_group.items.iter().find_map(|item| {
+                                                    match item {
+                                                        ToolGroupItem::Tool(tool)
+                                                            if tool.id == row =>
+                                                        {
+                                                            Some(tool.expanded)
+                                                        }
+                                                        _ => None,
+                                                    }
+                                                });
+                                            Some((candidate_group.collapsed, expanded))
+                                        });
+                                    if let Some((collapsed, expanded)) = group_row {
+                                        if expanded != Some(true) {
+                                            this.dispatch(DesktopIntent::ToggleTool {
+                                                group,
+                                                tool: row,
+                                            });
+                                        }
+                                        if collapsed {
+                                            this.dispatch(DesktopIntent::ToggleGroup { id: group });
+                                        }
+                                    }
+                                    this.remember_focus(window, cx);
+                                    this.open_transcript_reader(ReaderRef::ToolOutput(row), cx);
+                                    let inline = crate::ui::layout::layout(
+                                        f32::from(window.viewport_size().width),
+                                        this.snapshot.text_scale,
+                                        this.left_visible,
+                                        true,
+                                    )
+                                    .inspector_inline;
+                                    if !inline {
+                                        this.right_visible = false;
+                                        this.restore_focus(window, cx);
+                                    }
+                                    cx.notify();
+                                });
+                            });
+                        }
+                        column.child(
+                            h_flex().w_full().min_w_0().items_center().child(
+                                h_flex()
+                                    .flex_none()
+                                    .max_w_full()
+                                    .min_w_0()
+                                    .items_center()
+                                    .debug_selector(|| "inspector-latest-tool".into())
+                                    .child(chip),
+                            ),
+                        )
                     })
                     .children(activity_rows),
             )
@@ -5015,8 +5531,10 @@ impl DesktopRoot {
             .map(|task| {
                 let elapsed = task
                     .finished_at
-                    .unwrap_or_else(|| chrono::Utc::now().timestamp())
-                    .saturating_sub(task.started_at);
+                    .unwrap_or_else(|| chrono::Utc::now().timestamp_millis())
+                    .saturating_sub(task.started_at)
+                    .max(0) as u64;
+                let elapsed = format_duration_ms(elapsed);
                 v_flex()
                     .id(SharedString::from(format!(
                         "inspector-background-{}",
@@ -5024,7 +5542,7 @@ impl DesktopRoot {
                     )))
                     .role(Role::Status)
                     .aria_label(format!(
-                        "{} · {} · {}s",
+                        "{} · {} · {}",
                         background_status_label(task.status, self.snapshot.language),
                         task.command,
                         elapsed
@@ -5044,12 +5562,16 @@ impl DesktopRoot {
                         h_flex()
                             .gap_1()
                             .child(div().text_xs().child(format!(
-                                "{} · {elapsed}s",
+                                "{} · {elapsed}",
                                 background_status_label(task.status, self.snapshot.language)
                             )))
                             .child(
                                 div()
                                     .id(SharedString::from(format!("open-background-{}", task.id)))
+                                    .debug_selector({
+                                        let selector = format!("open-background-{}", task.id);
+                                        move || selector.clone()
+                                    })
                                     .role(Role::Button)
                                     .focusable()
                                     .tab_stop(true)
@@ -5063,9 +5585,10 @@ impl DesktopRoot {
                                         let id = task.id.to_string();
                                         move |this, _: &ClickEvent, window, cx| {
                                             this.remember_focus(window, cx);
-                                            this.dispatch(DesktopIntent::OpenReader(
+                                            this.open_transcript_reader(
                                                 ReaderRef::Background(id.clone()),
-                                            ));
+                                                cx,
+                                            );
                                         }
                                     })),
                             )
@@ -5695,13 +6218,21 @@ impl DesktopRoot {
             .transcript
             .iter()
             .find_map(|row| match &row.body {
-                RowBody::HookContext(hook) if row.id == id => Some((
-                    hook.source
+                RowBody::HookContext(hook) if row.id == id => {
+                    let source = hook
+                        .source
                         .as_deref()
-                        .unwrap_or(self.text(TextKey::HookSources))
-                        .to_string(),
-                    hook.markdown.to_string(),
-                )),
+                        .unwrap_or(self.text(TextKey::HookSources));
+                    let title = hook_context_title(&hook.markdown, source);
+                    Some((
+                        if title == source {
+                            source.to_string()
+                        } else {
+                            format!("{source} · {title}")
+                        },
+                        hook.markdown.to_string(),
+                    ))
+                }
                 _ => None,
             })
     }
@@ -6048,73 +6579,6 @@ impl DesktopRoot {
             .into_any_element()
     }
 
-    fn render_back_to_bottom(&self, cx: &mut Context<Self>) -> AnyElement {
-        let label = format!(
-            "{} · {}",
-            self.text(TextKey::BackToBottom),
-            self.text(TextKey::NewActivity)
-        );
-        h_flex()
-            .id("back-to-bottom-strip")
-            .absolute()
-            .right_4()
-            .bottom_4()
-            .occlude()
-            .items_center()
-            .gap(px(6.))
-            .when(self.new_activity, |strip| {
-                strip.child(
-                    div()
-                        .rounded_full()
-                        .bg(cx.theme().accent)
-                        .text_color(cx.theme().link)
-                        .px_3()
-                        .py_2()
-                        .text_xs()
-                        .font_semibold()
-                        .child(self.text(TextKey::NewActivity)),
-                )
-            })
-            .child(
-                div()
-                    .id("back-to-bottom")
-                    .debug_selector(|| "back-to-bottom".into())
-                    .role(Role::Button)
-                    .focusable()
-                    .tab_stop(true)
-                    .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
-                    .aria_label(label)
-                    .cursor_pointer()
-                    .rounded_full()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().popover)
-                    .px_3()
-                    .py_2()
-                    .text_xs()
-                    .text_color(cx.theme().foreground)
-                    .shadow_md()
-                    .child(
-                        h_flex()
-                            .items_center()
-                            .gap(px(5.))
-                            .child(self.text(TextKey::BackToBottom))
-                            .child(
-                                Icon::new(IconName::ChevronDown)
-                                    .xsmall()
-                                    .text_color(cx.theme().muted_foreground),
-                            ),
-                    )
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.new_activity = false;
-                        this.scroller
-                            .update(cx, |state, cx| state.scroll_to_end(cx));
-                        this.dispatch(DesktopIntent::BackToBottom);
-                    })),
-            )
-            .into_any_element()
-    }
-
     fn render_failure(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(failure) = self.snapshot.failure.clone() else {
             return div().into_any_element();
@@ -6248,7 +6712,10 @@ impl DesktopRoot {
         let weak = cx.weak_entity();
         let open_weak = weak.clone();
         Popover::new("permission-picker-popover")
-            .anchor(Anchor::TopLeft)
+            // The permission chip sits on the composer's bottom edge. Anchor
+            // the menu above it so the third choice is not clipped by the
+            // window.
+            .anchor(Anchor::BottomLeft)
             .open(self.permission_picker_open)
             .on_open_change(move |open, _, cx| {
                 let _ = open_weak.update(cx, |this, cx| {
@@ -6387,6 +6854,7 @@ impl DesktopRoot {
             .collect::<Vec<_>>();
         v_flex()
             .id("slash-overlay")
+            .debug_selector(|| "slash-overlay".into())
             .role(Role::ListBox)
             .aria_label(self.text(TextKey::Commands))
             .w_full()
@@ -6399,6 +6867,7 @@ impl DesktopRoot {
             .p_1()
             .shadow_lg()
             .overflow_y_scroll()
+            .occlude()
             .child(
                 h_flex()
                     .flex_none()
@@ -6713,12 +7182,15 @@ impl DesktopRoot {
                             // dialog: it stays a step narrower than the
                             // composer frame and never taller than a few
                             // rows. A long queue scrolls instead of
-                            // pushing the transcript off screen.
+                            // pushing the transcript off screen. The cap
+                            // belongs on this wrapper: on the scroll
+                            // content it would clamp the content itself
+                            // and nothing past the first screenful could
+                            // be reached.
                             .max_w(px(820.))
                             .max_h(px(240.))
                             .mx_auto()
-                            .overflow_y_scrollbar()
-                            .child(queue_view),
+                            .child(div().w_full().overflow_y_scrollbar().child(queue_view)),
                     )
                 })
             })
@@ -6949,8 +7421,16 @@ impl DesktopRoot {
             _ => return None,
         };
         let body = self.reader_body(&mut reader, window, cx);
+        let truncated = match reader.reference.as_ref() {
+            Some(ReaderRef::ToolOutput(row)) => self
+                .tool_row(*row)
+                .is_some_and(|tool| tool.output.truncated),
+            _ => false,
+        };
         if let Some(Overlay::Reader(stored)) = &mut self.overlay {
             stored.artifact_view = reader.artifact_view;
+            stored.selection = reader.selection.take();
+            stored.markdown_view = reader.markdown_view.take();
             stored.diff_table = reader.diff_table.take();
             stored.decisions = std::mem::take(&mut reader.decisions);
             stored.diff_epoch = reader.diff_epoch;
@@ -6960,13 +7440,14 @@ impl DesktopRoot {
         Some(
             v_flex()
                 .id("reader-overlay")
+                .debug_selector(|| "reader-overlay".into())
                 .role(Role::Dialog)
                 .aria_label(title.clone())
                 .w(overlay_width(window, 760.))
-                .max_h(overlay_height(window, 640.))
+                .h(overlay_height(window, 640.))
                 .p_4()
                 .gap_3()
-                .overflow_y_scroll()
+                .overflow_hidden()
                 .rounded_lg()
                 .border_1()
                 .border_color(cx.theme().border)
@@ -6974,6 +7455,7 @@ impl DesktopRoot {
                 .shadow_lg()
                 .child(
                     h_flex()
+                        .debug_selector(|| "reader-header".into())
                         .justify_between()
                         .child(div().font_semibold().child(title))
                         .child(
@@ -6993,7 +7475,15 @@ impl DesktopRoot {
                                 .child(self.text(TextKey::Close)),
                         ),
                 )
-                .child(body)
+                .when(truncated, |panel| {
+                    panel.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().warning)
+                            .child(self.text(TextKey::ToolOutputTruncated)),
+                    )
+                })
+                .child(div().flex_1().min_h_0().child(body))
                 .into_any_element(),
         )
     }
@@ -7093,8 +7583,60 @@ impl DesktopRoot {
                         return ansi::element("reader-ansi", &ansi::parse(detail), dark);
                     }
                 }
-                TextView::markdown("reader-markdown", reader.markdown.to_string())
-                    .into_any_element()
+                reader_markdown_element(reader, window, cx)
+            }
+            Some(ReaderRef::Background(id)) if !id.is_empty() => {
+                if let Some(task) = self
+                    .snapshot
+                    .inspector
+                    .background
+                    .iter()
+                    .find(|task| task.id.as_ref() == id)
+                    && ansi::contains_ansi(&task.output_tail)
+                {
+                    let elapsed = task
+                        .finished_at
+                        .unwrap_or_else(|| chrono::Utc::now().timestamp_millis())
+                        .saturating_sub(task.started_at)
+                        .max(0) as u64;
+                    let elapsed = format_duration_ms(elapsed);
+                    return v_flex()
+                        .debug_selector(|| "reader-background-ansi".into())
+                        .w_full()
+                        .min_w_0()
+                        .gap_2()
+                        .child(
+                            h_flex()
+                                .min_w_0()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_sm()
+                                        .child(task.command.to_string()),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!(
+                                            "{} · {elapsed}",
+                                            background_status_label(
+                                                task.status,
+                                                self.snapshot.language
+                                            )
+                                        )),
+                                ),
+                        )
+                        .child(ansi::element(
+                            "reader-ansi",
+                            &ansi::parse(&task.output_tail),
+                            dark,
+                        ))
+                        .into_any_element();
+                }
+                reader_markdown_element(reader, window, cx)
             }
             Some(ReaderRef::Diff(row)) => {
                 if let Some(patch) = self.diff_row_patch(row).cloned()
@@ -7103,11 +7645,9 @@ impl DesktopRoot {
                     let files = diff_review::files(&patch);
                     return self.diff_table_body(reader, &files, window, cx);
                 }
-                TextView::markdown("reader-markdown", reader.markdown.to_string())
-                    .into_any_element()
+                reader_markdown_element(reader, window, cx)
             }
-            _ => TextView::markdown("reader-markdown", reader.markdown.to_string())
-                .into_any_element(),
+            _ => reader_markdown_element(reader, window, cx),
         }
     }
 
@@ -7388,7 +7928,7 @@ impl DesktopRoot {
     fn render_subagent_overlay(
         &mut self,
         child_id: String,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let weak = cx.weak_entity();
@@ -7405,17 +7945,22 @@ impl DesktopRoot {
                     .flatten()
             })
         });
+        let selections = transcript
+            .as_ref()
+            .map(|transcript| self.sync_assistant_selections(transcript, &child_id, window, cx))
+            .unwrap_or_default();
         let rows = transcript
             .as_ref()
             .map(|transcript| {
                 transcript
                     .iter()
                     .map(|row| {
+                        let selection = selections.get(&(child_id.clone(), row.id)).cloned();
                         transcript_row_element(
                             row,
                             &self.snapshot,
                             weak.clone(),
-                            None,
+                            selection,
                             true,
                             None,
                             false,
@@ -7567,6 +8112,7 @@ impl DesktopRoot {
                 let description = descriptor.description.get(self.snapshot.language);
                 div()
                     .id(SharedString::from(format!("setting-{}", setting.as_str())))
+                    .debug_selector(move || format!("setting-row-{}", setting.as_str()))
                     .role(Role::Button)
                     .focusable()
                     .tab_stop(true)
@@ -7666,6 +8212,7 @@ impl DesktopRoot {
             .child(
                 v_flex()
                     .id("settings-list")
+                    .debug_selector(|| "settings-list".into())
                     .gap_1()
                     .overflow_y_scroll()
                     .children(settings),
@@ -7696,8 +8243,11 @@ impl DesktopRoot {
                     .join(" · ");
                 let source_for_click = source.clone();
                 let trusted = *trusted;
+                let source_id = SharedString::from(format!("hook-source-{source}"));
+                let debug_source = source_id.clone();
                 h_flex()
-                    .id(SharedString::from(format!("hook-source-{source}")))
+                    .id(source_id)
+                    .debug_selector(move || debug_source.to_string())
                     .justify_between()
                     .items_center()
                     .gap(px(12.))
@@ -7889,24 +8439,33 @@ impl DesktopRoot {
                 div()
                     .mx(px(20.))
                     .flex_none()
+                    // The cap sits on this wrapper, not on the scroll
+                    // content, so a long hook list can scroll instead of
+                    // being clamped to its first screenful.
                     .max_h(px(320.))
                     .rounded(px(10.))
                     .border_1()
                     .border_color(cx.theme().border)
-                    .overflow_y_scrollbar()
-                    .when(rows.is_empty(), |list| {
-                        list.child(
-                            div()
-                                .p(px(16.))
-                                .text_size(px(12.))
-                                .text_color(cx.theme().muted_foreground)
-                                .child(match self.snapshot.language {
-                                    tact_catalog::CatalogLocale::En => "No hooks configured.",
-                                    tact_catalog::CatalogLocale::Zh => "未配置钩子。",
-                                }),
-                        )
-                    })
-                    .children(rows),
+                    .child(
+                        div()
+                            .w_full()
+                            .overflow_y_scrollbar()
+                            .when(rows.is_empty(), |list| {
+                                list.child(
+                                    div()
+                                        .p(px(16.))
+                                        .text_size(px(12.))
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(match self.snapshot.language {
+                                            tact_catalog::CatalogLocale::En => {
+                                                "No hooks configured."
+                                            }
+                                            tact_catalog::CatalogLocale::Zh => "未配置钩子。",
+                                        }),
+                                )
+                            })
+                            .children(rows),
+                    ),
             )
             .child(div().flex_1())
             .child(
@@ -9691,6 +10250,12 @@ impl Render for DesktopRoot {
                     input.focus(window, cx);
                 });
             } else if matches!(self.overlay, Some(Overlay::SessionManager)) {
+                if self.reset_session_search_on_open {
+                    self.session_search.update(cx, |input, cx| {
+                        input.set_value(String::new(), window, cx);
+                    });
+                    self.reset_session_search_on_open = false;
+                }
                 self.session_search
                     .update(cx, |input, cx| input.focus(window, cx));
             } else {
@@ -9911,14 +10476,7 @@ impl Render for DesktopRoot {
                                                 .flex_1()
                                                 .min_h_0()
                                                 .relative()
-                                                .child(self.render_transcript(window, cx))
-                                                .when(
-                                                    self.scroller.read(cx).is_scrolled_up()
-                                                        || !self.snapshot.tail_following,
-                                                    |region| {
-                                                        region.child(self.render_back_to_bottom(cx))
-                                                    },
-                                                ),
+                                                .child(self.render_transcript(window, cx)),
                                         )
                                         .when(self.snapshot.failure.is_some(), |column| {
                                             column.child(self.render_failure(cx))
@@ -10086,6 +10644,11 @@ impl Render for DesktopRoot {
                         } else {
                             theme::scrim_color()
                         })
+                        // The overlay owns the pointer and wheel surface. Without
+                        // occluding the hitboxes behind it, GPUI still routes a
+                        // wheel event to the transcript scroller underneath even
+                        // though clicks are handled by the dialog.
+                        .occlude()
                         .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                             this.close_overlay();
                             this.restore_focus(window, cx);
@@ -10144,6 +10707,28 @@ fn truncate_table_text(text: &str, max_chars: usize) -> String {
     } else {
         truncated
     }
+}
+
+/// Truncates a mono label by display columns and reserves the ellipsis width.
+fn truncate_display_text(text: &str, max_columns: usize) -> String {
+    if text.width() <= max_columns {
+        return text.to_string();
+    }
+    if max_columns == 0 {
+        return String::new();
+    }
+    let budget = max_columns.saturating_sub('…'.width().unwrap_or(1));
+    let mut columns = 0;
+    let mut truncated = String::new();
+    for ch in text.chars() {
+        let width = ch.width().unwrap_or(0);
+        if columns + width > budget {
+            return format!("{truncated}…");
+        }
+        columns += width;
+        truncated.push(ch);
+    }
+    truncated
 }
 
 fn relative_session_time(
@@ -10929,6 +11514,8 @@ fn tool_call_labels(locale: tact_catalog::CatalogLocale) -> ToolCallLabels {
             running: "运行中".into(),
             completed: "已完成".into(),
             failed: "失败".into(),
+            cancelled: "已取消".into(),
+            unknown: "状态未知".into(),
         },
     }
 }
@@ -11214,11 +11801,11 @@ fn transcript_row_element(
                 .into_any_element()
         }
         RowBody::Plan(plan) => {
-            // A one-step plan whose only step is the tool it describes would
-            // draw the same command twice: once in the plan card and once in
-            // the tool card below it. The tool card carries the status,
-            // output and disclosure, so the plan yields to it.
-            if plan_is_a_single_tool_call(row, plan, &snapshot.transcript) {
+            // A plan made only of tool calls would draw every command twice:
+            // once here and once in the execution group below. The tool rows
+            // carry the status, output and disclosure, so the plan card yields
+            // when every step is already represented in this run.
+            if plan_is_tool_execution(row, plan, &snapshot.transcript) {
                 return div().into_any_element();
             }
             let steps = plan.steps.iter().enumerate().map(|(index, step)| {
@@ -11481,7 +12068,7 @@ fn transcript_row_element(
                         .count(tool_count)
                         .compact()
                         .active(matches!(
-                            group.status,
+                            group.status(),
                             RowStatus::Running | RowStatus::Pending
                         ))
                         .open(!group.collapsed)
@@ -11562,35 +12149,117 @@ fn transcript_row_element(
             .text_sm()
             .child(notice.text.to_string())
             .into_any_element(),
-        RowBody::HookContext(context) => v_flex()
-            .id(SharedString::from(format!("row-hook-context-{id}")))
-            .role(Role::Note)
-            .gap_1()
-            .rounded_md()
-            .border_1()
-            .border_color(snapshot_row_border(snapshot))
-            .bg(snapshot_row_background(snapshot))
-            .px_3()
-            .py_2()
-            .text_xs()
-            .child(
-                div()
-                    .text_xs()
-                    .font_semibold()
-                    .text_color(snapshot_row_muted(snapshot))
-                    .child(
-                        context
-                            .source
-                            .as_deref()
-                            .unwrap_or(i18n::text(snapshot.language, TextKey::Hooks))
-                            .to_string(),
-                    ),
-            )
-            .child(TextView::markdown(
-                format!("hook-context-{id}"),
-                context.markdown.to_string(),
-            ))
-            .into_any_element(),
+        RowBody::HookContext(context) => {
+            let source = context
+                .source
+                .as_deref()
+                .unwrap_or(i18n::text(snapshot.language, TextKey::Hooks));
+            let title = hook_context_title(&context.markdown, source);
+            let summary = hook_context_summary(&context.markdown, &title);
+            let reader_weak = weak.clone();
+            let reader_row = row_id;
+            let primary = snapshot_theme_primary(snapshot);
+            let aria_label = if title == source {
+                source.to_string()
+            } else {
+                format!("{source} · {title}")
+            };
+            h_flex()
+                .id(SharedString::from(format!("row-hook-context-{id}")))
+                .debug_selector(move || format!("transcript-row-hook-context-{id}"))
+                .role(Role::Button)
+                .aria_label(aria_label)
+                .when(!summary.is_empty(), |card| {
+                    card.aria_description(summary.clone())
+                })
+                .focusable()
+                .tab_stop(true)
+                .focus_visible(|style| style.border_color(primary))
+                .cursor_pointer()
+                .w_full()
+                .min_w_0()
+                .items_center()
+                .gap_3()
+                .rounded(px(10.))
+                .border_1()
+                .border_color(snapshot_row_border(snapshot))
+                .bg(snapshot_row_background(snapshot))
+                .px_3()
+                .py_2()
+                .hover(|style| style.border_color(primary.opacity(0.45)))
+                .on_click(move |_, window, cx| {
+                    let _ = reader_weak.update(cx, |this, cx| {
+                        if let Some((title, markdown)) = this.hook_context_reader(reader_row) {
+                            this.remember_focus(window, cx);
+                            this.open_overlay(Overlay::Reader(ReaderState::new(title, markdown)));
+                            cx.notify();
+                        }
+                    });
+                })
+                .child(
+                    div()
+                        .flex_none()
+                        .size(px(28.))
+                        .rounded(px(8.))
+                        .bg(primary.opacity(0.12))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(Icon::new(IconName::BookOpen).xsmall().text_color(primary)),
+                )
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap_0p5()
+                        .child(
+                            h_flex()
+                                .min_w_0()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .max_w(px(220.))
+                                        .truncate()
+                                        .font_family("Lilex")
+                                        .text_size(px(10.))
+                                        .text_color(snapshot_row_muted(snapshot))
+                                        .child(source.to_string()),
+                                )
+                                .when(title != source, |line| {
+                                    line.child(
+                                        div()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_sm()
+                                            .font_semibold()
+                                            .child(title),
+                                    )
+                                }),
+                        )
+                        .when(!summary.is_empty(), |body| {
+                            body.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(snapshot_row_muted(snapshot))
+                                    .line_clamp(2)
+                                    .child(summary),
+                            )
+                        }),
+                )
+                .child(
+                    h_flex()
+                        .flex_none()
+                        .items_center()
+                        .gap_1()
+                        .text_xs()
+                        .text_color(primary)
+                        .child(i18n::text(snapshot.language, TextKey::Open))
+                        .child(Icon::new(IconName::ExternalLink).xsmall()),
+                )
+                .into_any_element()
+        }
         RowBody::HookStatus(status) => div()
             .id(SharedString::from(format!("row-hook-status-{id}")))
             .debug_selector(move || format!("transcript-row-hook-status-{id}"))
@@ -11850,19 +12519,60 @@ fn tool_group_item_element(
     }
 }
 
+fn reader_markdown_element(
+    reader: &mut ReaderState,
+    window: &mut Window,
+    cx: &mut Context<DesktopRoot>,
+) -> AnyElement {
+    let selection = match reader.selection.clone() {
+        Some(selection) => selection,
+        None => {
+            let markdown = reader.markdown.clone();
+            let selection = cx.new(|cx| {
+                SelectionActions::new("reader-selection", markdown, window, cx)
+                    .frameless()
+                    .natural_height()
+            });
+            reader.selection = Some(selection.clone());
+            selection
+        }
+    };
+    selection.update(cx, |selection, cx| {
+        selection.set_markdown(reader.markdown.clone(), cx);
+    });
+    let markdown_view = match reader.markdown_view.clone() {
+        Some(view) => view,
+        None => {
+            let view = cx.new(|_| ReaderMarkdownView {
+                selection,
+                scroll: ScrollHandle::new(),
+                pending_scroll: Rc::new(Cell::new(0.)),
+                scroll_scheduled: Rc::new(Cell::new(false)),
+                scroll_task: Rc::new(RefCell::new(None)),
+            });
+            reader.markdown_view = Some(view.clone());
+            view
+        }
+    };
+    markdown_view.into_any_element()
+}
+
 fn tool_row_element(
     tool: &ToolRow,
     group_id: RowId,
     locale: tact_catalog::CatalogLocale,
     weak: WeakEntity<DesktopRoot>,
 ) -> AnyElement {
-    let invocation = ToolInvocation::new(tool.tool_id.to_string(), tool.name.to_string())
+    let output = tool_body_markdown(tool, locale);
+    let mut invocation = ToolInvocation::new(tool.tool_id.to_string(), tool.name.to_string())
         .summary(tact_desktop_core::one_line_summary(&tool.arg_summary))
         .input(tool.arg_full.as_deref().unwrap_or(&tool.arg_summary))
-        .output(tool_body_markdown(tool, locale))
         // Gate decisions are rendered as first-class gate cards; this inline
         // tool surface must not imply a second, disconnected approval action.
         .approval(ToolApproval::NotRequired);
+    if !output.is_empty() {
+        invocation = invocation.output(output);
+    }
     let invocation = progressive(invocation, tool.status, locale);
     let call_weak = weak.clone();
     let reader_weak = weak;
@@ -11925,6 +12635,53 @@ fn evidence_snippet(text: &str) -> String {
     }
 }
 
+/// The heading a plugin context uses as its card title, or its source.
+fn hook_context_title(markdown: &str, fallback: &str) -> String {
+    let title = markdown
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with('#'))
+        .map(compact_markdown_line)
+        .filter(|line| !line.is_empty())
+        .unwrap_or_else(|| fallback.to_string());
+    truncate_display_text(&title, 72)
+}
+
+/// A bounded plain-text preview. The full Markdown stays behind the reader.
+fn hook_context_summary(markdown: &str, title: &str) -> String {
+    let mut parts = Vec::new();
+    for line in markdown.lines().map(str::trim) {
+        if line.is_empty()
+            || line.starts_with("```")
+            || line.chars().all(|ch| matches!(ch, '-' | '*' | '_'))
+        {
+            continue;
+        }
+        if line.starts_with('#') {
+            continue;
+        }
+        let line = compact_markdown_line(line);
+        if line.is_empty() || line == title {
+            continue;
+        }
+        parts.push(truncate_display_text(&line, 160));
+        if parts.len() == 2 {
+            break;
+        }
+    }
+    parts.join(" · ")
+}
+
+fn compact_markdown_line(line: &str) -> String {
+    line.trim()
+        .trim_start_matches(['#', '>', '-', '*', '+', ' '])
+        .replace("**", "")
+        .replace("__", "")
+        .replace('`', "")
+        .trim()
+        .to_string()
+}
+
 /// Builds the `DiffTable` rows for a multi-file patch.
 fn diff_rows(
     files: &[diff_review::FileDiff],
@@ -11957,7 +12714,7 @@ fn diff_rows(
 }
 
 fn tool_body_markdown(tool: &ToolRow, locale: tact_catalog::CatalogLocale) -> String {
-    match &tool.body {
+    let body = match &tool.body {
         tact_desktop_core::ToolBody::Code { language, text } => {
             let original = language.as_deref().unwrap_or("text");
             let language = crate::ui::transcript_row::evidence_language(original);
@@ -11982,6 +12739,12 @@ fn tool_body_markdown(tool: &ToolRow, locale: tact_catalog::CatalogLocale) -> St
             .as_deref()
             .unwrap_or(&tool.output.preview)
             .to_string(),
+    };
+    if tool.output.truncated && !body.is_empty() {
+        let notice = i18n::text(locale, TextKey::ToolOutputTruncated);
+        format!("_{notice}_\n\n{body}")
+    } else {
+        body
     }
 }
 
@@ -11991,9 +12754,8 @@ fn progress_state(status: RowStatus, locale: tact_catalog::CatalogLocale) -> Pro
         RowStatus::Running => ProgressState::Running,
         RowStatus::Failed => ProgressState::Failed(i18n::text(locale, TextKey::ToolFailed).into()),
         RowStatus::Success | RowStatus::Resolved => ProgressState::Complete,
-        RowStatus::Cancelled => {
-            ProgressState::Failed(i18n::text(locale, TextKey::Cancelled).into())
-        }
+        RowStatus::Cancelled => ProgressState::Cancelled,
+        RowStatus::Unknown => ProgressState::Unknown,
     }
 }
 
@@ -12006,6 +12768,8 @@ fn progressive<T>(
         ProgressState::Pending => Progressive::pending(content),
         ProgressState::Running => Progressive::running(content),
         ProgressState::Complete => Progressive::complete(content),
+        ProgressState::Cancelled => Progressive::cancelled(content),
+        ProgressState::Unknown => Progressive::unknown(content),
         ProgressState::Failed(reason) => Progressive::failed(content, reason),
     }
 }
@@ -12020,10 +12784,16 @@ fn streamed_text(
         RowStatus::Pending => {
             content = StreamedContent::pending(markdown.to_string());
         }
+        RowStatus::Unknown => {
+            content = StreamedContent::unknown(markdown.to_string());
+        }
         RowStatus::Running => {
             content = StreamedContent::running(markdown.to_string());
         }
-        RowStatus::Failed | RowStatus::Cancelled => {
+        RowStatus::Cancelled => {
+            content = StreamedContent::cancelled(markdown.to_string());
+        }
+        RowStatus::Failed => {
             content = StreamedContent::failed(
                 markdown.to_string(),
                 i18n::text(locale, TextKey::ResponseFailed),
@@ -12809,22 +13579,21 @@ fn transcript_row_style() -> gpui::StyleRefinement {
     style
 }
 
-/// Whether a plan row would only repeat the single tool call it describes.
+/// Whether a plan row only repeats tool calls already visible in this run.
 ///
-/// The runtime emits a one-step plan whose step is the tool it is about to
-/// run. Drawing the plan card and that tool's card then shows the same command
-/// twice; the tool card is the richer surface, so the plan step yields to it.
-fn plan_is_a_single_tool_call(
+/// The runtime emits a plan step for every concrete tool call. Drawing that
+/// plan beside the execution group duplicates every command; the tool rows are
+/// the richer surface, so the plan yields when all of its steps have a
+/// `tool_id` present in the same run. A plan with a conceptual step (no tool
+/// id) keeps its card because the tool group cannot represent that step.
+fn plan_is_tool_execution(
     row: &TranscriptRow,
     plan: &tact_desktop_core::PlanRow,
     transcript: &TranscriptView,
 ) -> bool {
-    let [step] = plan.steps.as_ref() else {
+    if plan.steps.is_empty() {
         return false;
-    };
-    let Some(tool_name) = step.detail.as_deref() else {
-        return false;
-    };
+    }
     let rows: Vec<&TranscriptRow> = transcript.iter().map(|row| row.as_ref()).collect();
     let Some(index) = rows.iter().position(|candidate| candidate.id == row.id) else {
         return false;
@@ -12843,15 +13612,22 @@ fn plan_is_a_single_tool_call(
         .position(|candidate| matches!(&candidate.body, RowBody::User(_)))
         .map(|offset| index + offset)
         .unwrap_or(rows.len());
-    rows[start..end]
-        .iter()
-        .any(|candidate| match &candidate.body {
-            RowBody::ToolGroup(group) => group
-                .items
-                .iter()
-                .any(|item| matches!(item, ToolGroupItem::Tool(tool) if &*tool.name == tool_name)),
-            _ => false,
-        })
+    let mut run_tool_ids = std::collections::HashSet::new();
+    for candidate in &rows[start..end] {
+        let RowBody::ToolGroup(group) = &candidate.body else {
+            continue;
+        };
+        for item in group.items.iter() {
+            if let ToolGroupItem::Tool(tool) = item {
+                run_tool_ids.insert(tool.tool_id.as_ref());
+            }
+        }
+    }
+    plan.steps.iter().all(|step| {
+        step.tool_id
+            .as_deref()
+            .is_some_and(|tool_id| run_tool_ids.contains(tool_id))
+    })
 }
 
 /// The rail's quick-filter placeholder, short enough for the 250px rail in
@@ -13417,7 +14193,10 @@ fn surface_reader_markdown(
 mod tests {
     use gpui::{Element as _, Focusable as _, TestAppContext, VisualTestContext, px, size};
     use gpui_component::Root;
-    use tact_desktop_core::{DesktopConfig, SessionEpoch, StateCommit};
+    use tact_desktop_core::{
+        DesktopConfig, LatestToolView, SessionEpoch, StateCommit, ToolBody, ToolMetaView,
+        ToolOutputView,
+    };
 
     use super::*;
 
@@ -13486,6 +14265,38 @@ mod tests {
             window.draw(cx).clear(cx);
         });
         (root, window, shutdown, data_dir)
+    }
+
+    fn draw(window: &mut VisualTestContext) {
+        window.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    /// Sends one wheel tick over `at` and asserts the first and last rows of
+    /// one scroll container both moved by more than a row. The frame is drawn
+    /// afterwards, so callers can inspect the post-scroll state.
+    fn assert_scrolls_past_cap(
+        window: &mut VisualTestContext,
+        at: gpui::Point<gpui::Pixels>,
+        first: &'static str,
+        last: &'static str,
+    ) -> gpui::Bounds<gpui::Pixels> {
+        let first_before = window.debug_bounds(first).expect(first);
+        let last_before = window.debug_bounds(last).expect(last);
+        window.simulate_event(gpui::ScrollWheelEvent {
+            position: at,
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-2000.))),
+            ..Default::default()
+        });
+        draw(window);
+        let first_after = window.debug_bounds(first).expect(first);
+        let last_after = window.debug_bounds(last).expect(last);
+        assert!(
+            first_before.origin.y - first_after.origin.y > px(100.)
+                && last_before.origin.y - last_after.origin.y > px(100.),
+            "the list must scroll past its cap: first {first_before:?} -> {first_after:?}, \
+             last {last_before:?} -> {last_after:?}"
+        );
+        last_after
     }
 
     #[test]
@@ -13692,6 +14503,7 @@ mod tests {
         let mut plan_row = (*plan).clone();
         if let RowBody::Plan(body) = &mut plan_row.body {
             body.steps = Arc::from([tact_desktop_core::PlanStep {
+                tool_id: Some(Arc::from("tool-4")),
                 label: Arc::from("run the tests"),
                 status: RowStatus::Pending,
                 detail: Some(Arc::from("shell")),
@@ -13702,12 +14514,12 @@ mod tests {
         };
         let same_run = TranscriptView::from_rows(vec![group.clone(), Arc::new(plan_row.clone())]);
         assert!(
-            plan_is_a_single_tool_call(&plan_row, plan_body, &same_run),
+            plan_is_tool_execution(&plan_row, plan_body, &same_run),
             "a later turn's plan belongs to the run's existing group"
         );
         let next_run = TranscriptView::from_rows(vec![group, user, Arc::new(plan_row.clone())]);
         assert!(
-            !plan_is_a_single_tool_call(&plan_row, plan_body, &next_run),
+            !plan_is_tool_execution(&plan_row, plan_body, &next_run),
             "a group from an earlier run must not hide a new run's plan"
         );
     }
@@ -13749,6 +14561,380 @@ mod tests {
         );
         let long = "x".repeat(200);
         assert_eq!(evidence_snippet(&long).chars().count(), 161);
+    }
+
+    #[test]
+    fn hook_context_preview_keeps_a_title_and_two_plain_lines() {
+        let markdown = "# **Auto Memory — session context**\n\n\
+                        The fenced block below is reference data.\n\n\
+                        ## Recent sessions (5)\n\
+                        - Codex checkpoint: tool lifecycle";
+        let title = hook_context_title(markdown, "plugin auto-memory-tact");
+        let summary = hook_context_summary(markdown, &title);
+        assert_eq!(title, "Auto Memory — session context");
+        assert!(summary.contains("reference data"));
+        assert!(summary.contains("Codex checkpoint"));
+        assert!(!summary.contains("**"));
+        assert!(!summary.contains("##"));
+    }
+
+    #[gpui::test]
+    fn plugin_context_card_stays_compact_and_opens_the_reader(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(1800.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = tact_desktop_core::fixtures::demo_transcript();
+                snapshot.session.phase = SessionPhase::Running;
+                this.snapshot = Arc::new(snapshot);
+                this.pending_row_updates
+                    .extend(this.snapshot.transcript.iter().map(|row| row.id));
+                let count = this.snapshot.transcript.len();
+                this.scroller.update(cx, |state, cx| {
+                    state.reset(count, cx);
+                    state.scroll_to_item(1, cx);
+                });
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        let card = window
+            .debug_bounds("transcript-row-hook-context-1")
+            .expect("plugin context card");
+        assert!(
+            card.size.height <= px(80.),
+            "plugin context should stay compact: {card:?}"
+        );
+        window.simulate_click(card.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        let reader = window.update(|_, cx| {
+            let Overlay::Reader(reader) = root.read(cx).overlay.as_ref()? else {
+                return None;
+            };
+            Some((reader.title.to_string(), reader.markdown.to_string()))
+        });
+        let (title, markdown) = reader.expect("plugin context reader");
+        assert!(title.contains("plugin auto-memory-tact"));
+        assert!(markdown.contains("No active tasks"));
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn overlays_own_wheel_and_the_transcript_stays_still(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(900.)));
+        let rows = (0..40)
+            .map(|index| {
+                Arc::new(tact_desktop_core::TranscriptRow {
+                    id: RowId::new(index),
+                    ordinal: index,
+                    loop_id: None,
+                    time: None,
+                    body: RowBody::Notice(tact_desktop_core::transcript::NoticeRow {
+                        text: Arc::from(format!("background row {index}")),
+                    }),
+                })
+            })
+            .collect::<Vec<_>>();
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = TranscriptView::from_rows(rows);
+                snapshot.session.phase = SessionPhase::Running;
+                this.snapshot = Arc::new(snapshot);
+                this.pending_row_updates
+                    .extend(this.snapshot.transcript.iter().map(|row| row.id));
+                let count = this.snapshot.transcript.len();
+                this.scroller.update(cx, |state, cx| {
+                    state.reset(count, cx);
+                    state.scroll_to_item(5, cx);
+                });
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        let background_before = window
+            .debug_bounds("transcript-row-notice-5")
+            .expect("visible transcript row");
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.open_overlay(Overlay::Reader(ReaderState::new(
+                    "Long reader",
+                    (0..160)
+                        .map(|line| format!("line {line}"))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                )));
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+            window.draw(cx).clear(cx);
+        });
+        let overlay = window
+            .debug_bounds("reader-overlay")
+            .expect("reader overlay");
+        let content_before = window
+            .debug_bounds("reader-scroll-content")
+            .expect("reader content");
+        window.simulate_event(gpui::ScrollWheelEvent {
+            position: overlay.center(),
+            delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-180.))),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        window.run_until_parked();
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        window.run_until_parked();
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        let background_after = window
+            .debug_bounds("transcript-row-notice-5")
+            .expect("visible transcript row after reader scroll");
+        let content_after = window
+            .debug_bounds("reader-scroll-content")
+            .expect("reader content after scroll");
+        assert_eq!(
+            background_after.origin.y, background_before.origin.y,
+            "the transcript behind the overlay must not scroll"
+        );
+        assert!(
+            content_after.origin.y < content_before.origin.y,
+            "the reader body must scroll: before={content_before:?}, after={content_after:?}"
+        );
+        for overlay in [
+            Overlay::CommandCenter,
+            Overlay::Settings,
+            Overlay::Hooks,
+            Overlay::Extensions(ExtensionsTab::Plugins),
+            Overlay::SessionManager,
+            Overlay::Background,
+        ] {
+            window.update(|window, cx| {
+                root.update(cx, |this, cx| {
+                    this.overlay = None;
+                    this.overlay_stack.clear();
+                    this.open_overlay(overlay);
+                    cx.notify();
+                });
+                window.draw(cx).clear(cx);
+            });
+            let transcript_before = window
+                .debug_bounds("transcript-row-notice-5")
+                .expect("visible transcript row before dialog scroll");
+            window.simulate_event(gpui::ScrollWheelEvent {
+                position: point(px(640.), px(450.)),
+                delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-180.))),
+                modifiers: gpui::Modifiers::default(),
+                touch_phase: gpui::TouchPhase::Moved,
+            });
+            window.update(|window, cx| window.draw(cx).clear(cx));
+            let transcript_after = window
+                .debug_bounds("transcript-row-notice-5")
+                .expect("visible transcript row after dialog scroll");
+            assert_eq!(
+                transcript_after.origin.y, transcript_before.origin.y,
+                "the transcript must not move behind an open dialog"
+            );
+        }
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.overlay = None;
+                this.overlay_stack.clear();
+                this.open_overlay(Overlay::Settings);
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+            window.draw(cx).clear(cx);
+        });
+        let settings_list = window
+            .debug_bounds("settings-list")
+            .expect("settings scroll region");
+        let setting_before = window
+            .debug_bounds("setting-row-model")
+            .expect("first settings row");
+        window.simulate_event(gpui::ScrollWheelEvent {
+            position: settings_list.center(),
+            delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-180.))),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        let setting_after = window
+            .debug_bounds("setting-row-model")
+            .expect("first settings row after scroll");
+        assert!(
+            setting_after.origin.y < setting_before.origin.y,
+            "non-reader overlay content must scroll: before={setting_before:?}, after={setting_after:?}"
+        );
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.overlay = None;
+                this.overlay_stack.clear();
+                this.refresh_slash_overlay("/", cx);
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        let slash = window
+            .debug_bounds("slash-overlay")
+            .expect("slash suggestion popup");
+        let transcript_before = window
+            .debug_bounds("transcript-row-notice-5")
+            .expect("visible transcript row before slash scroll");
+        window.simulate_event(gpui::ScrollWheelEvent {
+            position: slash.center(),
+            delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-180.))),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        let transcript_after = window
+            .debug_bounds("transcript-row-notice-5")
+            .expect("visible transcript row after slash scroll");
+        assert_eq!(
+            transcript_after.origin.y, transcript_before.origin.y,
+            "the transcript must not scroll behind the slash popup"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn reader_single_click_does_not_select_text(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(900.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.open_overlay(Overlay::Reader(ReaderState::new(
+                    "Selectable reader",
+                    "Alpha beta gamma\n\nDelta epsilon",
+                )));
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        let content = window
+            .debug_bounds("selection-actions-surface")
+            .expect("reader selection surface");
+        let position = point(content.origin.x + px(40.), content.origin.y + px(16.));
+        window.simulate_event(gpui::MouseDownEvent {
+            position,
+            modifiers: gpui::Modifiers::default(),
+            button: gpui::MouseButton::Left,
+            click_count: 1,
+            first_mouse: true,
+        });
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        let (held_selected, held_has_selection) = window.update(|window, cx| {
+            (
+                gpui_base::TextSelection::selected_text(window, cx),
+                gpui_base::TextSelection::has_selection(window, cx),
+            )
+        });
+        assert!(
+            held_selected.is_empty() && !held_has_selection,
+            "pressing the mouse without moving must not start a selection: {held_selected:?}"
+        );
+        window.simulate_event(gpui::MouseUpEvent {
+            position,
+            modifiers: gpui::Modifiers::default(),
+            button: gpui::MouseButton::Left,
+            click_count: 1,
+        });
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        let (selected, has_selection) = window.update(|window, cx| {
+            (
+                gpui_base::TextSelection::selected_text(window, cx),
+                gpui_base::TextSelection::has_selection(window, cx),
+            )
+        });
+        assert!(
+            !has_selection,
+            "a single click must not leave a selection state"
+        );
+        assert!(
+            selected.is_empty(),
+            "a single click must not create a text selection: {selected:?}"
+        );
+        let reader_selection = window.update(|_, cx| {
+            let Overlay::Reader(reader) = root.read(cx).overlay.as_ref()? else {
+                return None;
+            };
+            reader
+                .selection
+                .as_ref()
+                .map(|selection| selection.read(cx).selected_text().to_string())
+        });
+        assert_eq!(
+            reader_selection.as_deref(),
+            Some(""),
+            "the shared selection surface must also remain empty"
+        );
+        window.simulate_event(gpui::MouseDownEvent {
+            position,
+            modifiers: gpui::Modifiers::default(),
+            button: gpui::MouseButton::Left,
+            click_count: 2,
+            first_mouse: false,
+        });
+        window.simulate_event(gpui::MouseUpEvent {
+            position,
+            modifiers: gpui::Modifiers::default(),
+            button: gpui::MouseButton::Left,
+            click_count: 2,
+        });
+        window.run_until_parked();
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        let selected = window.update(gpui_base::TextSelection::selected_text);
+        let reader_selection = window.update(|_, cx| {
+            let Overlay::Reader(reader) = root.read(cx).overlay.as_ref()? else {
+                return None;
+            };
+            reader
+                .selection
+                .as_ref()
+                .map(|selection| selection.read(cx).selected_text().to_string())
+        });
+        assert!(
+            !selected.trim().is_empty()
+                || reader_selection
+                    .as_ref()
+                    .is_some_and(|text| !text.is_empty()),
+            "a double click must select the word under the pointer: window={selected:?}, surface={reader_selection:?}"
+        );
+        let clear_position = position;
+        window.simulate_event(gpui::MouseDownEvent {
+            position: clear_position,
+            modifiers: gpui::Modifiers::default(),
+            button: gpui::MouseButton::Left,
+            click_count: 1,
+            first_mouse: true,
+        });
+        window.simulate_event(gpui::MouseUpEvent {
+            position: clear_position,
+            modifiers: gpui::Modifiers::default(),
+            button: gpui::MouseButton::Left,
+            click_count: 1,
+        });
+        window.run_until_parked();
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        let selected = window.update(gpui_base::TextSelection::selected_text);
+        let reader_selection = window.update(|_, cx| {
+            let Overlay::Reader(reader) = root.read(cx).overlay.as_ref()? else {
+                return None;
+            };
+            reader
+                .selection
+                .as_ref()
+                .map(|selection| selection.read(cx).selected_text().to_string())
+        });
+        assert!(
+            selected.is_empty() && reader_selection.as_deref() == Some(""),
+            "a later single click must clear the selection: window={selected:?}, surface={reader_selection:?}"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
     }
 
     #[gpui::test]
@@ -14071,6 +15257,63 @@ mod tests {
     }
 
     #[gpui::test]
+    fn background_readers_preserve_ansi_output(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |this, _| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.inspector.background =
+                    Arc::from([tact_desktop_core::BackgroundTaskView {
+                        id: Arc::from("ansi-background"),
+                        command: Arc::from("echo colored output"),
+                        status: tact_protocol::BackgroundTaskStatusSnapshot::Completed,
+                        started_at: 0,
+                        finished_at: Some(1),
+                        output_tail: Arc::from("\u{1b}[31mRED normal\u{1b}[0m"),
+                        output_path: None,
+                    }]);
+                this.snapshot = Arc::new(snapshot);
+                this.open_overlay(Overlay::Background);
+            });
+            window.draw(cx).clear(cx);
+        });
+        let open = window
+            .debug_bounds("open-background-ansi-background")
+            .expect("the background task open action");
+        window.simulate_click(open.center(), gpui::Modifiers::default());
+        window.update(|_, cx| {
+            assert_eq!(
+                root.read(cx).pending_reader,
+                Some(ReaderRef::Background("ansi-background".into())),
+                "the background task action must preserve its typed reader reference"
+            );
+        });
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.open_transcript_reader_for_test(
+                    ReaderRef::Background("ansi-background".into()),
+                    cx,
+                );
+            });
+            window.draw(cx).clear(cx);
+        });
+        window.run_until_parked();
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        window.run_until_parked();
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            window.debug_bounds("reader-background-ansi").is_some(),
+            "background output with ANSI escapes must use the coloured reader"
+        );
+        assert!(
+            window.debug_bounds("reader-ansi").is_some(),
+            "the coloured background surface must mount"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
     fn snapshot_refreshes_workspace_mentions(cx: &mut TestAppContext) {
         let (root, window, shutdown, data_dir) = probe_root(cx);
         let project = probe_dir("project");
@@ -14213,9 +15456,13 @@ mod tests {
             .expect("permission picker trigger");
         window.simulate_click(trigger.center(), gpui::Modifiers::default());
         window.update(|window, cx| window.draw(cx).clear(cx));
+        let menu = window
+            .debug_bounds("permission-picker-menu")
+            .expect("clicking the permission trigger must open the anchored menu");
+        let viewport = window.update(|window, _| window.viewport_size());
         assert!(
-            window.debug_bounds("permission-picker-menu").is_some(),
-            "clicking the permission trigger must open the anchored menu"
+            menu.origin.y >= px(0.0) && menu.origin.y + menu.size.height <= viewport.height,
+            "permission menu must fit above the composer trigger: menu={menu:?}, viewport={viewport:?}"
         );
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
@@ -14851,23 +16098,229 @@ mod tests {
     }
 
     #[gpui::test]
+    fn run_inspector_renders_the_latest_tool_chip(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.text_scale = 1.5;
+                snapshot.runtime.latest_tool =
+                    Some("read_file 工具调用工具调用🙂🙂🙂 README.md".into());
+                snapshot.runtime.latest_tool_detail = Some(LatestToolView {
+                    tool_id: "call-latest".into(),
+                    group: None,
+                    row: None,
+                    label: "read_file 工具调用工具调用🙂🙂🙂 README.md".into(),
+                    duration_ms: Some(120),
+                    status: RowStatus::Running,
+                });
+                this.snapshot = Arc::new(snapshot);
+                this.right_visible = true;
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        let inspector = window.debug_bounds("run-inspector").expect("run inspector");
+        let chip = window
+            .debug_bounds("inspector-latest-tool")
+            .expect("latest tool chip");
+        assert!(chip.size.width > px(0.), "chip has no width");
+        assert!(
+            chip.origin.x >= inspector.origin.x
+                && chip.origin.x + chip.size.width <= inspector.origin.x + inspector.size.width,
+            "chip={chip:?} outside inspector={inspector:?}"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn command_cards_render_their_output_not_the_command() {
+        let tool = ToolRow {
+            id: RowId::new(1),
+            tool_id: "bash-1".into(),
+            name: "bash".into(),
+            arg_summary: "cargo test".into(),
+            arg_full: Some("cargo test".into()),
+            status: RowStatus::Failed,
+            body: ToolBody::None,
+            output: ToolOutputView {
+                preview: "error: missing".into(),
+                detail: Some("error: missing crate".into()),
+                truncated: false,
+            },
+            meta: ToolMetaView::default(),
+            subagent: None,
+            expanded: true,
+            keep_live: false,
+            destructive: false,
+            duration_ms: None,
+        };
+
+        assert_eq!(
+            tool_body_markdown(&tool, tact_catalog::CatalogLocale::En),
+            "error: missing crate"
+        );
+    }
+
+    #[test]
+    fn truncated_tool_outputs_say_that_only_the_tail_is_retained() {
+        let tool = ToolRow {
+            id: RowId::new(1),
+            tool_id: "bash-1".into(),
+            name: "bash".into(),
+            arg_summary: "long output".into(),
+            arg_full: None,
+            status: RowStatus::Success,
+            body: ToolBody::None,
+            output: ToolOutputView {
+                preview: "tail".into(),
+                detail: Some("tail".into()),
+                truncated: true,
+            },
+            meta: ToolMetaView::default(),
+            subagent: None,
+            expanded: true,
+            keep_live: false,
+            destructive: false,
+            duration_ms: None,
+        };
+
+        assert_eq!(
+            tool_body_markdown(&tool, tact_catalog::CatalogLocale::En),
+            "_Only the last 50,000 characters are retained._\n\ntail"
+        );
+    }
+
+    #[test]
+    fn cancelled_and_unknown_tools_keep_distinct_progress_states() {
+        assert_eq!(
+            progress_state(RowStatus::Cancelled, tact_catalog::CatalogLocale::En),
+            ProgressState::Cancelled
+        );
+        assert_eq!(
+            progress_state(RowStatus::Unknown, tact_catalog::CatalogLocale::Zh),
+            ProgressState::Unknown
+        );
+    }
+
+    #[test]
+    fn chip_labels_truncate_by_display_columns() {
+        assert_eq!(truncate_display_text("工具调用工具调用", 6), "工具…");
+        assert_eq!(truncate_display_text("abcdef", 3), "ab…");
+        assert_eq!(truncate_display_text("a\u{301}bcdef", 3), "a\u{301}b…");
+        assert_eq!(truncate_display_text("🙂🙂🙂", 5), "🙂🙂…");
+        assert_eq!(
+            truncate_display_text("read_file README.md", 34),
+            "read_file README.md"
+        );
+        for text in ["工具调用工具调用", "abcdef", "🙂🙂🙂"] {
+            for max in 0..=8 {
+                assert!(
+                    unicode_width::UnicodeWidthStr::width(
+                        truncate_display_text(text, max).as_str(),
+                    ) <= max,
+                    "{text:?} exceeded {max} columns"
+                );
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn the_latest_tool_chip_closes_the_narrow_inspector(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(900.), px(700.)));
+        let mut expected_tool = None;
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let transcript = tact_desktop_core::fixtures::demo_transcript();
+                let (group, tool) = transcript
+                    .iter()
+                    .find_map(|row| match &row.body {
+                        RowBody::ToolGroup(group) => {
+                            group.items.iter().find_map(|item| match item {
+                                ToolGroupItem::Tool(tool) => Some((row.id, tool.id)),
+                                _ => None,
+                            })
+                        }
+                        _ => None,
+                    })
+                    .expect("a tool group");
+                expected_tool = Some(tool);
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = transcript;
+                snapshot.runtime.latest_tool = Some("read_file README.md".into());
+                snapshot.runtime.latest_tool_detail = Some(LatestToolView {
+                    tool_id: "call-latest".into(),
+                    group: Some(group),
+                    row: Some(tool),
+                    label: "read_file README.md".into(),
+                    duration_ms: Some(120),
+                    status: RowStatus::Running,
+                });
+                this.snapshot = Arc::new(snapshot);
+                this.transcript_rows.clear();
+                let count = this.snapshot.transcript.len();
+                this.scroller.update(cx, |state, cx| state.reset(count, cx));
+                this.right_visible = true;
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        let chip = window
+            .debug_bounds("inspector-latest-tool")
+            .expect("latest tool chip");
+        window.simulate_click(chip.center(), gpui::Modifiers::default());
+        window.update(|window, cx| {
+            root.update(cx, |this, _| {
+                assert!(
+                    !this.right_visible,
+                    "the chip must close the overlay it cannot scroll behind"
+                );
+                assert_eq!(
+                    this.pending_reader,
+                    Some(ReaderRef::ToolOutput(
+                        expected_tool.expect("expected tool row")
+                    )),
+                    "the chip must open the exact tool row"
+                );
+            });
+            window.draw(cx).clear(cx);
+        });
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
     fn back_to_bottom_floats_above_the_sticky_strip(cx: &mut TestAppContext) {
         let (root, window, shutdown, data_dir) = probe_root(cx);
         window.update(|window, cx| {
             root.update(cx, |this, cx| {
                 let mut snapshot = (*this.snapshot).clone();
                 snapshot.tail_following = false;
+                snapshot.transcript = tact_desktop_core::fixtures::demo_transcript();
                 snapshot.session.phase = SessionPhase::Ready;
                 snapshot.session.id = Some(SessionId("back-to-bottom-session".into()));
                 snapshot.project.id = Some(ProjectId("back-to-bottom-project".into()));
                 this.snapshot = Arc::new(snapshot);
+                this.transcript_rows.clear();
+                let count = this.snapshot.transcript.len();
+                this.scroller.update(cx, |state, cx| state.reset(count, cx));
                 // The pill is anchored to the transcript, not the window: with
                 // the inspector open it must not float over the inspector.
                 this.right_visible = true;
                 cx.notify();
             });
             window.draw(cx).clear(cx);
+            window.draw(cx).clear(cx);
         });
+        window.run_until_parked();
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        window.run_until_parked();
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        let tail_following =
+            window.update(|_, cx| root.read(cx).transcript_scroller.read(cx).tail_following);
+        assert!(!tail_following, "back-to-bottom state reached the scroller");
         let sticky = window.debug_bounds("sticky-strip").expect("sticky strip");
         let back = window
             .debug_bounds("back-to-bottom")
@@ -15132,6 +16585,45 @@ mod tests {
             Some(&search),
             "the manager's search field owns focus while it is open"
         );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn closing_session_manager_discards_its_search_query(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.open_overlay(Overlay::SessionManager);
+                this.session_search.update(cx, |input, cx| {
+                    input.set_value("spawn", window, cx);
+                });
+                this.close_overlay();
+                assert!(
+                    this.reset_session_search_on_open,
+                    "closing the manager must schedule the visible query to clear"
+                );
+            });
+        });
+
+        window.update(|window, cx| {
+            root.update(cx, |this, _cx| {
+                this.open_overlay(Overlay::SessionManager);
+            });
+            window.draw(cx).clear(cx);
+            window.draw(cx).clear(cx);
+        });
+
+        window.update(|_, cx| {
+            let root = root.read(cx);
+            assert_eq!(
+                root.session_search.read(cx).value().as_ref(),
+                "",
+                "the next manager opening must start with the stale query cleared"
+            );
+            assert!(!root.reset_session_search_on_open);
+        });
+
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
     }
@@ -15417,7 +16909,7 @@ mod tests {
     }
 
     #[test]
-    fn a_one_step_tool_plan_yields_to_the_tool_card() {
+    fn tool_only_plans_yield_to_the_tool_rows() {
         let base = tact_desktop_core::fixtures::demo_transcript();
         let rows = base
             .iter()
@@ -15427,6 +16919,7 @@ mod tests {
                     row.body = RowBody::Plan(tact_desktop_core::PlanRow {
                         title: Arc::from("Execution plan"),
                         steps: Arc::from([tact_desktop_core::PlanStep {
+                            tool_id: Some(Arc::from("tool-4")),
                             label: Arc::from("cargo test -p tact store::session_store"),
                             status: RowStatus::Success,
                             detail: Some(Arc::from("shell")),
@@ -15445,7 +16938,7 @@ mod tests {
             unreachable!()
         };
         assert!(
-            plan_is_a_single_tool_call(plan_row, plan, &transcript),
+            plan_is_tool_execution(plan_row, plan, &transcript),
             "a one-step plan that is the tool call must not draw a second card"
         );
 
@@ -15454,14 +16947,16 @@ mod tests {
             title: Arc::from("Execution plan"),
             steps: Arc::from([
                 tact_desktop_core::PlanStep {
-                    label: Arc::from("Inspect the store"),
+                    tool_id: Some(Arc::from("tool-4")),
+                    label: Arc::from("Run the store tests"),
                     status: RowStatus::Success,
-                    detail: None,
+                    detail: Some(Arc::from("shell")),
                 },
                 tact_desktop_core::PlanStep {
-                    label: Arc::from("Run the tests"),
+                    tool_id: Some(Arc::from("tool-5")),
+                    label: Arc::from("Edit the store"),
                     status: RowStatus::Running,
-                    detail: Some(Arc::from("shell")),
+                    detail: Some(Arc::from("edit")),
                 },
             ]),
         });
@@ -15469,8 +16964,34 @@ mod tests {
             unreachable!()
         };
         assert!(
-            !plan_is_a_single_tool_call(&multi, multi_plan, &transcript),
-            "a multi-step plan keeps its own card"
+            plan_is_tool_execution(&multi, multi_plan, &transcript),
+            "a multi-step plan that only repeats tool rows must not draw a second card"
+        );
+
+        let mut conceptual = (**plan_row).clone();
+        conceptual.body = RowBody::Plan(tact_desktop_core::PlanRow {
+            title: Arc::from("Execution plan"),
+            steps: Arc::from([
+                tact_desktop_core::PlanStep {
+                    tool_id: None,
+                    label: Arc::from("Inspect the store"),
+                    status: RowStatus::Success,
+                    detail: None,
+                },
+                tact_desktop_core::PlanStep {
+                    tool_id: Some(Arc::from("tool-4")),
+                    label: Arc::from("Run the tests"),
+                    status: RowStatus::Running,
+                    detail: Some(Arc::from("shell")),
+                },
+            ]),
+        });
+        let RowBody::Plan(conceptual_plan) = &conceptual.body else {
+            unreachable!()
+        };
+        assert!(
+            !plan_is_tool_execution(&conceptual, conceptual_plan, &transcript),
+            "a conceptual step keeps the plan card"
         );
     }
 
@@ -15548,6 +17069,31 @@ mod tests {
             permission.origin.y + permission.size.height
                 <= composer.origin.y + composer.size.height,
             "permission chip escapes the composer area: permission={permission:?}, composer={composer:?}"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn short_window_keeps_rail_settings_visible_at_150_percent(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(900.), px(700.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.text_scale = 1.5;
+                this.snapshot = Arc::new(snapshot);
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        let settings = window
+            .debug_bounds("open-settings")
+            .expect("rail settings row");
+        let viewport = window.update(|window, _| window.viewport_size());
+        assert!(
+            settings.origin.y + settings.size.height <= viewport.height,
+            "rail settings must stay visible: settings={settings:?}, viewport={viewport:?}"
         );
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
@@ -15894,5 +17440,229 @@ mod tests {
         }
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn tool_only_plan_rows_do_not_render_above_their_tool_group(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(2600.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let demo = tact_desktop_core::fixtures::demo_transcript();
+                let rows = demo
+                    .iter()
+                    .map(|row| {
+                        let mut next = (**row).clone();
+                        if let RowBody::Plan(plan) = &row.body {
+                            next.body = RowBody::Plan(tact_desktop_core::PlanRow {
+                                title: plan.title.clone(),
+                                steps: Arc::from([
+                                    tact_desktop_core::PlanStep {
+                                        tool_id: Some(Arc::from("tool-4")),
+                                        label: Arc::from("Run the store tests"),
+                                        status: RowStatus::Success,
+                                        detail: Some(Arc::from("shell")),
+                                    },
+                                    tact_desktop_core::PlanStep {
+                                        tool_id: Some(Arc::from("tool-5")),
+                                        label: Arc::from("Edit the store"),
+                                        status: RowStatus::Running,
+                                        detail: Some(Arc::from("edit")),
+                                    },
+                                ]),
+                            });
+                        }
+                        Arc::new(next)
+                    })
+                    .collect::<Vec<_>>();
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = TranscriptView::from_rows(rows);
+                snapshot.session.phase = SessionPhase::Running;
+                this.snapshot = Arc::new(snapshot);
+                this.pending_row_updates
+                    .extend(this.snapshot.transcript.iter().map(|row| row.id));
+                let count = this.snapshot.transcript.len();
+                this.scroller.update(cx, |state, cx| state.reset(count, cx));
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        assert!(
+            window.debug_bounds("transcript-row-plan-13").is_none(),
+            "a tool-only plan must not render above the same tool rows"
+        );
+        assert!(
+            window.debug_bounds("transcript-row-tool-group-3").is_some(),
+            "the execution group remains the canonical tool surface"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn model_menu_scrolls_past_its_first_screenful(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(840.)));
+        window.update(|_, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = tact_desktop_core::fixtures::demo_transcript();
+                snapshot.composer.models = (0..28)
+                    .map(|index| Arc::from(format!("model-{index:02}")))
+                    .collect::<Vec<_>>()
+                    .into();
+                snapshot.composer.model = Arc::from("model-00");
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+                this.scroller
+                    .update(cx, |state, cx| state.scroll_to_item(2, cx));
+            });
+        });
+        draw(window);
+        let trigger = window
+            .debug_bounds("prompt-bar-model-trigger")
+            .expect("model trigger renders");
+        window.simulate_click(trigger.center(), gpui::Modifiers::default());
+        draw(window);
+        let menu = window
+            .debug_bounds("prompt-bar-model-picker")
+            .expect("model menu opens");
+        assert!(
+            menu.size.height <= px(240.) && menu.bottom() <= trigger.top(),
+            "the menu stays capped and flips above the composer: menu={menu:?}, trigger={trigger:?}"
+        );
+        let transcript_before = window
+            .debug_bounds("transcript-row-thinking-2")
+            .expect("transcript row behind the menu");
+        let wheel_at = point(menu.origin.x + px(20.), menu.origin.y + px(20.));
+        let transcript_view = window
+            .debug_bounds("desktop-transcript")
+            .expect("transcript viewport renders");
+        assert!(
+            transcript_view.contains(&wheel_at),
+            "the wheel must land over the transcript for the isolation check to mean \
+             anything: viewport={transcript_view:?}, wheel={wheel_at:?}"
+        );
+        let last_after = assert_scrolls_past_cap(
+            window,
+            wheel_at,
+            "prompt-bar-model-option-model-00",
+            "prompt-bar-model-option-model-27",
+        );
+        let transcript_after = window
+            .debug_bounds("transcript-row-thinking-2")
+            .expect("transcript row after scrolling");
+        assert_eq!(
+            transcript_after.origin.y, transcript_before.origin.y,
+            "the wheel over the menu must not scroll the transcript behind it"
+        );
+        window.simulate_click(last_after.center(), gpui::Modifiers::default());
+        draw(window);
+        assert!(
+            window.debug_bounds("prompt-bar-model-picker").is_none(),
+            "an option reached by scrolling must still be clickable"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn composer_queue_scrolls_past_its_cap(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(840.)));
+        window.update(|_, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.composer.queue = (0..30)
+                    .map(|index| tact_desktop_core::QueuedPromptView {
+                        id: index,
+                        text: Arc::from(format!("queued prompt {index}")),
+                        attachments: Arc::from([]),
+                    })
+                    .collect::<Vec<_>>()
+                    .into();
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+                this.queue_expanded = true;
+                cx.notify();
+            });
+        });
+        draw(window);
+        let at = window
+            .debug_bounds("queue-item-composer-queue-0")
+            .expect("first queued row renders")
+            .center();
+        assert_scrolls_past_cap(
+            window,
+            at,
+            "queue-item-composer-queue-0",
+            "queue-item-composer-queue-29",
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn hooks_list_scrolls_past_its_cap(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(840.)));
+        window.update(|_, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.surface = Some(SurfaceSnapshot::Hooks(tact_desktop_core::HookSnapshot {
+                    trusted: (0..30)
+                        .map(|index| tact_desktop_core::HookItemSnapshot {
+                            source: format!("source-{index:02}"),
+                            event: "post_tool".into(),
+                            matcher: None,
+                            command: format!("hook {index}"),
+                        })
+                        .collect(),
+                    pending: Vec::new(),
+                }));
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+                this.open_overlay(Overlay::Hooks);
+                cx.notify();
+            });
+        });
+        draw(window);
+        let at = window
+            .debug_bounds("hook-source-source-00")
+            .expect("first hook row renders")
+            .center();
+        assert_scrolls_past_cap(window, at, "hook-source-source-00", "hook-source-source-29");
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn mention_suggestions_scroll_past_their_cap(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        let project = probe_dir("mentions");
+        for index in 0..30 {
+            std::fs::write(project.join(format!("mention-{index:02}.txt")), "probe").unwrap();
+        }
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.project.root = Some(project.clone());
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+                this.prompt
+                    .update(cx, |prompt, cx| prompt.focus(window, cx));
+            });
+        });
+        window.simulate_input("@mention");
+        draw(window);
+        let at = window
+            .debug_bounds("prompt-bar-suggestion-0")
+            .expect("first mention row renders")
+            .center();
+        assert_scrolls_past_cap(
+            window,
+            at,
+            "prompt-bar-suggestion-0",
+            "prompt-bar-suggestion-29",
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+        let _ = std::fs::remove_dir_all(project);
     }
 }

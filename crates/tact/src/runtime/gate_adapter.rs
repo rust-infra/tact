@@ -700,6 +700,7 @@ fn step_status(status: ToolExecutionStatus) -> StepStatus {
     match status {
         ToolExecutionStatus::Succeeded => StepStatus::Success,
         ToolExecutionStatus::Failed => StepStatus::Failed,
+        ToolExecutionStatus::Cancelled => StepStatus::Cancelled,
     }
 }
 

@@ -199,7 +199,7 @@ async fn orphaned_tool_use_is_reconciled_before_the_first_request() {
             .any(|block| {
                 matches!(
                     block,
-                    AgentContentBlock::ToolResult { tool_use_id, content }
+                    AgentContentBlock::ToolResult { tool_use_id, content, .. }
                         if tool_use_id == "orphan" && content.contains("interrupted")
                 )
             })
@@ -226,6 +226,7 @@ async fn healthy_tool_pairing_is_not_rewritten_during_reconciliation() {
             vec![AgentContentBlock::ToolResult {
                 tool_use_id: "paired".into(),
                 content: "already done".into(),
+                status: tact_agent_api::ToolResultStatus::Success,
             }],
         ),
     ];

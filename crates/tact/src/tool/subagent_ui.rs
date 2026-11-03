@@ -14,8 +14,8 @@
 use std::collections::HashMap;
 
 use tact_protocol::{
-    AgentUpdate, SubagentStep, SubagentStepStatus, SubagentTranscriptEntry, ToolOutputChunk,
-    ToolPresentationInfo, UiAgentRef, UpdateSender,
+    AgentUpdate, StepStatus, SubagentStep, SubagentStepStatus, SubagentTranscriptEntry,
+    ToolOutputChunk, ToolPresentationInfo, UiAgentRef, UpdateSender,
 };
 
 use crate::tool::ToolProgressReporter;
@@ -320,7 +320,11 @@ pub fn tagged_ui_channel_with_progress(
                             tool_name: result.tool,
                             arg_summary: result.arg_summary,
                             arg_full,
-                            status: SubagentStepStatus::Success,
+                            status: match result.status {
+                                StepStatus::Success => SubagentStepStatus::Success,
+                                StepStatus::Failed => SubagentStepStatus::Failed,
+                                StepStatus::Cancelled => SubagentStepStatus::Cancelled,
+                            },
                             message: result.message,
                             detail: result.detail,
                             duration_us: result.duration_us,
