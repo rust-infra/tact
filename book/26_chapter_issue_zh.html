@@ -21879,7 +21879,8 @@ host-owned <code>ScrollHandle</code>；两者在 capture 阶段接管滚轮，�
 24 ms 一次状态更新，再统一通知重绘。Reader 的 Markdown 使用
 <code>natural_height()</code>，只保留一个拥有滚动的父区域，避免嵌套滚动吞事件。
 弹窗打开时聊天滚轮 capture 会停用，back-to-bottom 控件也随 transcript view 一起重绘。
-dev profile 增加 <code>opt-level = 1</code>，桌面 preview 不再用完全未优化的代码跑布局和文字排版。</p>
+dev profile 让桌面与 <code>tact_desktop_core</code> 保持 <code>opt-level = 1</code>，
+其余工作区 crate 用 <code>0</code> 以加快开发编译；桌面 preview 不再用完全未优化的代码跑布局和文字排版。</p>
 <p><strong>验证：</strong> 本机 release 单次 5 秒采样中，80 Hz 合成滚轮下聊天 CPU
 约 10.8%、Reader 约 11.8%；同一测试在 3 秒内注入 600 次 Reader 滚动后仍能立即关闭，
 不再出现无响应弹窗。此前的 dev profile 同一聊天负载约 42% 到 50%，加
