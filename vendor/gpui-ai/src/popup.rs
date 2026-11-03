@@ -155,12 +155,16 @@ pub(crate) fn install(cx: &mut App) {
 /// whatever it covers on any theme.
 pub(crate) fn popover_surface<E>(surface: E, cx: &App) -> E
 where
-    E: gpui_component::ThemeStyled,
+    E: gpui_component::ThemeStyled + gpui::InteractiveElement,
 {
     surface
         .popover_style(cx)
         .border_1()
         .border_color(cx.theme().border)
+        // A floating panel owns the pointer and wheel surface. `occlude`
+        // drops the hitboxes behind it, so a wheel over the panel reaches
+        // its own scroll area but never the surface underneath.
+        .occlude()
 }
 
 #[cfg(test)]

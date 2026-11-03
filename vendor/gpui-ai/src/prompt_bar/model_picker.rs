@@ -348,22 +348,20 @@ impl PromptBar {
             }
         }
 
-        let surface = prompt_listbox(
+        let list = prompt_listbox(
             (gpui::ElementId::from(root_id.clone()), "models").into(),
             label,
         )
-        .debug_selector(|| "prompt-bar-model-picker".to_owned())
-        .occlude()
-        .w(tokens.spacing.xxl * 10.0)
-        .max_h(tokens.spacing.xxl * 7.0)
+        // A cap on this element would clamp the scroll content itself, so
+        // the menu's height limit lives on the wrapper below.
+        .w_full()
         .overflow_y_scrollbar()
         .p(tokens.spacing.xs)
         .relative()
         .on_mouse_down_out(cx.listener(|this, _, window, cx| {
             this.close_model_menu(window, cx);
         }));
-        let surface = crate::popup::popover_surface(surface, cx);
-        let surface = crate::glide::glide_frame(surface, &glide)
+        let list = crate::glide::glide_frame(list, &glide)
             .child(crate::glide::glide_highlight(
                 (gpui::ElementId::from(root_id.clone()), "model-glide").into(),
                 &glide,
@@ -377,6 +375,14 @@ impl PromptBar {
                 cx,
             ))
             .children(model_options);
+        let surface = crate::popup::popover_surface(
+            v_flex()
+                .debug_selector(|| "prompt-bar-model-picker".to_owned())
+                .w(tokens.spacing.xxl * 10.0)
+                .max_h(tokens.spacing.xxl * 7.0)
+                .child(list),
+            cx,
+        );
 
         // The side comes from the crate's popup policy; the positioner
         // still flips and clamps when the chosen side does not fit, so a

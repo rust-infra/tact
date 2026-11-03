@@ -241,14 +241,18 @@ fn coalesced_wheel_canvas(
 ) -> impl IntoElement {
     let apply = Rc::new(apply);
     canvas(
-        |_, _, _| (),
-        move |bounds, _, window, _| {
+        // The hitbox lets the capture handler ask gpui's cached hit test
+        // whether the wheel belongs to this surface. A popup painted above
+        // occludes it, so the popup's own scroll area keeps the event.
+        |bounds, window, _| window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
+        move |_, hitbox, window, _| {
             let apply = apply.clone();
             let pending = pending.clone();
             let scheduled = scheduled.clone();
             let task = task.clone();
+            let hitbox_id = hitbox.id;
             window.on_mouse_event(move |event: &gpui::ScrollWheelEvent, phase, window, cx| {
-                if phase != gpui::DispatchPhase::Capture || !bounds.contains(&event.position) {
+                if !(phase.capture() && hitbox_id.should_handle_scroll(window)) {
                     return;
                 }
                 let delta = f32::from(event.delta.pixel_delta(window.line_height()).y);
@@ -539,6 +543,7 @@ impl Render for TranscriptScrollerView {
         .py_2();
         let viewport = div()
             .id("desktop-transcript")
+            .debug_selector(|| "desktop-transcript".to_owned())
             .role(Role::Log)
             .size_full()
             .min_h_0()
@@ -6863,7 +6868,6 @@ impl DesktopRoot {
             .shadow_lg()
             .overflow_y_scroll()
             .occlude()
-            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
             .child(
                 h_flex()
                     .flex_none()
@@ -7178,12 +7182,15 @@ impl DesktopRoot {
                             // dialog: it stays a step narrower than the
                             // composer frame and never taller than a few
                             // rows. A long queue scrolls instead of
-                            // pushing the transcript off screen.
+                            // pushing the transcript off screen. The cap
+                            // belongs on this wrapper: on the scroll
+                            // content it would clamp the content itself
+                            // and nothing past the first screenful could
+                            // be reached.
                             .max_w(px(820.))
                             .max_h(px(240.))
                             .mx_auto()
-                            .overflow_y_scrollbar()
-                            .child(queue_view),
+                            .child(div().w_full().overflow_y_scrollbar().child(queue_view)),
                     )
                 })
             })
@@ -8236,8 +8243,11 @@ impl DesktopRoot {
                     .join(" · ");
                 let source_for_click = source.clone();
                 let trusted = *trusted;
+                let source_id = SharedString::from(format!("hook-source-{source}"));
+                let debug_source = source_id.clone();
                 h_flex()
-                    .id(SharedString::from(format!("hook-source-{source}")))
+                    .id(source_id)
+                    .debug_selector(move || debug_source.to_string())
                     .justify_between()
                     .items_center()
                     .gap(px(12.))
@@ -8429,24 +8439,33 @@ impl DesktopRoot {
                 div()
                     .mx(px(20.))
                     .flex_none()
+                    // The cap sits on this wrapper, not on the scroll
+                    // content, so a long hook list can scroll instead of
+                    // being clamped to its first screenful.
                     .max_h(px(320.))
                     .rounded(px(10.))
                     .border_1()
                     .border_color(cx.theme().border)
-                    .overflow_y_scrollbar()
-                    .when(rows.is_empty(), |list| {
-                        list.child(
-                            div()
-                                .p(px(16.))
-                                .text_size(px(12.))
-                                .text_color(cx.theme().muted_foreground)
-                                .child(match self.snapshot.language {
-                                    tact_catalog::CatalogLocale::En => "No hooks configured.",
-                                    tact_catalog::CatalogLocale::Zh => "未配置钩子。",
-                                }),
-                        )
-                    })
-                    .children(rows),
+                    .child(
+                        div()
+                            .w_full()
+                            .overflow_y_scrollbar()
+                            .when(rows.is_empty(), |list| {
+                                list.child(
+                                    div()
+                                        .p(px(16.))
+                                        .text_size(px(12.))
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(match self.snapshot.language {
+                                            tact_catalog::CatalogLocale::En => {
+                                                "No hooks configured."
+                                            }
+                                            tact_catalog::CatalogLocale::Zh => "未配置钩子。",
+                                        }),
+                                )
+                            })
+                            .children(rows),
+                    ),
             )
             .child(div().flex_1())
             .child(
@@ -10630,7 +10649,6 @@ impl Render for DesktopRoot {
                         // wheel event to the transcript scroller underneath even
                         // though clicks are handled by the dialog.
                         .occlude()
-                        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                         .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                             this.close_overlay();
                             this.restore_focus(window, cx);
@@ -14249,6 +14267,38 @@ mod tests {
         (root, window, shutdown, data_dir)
     }
 
+    fn draw(window: &mut VisualTestContext) {
+        window.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    /// Sends one wheel tick over `at` and asserts the first and last rows of
+    /// one scroll container both moved by more than a row. The frame is drawn
+    /// afterwards, so callers can inspect the post-scroll state.
+    fn assert_scrolls_past_cap(
+        window: &mut VisualTestContext,
+        at: gpui::Point<gpui::Pixels>,
+        first: &'static str,
+        last: &'static str,
+    ) -> gpui::Bounds<gpui::Pixels> {
+        let first_before = window.debug_bounds(first).expect(first);
+        let last_before = window.debug_bounds(last).expect(last);
+        window.simulate_event(gpui::ScrollWheelEvent {
+            position: at,
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-2000.))),
+            ..Default::default()
+        });
+        draw(window);
+        let first_after = window.debug_bounds(first).expect(first);
+        let last_after = window.debug_bounds(last).expect(last);
+        assert!(
+            first_before.origin.y - first_after.origin.y > px(100.)
+                && last_before.origin.y - last_after.origin.y > px(100.),
+            "the list must scroll past its cap: first {first_before:?} -> {first_after:?}, \
+             last {last_before:?} -> {last_after:?}"
+        );
+        last_after
+    }
+
     #[test]
     fn chinese_permission_choices_keep_stable_values() {
         assert_eq!(
@@ -17447,5 +17497,172 @@ mod tests {
         );
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn model_menu_scrolls_past_its_first_screenful(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(840.)));
+        window.update(|_, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = tact_desktop_core::fixtures::demo_transcript();
+                snapshot.composer.models = (0..28)
+                    .map(|index| Arc::from(format!("model-{index:02}")))
+                    .collect::<Vec<_>>()
+                    .into();
+                snapshot.composer.model = Arc::from("model-00");
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+                this.scroller
+                    .update(cx, |state, cx| state.scroll_to_item(2, cx));
+            });
+        });
+        draw(window);
+        let trigger = window
+            .debug_bounds("prompt-bar-model-trigger")
+            .expect("model trigger renders");
+        window.simulate_click(trigger.center(), gpui::Modifiers::default());
+        draw(window);
+        let menu = window
+            .debug_bounds("prompt-bar-model-picker")
+            .expect("model menu opens");
+        assert!(
+            menu.size.height <= px(240.) && menu.bottom() <= trigger.top(),
+            "the menu stays capped and flips above the composer: menu={menu:?}, trigger={trigger:?}"
+        );
+        let transcript_before = window
+            .debug_bounds("transcript-row-thinking-2")
+            .expect("transcript row behind the menu");
+        let wheel_at = point(menu.origin.x + px(20.), menu.origin.y + px(20.));
+        let transcript_view = window
+            .debug_bounds("desktop-transcript")
+            .expect("transcript viewport renders");
+        assert!(
+            transcript_view.contains(&wheel_at),
+            "the wheel must land over the transcript for the isolation check to mean \
+             anything: viewport={transcript_view:?}, wheel={wheel_at:?}"
+        );
+        let last_after = assert_scrolls_past_cap(
+            window,
+            wheel_at,
+            "prompt-bar-model-option-model-00",
+            "prompt-bar-model-option-model-27",
+        );
+        let transcript_after = window
+            .debug_bounds("transcript-row-thinking-2")
+            .expect("transcript row after scrolling");
+        assert_eq!(
+            transcript_after.origin.y, transcript_before.origin.y,
+            "the wheel over the menu must not scroll the transcript behind it"
+        );
+        window.simulate_click(last_after.center(), gpui::Modifiers::default());
+        draw(window);
+        assert!(
+            window.debug_bounds("prompt-bar-model-picker").is_none(),
+            "an option reached by scrolling must still be clickable"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn composer_queue_scrolls_past_its_cap(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(840.)));
+        window.update(|_, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.composer.queue = (0..30)
+                    .map(|index| tact_desktop_core::QueuedPromptView {
+                        id: index,
+                        text: Arc::from(format!("queued prompt {index}")),
+                        attachments: Arc::from([]),
+                    })
+                    .collect::<Vec<_>>()
+                    .into();
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+                this.queue_expanded = true;
+                cx.notify();
+            });
+        });
+        draw(window);
+        let at = window
+            .debug_bounds("queue-item-composer-queue-0")
+            .expect("first queued row renders")
+            .center();
+        assert_scrolls_past_cap(
+            window,
+            at,
+            "queue-item-composer-queue-0",
+            "queue-item-composer-queue-29",
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn hooks_list_scrolls_past_its_cap(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(840.)));
+        window.update(|_, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.surface = Some(SurfaceSnapshot::Hooks(tact_desktop_core::HookSnapshot {
+                    trusted: (0..30)
+                        .map(|index| tact_desktop_core::HookItemSnapshot {
+                            source: format!("source-{index:02}"),
+                            event: "post_tool".into(),
+                            matcher: None,
+                            command: format!("hook {index}"),
+                        })
+                        .collect(),
+                    pending: Vec::new(),
+                }));
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+                this.open_overlay(Overlay::Hooks);
+                cx.notify();
+            });
+        });
+        draw(window);
+        let at = window
+            .debug_bounds("hook-source-source-00")
+            .expect("first hook row renders")
+            .center();
+        assert_scrolls_past_cap(window, at, "hook-source-source-00", "hook-source-source-29");
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn mention_suggestions_scroll_past_their_cap(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        let project = probe_dir("mentions");
+        for index in 0..30 {
+            std::fs::write(project.join(format!("mention-{index:02}.txt")), "probe").unwrap();
+        }
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.project.root = Some(project.clone());
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+                this.prompt
+                    .update(cx, |prompt, cx| prompt.focus(window, cx));
+            });
+        });
+        window.simulate_input("@mention");
+        draw(window);
+        let at = window
+            .debug_bounds("prompt-bar-suggestion-0")
+            .expect("first mention row renders")
+            .center();
+        assert_scrolls_past_cap(
+            window,
+            at,
+            "prompt-bar-suggestion-0",
+            "prompt-bar-suggestion-29",
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+        let _ = std::fs::remove_dir_all(project);
     }
 }
