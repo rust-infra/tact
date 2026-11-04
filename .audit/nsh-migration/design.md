@@ -49,11 +49,12 @@ Replace the GPUI desktop (`crates/desktop`, ~17k production lines) with a Native
 
 - 2026-11-04: the reader overlay handles `DesktopEffect::OpenReader` (the `help` command, and the Open buttons on tools, thinking and diffs). Clipboard, external links, file opens and window close are handled from `DesktopEffect`.
 - 2026-11-04: typed surfaces render in their own overlay: system prompt, statistics, history, MCP servers and prompts, hooks. They close per revision without a controller intent.
-- Verified: 15 unit tests and 5 headless shell tests pass; the app launches with no warnings.
+- 2026-11-04: the composer lists slash-command suggestions from the catalog and runs the chosen command; the settings overlay edits booleans, choices and text settings; gates support multi-select with a draft and a Submit button.
+- Verified: 16 unit tests and 6 headless shell tests pass; the app launches with no warnings.
 
 ## Left
 
-- Settings editing (forms), slash overlay and command forms, gate multi-select, attachments and voice.
+- Attachments: NSH's picker returns image bytes, not paths; the desktop needs a temp-file bridge before `Submission.attachments` can be filled. Voice is still unported.
 - Application menu: NSH 0.3.0 exposes it only to TSX (`nsh/desktop`); Rust has `set_title_bar`, `title_bar`, `close_window`, `window_drag`. This is the largest parity blocker.
 - Virtualized transcript list (`virtual_list`) instead of `each` in a scroll, once row heights are measured.
 - Port the remaining behavior tests to `nsh-testing`; add fixtures for transcript rows.

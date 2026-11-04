@@ -6,8 +6,9 @@ use nsh_base::{text_view, theme};
 use nsh_core::element::{AccessibilityRole, AnyElement};
 use nsh_core::prelude::*;
 use tact_desktop_core::{
-    DesktopController, DesktopIntent, GateResponse, ReaderRef, RowBody, RowId, RowStatus,
-    ToolGroupItem, ToolGroupRow, ToolRow, TranscriptRow,
+    DesktopController, DesktopIntent, GateCard, GateKind, GateResponse, GateSelection,
+    GateState, ReaderRef, RowBody, RowId, RowStatus, ToolGroupItem, ToolGroupRow, ToolRow,
+    TranscriptRow,
 };
 
 use crate::app::SnapshotRef;
@@ -167,47 +168,7 @@ fn row_element(
                     .font_size(px(11.0)),
             )
             .into_element(),
-        RowBody::Gate(gate) => view()
-            .flex_col()
-            .gap_2()
-            .p_3()
-            .rounded(px(RADIUS))
-            .bg(move || theme().card)
-            .border_1()
-            .border_color(move || theme().border)
-            .child(text(gate.prompt.to_string()).text_size(px(13.0)))
-            .child(
-                view()
-                    .flex_row()
-                    .flex_wrap()
-                    .gap_2()
-                    .children(gate.options.iter().enumerate().map(|(index, option)| {
-                        let controller = controller.clone();
-                        let session_epoch = gate.session_epoch;
-                        let request_id = gate.request_id;
-                        view()
-                            .px_3()
-                            .py(px(5.0))
-                            .rounded(px(7.0))
-                            .bg(move || theme().primary)
-                            .cursor_pointer()
-                            .role(AccessibilityRole::Button)
-                            .label(option.to_string())
-                            .on_press(move || {
-                                let _ = controller.dispatch(DesktopIntent::RespondGate {
-                                    session_epoch,
-                                    request_id: request_id.0,
-                                    response: GateResponse::Select(Some(index)),
-                                });
-                            })
-                            .child(
-                                text(option.to_string())
-                                    .text_size(px(12.0))
-                                    .text_color(move || theme().primary_foreground),
-                            )
-                    })),
-            )
-            .into_element(),
+        RowBody::Gate(gate) => gate_card(gate, controller.clone()),
         RowBody::Notice(notice) => text(notice.text.to_string())
             .text_size(px(12.0))
             .text_color(theme().muted_foreground)
@@ -370,4 +331,120 @@ fn open_button(controller: DesktopController, reference: ReaderRef) -> impl Into
                 .text_size(px(10.0))
                 .text_color(move || theme().primary),
         )
+}
+
+fn gate_card(gate: &GateCard, controller: DesktopController) -> AnyElement {
+    let multi = gate.kind == GateKind::MultiSelect;
+    let pending = gate.status == GateState::Pending;
+    let selection: Vec<usize> = match &gate.selection {
+        GateSelection::Single(Some(index)) => vec![*index],
+        GateSelection::Multiple(indices) => indices.clone(),
+        _ => Vec::new(),
+    };
+    let mut options = view().flex_row().flex_wrap().gap_2();
+    for (index, option) in gate.options.iter().enumerate() {
+        let controller = controller.clone();
+        let selected = selection.contains(&index);
+        let session_epoch = gate.session_epoch;
+        let request_id = gate.request_id;
+        let next_selection = if multi {
+            let mut next = selection.clone();
+            if selected {
+                next.retain(|value| *value != index);
+            } else {
+                next.push(index);
+            }
+            next
+        } else {
+            Vec::new()
+        };
+        let label = option.to_string();
+        options = options.child(
+            view()
+                .px_3()
+                .py(px(5.0))
+                .rounded(px(7.0))
+                .cursor_pointer()
+                .role(AccessibilityRole::Button)
+                .label(label.clone())
+                .bg(move || {
+                    if selected {
+                        theme().primary
+                    } else {
+                        theme().muted
+                    }
+                })
+                .on_press(move || {
+                    if !pending {
+                        return;
+                    }
+                    if multi {
+                        let _ = controller.dispatch(DesktopIntent::SetGateDraft {
+                            session_epoch,
+                            request_id: request_id.0,
+                            selected: next_selection.clone(),
+                        });
+                    } else {
+                        let _ = controller.dispatch(DesktopIntent::RespondGate {
+                            session_epoch,
+                            request_id: request_id.0,
+                            response: GateResponse::Select(Some(index)),
+                        });
+                    }
+                })
+                .child(
+                    text(label)
+                        .text_size(px(12.0))
+                        .text_color(move || {
+                            if selected {
+                                theme().primary_foreground
+                            } else {
+                                theme().foreground
+                            }
+                        }),
+                ),
+        );
+    }
+    let submit = if multi {
+        let controller = controller.clone();
+        let session_epoch = gate.session_epoch;
+        let request_id = gate.request_id;
+        let selected = selection.clone();
+        Some(
+            view()
+                .px_3()
+                .py(px(5.0))
+                .rounded(px(7.0))
+                .cursor_pointer()
+                .role(AccessibilityRole::Button)
+                .label("Submit")
+                .bg(move || theme().primary)
+                .on_press(move || {
+                    let _ = controller.dispatch(DesktopIntent::RespondGate {
+                        session_epoch,
+                        request_id: request_id.0,
+                        response: GateResponse::MultiSelect(Some(selected.clone())),
+                    });
+                })
+                .child(
+                    text("Submit")
+                        .text_size(px(12.0))
+                        .text_color(move || theme().primary_foreground),
+                ),
+        )
+    } else {
+        None
+    };
+    view()
+        .flex_col()
+        .gap_2()
+        .p_3()
+        .rounded(px(RADIUS))
+        .bg(move || theme().card)
+        .border_1()
+        .border_color(move || theme().border)
+        .child(text(gate.prompt.to_string()).text_size(px(13.0)))
+        .child(options)
+        .children(submit)
+        .into_element()
 }
