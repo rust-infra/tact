@@ -86,8 +86,10 @@ The desktop shell has four persistent regions:
 1. **Title bar** - workspace, repository, branch/worktree, session status,
    command palette, theme, and window controls.
 2. **Session rail** - project switcher, new session, recent sessions,
-   Extensions and Settings. Durable Goals/Subagents/Background shortcuts live in
-   the sticky strip and Inspector, not duplicated in the rail.
+   Extensions and Settings. The session list stretches to fill the rail, with
+   Extensions, the quota card and Settings pinned to its bottom edge. Goals,
+   Subagents and Background live only in the Inspector tabs and the sticky
+   strip; the rail no longer keeps a second copy of those shortcuts.
 3. **Run transcript** - mixed rows in execution order, with a sticky run
    summary and a composer/queue at the bottom.
 4. **Inspector** - Run, Goals, Subagents, Context, and Background views. It is

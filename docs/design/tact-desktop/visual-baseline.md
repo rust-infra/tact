@@ -215,11 +215,10 @@ structural differences that remained after 4b:
 - **Back to bottom.** Separate `New activity` chip and `Back to bottom`
   control with a chevron.
 - **Rail and inspector.** Active rail rows carry a fill, section labels align
-  with row text, the session list is capped at 20% of the viewport (190px
-  floor) so the DURABLE block, Extensions, quota and Settings stay visible at
-  840px,
-  the inspector is a white panel and its current-step card uses a left accent
-  bar rather than a full outline.
+  with row text, the session list stretches to fill the rail while Extensions,
+  the quota card and Settings stay pinned to its bottom edge, the inspector is
+  a white panel and its current-step card uses a left accent bar rather than a
+  full outline.
 - **Colors.** Dark rail uses the prototype's `#1c1c1e`; light canvas, rail and
   inspector follow `--canvas`, `--rail` and `--panel`.
 - **Execution grouping.** Every turn in one run appends to the run's single

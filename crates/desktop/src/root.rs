@@ -4220,20 +4220,10 @@ impl DesktopRoot {
 
     fn render_session_rail(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let geometry = crate::ui::shell::geometry(self.snapshot.appearance);
-        // The design caps the session list at 32% of the window's height
-        // (190–330px) instead of letting it eat the rail's spare space. The
-        // DURABLE block below it also needs room at 840px, so the cap is
-        // taken slightly lower there.
-        let viewport_height = f32::from(window.viewport_size().height);
-        let requested_session_height =
-            (viewport_height * 0.20).clamp(190., 330.) * self.snapshot.text_scale;
-        // The rail's remaining sections scale with text too. At 150% in a
-        // 700px window, a 285px session viewport pushed the pinned Settings
-        // row below the window. Leave 422px per text scale for that chrome;
-        // the session list still scrolls and keeps a useful minimum.
-        let scalable_chrome_height = 422. * self.snapshot.text_scale;
-        let session_list_height = requested_session_height
-            .min((viewport_height - scalable_chrome_height).max(36. * self.snapshot.text_scale));
+        // The session list is the rail's main content: it stretches to fill
+        // whatever the pinned blocks below leave, so every pixel the removed
+        // DURABLE block freed goes to the sessions. Their height is
+        // `flex_none` chrome; the list's `min_h` keeps a short window usable.
         let project = self
             .snapshot
             .project
@@ -4241,9 +4231,6 @@ impl DesktopRoot {
             .clone()
             .unwrap_or_else(|| self.snapshot.project.display_name.clone());
         let session_count = self.snapshot.sessions.items.len();
-        let goal_count = self.snapshot.inspector.goals.len();
-        let subagent_count = self.snapshot.inspector.subagents.len();
-        let background_count = self.snapshot.inspector.background.len();
         let project_meta = match (
             self.snapshot.project.branch.as_deref(),
             self.snapshot.language,
@@ -4514,13 +4501,11 @@ impl DesktopRoot {
                     .id("session-list")
                     .debug_selector(|| "session-list".into())
                     .min_h_0()
-                    // The design caps the session list and lets the
-                    // extensions block follow it; the rail's spare height
-                    // belongs to the quota card at the bottom. `flex_1` lets
-                    // a short window shrink the list instead of pushing the
-                    // quota card off the rail.
-                    .flex_none()
-                    .h(px(session_list_height))
+                    // The list absorbs every pixel the rail has left once the
+                    // pinned blocks are placed: extensions, quota and Settings
+                    // sit at the bottom, so spare height is the sessions'.
+                    .flex_1()
+                    .min_h(px(36. * self.snapshot.text_scale))
                     .mt(px(6.))
                     .child(self.sidebar_nav.clone()),
             )
@@ -4553,63 +4538,9 @@ impl DesktopRoot {
                         cx.notify();
                     })),
             )
-            .child(
-                v_flex()
-                    .id("rail-durable")
-                    .debug_selector(|| "rail-durable".into())
-                    .gap(px(2.))
-                    .mt(px(8.))
-                    .child(
-                        div()
-                            .px(px(14.))
-                            .text_size(px(10.))
-                            .font_family("Lilex")
-                            .text_color(cx.theme().muted_foreground)
-                            .child(self.text(TextKey::Durable)),
-                    )
-                    .child(
-                        extension_rail_row(
-                            "rail-goals",
-                            IconName::CircleCheck,
-                            self.text(TextKey::Goals),
-                            Some(goal_count.to_string()),
-                            cx,
-                        )
-                        .on_click(cx.listener(
-                            |this, _: &ClickEvent, _, cx| {
-                                this.select_inspector(InspectorTab::Goals, cx);
-                            },
-                        )),
-                    )
-                    .child(
-                        extension_rail_row(
-                            "rail-subagents",
-                            IconName::CircleUser,
-                            self.text(TextKey::Subagents),
-                            Some(subagent_count.to_string()),
-                            cx,
-                        )
-                        .on_click(cx.listener(
-                            |this, _: &ClickEvent, _, cx| {
-                                this.select_inspector(InspectorTab::Subagents, cx);
-                            },
-                        )),
-                    )
-                    .child(
-                        extension_rail_row(
-                            "rail-background",
-                            IconName::Inbox,
-                            self.text(TextKey::Background),
-                            Some(background_count.to_string()),
-                            cx,
-                        )
-                        .on_click(cx.listener(
-                            |this, _: &ClickEvent, _, cx| {
-                                this.select_inspector(InspectorTab::Background, cx);
-                            },
-                        )),
-                    ),
-            )
+            // Extensions hug the rail's bottom, above the quota card and
+            // Settings. They are the least-used block, so the height above
+            // them belongs to the session list, which stretches to fill it.
             .child(
                 v_flex()
                     .id("rail-extensions")
@@ -4691,10 +4622,6 @@ impl DesktopRoot {
                         )),
                     ),
             )
-            // The design pins the quota card and Settings to the rail's
-            // bottom edge; the spare height sits between them and the
-            // extension list rather than stretching the session list.
-            .child(div().flex_1().min_h(px(8.)))
             .when_some(
                 self.account_summary(),
                 |rail, (label, detail, ratio, resets)| {
@@ -19097,6 +19024,67 @@ mod tests {
                 <= composer.origin.y + composer.size.height,
             "permission chip escapes the composer area: permission={permission:?}, composer={composer:?}"
         );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn the_session_list_takes_the_space_the_durable_block_used_to(cx: &mut TestAppContext) {
+        let (_root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        // The durable block (heading + three rows) was removed because it
+        // duplicated the inspector's Goals/Subagents/Background tabs. That
+        // space belongs to the session list, so the list must be taller than
+        // the old cap rather than merely no longer overlapping.
+        let list = window
+            .debug_bounds("session-list")
+            .expect("session list bounds");
+        // The list now takes its design share of the window (~32%) instead of
+        // the 20% cap the durable block forced. Tie the assertion to that
+        // share so it fails if the old cap comes back.
+        let viewport = window.update(|window, _| window.viewport_size());
+        assert!(
+            list.size.height >= viewport.height * 0.30,
+            "the session list should take about a third of the window, got {list:?} of {viewport:?}"
+        );
+
+        // Extensions moved to the rail's bottom, below the session list and
+        // the view-all row, so the least-used block stops crowding the list.
+        let extensions = window
+            .debug_bounds("rail-extensions")
+            .expect("rail extensions bounds");
+        let view_all = window
+            .debug_bounds("view-all-sessions")
+            .expect("view all sessions bounds");
+        assert!(
+            extensions.origin.y > view_all.origin.y,
+            "extensions belong below the session list: extensions={extensions:?}, view_all={view_all:?}"
+        );
+
+        // The duplicate rows are gone for good: a second copy of the
+        // Goals/Subagents/Background links must not come back.
+        for selector in [
+            "rail-durable",
+            "rail-goals",
+            "rail-subagents",
+            "rail-background",
+        ] {
+            assert!(
+                window.debug_bounds(selector).is_none(),
+                "{selector} duplicates an inspector tab"
+            );
+        }
+
+        let settings = window
+            .debug_bounds("open-settings")
+            .expect("rail settings row");
+        assert!(
+            settings.origin.y + settings.size.height <= viewport.height,
+            "removing the durable block must not push Settings off the rail"
+        );
+
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
     }
