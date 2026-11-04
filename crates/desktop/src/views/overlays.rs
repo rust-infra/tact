@@ -115,7 +115,7 @@ fn panel(
         Overlay::CommandCenter => command_center_panel(controller, overlay, query).into_element(),
         Overlay::Settings => settings_panel(snapshot, controller).into_element(),
         Overlay::SessionManager => session_panel(snapshot, controller).into_element(),
-        Overlay::Extensions => extensions_panel(snapshot).into_element(),
+        Overlay::Extensions => extensions_panel(snapshot, controller).into_element(),
         Overlay::Models => models_panel(snapshot, controller, overlay).into_element(),
     }
 }
@@ -539,21 +539,14 @@ fn session_panel(snapshot: Signal<SnapshotRef>, controller: DesktopController) -
     ))
 }
 
-fn extensions_panel(snapshot: Signal<SnapshotRef>) -> impl IntoElement {
+fn extensions_panel(
+    snapshot: Signal<SnapshotRef>,
+    controller: DesktopController,
+) -> impl IntoElement {
     view()
         .flex_col()
         .gap_2()
-        .child(section("Skills", move || {
-            snapshot
-                .get()
-                .0
-                .extensions
-                .snapshot
-                .skills
-                .iter()
-                .map(|skill| format!("{} · {}", skill.name, skill.description))
-                .collect::<Vec<_>>()
-        }))
+        .child(skills_section(snapshot, controller))
         .child(section("Plugins", move || {
             snapshot
                 .get()
@@ -587,6 +580,77 @@ fn extensions_panel(snapshot: Signal<SnapshotRef>) -> impl IntoElement {
                 .map(|marketplace| format!("{} · {}", marketplace.name, marketplace.source))
                 .collect::<Vec<_>>()
         }))
+}
+
+fn skills_section(
+    snapshot: Signal<SnapshotRef>,
+    controller: DesktopController,
+) -> impl IntoElement {
+    view()
+        .flex_col()
+        .gap(px(2.0))
+        .child(
+            text("Skills")
+                .text_size(px(10.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(move || theme().muted_foreground),
+        )
+        .child(each(
+            move || snapshot.get().0.extensions.snapshot.skills.clone(),
+            |skill| skill.name.clone(),
+            move |skill, _| {
+                let skill = skill.get_untracked();
+                let controller = controller.clone();
+                let name = skill.name.clone();
+                let enabled = skill.enabled;
+                view()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .py(px(2.0))
+                    .rounded(px(5.0))
+                    .child(
+                        view()
+                            .flex_1()
+                            .flex_col()
+                            .child(text(skill.name.clone()).text_size(px(12.0)))
+                            .child(
+                                text(skill.description.clone())
+                                    .number_of_lines(1)
+                                    .text_size(px(10.0))
+                                    .text_color(move || theme().muted_foreground),
+                            ),
+                    )
+                    .child(
+                        view()
+                            .px_2()
+                            .py(px(2.0))
+                            .rounded(px(5.0))
+                            .cursor_pointer()
+                            .role(AccessibilityRole::Button)
+                            .label(if enabled { "Disable" } else { "Enable" })
+                            .hover(|style| style.bg(move || theme().muted))
+                            .on_press(move || {
+                                let _ = controller.dispatch(DesktopIntent::SetSkillEnabled {
+                                    name: name.clone(),
+                                    enabled: !enabled,
+                                });
+                            })
+                            .child(
+                                text(if enabled { "Disable" } else { "Enable" })
+                                    .text_size(px(10.0))
+                                    .text_color(move || {
+                                        if enabled {
+                                            theme().muted_foreground
+                                        } else {
+                                            theme().primary
+                                        }
+                                    }),
+                            ),
+                    )
+            },
+        ))
 }
 
 fn section(title: &'static str, rows: impl Fn() -> Vec<String> + 'static) -> impl IntoElement {

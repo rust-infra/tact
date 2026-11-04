@@ -12,7 +12,7 @@ use tact_desktop_core::{
 
 use crate::app::SnapshotRef;
 use crate::ui::shell::RunTab;
-use crate::ui::{ansi, mermaid, transcript::visible_row};
+use crate::ui::{ansi, mermaid, transcript::visible_row, web_search};
 
 use super::RADIUS;
 
@@ -253,11 +253,39 @@ fn tool_card(row: RowId, tool: &ToolRow, controller: DesktopController) -> AnyEl
                     ReaderRef::ToolOutput(tool.id),
                 )),
         );
-    if tool.expanded && !tool.output.preview.is_empty() {
-        card = card.child(ansi::element(
-            "tool-output",
-            &ansi::parse(&tool.output.preview),
-        ));
+    if tool.expanded {
+        let output = tool
+            .output
+            .detail
+            .clone()
+            .unwrap_or_else(|| tool.output.preview.clone());
+        if web_search::is_search_tool(&tool.name) {
+            let hits = web_search::parse(&output);
+            if !hits.is_empty() {
+                card = card.child(view().flex_col().gap(px(1.0)).children(hits.iter().map(
+                    |hit| {
+                        view()
+                            .flex_col()
+                            .gap(px(0.0))
+                            .child(
+                                text(hit.title.clone())
+                                    .number_of_lines(1)
+                                    .text_size(px(11.0))
+                                    .font_weight(FontWeight::MEDIUM),
+                            )
+                            .child(
+                                text(hit.domain.clone())
+                                    .text_size(px(9.0))
+                                    .text_color(move || theme().muted_foreground),
+                            )
+                    },
+                )));
+            } else if !output.is_empty() {
+                card = card.child(ansi::element("tool-output", &ansi::parse(&output)));
+            }
+        } else if !output.is_empty() {
+            card = card.child(ansi::element("tool-output", &ansi::parse(&output)));
+        }
     }
     card.into_element()
 }

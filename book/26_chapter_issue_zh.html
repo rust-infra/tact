@@ -22007,7 +22007,7 @@ macOS、Windows、Linux 上各用系统后端。</p>
 <li>测试改为 <code>nsh-testing</code> 无头测试、纯模块单测和 catalog parity。</li>
 <li>删除 GPUI crate 与 <code>vendor/gpui-ai</code>，syntect 改用 fancy-regex，CI 安装 GTK 4，打包时把 NSH assets 目录放到可执行文件旁。</li>
 </ol>
-<p><strong>Verification：</strong> <code>cargo test -p tact-desktop</code>（65 个单元测试、10 个 parity、7 个无头 UI 测试）与
+<p><strong>Verification：</strong> <code>cargo test -p tact-desktop</code>（65 个单元测试、10 个 parity、9 个无头 UI 测试）与
 <code>cargo check --workspace</code> 通过；<code>nsh package --target macos</code> 产出可启动的
 <code>Tact Desktop.app</code>。</p>
 <p><strong>Pointers:</strong> <code>crates/desktop/src/{app,shell,views}</code>、<code>crates/desktop/{theme.json,nsh.json}</code>、<code>.audit/nsh-migration/{design,api-notes}.md</code>。</p>

@@ -60,10 +60,11 @@ Replace the GPUI desktop (`crates/desktop`, ~17k production lines) with a Native
 - The NSH crate is now `crates/desktop` (`tact-desktop`); the GPUI crate and `vendor/gpui-ai` are deleted, GPUI workspace dependencies are gone, syntect uses fancy-regex, CI installs GTK 4, and packaging ships `tact-desktop-assets`.
 - `nsh package --target macos` produced a launchable `Tact Desktop.app`.
 
-## Left
+## Known gaps
 
-- The transcript still renders with `each` in a scroll; `virtual_list` is the next performance step once row heights are measured.
-- The GPUI behavior tests in `root.rs` were not ported one by one; the headless shell tests cover the shell, overlays, trajectory, reader and slash flows.
-- Linux and Windows packaging run in CI only; only macOS was verified locally.
+- The transcript renders with `each` in a scroll. NSH 0.3.0 has `virtual_list` but no programmatic scroll-to-index on the scroll view, so tail-following (the old shell's automatic scroll to the newest row) has no equivalent yet. Revisit when NSH exposes it.
+- The GPUI behavior tests in the old `root.rs` were not ported one by one; the headless shell tests cover the shell, menus, overlays, trajectory, reader, slash suggestions and slash submission.
+- Linux and Windows packaging run in CI only; macOS packaging (`nsh package --target macos`) and the packaged smoke test were verified locally.
+- The app menu is drawn by the app because NSH 0.3.0 exposes native menus only to TSX.
 
 The API cheat sheet from the porting agent is at `.audit/nsh-migration/api-notes.md`.
