@@ -70,6 +70,22 @@ impl PartialEq for SnapshotRef {
     }
 }
 
+/// The voice worker's phase as the composer shows it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum VoicePhase {
+    #[default]
+    Idle,
+    Recording,
+    Transcribing,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct VoiceState {
+    pub phase: VoicePhase,
+    pub transcript: Option<String>,
+    pub error: Option<String>,
+}
+
 /// The controller and the latest committed snapshot, available to every
 /// component of the app.
 #[derive(Clone)]
@@ -77,6 +93,7 @@ pub struct AppState {
     pub controller: DesktopController,
     pub snapshot: Signal<SnapshotRef>,
     pub reader: Signal<Option<ReaderRequest>>,
+    pub voice: Signal<VoiceState>,
 }
 
 /// Installs the controller bridge once, at the root component.
@@ -90,10 +107,12 @@ pub fn install() {
     let runtime = runtime();
     let snapshot = signal(SnapshotRef(runtime.initial.clone()));
     let reader = signal(None::<ReaderRequest>);
+    let voice = signal(VoiceState::default());
     provide_context(AppState {
         controller: runtime.controller.clone(),
         snapshot,
         reader,
+        voice,
     });
     let events = &runtime.events;
     spawn(async move {
@@ -114,6 +133,29 @@ pub fn install() {
                 }
                 DesktopEvent::Effect(DesktopEffect::WindowCloseRequested) => {
                     nsh_core::element::desktop::close_window();
+                }
+                DesktopEvent::Voice(event) => {
+                    use tact_desktop_core::VoiceEvent;
+                    voice.update(|state| match event {
+                        VoiceEvent::RecordingStarted => {
+                            state.phase = VoicePhase::Recording;
+                            state.error = None;
+                        }
+                        VoiceEvent::RecordingStopped | VoiceEvent::Transcribing => {
+                            state.phase = VoicePhase::Transcribing;
+                        }
+                        VoiceEvent::Transcript(text) => {
+                            state.phase = VoicePhase::Idle;
+                            state.transcript = Some(text);
+                        }
+                        VoiceEvent::Error(message) => {
+                            state.phase = VoicePhase::Idle;
+                            state.error = Some(message);
+                        }
+                        VoiceEvent::Cancelled => {
+                            state.phase = VoicePhase::Idle;
+                        }
+                    });
                 }
                 _ => {}
             }

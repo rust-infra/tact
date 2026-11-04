@@ -35,7 +35,7 @@ pub fn shell() -> impl IntoElement {
         .bg(move || nsh_base::theme().background)
         .text_color(move || nsh_base::theme().foreground)
         .child(title_bar::title_bar(snapshot, overlay))
-        .child(body(snapshot, controller, tab, overlay))
+        .child(body(snapshot, controller, tab, overlay, app.voice))
         .child(overlays::layer(snapshot, controller_for_layer, overlay))
         .child(surface::layer(snapshot))
         .child(reader::layer(reader_state))
@@ -46,6 +46,7 @@ fn body(
     controller: tact_desktop_core::DesktopController,
     tab: Signal<RunTab>,
     overlay: Signal<Option<Overlay>>,
+    voice: Signal<crate::app::VoiceState>,
 ) -> impl IntoElement {
     let columns = move || {
         layout::layout(
@@ -75,7 +76,12 @@ fn body(
                     controller.clone(),
                     tab,
                 ))
-                .child(composer::composer(snapshot, controller.clone(), overlay)),
+                .child(composer::composer(
+                    snapshot,
+                    controller.clone(),
+                    overlay,
+                    voice,
+                )),
         )
         .child(when(
             move || columns().inspector_inline,
