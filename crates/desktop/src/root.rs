@@ -41,6 +41,7 @@ use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr as _};
 
 use crate::i18n::{self, TextKey};
 use crate::ui::shell::{RunTab, TrajectoryDetailTab};
+use crate::ui::sticky::GroupStatus;
 use crate::ui::trajectory as trajectory_page;
 use crate::ui::{ansi, diff_review, mermaid, web_search};
 use crate::{keymap, theme};
@@ -7422,14 +7423,14 @@ impl DesktopRoot {
         // scrolling must not change a header's number. `groups` is already in
         // `GROUPS` order and has at most a couple of entries, so a match on
         // status reads better than a map keyed by it.
-        let count_of = |status: tact_desktop_core::TaskStatusSnapshot| {
+        let count_of = |status: GroupStatus| {
             groups
                 .iter()
                 .find(|group| group.status == status)
                 .map_or(0, |group| group.tasks.len())
         };
         let mut grouped: Vec<AnyElement> = Vec::new();
-        let mut heading: Option<tact_desktop_core::TaskStatusSnapshot> = None;
+        let mut heading: Option<GroupStatus> = None;
         let mut painted = 0usize;
         for (status, task) in window {
             // The window can start mid-group, so the header is emitted on the
@@ -7487,7 +7488,7 @@ impl DesktopRoot {
                     .min_w_0()
                     .items_center()
                     .gap_2()
-                    .child(Self::marker_for(task.status, cx))
+                    .child(Self::marker_for(status, cx))
                     .child(
                         div()
                             .flex_1()
@@ -7707,22 +7708,18 @@ impl DesktopRoot {
     }
 
     /// The marker a task row carries for its status.
-    fn marker_for(status: tact_desktop_core::TaskStatusSnapshot, cx: &Context<Self>) -> AnyElement {
+    fn marker_for(status: GroupStatus, cx: &Context<Self>) -> AnyElement {
         match status {
-            tact_desktop_core::TaskStatusSnapshot::Pending => div()
+            GroupStatus::Pending => div()
                 .flex_none()
                 .size(px(12.))
                 .rounded_full()
                 .border_1()
                 .border_color(cx.theme().muted_foreground)
                 .into_any_element(),
-            tact_desktop_core::TaskStatusSnapshot::InProgress => Icon::new(IconName::LoaderCircle)
+            GroupStatus::InProgress => Icon::new(IconName::LoaderCircle)
                 .size(px(13.))
                 .text_color(cx.theme().info)
-                .into_any_element(),
-            tact_desktop_core::TaskStatusSnapshot::Completed => Icon::new(IconName::CircleCheck)
-                .size(px(13.))
-                .text_color(cx.theme().success)
                 .into_any_element(),
         }
     }
@@ -7760,11 +7757,10 @@ impl DesktopRoot {
     }
 
     /// The heading the strip paints above a status group.
-    fn sticky_status_key(status: tact_desktop_core::TaskStatusSnapshot) -> TextKey {
+    fn sticky_status_key(status: GroupStatus) -> TextKey {
         match status {
-            tact_desktop_core::TaskStatusSnapshot::InProgress => TextKey::InProgress,
-            tact_desktop_core::TaskStatusSnapshot::Pending => TextKey::Pending,
-            tact_desktop_core::TaskStatusSnapshot::Completed => TextKey::Completed,
+            GroupStatus::InProgress => TextKey::InProgress,
+            GroupStatus::Pending => TextKey::Pending,
         }
     }
 

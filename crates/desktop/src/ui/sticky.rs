@@ -35,18 +35,39 @@ pub fn active_task(inspector: &InspectorView) -> Option<&TaskView> {
         })
 }
 
-/// The status groups the strip paints, in the order it paints them.
+/// A status the strip paints a group for.
 ///
-/// Completed is absent on purpose: `agent_tui_kit` hides it from the sticky,
-/// and the panel's `n/m` counter is what reports finished work.
-pub const GROUPS: [TaskStatusSnapshot; 2] =
-    [TaskStatusSnapshot::InProgress, TaskStatusSnapshot::Pending];
+/// Deliberately narrower than [`TaskStatusSnapshot`]: completed work is not a
+/// group, because `agent_tui_kit` hides it from the sticky and the panel's
+/// `n/m` counter is what reports it. Owning a type that cannot name `Completed`
+/// keeps every downstream `match` exhaustive in two arms instead of carrying an
+/// arm no run can reach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupStatus {
+    InProgress,
+    Pending,
+}
+
+impl GroupStatus {
+    /// The group a task belongs to, or `None` when the strip does not show it.
+    pub fn of(status: TaskStatusSnapshot) -> Option<Self> {
+        match status {
+            TaskStatusSnapshot::InProgress => Some(Self::InProgress),
+            TaskStatusSnapshot::Pending => Some(Self::Pending),
+            TaskStatusSnapshot::Completed => None,
+        }
+    }
+}
+
+/// The groups the strip paints, in the order it paints them: in progress first,
+/// then pending.
+pub const GROUPS: [GroupStatus; 2] = [GroupStatus::InProgress, GroupStatus::Pending];
 
 /// One painted group: the status it covers and that status's rows, already
 /// ordered the way the group paints them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskGroup<'a> {
-    pub status: TaskStatusSnapshot,
+    pub status: GroupStatus,
     pub tasks: Vec<&'a TaskView>,
 }
 
@@ -61,21 +82,20 @@ pub fn group_tasks<'a>(tasks: &[&'a TaskView], now_ms: i64) -> Vec<TaskGroup<'a>
             let mut matching: Vec<&'a TaskView> = tasks
                 .iter()
                 .copied()
-                .filter(|task| task.status == status)
+                .filter(|task| GroupStatus::of(task.status) == Some(status))
                 .collect();
             match status {
                 // Ascending elapsed: the most recently started task leads.
                 // `unwrap_or(0)` matches the kit on purpose — a row that never
                 // recorded a start has an unbounded-looking elapsed time and
                 // sinks to the bottom instead of leading the list.
-                TaskStatusSnapshot::InProgress => {
+                GroupStatus::InProgress => {
                     matching.sort_by_key(|task| (now_ms - task.started_at.unwrap_or(0)).max(0))
                 }
                 // Newest request first.
-                TaskStatusSnapshot::Pending => {
+                GroupStatus::Pending => {
                     matching.sort_by_key(|task| std::cmp::Reverse(task.created_at))
                 }
-                TaskStatusSnapshot::Completed => {}
             }
             (!matching.is_empty()).then_some(TaskGroup {
                 status,
@@ -100,8 +120,8 @@ pub const MAX_VISIBLE_ROWS: usize = 10;
 pub fn window_rows<'a>(
     groups: &[TaskGroup<'a>],
     scroll: usize,
-) -> (Vec<(TaskStatusSnapshot, &'a TaskView)>, Option<String>) {
-    let flat: Vec<(TaskStatusSnapshot, &'a TaskView)> = groups
+) -> (Vec<(GroupStatus, &'a TaskView)>, Option<String>) {
+    let flat: Vec<(GroupStatus, &'a TaskView)> = groups
         .iter()
         .flat_map(|group| group.tasks.iter().map(move |task| (group.status, *task)))
         .collect();
@@ -174,7 +194,7 @@ mod tests {
         let groups = group_tasks(&all, 0);
         assert_eq!(
             groups.iter().map(|group| group.status).collect::<Vec<_>>(),
-            vec![TaskStatusSnapshot::InProgress, TaskStatusSnapshot::Pending],
+            vec![GroupStatus::InProgress, GroupStatus::Pending],
             "completed is not a group the strip paints"
         );
         assert_eq!(groups[0].tasks.len(), 1);
@@ -192,7 +212,7 @@ mod tests {
         let todo = task(2, TaskStatusSnapshot::Pending);
         let groups = group_tasks(&[&todo], 0);
         assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].status, TaskStatusSnapshot::Pending);
+        assert_eq!(groups[0].status, GroupStatus::Pending);
         assert!(group_tasks(&[], 0).is_empty());
     }
 
