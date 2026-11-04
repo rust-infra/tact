@@ -8,7 +8,7 @@ use tact_desktop_core::SurfaceSnapshot;
 
 use crate::app::SnapshotRef;
 
-use super::{RADIUS, token};
+use super::token;
 
 pub fn layer(snapshot: Signal<SnapshotRef>) -> AnyElement {
     let dismissed = signal(None::<u64>);
@@ -39,10 +39,11 @@ pub fn layer(snapshot: Signal<SnapshotRef>) -> AnyElement {
                     .max_w(px(760.0))
                     .max_h(px(600.0))
                     .flex_col()
-                    .rounded(px(RADIUS + 4.0))
+                    .rounded(px(12.0))
                     .bg(move || theme().popover)
                     .border_1()
-                    .border_color(move || theme().border)
+                    .border_color(move || theme().color("line-strong").unwrap_or(theme().border))
+                    .shadow_sm()
                     .child(header(title, move || dismissed.set(Some(revision))))
                     .child(
                         scroll().flex_1().child(

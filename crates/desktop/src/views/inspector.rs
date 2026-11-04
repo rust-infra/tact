@@ -179,10 +179,11 @@ fn run_tab(snapshot: Signal<SnapshotRef>, controller: DesktopController) -> impl
             .text_color(move || theme().muted_foreground),
         )
         .child(
-            text("Tasks")
-                .pt_2()
+            text("TASKS")
+                .pt_3()
                 .text_size(px(10.0))
-                .font_weight(FontWeight::SEMIBOLD)
+                .font_family("Lilex")
+                .letter_spacing(px(1.4))
                 .text_color(move || theme().muted_foreground),
         )
         .child(each(

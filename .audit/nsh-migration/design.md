@@ -79,3 +79,20 @@ Replace the GPUI desktop (`crates/desktop`, ~17k production lines) with a Native
 - The app menu is drawn by the app because NSH 0.3.0 exposes native menus only to TSX.
 
 The API cheat sheet from the porting agent is at `.audit/nsh-migration/api-notes.md`.
+
+## TSX option (evaluated 2026-11-04)
+
+NSH's TSX would make layout parity easier: the design prototype is HTML/CSS,
+TSX takes Tailwind classes, and NSH's docs target AI-generated TSX screens.
+The blocker is state, not layout. The desktop's state lives in
+`tact_desktop_core` (a tokio actor publishing `DesktopSnapshot` commits), and a
+TSX view runs on QuickJS inside the NSH engine. A mixed app would have to
+expose the controller to TSX through a `#[native_module]` and a host channel,
+then cross the JS boundary on every commit; the large snapshot and high commit
+rate make that a measurable risk. A pivot also rewrites the ~6k-line Rust view
+layer.
+
+Decision for now: keep the Rust view and align it with the prototype's tokens
+(colors, radii, type scale, spacing, shadows, icons). If TSX parity becomes the
+priority, spike the Rust-to-TSX bridge first (snapshot push, dispatch call) and
+measure the crossing cost before rewriting screens.

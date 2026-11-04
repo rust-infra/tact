@@ -5,7 +5,7 @@ use nsh_core::element::{AccessibilityRole, AnyElement};
 use nsh_core::prelude::*;
 use tact_desktop_core::ReaderRequest;
 
-use super::{RADIUS, token};
+use super::token;
 
 pub fn layer(reader: Signal<Option<ReaderRequest>>) -> AnyElement {
     dynamic(move || match reader.get() {
@@ -27,10 +27,11 @@ pub fn layer(reader: Signal<Option<ReaderRequest>>) -> AnyElement {
                     .max_w(px(760.0))
                     .max_h(px(600.0))
                     .flex_col()
-                    .rounded(px(RADIUS + 4.0))
+                    .rounded(px(12.0))
                     .bg(move || theme().popover)
                     .border_1()
-                    .border_color(move || theme().border)
+                    .border_color(move || theme().color("line-strong").unwrap_or(theme().border))
+                    .shadow_sm()
                     .child(header(request.title.to_string(), reader))
                     .child(
                         scroll()

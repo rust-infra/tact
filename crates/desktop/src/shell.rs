@@ -178,13 +178,13 @@ fn body(
                 .flex_col()
                 .child(transcript::run_room(snapshot, controller.clone(), tab))
                 .child(gate_banner::banner(snapshot, controller.clone()))
-                .child(composer::composer(
+                .child(view().w_full().items_center().child(composer::composer(
                     snapshot,
                     controller.clone(),
                     overlay,
                     voice,
                     submit_tick,
-                )),
+                ))),
         )
         .child(when(
             move || columns().inspector_inline,

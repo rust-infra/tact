@@ -33,11 +33,32 @@ pub fn title_bar(
         .border_b_1()
         .border_b_color(move || token("title-bar-border"))
         .child(
-            text("Tact")
-                .text_size(px(13.0))
-                .font_weight(FontWeight::SEMIBOLD),
+            view()
+                .w(px(250.0))
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(
+                    view()
+                        .size(px(27.0))
+                        .rounded(px(7.0))
+                        .bg(move || theme().primary)
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            text("T")
+                                .text_size(px(15.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(move || theme().primary_foreground),
+                        ),
+                )
+                .child(
+                    text("Tact")
+                        .text_size(px(13.0))
+                        .font_weight(FontWeight::SEMIBOLD),
+                )
+                .child(menu::bar(menu)),
         )
-        .child(menu::bar(menu))
         .child(
             text(move || {
                 let snapshot = snapshot.get();
@@ -62,9 +83,10 @@ pub fn title_bar(
 
 fn chrome_button(label: &'static str, on_press: impl Fn() + 'static) -> impl IntoElement {
     view()
+        .h(px(27.0))
+        .items_center()
         .px_2()
-        .py(px(3.0))
-        .rounded(px(6.0))
+        .rounded(px(5.0))
         .cursor_pointer()
         .role(AccessibilityRole::Button)
         .label(label)
@@ -72,7 +94,7 @@ fn chrome_button(label: &'static str, on_press: impl Fn() + 'static) -> impl Int
         .on_press(on_press)
         .child(
             text(label)
-                .text_size(px(11.0))
+                .text_size(px(10.0))
                 .text_color(move || theme().muted_foreground),
         )
 }

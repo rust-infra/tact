@@ -131,8 +131,11 @@ fn run_header(snapshot: Signal<SnapshotRef>) -> impl IntoElement {
     view()
         .flex_col()
         .gap_2()
+        .w_full()
+        .max_w(px(900.0))
+        .self_center()
         .px_6()
-        .pt_5()
+        .pt(px(34.0))
         .pb_4()
         .border_b_1()
         .border_b_color(move || theme().border)
@@ -199,7 +202,8 @@ fn run_header(snapshot: Signal<SnapshotRef>) -> impl IntoElement {
                     .map(|text| first_line(&text))
                     .unwrap_or_else(|| "New session".to_owned())
             })
-            .text_size(px(26.0))
+            .text_size(px(30.0))
+            .line_height(px(37.0))
             .font_weight(FontWeight::SEMIBOLD),
         )
         .child(
@@ -436,7 +440,7 @@ fn user_row(
                         .rounded(px(12.0))
                         .border_1()
                         .border_color(move || theme().border)
-                        .bg(move || theme().card)
+                        .bg(move || theme().popover)
                         .px(px(14.0))
                         .py(px(10.0))
                         .child(text_view().markdown(user.text.to_string()).selectable(true)),

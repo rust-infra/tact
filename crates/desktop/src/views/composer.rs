@@ -15,7 +15,6 @@ use tact_desktop_core::{
 
 use crate::app::{SnapshotRef, VoicePhase, VoiceState};
 
-use super::RADIUS;
 use super::overlays::Overlay;
 use crate::ui::slash_overlay;
 
@@ -31,6 +30,7 @@ pub fn composer(
     let attachments = app.attachments;
     let history_cursor = signal(None::<usize>);
     let slash_cursor = signal(0_usize);
+    let input_focused = signal(false);
     effect(move || {
         if let Some(text) = voice.get().transcript.clone() {
             draft.update(|current| {
@@ -95,9 +95,10 @@ pub fn composer(
     view()
         .flex_col()
         .gap_2()
-        .px_6()
-        .pt_3()
-        .pb_5()
+        .w_full()
+        .max_w(px(900.0))
+        .px(px(22.0))
+        .pb(px(18.0))
         .child(queue_list(snapshot, controller.clone()))
         .child(dynamic({
             let controller = controller.clone();
@@ -173,10 +174,17 @@ pub fn composer(
                 .items_end()
                 .gap_2()
                 .p_2()
-                .rounded(px(RADIUS + 2.0))
-                .bg(move || theme().card)
+                .rounded(px(12.0))
+                .bg(move || theme().popover)
                 .border_1()
-                .border_color(move || theme().border)
+                .border_color(move || {
+                    if input_focused.get() {
+                        theme().primary
+                    } else {
+                        theme().color("line-strong").unwrap_or(theme().border)
+                    }
+                })
+                .shadow_sm()
                 .child(
                     input()
                         .test_id("composer-input")
@@ -186,6 +194,8 @@ pub fn composer(
                             let send = send.clone();
                             move |text: &str| send(text)
                         })
+                        .on_focus(move || input_focused.set(true))
+                        .on_blur(move || input_focused.set(false))
                         .on_key_press({
                             let controller = controller.clone();
                             move |key: &str| {
@@ -255,15 +265,18 @@ pub fn composer(
                             crate::i18n::TextKey::SteerPlaceholder,
                         ))
                         .flex_1()
-                        .text_size(px(14.0))
-                        .px_2()
+                        .text_size(px(13.0))
+                        .line_height(px(20.0))
+                        .px(px(10.0))
                         .py(px(6.0)),
                 )
                 .child(
                     view()
-                        .px_3()
-                        .py(px(6.0))
-                        .rounded(px(8.0))
+                        .px(px(10.0))
+                        .h(px(27.0))
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(5.0))
                         .bg(move || {
                             if running() {
                                 theme().color("danger").unwrap_or(theme().primary)
@@ -286,10 +299,23 @@ pub fn composer(
                             }
                         })
                         .child(
-                            text(move || if running() { "Stop" } else { "Send" })
-                                .text_size(px(12.0))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(move || theme().primary_foreground),
+                            view()
+                                .items_center()
+                                .justify_center()
+                                .children(if running() {
+                                    Some(
+                                        text("■")
+                                            .text_size(px(10.0))
+                                            .text_color(move || theme().primary_foreground),
+                                    )
+                                } else {
+                                    None
+                                })
+                                .children((!running()).then(|| {
+                                    image(crate::assets::SEND.uri)
+                                        .size(px(14.0))
+                                        .tint_color(move || theme().primary_foreground)
+                                })),
                         ),
                 ),
         )
@@ -481,18 +507,14 @@ fn voice_button(
                 VoicePhase::Transcribing => {}
             }
         })
-        .child(
-            text(move || match voice.get().phase {
-                VoicePhase::Idle => "Mic",
-                VoicePhase::Recording => "Stop",
-                VoicePhase::Transcribing => "…",
-            })
-            .text_size(px(11.0))
-            .text_color(move || match voice.get().phase {
-                VoicePhase::Recording => theme().primary_foreground,
-                _ => theme().muted_foreground,
-            }),
-        )
+        .child(view().items_center().justify_center().child(
+            image(crate::assets::MIC.uri).size(px(14.0)).tint_color(
+                move || match voice.get().phase {
+                    VoicePhase::Recording => theme().primary_foreground,
+                    _ => theme().muted_foreground,
+                },
+            ),
+        ))
 }
 
 fn queue_list(snapshot: Signal<SnapshotRef>, controller: DesktopController) -> impl IntoElement {

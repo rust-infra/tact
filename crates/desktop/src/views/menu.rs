@@ -128,10 +128,11 @@ pub fn layer(
                     .flex_col()
                     .gap(px(1.0))
                     .p_1()
-                    .rounded(px(8.0))
+                    .rounded(px(12.0))
                     .bg(move || theme().popover)
                     .border_1()
-                    .border_color(move || theme().border)
+                    .border_color(move || theme().color("line-strong").unwrap_or(theme().border))
+                    .shadow_sm()
                     .child(panel),
             )
             .into_element()

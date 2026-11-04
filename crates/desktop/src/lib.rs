@@ -2,6 +2,7 @@
 //! the bridge to `tact_desktop_core`.
 
 pub mod app;
+mod assets;
 pub mod i18n;
 mod shell;
 pub mod ui;

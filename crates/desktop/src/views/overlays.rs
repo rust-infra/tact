@@ -10,7 +10,7 @@ use tact_desktop_core::{DesktopController, DesktopIntent, SessionId, SettingValu
 use crate::app::SnapshotRef;
 use crate::ui::{command_center, session_manager, settings as settings_ui};
 
-use super::{RADIUS, token};
+use super::token;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Overlay {
@@ -31,41 +31,41 @@ pub fn layer(
     let query = signal(String::new());
     dynamic(move || match overlay.get() {
         None => view().into_element(),
-        Some(kind) => {
-            view()
-                .absolute()
-                .top_0()
-                .left_0()
-                .right_0()
-                .bottom_0()
-                .items_center()
-                .justify_center()
-                .p_6()
-                .bg(move || token("scrim"))
-                .child(
-                    view()
-                        .w_full()
-                        .max_w(px(640.0))
-                        .max_h(px(540.0))
-                        .flex_col()
-                        .rounded(px(RADIUS + 4.0))
-                        .bg(move || theme().popover)
-                        .border_1()
-                        .border_color(move || theme().border)
-                        .child(header(kind, overlay))
-                        .child(scroll().flex_1().child(
-                            view().flex_col().gap_1().px_4().py_3().child(panel(
+        Some(kind) => view()
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .items_center()
+            .justify_center()
+            .p_6()
+            .bg(move || token("scrim"))
+            .child(
+                view()
+                    .w_full()
+                    .max_w(px(640.0))
+                    .max_h(px(540.0))
+                    .flex_col()
+                    .rounded(px(12.0))
+                    .bg(move || theme().popover)
+                    .border_1()
+                    .border_color(move || theme().color("line-strong").unwrap_or(theme().border))
+                    .child(header(kind, overlay))
+                    .child(
+                        scroll()
+                            .flex_1()
+                            .child(view().flex_col().gap_1().px_4().py_3().child(panel(
                                 kind,
                                 snapshot,
                                 controller.clone(),
                                 overlay,
                                 query,
                                 draft,
-                            )),
-                        )),
-                )
-                .into_element()
-        }
+                            ))),
+                    ),
+            )
+            .into_element(),
     })
 }
 
@@ -149,7 +149,7 @@ fn command_center_panel(
                 .py(px(7.0))
                 .rounded(px(8.0))
                 .border_1()
-                .border_color(move || theme().border)
+                .border_color(move || theme().color("line-strong").unwrap_or(theme().border))
                 .bg(move || theme().background),
         )
         .child(view().flex_col().gap(px(2.0)).child(each(
@@ -358,7 +358,9 @@ fn control(
                         .py(px(5.0))
                         .rounded(px(7.0))
                         .border_1()
-                        .border_color(move || theme().border)
+                        .border_color(move || {
+                            theme().color("line-strong").unwrap_or(theme().border)
+                        })
                         .bg(move || theme().background)
                         .text_size(px(12.0)),
                 )
@@ -594,7 +596,9 @@ fn session_panel(snapshot: Signal<SnapshotRef>, controller: DesktopController) -
                             .py(px(3.0))
                             .rounded(px(5.0))
                             .border_1()
-                            .border_color(move || theme().border)
+                            .border_color(move || {
+                                theme().color("line-strong").unwrap_or(theme().border)
+                            })
                             .bg(move || theme().background)
                             .text_size(px(12.0)),
                     )
@@ -1001,7 +1005,9 @@ fn projects_panel(
                         .py(px(5.0))
                         .rounded(px(7.0))
                         .border_1()
-                        .border_color(move || theme().border)
+                        .border_color(move || {
+                            theme().color("line-strong").unwrap_or(theme().border)
+                        })
                         .bg(move || theme().background)
                         .text_size(px(12.0)),
                 )
