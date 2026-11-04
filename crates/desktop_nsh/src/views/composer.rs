@@ -1,17 +1,20 @@
 //! The prompt composer: the draft, send and stop.
 
 use nsh_base::{input, theme};
-use nsh_core::element::AccessibilityRole;
+use nsh_core::element::{AccessibilityRole, ReadSignal};
 use nsh_core::prelude::*;
 use tact_catalog::SettingId;
+use tact_catalog::CommandArguments;
 use tact_desktop_core::{
-    DesktopController, DesktopIntent, PermissionModeView, SessionPhase, SettingValue, Submission,
+    CommandAvailability, DesktopController, DesktopIntent, PermissionModeView, SessionPhase,
+    SettingValue, Submission,
 };
 
 use crate::app::SnapshotRef;
 
 use super::RADIUS;
 use super::overlays::Overlay;
+use crate::ui::slash_overlay;
 
 pub fn composer(
     snapshot: Signal<SnapshotRef>,
@@ -37,12 +40,87 @@ pub fn composer(
             draft.set(String::new());
         }
     };
+    let candidates = move || {
+        let current = snapshot.get();
+            let availability = CommandAvailability {
+                has_project: current.0.project.id.is_some(),
+                has_session: current.0.session.id.is_some(),
+                has_account: current.0.account_supported,
+                has_installed_skill: !current.0.extensions.snapshot.skills.is_empty(),
+            };
+        slash_overlay::command_candidates(&draft.get(), current.0.language, availability, &[])
+    };
     view()
         .flex_col()
         .gap_2()
         .px_6()
         .pt_3()
         .pb_5()
+        .child(dynamic({
+            let controller = controller.clone();
+            move || {
+                let items = candidates();
+                if items.is_empty() {
+                    return view().into_element();
+                }
+                view()
+                    .flex_col()
+                    .gap(px(1.0))
+                    .max_h(px(220.0))
+                    .rounded(px(8.0))
+                    .bg(move || theme().popover)
+                    .border_1()
+                    .border_color(move || theme().border)
+                    .p_1()
+                    .child(each(
+                        move || items.clone(),
+                        |candidate: &slash_overlay::CommandCandidate| candidate.title.clone(),
+                        {
+                            let controller = controller.clone();
+                            move |candidate: ReadSignal<slash_overlay::CommandCandidate>, _| {
+                                let candidate = candidate.get_untracked();
+                                let controller = controller.clone();
+                                let chosen = candidate.clone();
+                                view()
+                                    .flex_col()
+                                    .gap(px(1.0))
+                                    .px_3()
+                                    .py(px(3.0))
+                                    .rounded(px(6.0))
+                                    .cursor_pointer()
+                                    .role(AccessibilityRole::Button)
+                                    .label(candidate.title.clone())
+                                    .hover(|style| style.bg(move || theme().muted))
+                                    .on_press(move || {
+                                        if chosen.has_children {
+                                            draft.set(chosen.insertion.clone());
+                                            return;
+                                        }
+                                        let tokens = slash_overlay::parse(&draft.get())
+                                            .map(|path| path.tokens)
+                                            .unwrap_or(CommandArguments { tokens: Vec::new() });
+                                        let _ = controller.dispatch(DesktopIntent::InvokeCommand {
+                                            id: chosen.id.clone(),
+                                            args: tokens,
+                                        });
+                                        draft.set(String::new());
+                                    })
+                                    .child(
+                                        text(candidate.title.clone())
+                                            .text_size(px(12.0))
+                                            .font_family("Lilex"),
+                                    )
+                                    .child(
+                                        text(candidate.detail.clone())
+                                            .text_size(px(10.0))
+                                            .text_color(move || theme().muted_foreground),
+                                    )
+                            }
+                        },
+                    ))
+                    .into_element()
+            }
+        }))
         .child(
             view()
                 .flex_row()
@@ -55,6 +133,7 @@ pub fn composer(
                 .border_color(move || theme().border)
                 .child(
                     input()
+                        .test_id("composer-input")
                         .value(move || draft.get())
                         .on_change(move |text: &str| draft.set(text.to_owned()))
                         .on_submit({

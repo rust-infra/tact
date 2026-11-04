@@ -62,15 +62,26 @@ fn a_command_opens_the_reader() {
     app.wait_for("id:reader").expect("the reader opens");
 }
 
+
 #[test]
-fn a_command_opens_a_typed_surface() {
+fn slash_opens_the_command_suggestions() {
     let _serial = serial();
     let mut app = Headless::start(config()).expect("the Tact shell starts");
-    app.wait_for("label:Commands").expect("the Commands button shows");
-    app.press("label:Commands").expect("the command center opens");
-    app.wait_for("label:view-system-prompt")
-        .expect("the system prompt command shows");
-    app.press("label:view-system-prompt")
-        .expect("the command runs");
-    app.wait_for("id:surface").expect("the surface opens");
+    app.wait_for("id:composer-input").expect("the composer shows");
+    app.type_text("id:composer-input", "/")
+        .expect("typing the slash works");
+    app.wait_for("label:theme")
+        .expect("the slash suggestions show");
+}
+
+#[test]
+fn the_settings_overlay_lists_the_settings() {
+    let _serial = serial();
+    let mut app = Headless::start(config()).expect("the Tact shell starts");
+    app.wait_for("label:Settings").expect("the Settings button shows");
+    app.press("label:Settings").expect("the settings open");
+    app.wait_for("text:Provider")
+        .expect("the provider setting shows");
+    app.wait_for("text:Reasoning effort")
+        .expect("the effort setting shows");
 }

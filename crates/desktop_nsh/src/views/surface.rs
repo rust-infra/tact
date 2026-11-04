@@ -170,3 +170,15 @@ fn render(surface: &SurfaceSnapshot) -> (String, String) {
         ),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_system_prompt_surface_keeps_its_markdown() {
+        let (title, body) = render(&SurfaceSnapshot::SystemPrompt("# Prompt".to_owned()));
+        assert_eq!(title, "System prompt");
+        assert_eq!(body, "# Prompt");
+    }
+}

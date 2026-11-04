@@ -112,7 +112,7 @@ fn panel(
 ) -> AnyElement {
     match kind {
         Overlay::CommandCenter => command_center_panel(controller, overlay, query).into_element(),
-        Overlay::Settings => settings_panel(snapshot).into_element(),
+        Overlay::Settings => settings_panel(snapshot, controller).into_element(),
         Overlay::SessionManager => session_panel(snapshot, controller).into_element(),
         Overlay::Extensions => extensions_panel(snapshot).into_element(),
         Overlay::Models => models_panel(snapshot, controller, overlay).into_element(),
@@ -185,31 +185,279 @@ fn command_center_panel(
         )
 }
 
-fn settings_panel(snapshot: Signal<SnapshotRef>) -> impl IntoElement {
+fn settings_panel(
+    snapshot: Signal<SnapshotRef>,
+    controller: DesktopController,
+) -> impl IntoElement {
     view().flex_col().gap_2().child(each(
         move || settings_ui::rows("").collect::<Vec<_>>(),
         |row: &settings_ui::SettingRow| row.id.as_str().to_owned(),
         move |row, _| {
             let row = row.get_untracked();
+            setting_row(row, snapshot, controller.clone())
+        },
+    ))
+}
+
+fn setting_row(
+    row: settings_ui::SettingRow,
+    snapshot: Signal<SnapshotRef>,
+    controller: DesktopController,
+) -> AnyElement {
+    let id = row.id;
+    let value = move || setting_value(id, &snapshot.get().0);
+    view()
+        .flex_col()
+        .gap_1()
+        .px_3()
+        .py_2()
+        .rounded(px(7.0))
+        .child(
             view()
                 .flex_row()
                 .items_center()
-                .gap_3()
-                .px_3()
-                .py_2()
-                .rounded(px(7.0))
+                .gap_2()
                 .child(
-                    text(row.id.label().get(snapshot.get().0.language))
+                    text(id.label().get(snapshot.get().0.language))
                         .flex_1()
-                        .text_size(px(12.0)),
+                        .text_size(px(12.0))
+                        .font_weight(FontWeight::MEDIUM),
                 )
                 .child(
                     text(settings_ui::label(row))
-                        .text_size(px(10.0))
+                        .text_size(px(9.0))
                         .text_color(move || theme().muted_foreground),
+                ),
+        )
+        .child(control(id, value, controller))
+        .into_element()
+}
+
+fn control(
+    id: SettingId,
+    value: impl Fn() -> String + Clone + 'static,
+    controller: DesktopController,
+) -> AnyElement {
+    match id {
+        SettingId::Notifications
+        | SettingId::HookOutput
+        | SettingId::MicroCompact
+        | SettingId::TokioConsole
+        | SettingId::SkillBodyAutoInject => {
+            let current_value = value.clone();
+            let current = move || current_value() == "on";
+            let toggle = controller.clone();
+            let next = move || !current();
+            let label_value = value.clone();
+            let text_value = value.clone();
+            view()
+                .px_3()
+                .py(px(5.0))
+                .rounded(px(7.0))
+                .cursor_pointer()
+                .role(AccessibilityRole::Button)
+                .label(move || label_value())
+                .bg(move || theme().muted)
+                .on_press(move || {
+                    let _ = toggle.dispatch(DesktopIntent::SetSetting {
+                        id,
+                        value: SettingValue::Bool(next()),
+                    });
+                })
+                .child(
+                    text(move || text_value())
+                        .text_size(px(12.0))
+                        .text_color(move || theme().foreground),
                 )
-        },
-    ))
+                .into_element()
+        }
+        SettingId::PermissionMode
+        | SettingId::Theme
+        | SettingId::Language
+        | SettingId::ReasoningEffort => {
+            let cycle = controller.clone();
+            let next_value = value.clone();
+            let next = move || next_choice(id, &next_value());
+            let label_value = value.clone();
+            let text_value = value.clone();
+            view()
+                .px_3()
+                .py(px(5.0))
+                .rounded(px(7.0))
+                .cursor_pointer()
+                .role(AccessibilityRole::Button)
+                .label(move || label_value())
+                .bg(move || theme().muted)
+                .on_press(move || {
+                    let _ = cycle.dispatch(DesktopIntent::SetSetting {
+                        id,
+                        value: SettingValue::Choice(next()),
+                    });
+                })
+                .child(
+                    text(move || text_value())
+                        .text_size(px(12.0))
+                        .text_color(move || theme().foreground),
+                )
+                .into_element()
+        }
+        SettingId::ConfigPath => text(move || value())
+            .text_size(px(11.0))
+            .font_family("Lilex")
+            .text_color(move || theme().muted_foreground)
+            .into_element(),
+        _ => {
+            let draft = signal(value());
+            let masked = id == SettingId::ApiKey;
+            let submit_controller = controller.clone();
+            let submit_value = value.clone();
+            view()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(
+                    input()
+                        .value(move || draft.get())
+                        .on_change(move |text: &str| draft.set(text.to_owned()))
+                        .on_submit({
+                            let controller = submit_controller.clone();
+                            let current = submit_value.clone();
+                            move |text: &str| {
+                                let text = text.trim();
+                                let value = if text.is_empty() {
+                                    current()
+                                } else {
+                                    text.to_owned()
+                                };
+                                let _ = controller.dispatch(DesktopIntent::SetSetting {
+                                    id,
+                                    value: SettingValue::Text(value),
+                                });
+                            }
+                        })
+                        .masked(masked)
+                        .flex_1()
+                        .px_3()
+                        .py(px(5.0))
+                        .rounded(px(7.0))
+                        .border_1()
+                        .border_color(move || theme().border)
+                        .bg(move || theme().background)
+                        .text_size(px(12.0)),
+                )
+                .child(
+                    view()
+                        .px_2()
+                        .py(px(3.0))
+                        .rounded(px(6.0))
+                        .cursor_pointer()
+                        .role(AccessibilityRole::Button)
+                        .label("Set")
+                        .hover(|style| style.bg(move || theme().muted))
+                        .on_press({
+                            let controller = submit_controller;
+                            move || {
+                                let text = draft.get();
+                                if !text.trim().is_empty() {
+                                    let _ = controller.dispatch(DesktopIntent::SetSetting {
+                                        id,
+                                        value: SettingValue::Text(text),
+                                    });
+                                }
+                            }
+                        })
+                        .child(
+                            text("Set")
+                                .text_size(px(10.0))
+                                .text_color(move || theme().primary),
+                        ),
+                )
+                .into_element()
+        }
+    }
+}
+
+fn next_choice(id: SettingId, current: &str) -> String {
+    let options: &[&str] = match id {
+        SettingId::PermissionMode => &["default", "plan", "auto"],
+        SettingId::Theme => &["light", "dark"],
+        SettingId::Language => &["en", "zh"],
+        SettingId::ReasoningEffort => &["low", "medium", "high", "xhigh", "max"],
+        _ => &[],
+    };
+    let index = options.iter().position(|option| *option == current).unwrap_or(0);
+    options
+        .get((index + 1) % options.len().max(1))
+        .copied()
+        .unwrap_or(current)
+        .to_owned()
+}
+
+fn setting_value(id: SettingId, snapshot: &tact_desktop_core::DesktopSnapshot) -> String {
+    use tact_desktop_core::{Appearance, PermissionModeView};
+    match id {
+        SettingId::Model => snapshot
+            .runtime
+            .model
+            .as_deref()
+            .filter(|model| !model.is_empty())
+            .unwrap_or(&snapshot.composer.model)
+            .to_owned(),
+        SettingId::SubagentModel => snapshot.composer.subagent_model.to_string(),
+        SettingId::ReasoningEffort => snapshot
+            .composer
+            .effort
+            .as_deref()
+            .unwrap_or("—")
+            .to_owned(),
+        SettingId::PermissionMode => match snapshot.composer.permission_mode {
+            PermissionModeView::Default => "default",
+            PermissionModeView::Plan => "plan",
+            PermissionModeView::Auto => "auto",
+        }
+        .to_owned(),
+        SettingId::Notifications => on_off(snapshot.notifications),
+        SettingId::HookOutput => on_off(snapshot.show_hook_output),
+        SettingId::Theme => match snapshot.appearance {
+            Appearance::Light => "light",
+            Appearance::Dark => "dark",
+        }
+        .to_owned(),
+        SettingId::Language => match snapshot.language {
+            tact_catalog::CatalogLocale::En => "en",
+            tact_catalog::CatalogLocale::Zh => "zh",
+        }
+        .to_owned(),
+        SettingId::Provider => snapshot.settings.provider.to_string(),
+        SettingId::ApiKey => {
+            if snapshot.settings.api_key_set {
+                "••••••".to_owned()
+            } else {
+                String::new()
+            }
+        }
+        SettingId::BaseUrl => snapshot.settings.base_url.to_string(),
+        SettingId::MaxTokens => optional(snapshot.settings.max_tokens.map(u64::from)),
+        SettingId::ModelContextWindow => {
+            optional(snapshot.settings.context_window.map(|value| value as u64))
+        }
+        SettingId::SnapshotMaxItems => {
+            optional(snapshot.settings.snapshot_max_items.map(|value| value as u64))
+        }
+        SettingId::MicroCompact => on_off(snapshot.settings.micro_compact),
+        SettingId::TokioConsole => on_off(snapshot.settings.tokio_console),
+        SettingId::SkillBodyAutoInject => on_off(snapshot.settings.skill_body_auto_inject),
+        SettingId::ConfigPath => snapshot.settings.config_path.clone().unwrap_or_default(),
+        SettingId::ThinkingBudget => optional(snapshot.composer.thinking_budget.map(u64::from)),
+    }
+}
+
+fn on_off(value: bool) -> String {
+    if value { "on" } else { "off" }.to_owned()
+}
+
+fn optional(value: Option<u64>) -> String {
+    value.map(|value| value.to_string()).unwrap_or_default()
 }
 
 fn session_panel(
@@ -410,7 +658,7 @@ fn models_panel(
                 .on_press(move || {
                     let _ = controller.dispatch(DesktopIntent::SetSetting {
                         id: SettingId::Model,
-                        value: SettingValue::Choice(chosen.clone()),
+                        value: SettingValue::Text(chosen.clone()),
                     });
                     overlay.set(None);
                 })
