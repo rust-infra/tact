@@ -280,8 +280,9 @@ impl DesktopState {
         self.pending_run = None;
         self.active_run = None;
         self.reducer.reset_for_session();
-        self.sessions.items.clear();
-        self.sessions.selected = None;
+        // The session catalog belongs to the project, not to the session that
+        // owns the window. A switch keeps the rail's rows mounted; the new
+        // selection and the refreshed summaries arrive on later commits.
         self.sessions.error = None;
         self.sessions.loading = false;
         self.tasks.clear();
@@ -768,6 +769,41 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let config = DesktopConfig::load(tmp.path().to_path_buf()).unwrap();
         (DesktopState::new(&config), tmp)
+    }
+
+    #[test]
+    fn switching_sessions_keeps_the_rail_catalog() {
+        let (mut state, _tmp) = state();
+        state.sessions.items = vec![SessionSummaryView {
+            id: "session-a".into(),
+            project_id: crate::ProjectId("project".into()),
+            root_dir: "/tmp/project".into(),
+            title: "First session".into(),
+            updated_at: Utc::now(),
+            archived_at: None,
+            locked: false,
+            message_count: 3,
+            search_score: 0,
+        }];
+        state.sessions.selected = Some(crate::SessionId("session-a".into()));
+
+        state.begin_session_switch();
+
+        assert_eq!(
+            state.sessions.items.len(),
+            1,
+            "a session switch must not unmount the project's rail rows"
+        );
+        assert_eq!(
+            state
+                .sessions
+                .selected
+                .as_ref()
+                .map(|session| session.0.as_str()),
+            Some("session-a"),
+            "the rail keeps its selection until the new session reports one"
+        );
+        assert_eq!(state.session.phase, SessionPhase::Switching);
     }
 
     #[test]

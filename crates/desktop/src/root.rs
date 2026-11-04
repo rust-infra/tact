@@ -186,6 +186,16 @@ struct TranscriptRowView {
     gate_focus: gpui::FocusHandle,
 }
 
+/// One assistant row's selectable prose.
+///
+/// The row Arc is the cache key: the reducer replaces it only when the
+/// message changed, so a frame with no edits skips stripping Mermaid blocks
+/// and re-laying-out every answer in the transcript.
+struct AssistantSelection {
+    row: Arc<TranscriptRow>,
+    selection: Entity<SelectionActions>,
+}
+
 impl Render for TranscriptRowView {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         transcript_row_element(
@@ -586,7 +596,7 @@ pub(crate) struct DesktopRoot {
     prompt: Entity<PromptBar>,
     sidebar_nav: Entity<SidebarNav>,
     extensions_table: Entity<FilterTable>,
-    assistant_selections: HashMap<(String, RowId), Entity<SelectionActions>>,
+    assistant_selections: HashMap<(String, RowId), AssistantSelection>,
     transcript_rows: HashMap<RowId, Entity<TranscriptRowView>>,
     pending_row_updates: HashSet<RowId>,
     /// Thinking rows the reader expanded inline. The `Thinking` component is
@@ -1275,10 +1285,14 @@ impl DesktopRoot {
         let today = chrono::Local::now().date_naive();
         let yesterday = today - chrono::Duration::days(1);
         let mut buckets: [Vec<SidebarNavItem>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+        // `sessions.selected` is set when the click lands, before the new host
+        // has produced a snapshot. Prefer it so the rail answers immediately;
+        // `session.id` still covers the startup frame where no row is selected.
+        let selected = self.snapshot.sessions.selected.as_ref();
+        let active_id = selected.or(self.snapshot.session.id.as_ref());
         for session in &self.snapshot.sessions.items {
             let title = self.session_title(session);
-            let locked = session.locked
-                && self.snapshot.session.id.as_ref() != Some(&SessionId(session.id.clone()));
+            let locked = session.locked && active_id != Some(&SessionId(session.id.clone()));
             let detail = crate::ui::session_rail::session_detail(
                 session,
                 chrono::Utc::now(),
@@ -1311,7 +1325,7 @@ impl DesktopRoot {
         }
         let (labels, active) = (
             sidebar_nav_labels(self.snapshot.language),
-            self.snapshot.session.id.as_ref().map(|id| id.0.clone()),
+            active_id.map(|id| id.0.clone()),
         );
         let (today_label, yesterday_label, earlier_label) = match self.snapshot.language {
             tact_catalog::CatalogLocale::En => ("TODAY", "YESTERDAY", "EARLIER"),
@@ -1594,9 +1608,10 @@ impl DesktopRoot {
                     self.pending_row_updates
                         .extend(commit.snapshot.transcript.iter().map(|row| row.id));
                 }
-                if epoch_changed {
-                    self.transcript_rows.clear();
-                }
+                // Keep the row views across the epoch boundary. Every row is
+                // in `pending_row_updates` below, so each view is refreshed
+                // with its new row; clearing the map would drop and rebuild
+                // one entity per message on every session switch.
                 if epoch_changed {
                     self.submitted_gates.clear();
                 }
@@ -4763,19 +4778,37 @@ impl DesktopRoot {
         cx: &mut Context<Self>,
     ) -> HashMap<(String, RowId), Entity<SelectionActions>> {
         let mut live = HashSet::new();
+        let mut selections = HashMap::new();
         for row in transcript.iter() {
             let RowBody::Assistant(assistant) = &row.body else {
                 continue;
             };
             live.insert(row.id);
-            let display_markdown = mermaid::strip_blocks(&assistant.markdown);
             let key = (scope.to_string(), row.id);
-            if let Some(selection) = self.assistant_selections.get(&key) {
+            let cached = self
+                .assistant_selections
+                .get(&key)
+                .map(|entry| (entry.row.clone(), entry.selection.clone()));
+            if let Some((cached_row, selection)) = cached {
+                if Arc::ptr_eq(&cached_row, row) {
+                    selections.insert(key, selection);
+                    continue;
+                }
+                let display_markdown = mermaid::strip_blocks(&assistant.markdown);
                 selection.update(cx, |selection, cx| {
-                    selection.set_markdown(display_markdown.clone(), cx);
+                    selection.set_markdown(display_markdown, cx);
                 });
+                self.assistant_selections.insert(
+                    key.clone(),
+                    AssistantSelection {
+                        row: row.clone(),
+                        selection: selection.clone(),
+                    },
+                );
+                selections.insert(key, selection);
                 continue;
             }
+            let display_markdown = mermaid::strip_blocks(&assistant.markdown);
             let selection = cx.new(|cx| {
                 SelectionActions::new(
                     format!("assistant-selection-{}", row.ordinal),
@@ -4840,11 +4873,18 @@ impl DesktopRoot {
                 },
             );
             self._subscriptions.push(subscription);
-            self.assistant_selections.insert(key, selection);
+            self.assistant_selections.insert(
+                key.clone(),
+                AssistantSelection {
+                    row: row.clone(),
+                    selection: selection.clone(),
+                },
+            );
+            selections.insert(key, selection);
         }
         self.assistant_selections
             .retain(|(key_scope, row_id), _| key_scope != scope || live.contains(row_id));
-        self.assistant_selections.clone()
+        selections
     }
 
     /// The run room's page tabs: the conversation and the trajectory ledger
@@ -17790,6 +17830,56 @@ mod tests {
         assert!(
             view_all.origin.y + view_all.size.height <= extensions.origin.y + px(12.),
             "view-all row overlaps the extensions section"
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn the_rail_highlights_the_clicked_session_before_the_switch_lands(cx: &mut TestAppContext) {
+        use tact_desktop_core::{ProjectId, SessionId, SessionSummaryView};
+
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        let items = ["session-a", "session-b"]
+            .into_iter()
+            .map(|id| SessionSummaryView {
+                id: id.to_string(),
+                project_id: ProjectId("tact".into()),
+                root_dir: data_dir.clone(),
+                title: id.to_string(),
+                updated_at: chrono::Utc::now(),
+                archived_at: None,
+                locked: false,
+                message_count: 1,
+                search_score: 0,
+            })
+            .collect();
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                let mut snapshot = (*root.snapshot).clone();
+                snapshot.sessions.items = items;
+                // The click lands before the new host reports its own id, so
+                // the selection and the open session disagree for one frame.
+                snapshot.session.id = Some(SessionId("session-a".into()));
+                snapshot.session.phase = SessionPhase::Ready;
+                snapshot.sessions.selected = Some(SessionId("session-b".into()));
+                root.set_snapshot_for_capture(Arc::new(snapshot), cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        assert!(
+            window
+                .debug_bounds("sidebar-nav-active-session-b")
+                .is_some(),
+            "the row the reader clicked must be highlighted immediately"
+        );
+        assert!(
+            window
+                .debug_bounds("sidebar-nav-active-session-a")
+                .is_none(),
+            "the previous session must not keep the rail's active fill"
         );
 
         shutdown.shutdown_blocking().unwrap();

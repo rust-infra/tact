@@ -662,6 +662,7 @@ impl DesktopActor {
                     self.catalog = None;
                     self.state.set_project(None);
                     self.state.sessions.items.clear();
+                    self.state.sessions.selected = None;
                     self.state.session = crate::SessionView {
                         epoch,
                         phase: SessionPhase::Empty,
@@ -705,6 +706,12 @@ impl DesktopActor {
                 if self.session_switch_in_flight() {
                     return Ok(());
                 }
+                // Move the rail's highlight as soon as the click lands. The
+                // host teardown and history restore happen off the UI thread;
+                // without this the selected row does not move until the new
+                // snapshot arrives, which reads as a frozen list.
+                self.state.sessions.selected = Some(session_id.clone());
+                self.publish(false);
                 self.start_session(InitialSession::Resume(session_id.0))
                     .await?;
             }
@@ -966,6 +973,10 @@ impl DesktopActor {
             .map_err(|error| DesktopStartError::Config(error.to_string()))?;
         self.state.set_projects(self.registry.records());
         self.state.begin_session_switch();
+        // A project switch replaces the catalog: none of the previous
+        // project's rows may stay on screen while the new list loads.
+        self.state.sessions.items.clear();
+        self.state.sessions.selected = None;
         self.clear_queue();
         self.state.set_project(Some(&project));
         self.catalog = Some(SessionCatalog::new(project.clone()));

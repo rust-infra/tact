@@ -738,6 +738,7 @@
 <li class="toc-l2"><a href="#30-2026-11-02--desktop-%E6%BB%9A%E5%8A%A8%E5%90%88%E5%B9%B6%E4%B8%8E%E5%BC%B9%E7%AA%97%E5%8D%A1%E6%AD%BB" title="30. 2026-11-02 — Desktop 滚动合并与弹窗卡死"><span class="toc-label">30. 2026-11-02 — Desktop 滚动合并与弹窗卡死</span></a></li>
 <li class="toc-l2"><a href="#31-2026-11-04--desktop-%E4%BB%BB%E5%8A%A1%E6%9D%A1%E6%B7%B7%E5%85%A5%E5%85%B6%E5%AE%83-session-%E7%9A%84%E4%BB%BB%E5%8A%A1" title="31. 2026-11-04 — Desktop 任务条混入其它 session 的任务"><span class="toc-label">31. 2026-11-04 — Desktop 任务条混入其它 session 的任务</span></a></li>
 <li class="toc-l2"><a href="#32-2026-11-04--desktop-%E4%BB%BB%E5%8A%A1%E5%85%A8%E9%83%A8%E5%AE%8C%E6%88%90%E5%90%8E%E9%9A%90%E8%97%8F%E4%BB%BB%E5%8A%A1%E5%8D%A1trajectory-%E6%90%9C%E7%B4%A2%E6%A1%86%E6%94%B9%E4%B8%BA%E5%8D%95%E5%B1%82" title="32. 2026-11-04 — Desktop：任务全部完成后隐藏任务卡；Trajectory 搜索框改为单层"><span class="toc-label">32. 2026-11-04 — Desktop：任务全部完成后隐藏任务卡；Trajectory 搜索框改为单层</span></a></li>
+<li class="toc-l2"><a href="#33-2026-11-04--desktop-%E4%BC%9A%E8%AF%9D%E5%88%87%E6%8D%A2%E4%B8%8D%E5%86%8D%E6%B8%85%E7%A9%BA%E4%BE%A7%E6%A0%8F" title="33. 2026-11-04 — Desktop：会话切换不再清空侧栏"><span class="toc-label">33. 2026-11-04 — Desktop：会话切换不再清空侧栏</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -21967,6 +21968,35 @@ sticky 卡片整条消失，恢复干净对话区；有任一域活跃时卡片�
 <code>crates/desktop/src/root.rs</code>（<code>render_sticky</code>、
 <code>render_trajectory_summary</code>）。</p>
 <hr />
+<h2 id="33-2026-11-04--desktop-会话切换不再清空侧栏">33. 2026-11-04 —
+Desktop：会话切换不再清空侧栏</h2>
+<p><strong>现象：</strong> 在左侧会话列表里点另一个会话时，整列会话会先消失再
+重新出现，选中高亮也要等新宿主启动完才移动；切到长会话后，180ms
+淡入期间持续掉帧。</p>
+<p><strong>根因：</strong> <code>begin_session_switch</code> 把
+<code>sessions.items</code> 和 <code>sessions.selected</code>
+当成会话自己的状态一起清空，但会话目录属于项目：每次切换都卸载整列虚拟行，
+等 <code>refresh_sessions_inner</code> 查完库再重建。侧栏的 active
+又只读 <code>session.id</code>，所以点击到新宿主就绪之间没有任何反馈。
+另外两处每帧工作放大了切换后的掉帧：<code>sync_assistant_selections</code>
+对每条助手回答重跑 <code>strip_blocks</code> 与 <code>set_markdown</code>，
+epoch 变化时还会清空 <code>transcript_rows</code>，逐条重建行实体。</p>
+<p><strong>改后行为：</strong> 会话切换保留侧栏目录与选中项，点击落下就把
+active 移到目标行；项目切换仍显式清空目录，旧项目的行不会留在新项目下。
+转录行视图跨 epoch 复用，未变化的助手回答按行 <code>Arc</code>
+命中缓存，不再每帧剥离 Mermaid 块或重排正文。</p>
+<p><strong>验证：</strong>
+<code>switching_sessions_keeps_the_rail_catalog</code>（切换保留目录与选中项）、
+<code>the_rail_highlights_the_clicked_session_before_the_switch_lands</code>
+（选中项与新会话 id 暂时不一致时仍高亮点击行）；
+<code>cargo test -p tact_desktop_core</code> 167 通过，
+<code>cargo test -p tact-desktop --lib</code> 200 通过。</p>
+<p><strong>Pointers：</strong>
+<code>crates/desktop_core/src/state.rs</code>（<code>begin_session_switch</code>）、
+<code>crates/desktop_core/src/controller.rs</code>（<code>ResumeSession</code>、
+<code>open_project</code>）、<code>crates/desktop/src/root.rs</code>
+（<code>sync_sidebar_nav</code>、<code>AssistantSelection</code>、
+<code>handle_event</code>）。</p>
 <h2 id="related-docs">Related Docs</h2>
 <ul>
 <li><a href="./07_chapter_tool_zh.html">工具系统</a></li>
