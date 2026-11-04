@@ -4937,27 +4937,18 @@ impl DesktopRoot {
             .child(metric(self.text(TextKey::RecordPrefix), line.records, cx))
             .child(div().flex_1())
             .child(
-                h_flex()
-                    .w(px(180.))
-                    .items_center()
-                    .gap(px(6.))
-                    .rounded(px(6.))
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().input)
-                    .px(px(7.))
-                    .py(px(2.))
-                    .child(
+                // One box: the Input draws its own border, background and
+                // focus ring. Wrapping it in a second bordered container left
+                // two frames plus an outer ring crowding a 20px-tall field.
+                Input::new(&self.trajectory_search)
+                    .prefix(
                         Icon::new(IconName::Search)
                             .size(px(12.))
                             .text_color(cx.theme().muted_foreground),
                     )
-                    .child(
-                        div().flex_1().min_w_0().child(
-                            Input::new(&self.trajectory_search)
-                                .aria_label(self.text(TextKey::SearchTrajectory)),
-                        ),
-                    ),
+                    .xsmall()
+                    .w(px(180.))
+                    .aria_label(self.text(TextKey::SearchTrajectory)),
             )
             .into_any_element()
     }
