@@ -65,5 +65,3 @@ pub fn evidence_language(language: &str) -> &str {
         _ => language,
     }
 }
-
-

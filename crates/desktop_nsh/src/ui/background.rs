@@ -49,4 +49,48 @@ pub fn status_label(task: &BackgroundTaskView) -> &'static str {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
 
+    use super::*;
+
+    #[test]
+    fn an_unrecorded_start_reports_no_elapsed_time() {
+        let undated = BackgroundTaskView {
+            id: Arc::from("task-3"),
+            started_at: 0,
+            ..BackgroundTaskView::default()
+        };
+        assert_eq!(elapsed_label(&undated, 1_700_000_000_000), None);
+        assert_eq!(
+            meta_label(&undated, 1_700_000_000_000, "Running"),
+            "Running",
+            "the status still shows; only the invented duration is dropped"
+        );
+    }
+
+    #[test]
+    fn a_recorded_start_reports_its_span() {
+        let running = BackgroundTaskView {
+            id: Arc::from("task-4"),
+            started_at: 1_700_000_000_000,
+            ..BackgroundTaskView::default()
+        };
+        assert_eq!(
+            elapsed_label(&running, 1_700_000_095_000).as_deref(),
+            Some("1m 35s")
+        );
+        // A finished task measures to its end, not to now.
+        let done = BackgroundTaskView {
+            finished_at: Some(1_700_000_002_000),
+            ..running.clone()
+        };
+        assert_eq!(
+            elapsed_label(&done, 1_700_000_099_000).as_deref(),
+            Some("2.0s")
+        );
+    }
+
+    
+}

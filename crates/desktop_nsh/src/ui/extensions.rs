@@ -28,4 +28,23 @@ pub fn matches_extension(query: &str, value: &str) -> bool {
     score_extension(query, &[value]) >= 0
 }
 
+#[cfg(test)]
+mod tests {
 
+    use super::*;
+
+    
+
+    #[test]
+    fn extension_search_uses_the_shared_fuzzy_matcher() {
+        assert!(matches_extension("gthb", "GitHub Marketplace"));
+        assert!(!matches_extension("zzzz", "GitHub Marketplace"));
+    }
+
+    #[test]
+    fn extension_scores_rank_prefixes_above_subsequences() {
+        let prefix = score_extension("git", &["GitHub Marketplace", "git"]);
+        let subsequence = score_extension("gthb", &["GitHub Marketplace"]);
+        assert!(prefix > subsequence);
+    }
+}

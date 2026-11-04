@@ -78,4 +78,24 @@ pub fn session_detail(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::relative_time;
+    use chrono::{TimeZone as _, Utc};
+    use tact_catalog::CatalogLocale as L;
 
+    fn at(seconds_ago: i64) -> String {
+        let now = Utc.with_ymd_and_hms(2026, 10, 31, 12, 0, 0).unwrap();
+        relative_time(now - chrono::Duration::seconds(seconds_ago), now, L::En)
+    }
+
+    #[test]
+    fn relative_labels_cover_each_bucket() {
+        assert_eq!(at(5), "just now");
+        assert_eq!(at(120), "2m ago");
+        assert_eq!(at(3_600), "1h ago");
+        assert_eq!(at(90_000), "Yesterday");
+        assert_eq!(at(200_000), "2d ago");
+        assert_eq!(at(2_000_000), "Oct 8");
+    }
+}

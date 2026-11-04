@@ -173,4 +173,74 @@ pub fn resolve(text: &str) -> Option<(&'static CommandDescriptor, CommandArgumen
     None
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
 
+    #[test]
+    fn nested_candidates_follow_the_catalog_tree() {
+        let candidates = command_candidates(
+            "/plugin mar",
+            CatalogLocale::En,
+            CommandAvailability {
+                has_project: true,
+                ..Default::default()
+            },
+            &[],
+        );
+        let marketplace = candidates
+            .iter()
+            .find(|candidate| candidate.insertion == "/plugin marketplace ")
+            .expect("marketplace candidate");
+        assert!(marketplace.has_children);
+    }
+
+    #[test]
+    fn installed_skills_are_first_class_slash_candidates() {
+        let skills = vec![(
+            "test-driven-development".to_string(),
+            "Write tests first".to_string(),
+        )];
+        let candidates = command_candidates(
+            "/skill td",
+            CatalogLocale::En,
+            CommandAvailability {
+                has_project: true,
+                has_installed_skill: true,
+                ..Default::default()
+            },
+            &skills,
+        );
+        assert!(candidates.iter().any(|candidate| {
+            candidate.id == CommandId::DynamicSkill("test-driven-development".into())
+                && candidate.insertion == "/skill test-driven-development "
+        }));
+    }
+
+    #[test]
+    fn slash_root_only_lists_builtin_slash_commands() {
+        let candidates = command_candidates(
+            "/",
+            CatalogLocale::En,
+            CommandAvailability {
+                has_project: true,
+                has_session: true,
+                has_account: true,
+                has_installed_skill: true,
+            },
+            &[],
+        );
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| matches!(candidate.id, CommandId::Builtin(_)))
+        );
+    }
+
+    #[test]
+    fn longest_path_keeps_arguments_separate() {
+        let (descriptor, args) = resolve("/goal show goal-1").unwrap();
+        assert_eq!(descriptor.path, ["goal", "show"]);
+        assert_eq!(args.tokens, ["goal-1"]);
+    }
+}

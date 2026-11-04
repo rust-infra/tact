@@ -99,4 +99,10 @@ fn format_ids(ids: &[u64]) -> String {
     }
 }
 
+#[cfg(test)]
+mod tests {
 
+    use super::*;
+
+    
+}

@@ -76,4 +76,57 @@ pub fn files(patch: &str) -> Vec<FileDiff> {
     files
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{FileDiff, files, is_multi_file};
 
+    const PATCH: &str = "diff --git a/src/a.rs b/src/a.rs
+--- a/src/a.rs
++++ b/src/a.rs
+@@ -1,2 +1,3 @@
+-old
++new
++extra
+diff --git a/src/b.rs b/src/b.rs
+--- a/src/b.rs
++++ b/src/b.rs
+@@ -1 +1 @@
+-gone
++kept
+";
+
+    #[test]
+    fn counts_additions_and_removals_per_file() {
+        assert_eq!(
+            files(PATCH),
+            vec![
+                FileDiff {
+                    path: "src/a.rs".into(),
+                    added: 2,
+                    removed: 1,
+                },
+                FileDiff {
+                    path: "src/b.rs".into(),
+                    added: 1,
+                    removed: 1,
+                },
+            ]
+        );
+        assert!(is_multi_file(PATCH));
+    }
+
+    #[test]
+    fn a_single_file_patch_stays_a_patch() {
+        let single = "--- a/one.rs\n+++ b/one.rs\n@@ -1 +1 @@\n-a\n+b\n";
+        assert_eq!(files(single).len(), 1);
+        assert!(!is_multi_file(single));
+        assert!(!is_multi_file(""));
+    }
+
+    #[test]
+    fn header_lines_are_not_counted_as_changes() {
+        let single = "--- a/one.rs\n+++ b/one.rs\n@@ -1 +1 @@\n-a\n+b\n";
+        assert_eq!(files(single)[0].added, 1);
+        assert_eq!(files(single)[0].removed, 1);
+    }
+}

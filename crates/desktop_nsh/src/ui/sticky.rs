@@ -210,4 +210,256 @@ pub fn pending_gate(inspector_pending: &[GateCard]) -> Option<&GateCard> {
     inspector_pending.first()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
 
+    fn task(id: u64, status: TaskStatusSnapshot) -> TaskView {
+        TaskView {
+            id,
+            status,
+            ..TaskView::default()
+        }
+    }
+
+    #[test]
+    fn groups_put_in_progress_first_and_hide_completed_work() {
+        let done = task(1, TaskStatusSnapshot::Completed);
+        let doing = task(2, TaskStatusSnapshot::InProgress);
+        let todo = task(3, TaskStatusSnapshot::Pending);
+        let all = [&done, &doing, &todo];
+
+        let groups = group_tasks(&all, 0);
+        assert_eq!(
+            groups.iter().map(|group| group.status).collect::<Vec<_>>(),
+            vec![GroupStatus::InProgress, GroupStatus::Pending],
+            "completed is not a group the strip paints"
+        );
+        assert_eq!(groups[0].tasks.len(), 1);
+        assert_eq!(groups[0].tasks[0].id, 2, "the in-progress task leads");
+    }
+
+    #[test]
+    fn a_group_with_no_tasks_is_not_painted() {
+        let done = task(1, TaskStatusSnapshot::Completed);
+        assert!(
+            group_tasks(&[&done], 0).is_empty(),
+            "one finished task leaves nothing to paint"
+        );
+
+        let todo = task(2, TaskStatusSnapshot::Pending);
+        let groups = group_tasks(&[&todo], 0);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].status, GroupStatus::Pending);
+        assert!(group_tasks(&[], 0).is_empty());
+    }
+
+    #[test]
+    fn in_progress_leads_with_the_most_recently_started_task() {
+        let now = 1_000_000;
+        let just_started = TaskView {
+            started_at: Some(now - 1_000),
+            ..task(10, TaskStatusSnapshot::InProgress)
+        };
+        let stuck = TaskView {
+            started_at: Some(now - 900_000),
+            ..task(11, TaskStatusSnapshot::InProgress)
+        };
+        let unstarted = TaskView {
+            started_at: None,
+            ..task(12, TaskStatusSnapshot::InProgress)
+        };
+
+        let groups = group_tasks(&[&stuck, &just_started, &unstarted], now);
+        assert_eq!(
+            groups[0]
+                .tasks
+                .iter()
+                .map(|task| task.id)
+                .collect::<Vec<_>>(),
+            vec![10, 11, 12],
+            "newest start first, unstarted last"
+        );
+    }
+
+    #[test]
+    fn pending_leads_with_the_newest_request() {
+        let older = TaskView {
+            created_at: Some(1_000),
+            ..task(20, TaskStatusSnapshot::Pending)
+        };
+        let newer = TaskView {
+            created_at: Some(5_000),
+            ..task(21, TaskStatusSnapshot::Pending)
+        };
+        let undated = task(22, TaskStatusSnapshot::Pending);
+
+        let groups = group_tasks(&[&older, &undated, &newer], 0);
+        assert_eq!(
+            groups[0]
+                .tasks
+                .iter()
+                .map(|task| task.id)
+                .collect::<Vec<_>>(),
+            vec![21, 20, 22],
+            "newest first, undated last"
+        );
+    }
+
+    fn pending_tasks(count: u64) -> Vec<TaskView> {
+        (1..=count)
+            .map(|id| TaskView {
+                created_at: Some(id as i64),
+                ..task(id, TaskStatusSnapshot::Pending)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_list_that_fits_paints_every_row_and_no_marker() {
+        let tasks = pending_tasks(3);
+        let refs: Vec<&TaskView> = tasks.iter().collect();
+        let groups = group_tasks(&refs, 0);
+        let (rows, marker) = window_rows(&groups, 0);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(marker, None);
+    }
+
+    #[test]
+    fn overflow_is_capped_and_reports_what_is_left() {
+        let tasks = pending_tasks(15);
+        let refs: Vec<&TaskView> = tasks.iter().collect();
+        let groups = group_tasks(&refs, 0);
+        let (rows, marker) = window_rows(&groups, 0);
+        assert_eq!(rows.len(), MAX_VISIBLE_ROWS);
+        assert_eq!(marker.as_deref(), Some("+5 more"));
+    }
+
+    #[test]
+    fn scrolling_past_the_end_clamps_and_flips_the_marker() {
+        let tasks = pending_tasks(12);
+        let refs: Vec<&TaskView> = tasks.iter().collect();
+        let groups = group_tasks(&refs, 0);
+        let (rows, marker) = window_rows(&groups, 99);
+        assert_eq!(rows.len(), MAX_VISIBLE_ROWS);
+        assert_eq!(marker.as_deref(), Some("scroll up"));
+    }
+
+    #[test]
+    fn an_elapsed_label_needs_a_start_and_a_positive_span() {
+        assert_eq!(elapsed_label(None, Some(5_000), 5_000), None, "no start");
+        assert_eq!(
+            elapsed_label(Some(5_000), Some(5_000), 5_000),
+            None,
+            "a zero span is a missing label, not 0s"
+        );
+        assert_eq!(elapsed_label(Some(6_000), Some(5_000), 5_000), None);
+    }
+
+    #[test]
+    fn an_elapsed_label_shortens_by_scale_and_runs_up_to_now() {
+        let start = 1_000_000_000_000;
+        assert_eq!(
+            elapsed_label(Some(start), Some(start + 12_000), start).as_deref(),
+            Some("12s")
+        );
+        assert_eq!(
+            elapsed_label(Some(start), Some(start + 185_000), start).as_deref(),
+            Some("3m 5s")
+        );
+        assert_eq!(
+            elapsed_label(Some(start), Some(start + 7_620_000), start).as_deref(),
+            Some("2h 07m")
+        );
+        // A running task has no end yet and is measured against the clock.
+        assert_eq!(
+            elapsed_label(Some(start), None, start + 30_000).as_deref(),
+            Some("30s")
+        );
+    }
+
+    #[test]
+    fn a_quiet_board_hides_the_card_and_a_moving_one_keeps_it() {
+        let done = [task(1, TaskStatusSnapshot::Completed)];
+        let goals: Vec<GoalView> = Vec::new();
+        let subagents: Vec<SubagentView> = Vec::new();
+        let background: Vec<BackgroundTaskView> = Vec::new();
+
+        // Everything finished and nothing else moving: the card is history.
+        assert!(!card_visible(&done, &goals, &subagents, &background));
+
+        // Any open task keeps it up — the kit's `has_open_items`.
+        let open = [
+            task(1, TaskStatusSnapshot::Completed),
+            task(2, TaskStatusSnapshot::Pending),
+        ];
+        assert!(card_visible(&open, &goals, &subagents, &background));
+        let running = [
+            task(1, TaskStatusSnapshot::Completed),
+            task(2, TaskStatusSnapshot::InProgress),
+        ];
+        assert!(card_visible(&running, &goals, &subagents, &background));
+
+        // So does any other domain the TUI strip would keep: a goal, a running
+        // subagent, a running background task. A finished background task is
+        // not one — the kit's linger window owns that row, and the desktop has
+        // no tick to prune it on.
+        let finished = BackgroundTaskView {
+            status: BackgroundTaskStatusSnapshot::Completed,
+            ..BackgroundTaskView::default()
+        };
+        let done_bg = [finished];
+        assert!(!card_visible(&done, &goals, &subagents, &done_bg));
+
+        let running_bg = [BackgroundTaskView {
+            status: BackgroundTaskStatusSnapshot::Running,
+            ..BackgroundTaskView::default()
+        }];
+        assert!(card_visible(&done, &goals, &subagents, &running_bg));
+
+        let with_goal = [GoalView::default()];
+        assert!(card_visible(&done, &with_goal, &subagents, &background));
+
+        let running_agent = [SubagentView {
+            status: SubagentStatusSnapshot::Running,
+            ..SubagentView::default()
+        }];
+        assert!(card_visible(&done, &goals, &running_agent, &background));
+
+        let finished_agent = [SubagentView {
+            status: SubagentStatusSnapshot::Completed,
+            ..SubagentView::default()
+        }];
+        assert!(!card_visible(&done, &goals, &finished_agent, &background));
+    }
+
+    #[test]
+    fn the_current_task_prefers_in_progress_over_pending() {
+        let with = |tasks: [TaskView; 3]| InspectorView {
+            tasks: std::sync::Arc::from(tasks),
+            ..InspectorView::default()
+        };
+        let running = with([
+            task(1, TaskStatusSnapshot::Pending),
+            task(2, TaskStatusSnapshot::InProgress),
+            task(3, TaskStatusSnapshot::Completed),
+        ]);
+        assert_eq!(active_task(&running).map(|task| task.id), Some(2));
+
+        // With nothing running, the first row still waiting is current.
+        let waiting = with([
+            task(4, TaskStatusSnapshot::Pending),
+            task(5, TaskStatusSnapshot::Completed),
+            task(7, TaskStatusSnapshot::Completed),
+        ]);
+        assert_eq!(active_task(&waiting).map(|task| task.id), Some(4));
+
+        // Everything done means no current task rather than a stale one.
+        let finished = with([
+            task(6, TaskStatusSnapshot::Completed),
+            task(8, TaskStatusSnapshot::Completed),
+            task(9, TaskStatusSnapshot::Completed),
+        ]);
+        assert!(active_task(&finished).is_none());
+    }
+}

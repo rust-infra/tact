@@ -65,4 +65,71 @@ pub fn usable_text_scale(text_scale: f32) -> bool {
     (1.0..=1.5).contains(&text_scale)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
 
+    #[test]
+    fn panel_widths_match_the_reviewed_prototype() {
+        assert_eq!(RAIL_WIDTH, 250.0);
+        assert_eq!(INSPECTOR_WIDTH, 318.0);
+    }
+
+    #[test]
+    fn narrow_window_moves_panels_to_scrimmed_overlays() {
+        let narrow = layout(820.0, 1.0, true, true);
+        assert!(!narrow.three_column);
+        assert!(!narrow.rail_inline);
+        assert!(!narrow.inspector_inline);
+        assert!(narrow.rail_overlay);
+        assert!(narrow.inspector_overlay);
+
+        let middle = layout(1100.0, 1.0, true, true);
+        assert!(!middle.three_column);
+        assert!(middle.rail_inline);
+        assert!(!middle.inspector_inline);
+        assert!(!middle.rail_overlay);
+        assert!(middle.inspector_overlay);
+
+        let roomy = layout(1280.0, 1.0, true, true);
+        assert!(roomy.rail_inline);
+        assert!(roomy.inspector_inline);
+        assert!(!roomy.rail_overlay);
+        assert!(!roomy.inspector_overlay);
+    }
+
+    #[test]
+    fn text_scale_125_and_150_remain_usable() {
+        for scale in [1.25, 1.5] {
+            assert!(usable_text_scale(scale));
+
+            // A 1280-wide window keeps the rail inline at every supported
+            // scale; only the inspector gives way, and the transcript keeps a
+            // usable width because the rail is scaled with the text.
+            let shell = layout(1280.0, scale, true, true);
+            assert!(shell.rail_inline, "rail should stay inline at {scale}");
+            assert!(!shell.inspector_inline);
+            assert!(shell.inspector_overlay);
+            assert_eq!(shell.rail_width(), RAIL_WIDTH * scale);
+            assert_eq!(shell.content_width, 1280.0 - RAIL_WIDTH * scale);
+            assert!(shell.content_width >= 880.0);
+
+            // Below the rail breakpoint both panels scrim over the transcript.
+            let narrow = layout(800.0, scale, true, true);
+            assert!(narrow.rail_overlay);
+            assert!(narrow.inspector_overlay);
+
+            // Three columns still fit when the window is wide enough for the
+            // scaled inspector.
+            let roomy_width = INSPECTOR_BREAKPOINT * scale;
+            let roomy = layout(roomy_width, scale, true, true);
+            assert!(roomy.three_column);
+            assert_eq!(roomy.rail_width(), RAIL_WIDTH * scale);
+            assert_eq!(roomy.inspector_width(), INSPECTOR_WIDTH * scale);
+            assert_eq!(
+                roomy.content_width,
+                roomy_width - RAIL_WIDTH * scale - INSPECTOR_WIDTH * scale
+            );
+        }
+    }
+}

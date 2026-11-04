@@ -328,4 +328,237 @@ pub fn format_duration(milliseconds: u64) -> String {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tact_desktop_core::fixtures;
 
+    fn view() -> TrajectoryView {
+        TrajectoryView::from_transcript(&fixtures::demo_transcript())
+    }
+
+    #[test]
+    fn every_record_gets_one_column_and_every_lane_is_inside_the_plot() {
+        let view = view();
+        let layout = TimelineLayout::new(&view, 600.);
+        assert_eq!(layout.boxes.len(), view.len());
+        for span in &layout.boxes {
+            assert!(span.left >= 0.);
+            assert!(span.left + span.width <= 600. + MIN_SPAN_WIDTH);
+            assert!(span.top >= LANE_TOP);
+            assert!(
+                span.top + BLOCK_HEIGHT <= LANE_TOP + 2. * LANE_HEIGHT + BLOCK_HEIGHT,
+                "a block stays in its lane"
+            );
+        }
+    }
+
+    #[test]
+    fn clicking_a_column_hits_exactly_its_record() {
+        let view = view();
+        let layout = TimelineLayout::new(&view, 500.);
+        for span in &layout.boxes {
+            let middle = span.left + span.width / 2.;
+            assert_eq!(layout.hit(middle), Some(span.index));
+        }
+        assert_eq!(layout.hit(-4.), None);
+        assert_eq!(layout.hit(10_000.), None);
+    }
+
+    #[test]
+    fn a_narrow_track_keeps_spans_clickable() {
+        let view = view();
+        let layout = TimelineLayout::new(&view, 12.);
+        assert!(layout.boxes.iter().all(|span| span.width >= MIN_SPAN_WIDTH));
+        assert!(layout.hit(0.).is_some());
+    }
+
+    #[test]
+    fn an_empty_view_has_an_empty_layout() {
+        let empty = TrajectoryView::default();
+        let layout = TimelineLayout::new(&empty, 400.);
+        assert!(layout.boxes.is_empty());
+        assert_eq!(layout.hit(10.), None);
+        assert_eq!(layout.nearest(10.), None);
+    }
+
+    #[test]
+    fn nearest_clamps_outside_the_track() {
+        let view = view();
+        let layout = TimelineLayout::new(&view, 400.);
+        assert_eq!(layout.nearest(-50.), Some(0));
+        assert_eq!(layout.nearest(10_000.), Some(view.len() - 1));
+    }
+
+    #[test]
+    fn summary_never_invents_a_total_it_did_not_measure() {
+        let line = SummaryLine::new(TrajectorySummary::default(), "measured");
+        assert_eq!(line.measured, "—");
+        let line = SummaryLine::new(
+            TrajectorySummary {
+                measured: 2,
+                measured_ms: 3_400,
+                ..TrajectorySummary::default()
+            },
+            "measured",
+        );
+        assert_eq!(line.measured, "3.4s · measured");
+        let line = SummaryLine::new(
+            TrajectorySummary {
+                measured: 1,
+                measured_ms: 600,
+                ..TrajectorySummary::default()
+            },
+            "measured",
+        );
+        assert_eq!(line.measured, "600ms · measured");
+        let line = SummaryLine::new(
+            TrajectorySummary {
+                measured: 1,
+                measured_ms: 125_000,
+                ..TrajectorySummary::default()
+            },
+            "measured",
+        );
+        assert_eq!(line.measured, "2m 05s · measured");
+    }
+
+    #[test]
+    fn ledger_rows_mark_the_turn_boundaries() {
+        let view = view();
+        let rows = ledger_rows(&view, None);
+        assert_eq!(rows.len(), view.len());
+        assert!(rows[0].starts_turn, "the first record opens turn 1");
+        for (position, row) in rows.iter().enumerate() {
+            let previous = position.checked_sub(1).map(|position| &rows[position]);
+            assert_eq!(
+                row.starts_turn,
+                previous.is_none_or(|previous| previous.turn != row.turn),
+                "#{} turn {}",
+                row.index,
+                row.turn
+            );
+        }
+        assert!(rows.iter().filter(|row| row.starts_turn).count() >= view.turns().len());
+    }
+
+    #[test]
+    fn a_filtered_ledger_keeps_a_header_for_every_turn_it_shows() {
+        let view = view();
+        let all = ledger_rows(&view, None);
+        assert!(all.len() >= 3);
+        // A query that keeps only inner records still shows a turn header:
+        // the first surviving row of a turn opens it, even when the record
+        // that actually opened the turn was filtered out.
+        let inner: Vec<usize> = all[1..3].iter().map(|row| row.index).collect();
+        let filtered = ledger_rows(&view, Some(&inner));
+        assert_eq!(filtered.len(), 2);
+        assert!(
+            filtered[0].starts_turn,
+            "the first kept row opens the turn it belongs to"
+        );
+        assert!(!filtered[1].starts_turn, "a sibling record is not a header");
+    }
+
+    #[test]
+    fn a_filter_keeps_ledger_order() {
+        let view = view();
+        let all = ledger_rows(&view, None);
+        let filtered = ledger_rows(&view, Some(&[3, 1]));
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].index, all[0].index);
+        assert!(filtered[0].index < filtered[1].index);
+    }
+
+    #[test]
+    fn durations_read_as_ms_seconds_and_minutes() {
+        assert_eq!(format_duration(8), "8ms");
+        assert_eq!(format_duration(1_250), "1.25s");
+        assert_eq!(format_duration(75_000), "1m 15s");
+    }
+
+    const LABELS: StatsLabels = StatsLabels {
+        turns: "turns",
+        steps: "steps",
+        tokens: "tok",
+        cache_hit: "Cache hit",
+    };
+
+    #[test]
+    fn an_empty_summary_shows_no_footer_figures_at_all() {
+        let line = StatsLine::new(TrajectorySummary::default(), LABELS);
+        assert!(line.is_empty(), "nothing measured means nothing shown");
+        assert_eq!(line.turns, None);
+        assert_eq!(line.rate, None);
+        assert_eq!(line.tokens, None);
+        assert_eq!(line.cache, None);
+        assert_eq!(line.context, None);
+    }
+
+    #[test]
+    fn the_footer_reports_turns_steps_tokens_cache_and_context() {
+        let line = StatsLine::new(
+            TrajectorySummary {
+                turns: 21,
+                records: 1_082,
+                measured: 3,
+                measured_ms: 50_111,
+                input_tokens: 300_000_000,
+                output_tokens: 38_000_000,
+                cache_hit_tokens: 9_800,
+                cache_miss_tokens: 100,
+                context_window: Some(200_000),
+                context_used: 100_000,
+                ..TrajectorySummary::default()
+            },
+            LABELS,
+        );
+        assert_eq!(line.turns.as_deref(), Some("21 turns 1082 steps"));
+        assert_eq!(line.tokens.as_deref(), Some("338M tok"));
+        assert_eq!(line.cache.as_deref(), Some("Cache hit 98%"));
+        assert_eq!(line.context.as_deref(), Some("50%"));
+        assert_eq!(line.rate.as_deref(), Some("6745026 tok/s"));
+    }
+
+    #[test]
+    fn a_rate_needs_a_measured_duration_and_a_token_count() {
+        assert_eq!(throughput(0, 1_000), None, "no tokens, no rate");
+        assert_eq!(throughput(500, 0), None, "no measured time, no rate");
+        assert_eq!(throughput(1_000, 1_000).as_deref(), Some("1000 tok/s"));
+    }
+
+    #[test]
+    fn a_cache_share_needs_something_reported_on_either_side() {
+        assert_eq!(cache_share(0, 0), None);
+        assert_eq!(cache_share(99, 1), Some(99));
+        assert_eq!(cache_share(0, 50), Some(0), "a real zero is still a zero");
+    }
+
+    #[test]
+    fn the_context_meter_needs_a_window_to_divide_by() {
+        let no_window = StatsLine::new(
+            TrajectorySummary {
+                context_used: 5_000,
+                ..TrajectorySummary::default()
+            },
+            LABELS,
+        );
+        assert_eq!(no_window.context, None);
+        let full = StatsLine::new(
+            TrajectorySummary {
+                context_used: 500_000,
+                context_window: Some(200_000),
+                ..TrajectorySummary::default()
+            },
+            LABELS,
+        );
+        assert_eq!(full.context.as_deref(), Some("100%"), "the meter clamps");
+    }
+
+    #[test]
+    fn token_totals_switch_from_count_to_k_to_m() {
+        assert_eq!(compact_tokens(374), "374");
+        assert_eq!(compact_tokens(8_400), "8.4k");
+        assert_eq!(compact_tokens(338_000_000), "338M");
+    }
+}

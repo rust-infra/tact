@@ -23,4 +23,17 @@ pub fn title(display_name: &str, branch: Option<&str>) -> String {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
 
+    #[test]
+    fn phase_labels_follow_the_catalog_locale() {
+        let session = SessionView {
+            phase: SessionPhase::Ready,
+            ..SessionView::default()
+        };
+        assert_eq!(status_text(&session, CatalogLocale::En), "Ready");
+        assert_eq!(status_text(&session, CatalogLocale::Zh), "就绪");
+    }
+}

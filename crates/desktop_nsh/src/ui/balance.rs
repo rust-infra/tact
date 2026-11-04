@@ -54,4 +54,10 @@ pub fn currency_symbol(account: &AccountView) -> Option<Arc<str>> {
     }
 }
 
+#[cfg(test)]
+mod tests {
 
+    use super::*;
+
+    
+}

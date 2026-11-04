@@ -68,4 +68,34 @@ pub fn filter_sessions<'a>(
     rows.into_iter().map(|(_, session)| session).collect()
 }
 
+#[cfg(test)]
+mod tests {
+    use chrono::{TimeZone as _, Utc};
+    use tact_desktop_core::ProjectId;
 
+    use super::*;
+
+    fn session(id: &str, title: &str, archived: bool) -> SessionSummaryView {
+        session_in("p", id, title, archived)
+    }
+
+    fn session_in(project: &str, id: &str, title: &str, archived: bool) -> SessionSummaryView {
+        SessionSummaryView {
+            id: id.into(),
+            project_id: ProjectId(project.into()),
+            root_dir: "/tmp/p".into(),
+            title: title.into(),
+            updated_at: Utc.with_ymd_and_hms(2026, 10, 30, 0, 0, 0).unwrap(),
+            archived_at: archived.then(Utc::now),
+            locked: false,
+            message_count: 1,
+            search_score: 0,
+        }
+    }
+
+    
+
+    
+
+    
+}

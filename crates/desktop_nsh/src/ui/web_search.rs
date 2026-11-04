@@ -146,4 +146,79 @@ fn domain(url: &str) -> String {
         .to_string()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{Hit, is_search_tool, parse, query};
 
+    fn hit(url: &str, title: &str, domain: &str) -> Hit {
+        Hit {
+            url: url.into(),
+            title: title.into(),
+            domain: domain.into(),
+        }
+    }
+
+    #[test]
+    fn json_results_keep_title_and_domain() {
+        let output = r#"{"results":[
+            {"title":"GPUI","url":"https://github.com/zed-industries/zed"},
+            {"title":"Docs","link":"https://gpui.rs/docs"}
+        ]}"#;
+        assert_eq!(
+            parse(output),
+            vec![
+                hit(
+                    "https://github.com/zed-industries/zed",
+                    "GPUI",
+                    "github.com"
+                ),
+                hit("https://gpui.rs/docs", "Docs", "gpui.rs"),
+            ]
+        );
+    }
+
+    #[test]
+    fn markdown_links_are_read() {
+        let output = "- [Rust](https://www.rust-lang.org/learn)\n- [GPUI](https://gpui.rs)";
+        assert_eq!(
+            parse(output),
+            vec![
+                hit("https://www.rust-lang.org/learn", "Rust", "rust-lang.org"),
+                hit("https://gpui.rs", "GPUI", "gpui.rs"),
+            ]
+        );
+    }
+
+    #[test]
+    fn bare_urls_use_the_previous_line_as_title() {
+        let output = "GPUI Component\nhttps://longbridge.github.io/gpui-ai/components\n";
+        assert_eq!(
+            parse(output),
+            vec![hit(
+                "https://longbridge.github.io/gpui-ai/components",
+                "GPUI Component",
+                "longbridge.github.io"
+            )]
+        );
+    }
+
+    #[test]
+    fn duplicate_urls_collapse() {
+        let output = "[A](https://a.dev)\n[B](https://a.dev)";
+        assert_eq!(parse(output).len(), 1);
+    }
+
+    #[test]
+    fn the_query_comes_from_the_arguments() {
+        assert_eq!(query("web_search", r#"{"query":"gpui wasm"}"#), "gpui wasm");
+        assert_eq!(query("web_search", "plain words"), "plain words");
+        assert_eq!(query("web_search", ""), "web_search");
+    }
+
+    #[test]
+    fn tool_names_are_classified() {
+        assert!(is_search_tool("web_search"));
+        assert!(is_search_tool("mcp__search__query"));
+        assert!(!is_search_tool("bash"));
+    }
+}
