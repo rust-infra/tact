@@ -15,7 +15,10 @@
 //!
 //! Everything here is pure so the ranking can be asserted without a window.
 
-use tact_desktop_core::{GateCard, InspectorView, TaskStatusSnapshot, TaskView};
+use tact_desktop_core::{
+    BackgroundTaskStatusSnapshot, BackgroundTaskView, GateCard, GoalView, InspectorView,
+    SubagentStatusSnapshot, SubagentView, TaskStatusSnapshot, TaskView,
+};
 
 /// The task the strip calls current when collapsed: the in-progress one, or
 /// failing that the first task still waiting.
@@ -166,6 +169,41 @@ pub fn elapsed_label(started_at: Option<i64>, end_at: Option<i64>, now_ms: i64) 
     } else {
         Some(format!("{}h {:02}m", secs / 3_600, (secs % 3_600) / 60))
     }
+}
+
+/// Whether the task card paints at all.
+///
+/// The TUI host hides its sticky when every domain is quiet, and the desktop
+/// card merges those domains into one header, so the card stays up while any
+/// of them would keep the TUI strip up:
+///
+/// - tasks: a pending or in-progress row — the kit's `has_open_items`. A list
+///   that is all completed is history, and the ledger already carries it;
+/// - goals: any at all;
+/// - subagents / background: a still-running one.
+///
+/// A finished background task keeps its row only for the kit's linger window;
+/// the desktop has no idle tick to prune on, so it drops out of this decision
+/// the moment it ends. Its chip still shows while the card is up for another
+/// reason.
+pub fn card_visible(
+    tasks: &[TaskView],
+    goals: &[GoalView],
+    subagents: &[SubagentView],
+    background: &[BackgroundTaskView],
+) -> bool {
+    tasks.iter().any(|task| {
+        matches!(
+            task.status,
+            TaskStatusSnapshot::Pending | TaskStatusSnapshot::InProgress
+        )
+    }) || !goals.is_empty()
+        || subagents
+            .iter()
+            .any(|agent| agent.status == SubagentStatusSnapshot::Running)
+        || background
+            .iter()
+            .any(|task| task.status == BackgroundTaskStatusSnapshot::Running)
 }
 
 pub fn pending_gate(inspector_pending: &[GateCard]) -> Option<&GateCard> {
@@ -338,6 +376,61 @@ mod tests {
             elapsed_label(Some(start), None, start + 30_000).as_deref(),
             Some("30s")
         );
+    }
+
+    #[test]
+    fn a_quiet_board_hides_the_card_and_a_moving_one_keeps_it() {
+        let done = [task(1, TaskStatusSnapshot::Completed)];
+        let goals: Vec<GoalView> = Vec::new();
+        let subagents: Vec<SubagentView> = Vec::new();
+        let background: Vec<BackgroundTaskView> = Vec::new();
+
+        // Everything finished and nothing else moving: the card is history.
+        assert!(!card_visible(&done, &goals, &subagents, &background));
+
+        // Any open task keeps it up — the kit's `has_open_items`.
+        let open = [
+            task(1, TaskStatusSnapshot::Completed),
+            task(2, TaskStatusSnapshot::Pending),
+        ];
+        assert!(card_visible(&open, &goals, &subagents, &background));
+        let running = [
+            task(1, TaskStatusSnapshot::Completed),
+            task(2, TaskStatusSnapshot::InProgress),
+        ];
+        assert!(card_visible(&running, &goals, &subagents, &background));
+
+        // So does any other domain the TUI strip would keep: a goal, a running
+        // subagent, a running background task. A finished background task is
+        // not one — the kit's linger window owns that row, and the desktop has
+        // no tick to prune it on.
+        let finished = BackgroundTaskView {
+            status: BackgroundTaskStatusSnapshot::Completed,
+            ..BackgroundTaskView::default()
+        };
+        let done_bg = [finished];
+        assert!(!card_visible(&done, &goals, &subagents, &done_bg));
+
+        let running_bg = [BackgroundTaskView {
+            status: BackgroundTaskStatusSnapshot::Running,
+            ..BackgroundTaskView::default()
+        }];
+        assert!(card_visible(&done, &goals, &subagents, &running_bg));
+
+        let with_goal = [GoalView::default()];
+        assert!(card_visible(&done, &with_goal, &subagents, &background));
+
+        let running_agent = [SubagentView {
+            status: SubagentStatusSnapshot::Running,
+            ..SubagentView::default()
+        }];
+        assert!(card_visible(&done, &goals, &running_agent, &background));
+
+        let finished_agent = [SubagentView {
+            status: SubagentStatusSnapshot::Completed,
+            ..SubagentView::default()
+        }];
+        assert!(!card_visible(&done, &goals, &finished_agent, &background));
     }
 
     #[test]

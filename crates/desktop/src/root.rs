@@ -7509,6 +7509,15 @@ impl DesktopRoot {
         let goals = self.snapshot.inspector.goals.len();
         let agents = self.snapshot.inspector.subagents.len();
         let background = self.snapshot.inspector.background.len();
+        // The TUI host hides its sticky when every domain is quiet; the card
+        // merges those domains, so it paints while any of them would keep the
+        // TUI strip up. An all-completed task list on its own is not enough.
+        let card_visible = crate::ui::sticky::card_visible(
+            all_tasks,
+            &self.snapshot.inspector.goals,
+            &self.snapshot.inspector.subagents,
+            &self.snapshot.inspector.background,
+        );
         let chevron = if self.sticky_tasks_collapsed {
             IconName::ChevronDown
         } else {
@@ -7529,7 +7538,7 @@ impl DesktopRoot {
             .when_some(pending, |strip, gate| {
                 strip.child(self.render_gate_banner(gate, cx))
             })
-            .when(task_total > 0, |strip| {
+            .when(card_visible, |strip| {
                 strip.child(
                     v_flex()
                         .id("sticky-task-card")
@@ -19133,6 +19142,53 @@ mod tests {
         assert!(
             window.debug_bounds("toggle-sticky-tasks").is_some(),
             "the card lost its collapse control"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn an_all_completed_quiet_board_hides_the_task_card(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.inspector.tasks = std::sync::Arc::from([tact_desktop_core::TaskView {
+                    id: 1,
+                    subject: "done deal".into(),
+                    status: tact_desktop_core::TaskStatusSnapshot::Completed,
+                    ..tact_desktop_core::TaskView::default()
+                }]);
+                this.snapshot = Arc::new(snapshot);
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        // The TUI sticky hides once nothing is open; "TASKS 1/1" on its own is
+        // not a reason to keep the card up.
+        assert!(
+            window.debug_bounds("sticky-task-card").is_none(),
+            "a fully completed task list must not keep the card up"
+        );
+
+        // But any other domain the TUI strip would keep does: a running
+        // background task summons the card back for its chip.
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.inspector.background =
+                    std::sync::Arc::from([tact_desktop_core::BackgroundTaskView {
+                        status: tact_desktop_core::BackgroundTaskStatusSnapshot::Running,
+                        ..tact_desktop_core::BackgroundTaskView::default()
+                    }]);
+                this.snapshot = Arc::new(snapshot);
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        assert!(
+            window.debug_bounds("sticky-task-card").is_some(),
+            "a running background task keeps the card up for its chip"
         );
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
