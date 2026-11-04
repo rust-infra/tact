@@ -1,6 +1,7 @@
 //! NSH views of the desktop surfaces. Pure decisions live in `crate::ui`.
 
 pub mod composer;
+pub mod gate_banner;
 pub mod inspector;
 pub mod menu;
 pub mod overlays;

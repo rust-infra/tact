@@ -26,8 +26,10 @@ pub fn composer(
     voice: Signal<VoiceState>,
     submit_tick: Signal<u64>,
 ) -> impl IntoElement {
-    let draft = signal(String::new());
-    let attachments = signal(Vec::<PathBuf>::new());
+    let app = crate::app::use_app();
+    let draft = app.draft;
+    let attachments = app.attachments;
+    let history_cursor = signal(None::<usize>);
     effect(move || {
         if let Some(text) = voice.get().transcript.clone() {
             draft.update(|current| {
@@ -95,6 +97,7 @@ pub fn composer(
         .px_6()
         .pt_3()
         .pb_5()
+        .child(queue_list(snapshot, controller.clone()))
         .child(dynamic({
             let controller = controller.clone();
             move || {
@@ -178,6 +181,40 @@ pub fn composer(
                         .on_submit({
                             let send = send.clone();
                             move |text: &str| send(text)
+                        })
+                        .on_key_press({
+                            let controller = controller.clone();
+                            move |key: &str| {
+                                let history = snapshot.get().0.composer.history.clone();
+                                if history.is_empty() {
+                                    return;
+                                }
+                                match key {
+                                    "up" => {
+                                        let next = history_cursor
+                                            .get()
+                                            .map(|index| (index + 1).min(history.len() - 1))
+                                            .unwrap_or(0);
+                                        history_cursor.set(Some(next));
+                                        draft.set(history[next].to_string());
+                                    }
+                                    "down" => {
+                                        let Some(index) = history_cursor.get() else {
+                                            return;
+                                        };
+                                        if index == 0 {
+                                            history_cursor.set(None);
+                                            draft.set(String::new());
+                                        } else {
+                                            let next = index - 1;
+                                            history_cursor.set(Some(next));
+                                            draft.set(history[next].to_string());
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                                let _ = &controller;
+                            }
                         })
                         .multiline(true)
                         .placeholder(crate::i18n::text(
@@ -277,6 +314,7 @@ pub fn composer(
                     .text_color(move || theme().muted_foreground),
                 ),
         )
+        .child(context_meter(snapshot))
 }
 
 fn control(
@@ -422,4 +460,124 @@ fn voice_button(
                 _ => theme().muted_foreground,
             }),
         )
+}
+
+fn queue_list(snapshot: Signal<SnapshotRef>, controller: DesktopController) -> impl IntoElement {
+    view().flex_col().gap(px(1.0)).child(each(
+        move || {
+            snapshot
+                .get()
+                .0
+                .composer
+                .queue
+                .iter()
+                .take(4)
+                .cloned()
+                .collect::<Vec<_>>()
+        },
+        |item: &tact_desktop_core::QueuedPromptView| item.id,
+        move |item, at| {
+            let item = item.get_untracked();
+            let index = at.get_untracked();
+            let controller = controller.clone();
+            let remove_controller = controller.clone();
+            view()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .py(px(3.0))
+                .rounded(px(6.0))
+                .bg(move || theme().muted)
+                .child(
+                    text(item.text.to_string())
+                        .flex_1()
+                        .number_of_lines(1)
+                        .text_size(px(11.0))
+                        .text_color(move || theme().muted_foreground),
+                )
+                .child(
+                    view()
+                        .px_2()
+                        .py(px(1.0))
+                        .rounded(px(4.0))
+                        .cursor_pointer()
+                        .role(AccessibilityRole::Button)
+                        .label("Send now")
+                        .on_press(move || {
+                            let _ = controller.dispatch(DesktopIntent::SendQueuedNow { index });
+                        })
+                        .child(
+                            text("Send now")
+                                .text_size(px(9.0))
+                                .text_color(move || theme().primary),
+                        ),
+                )
+                .child(
+                    view()
+                        .px_1()
+                        .cursor_pointer()
+                        .role(AccessibilityRole::Button)
+                        .label("Remove queued prompt")
+                        .on_press(move || {
+                            let _ =
+                                remove_controller.dispatch(DesktopIntent::RemoveQueued { index });
+                        })
+                        .child(
+                            text("×")
+                                .text_size(px(10.0))
+                                .text_color(move || theme().muted_foreground),
+                        ),
+                )
+        },
+    ))
+}
+
+fn context_meter(snapshot: Signal<SnapshotRef>) -> impl IntoElement {
+    let usage = move || snapshot.get().0.runtime.usage.clone();
+    view()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .px_1()
+        .child(
+            text(move || {
+                let usage = usage();
+                match usage.context_window {
+                    Some(window) => format!("{} / {} context", usage.prompt_tokens, window),
+                    None => format!("{} tokens", usage.total_tokens),
+                }
+            })
+            .text_size(px(10.0))
+            .font_family("Lilex")
+            .text_color(move || theme().muted_foreground),
+        )
+        .child(when(
+            move || usage().context_window.is_some(),
+            move || {
+                let fraction = move || {
+                    let usage = usage();
+                    let window = usage.context_window.unwrap_or(1).max(1);
+                    (usage.prompt_tokens as f32 / window as f32).clamp(0.0, 1.0)
+                };
+                view()
+                    .w(px(120.0))
+                    .h(px(3.0))
+                    .rounded(px(2.0))
+                    .bg(move || theme().muted)
+                    .child(
+                        view()
+                            .h(px(3.0))
+                            .rounded(px(2.0))
+                            .w(move || px(120.0 * fraction()))
+                            .bg(move || {
+                                if fraction() > 0.9 {
+                                    theme().color("danger").unwrap_or(theme().primary)
+                                } else {
+                                    theme().primary
+                                }
+                            }),
+                    )
+            },
+        ))
 }

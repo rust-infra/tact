@@ -4,7 +4,8 @@ use nsh_base::theme;
 use nsh_core::element::AccessibilityRole;
 use nsh_core::prelude::*;
 use tact_desktop_core::{
-    BackgroundTaskView, DesktopController, DesktopIntent, InspectorTab, RowStatus,
+    BackgroundTaskView, DesktopController, DesktopIntent, InspectorTab, ReaderRef, RowStatus,
+    SubagentView,
 };
 
 use crate::app::SnapshotRef;
@@ -33,10 +34,16 @@ pub fn inspector(snapshot: Signal<SnapshotRef>, controller: DesktopController) -
                         .px_4()
                         .py_3()
                         .child(dynamic(move || match snapshot.get().0.inspector.tab {
-                            InspectorTab::Run => run_tab(snapshot).into_element(),
+                            InspectorTab::Run => {
+                                run_tab(snapshot, controller.clone()).into_element()
+                            }
                             InspectorTab::Goals => goals_tab(snapshot).into_element(),
-                            InspectorTab::Subagents => subagents_tab(snapshot).into_element(),
-                            InspectorTab::Background => background_tab(snapshot).into_element(),
+                            InspectorTab::Subagents => {
+                                subagents_tab(snapshot, controller.clone()).into_element()
+                            }
+                            InspectorTab::Background => {
+                                background_tab(snapshot, controller.clone()).into_element()
+                            }
                             InspectorTab::Context => context_tab(snapshot).into_element(),
                         })),
                 ),
@@ -82,7 +89,7 @@ fn tabs(snapshot: Signal<SnapshotRef>, controller: DesktopController) -> impl In
         }))
 }
 
-fn run_tab(snapshot: Signal<SnapshotRef>) -> impl IntoElement {
+fn run_tab(snapshot: Signal<SnapshotRef>, controller: DesktopController) -> impl IntoElement {
     view()
         .flex_col()
         .gap_1()
@@ -93,24 +100,111 @@ fn run_tab(snapshot: Signal<SnapshotRef>) -> impl IntoElement {
         )
         .child(
             text(move || {
-                snapshot
-                    .get()
-                    .0
-                    .runtime
-                    .latest_tool
-                    .as_deref()
-                    .unwrap_or("No tool running")
-                    .to_owned()
+                let started = snapshot.get().0.runtime.run_started_at;
+                let elapsed = started
+                    .map(|started| (chrono::Utc::now() - started).num_seconds().max(0))
+                    .unwrap_or(0);
+                format!("{elapsed}s elapsed")
             })
-            .text_size(px(12.0))
+            .text_size(px(10.0))
             .font_family("Lilex")
             .text_color(move || theme().muted_foreground),
+        )
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(
+                    text(move || {
+                        snapshot
+                            .get()
+                            .0
+                            .runtime
+                            .latest_tool
+                            .as_deref()
+                            .unwrap_or("No tool running")
+                            .to_owned()
+                    })
+                    .flex_1()
+                    .text_size(px(11.0))
+                    .font_family("Lilex")
+                    .text_color(move || theme().muted_foreground),
+                )
+                .children(
+                    snapshot
+                        .get()
+                        .0
+                        .runtime
+                        .latest_tool_detail
+                        .as_ref()
+                        .and_then(|detail| detail.row)
+                        .map(|row| {
+                            let controller = controller.clone();
+                            view()
+                                .px_2()
+                                .py(px(1.0))
+                                .rounded(px(4.0))
+                                .cursor_pointer()
+                                .role(AccessibilityRole::Button)
+                                .label("Open latest tool output")
+                                .on_press(move || {
+                                    let _ = controller.dispatch(DesktopIntent::OpenReader(
+                                        ReaderRef::ToolOutput(row),
+                                    ));
+                                })
+                                .child(
+                                    text("Open")
+                                        .text_size(px(9.0))
+                                        .text_color(move || theme().primary),
+                                )
+                        }),
+                ),
         )
         .child(
             text(move || format!("{} turns", snapshot.get().0.runtime.turns_taken))
                 .text_size(px(11.0))
                 .text_color(move || theme().muted_foreground),
         )
+        .child(
+            text(move || {
+                let usage = &snapshot.get().0.runtime.usage;
+                match usage.context_window {
+                    Some(window) => format!("{} / {} context", usage.prompt_tokens, window),
+                    None => format!("{} tokens", usage.total_tokens),
+                }
+            })
+            .text_size(px(10.0))
+            .font_family("Lilex")
+            .text_color(move || theme().muted_foreground),
+        )
+        .child(
+            text("Tasks")
+                .pt_2()
+                .text_size(px(10.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(move || theme().muted_foreground),
+        )
+        .child(each(
+            move || snapshot.get().0.inspector.tasks.to_vec(),
+            |task: &tact_desktop_core::TaskView| task.id,
+            move |task, _| {
+                let task = task.get_untracked();
+                view()
+                    .flex_col()
+                    .gap(px(0.0))
+                    .child(
+                        text(format!("{} {}", task.status.marker(), task.subject))
+                            .number_of_lines(2)
+                            .text_size(px(11.0)),
+                    )
+                    .child(
+                        text(task.owner.to_string())
+                            .text_size(px(9.0))
+                            .text_color(move || theme().muted_foreground),
+                    )
+            },
+        ))
 }
 
 fn goals_tab(snapshot: Signal<SnapshotRef>) -> impl IntoElement {
@@ -127,21 +221,89 @@ fn goals_tab(snapshot: Signal<SnapshotRef>) -> impl IntoElement {
     row_list(rows)
 }
 
-fn subagents_tab(snapshot: Signal<SnapshotRef>) -> impl IntoElement {
-    let rows = move || {
-        snapshot
-            .get()
-            .0
-            .inspector
-            .subagents
-            .iter()
-            .map(inspector::subagent_row)
-            .collect::<Vec<_>>()
-    };
-    row_list(rows)
+fn subagents_tab(snapshot: Signal<SnapshotRef>, controller: DesktopController) -> impl IntoElement {
+    view().flex_col().gap_2().child(each(
+        move || snapshot.get().0.inspector.subagents.to_vec(),
+        |agent: &SubagentView| agent.child_id.to_string(),
+        move |agent, _| {
+            let agent = agent.get_untracked();
+            let cancel = controller.clone();
+            let open = controller.clone();
+            let child_id = agent.child_id.to_string();
+            view()
+                .flex_col()
+                .gap(px(1.0))
+                .child(
+                    text(child_id.clone())
+                        .number_of_lines(1)
+                        .text_size(px(11.0))
+                        .font_family("Lilex"),
+                )
+                .child(
+                    text(agent.summary.to_string())
+                        .number_of_lines(2)
+                        .text_size(px(10.0))
+                        .text_color(move || theme().muted_foreground),
+                )
+                .child(
+                    view()
+                        .flex_row()
+                        .gap_2()
+                        .child(
+                            text(format!("{:?}", agent.status))
+                                .text_size(px(9.0))
+                                .text_color(move || theme().muted_foreground),
+                        )
+                        .child(
+                            view()
+                                .px_2()
+                                .py(px(1.0))
+                                .rounded(px(4.0))
+                                .cursor_pointer()
+                                .role(AccessibilityRole::Button)
+                                .label("Open subagent")
+                                .on_press(move || {
+                                    let _ = open.dispatch(DesktopIntent::OpenReader(
+                                        ReaderRef::Subagent(child_id.clone()),
+                                    ));
+                                })
+                                .child(
+                                    text("Open")
+                                        .text_size(px(9.0))
+                                        .text_color(move || theme().primary),
+                                ),
+                        )
+                        .child(
+                            view()
+                                .px_2()
+                                .py(px(1.0))
+                                .rounded(px(4.0))
+                                .cursor_pointer()
+                                .role(AccessibilityRole::Button)
+                                .label("Cancel subagent")
+                                .on_press({
+                                    let child_id = agent.child_id.to_string();
+                                    move || {
+                                        let _ = cancel.dispatch(DesktopIntent::CancelSubagent {
+                                            child_id: child_id.clone(),
+                                        });
+                                    }
+                                })
+                                .child(
+                                    text("Cancel")
+                                        .text_size(px(9.0))
+                                        .text_color(move || theme().muted_foreground),
+                                ),
+                        ),
+                )
+        },
+    ))
 }
 
-fn background_tab(snapshot: Signal<SnapshotRef>) -> impl IntoElement {
+fn background_tab(
+    snapshot: Signal<SnapshotRef>,
+    controller: DesktopController,
+) -> impl IntoElement {
     view().flex_col().gap_2().child(each(
         move || {
             snapshot
@@ -154,11 +316,21 @@ fn background_tab(snapshot: Signal<SnapshotRef>) -> impl IntoElement {
                 .collect::<Vec<_>>()
         },
         |task: &BackgroundTaskView| task.id.clone(),
-        |task, _| background_row(task),
+        {
+            let controller = controller.clone();
+            move |task, _| background_row(task, controller.clone())
+        },
     ))
 }
 
-fn background_row(task: nsh_core::element::ReadSignal<BackgroundTaskView>) -> impl IntoElement {
+fn background_row(
+    task: nsh_core::element::ReadSignal<BackgroundTaskView>,
+    controller: DesktopController,
+) -> impl IntoElement {
+    let open = controller.clone();
+    let cancel = controller.clone();
+    let task_id = task.get_untracked().id.to_string();
+    let cancel_id = task_id.clone();
     view()
         .flex_col()
         .gap(px(1.0))
@@ -172,6 +344,49 @@ fn background_row(task: nsh_core::element::ReadSignal<BackgroundTaskView>) -> im
             text(move || format!("{:?}", task.get().status))
                 .text_size(px(11.0))
                 .text_color(move || theme().muted_foreground),
+        )
+        .child(
+            view()
+                .flex_row()
+                .gap_2()
+                .child(
+                    view()
+                        .px_2()
+                        .py(px(1.0))
+                        .rounded(px(4.0))
+                        .cursor_pointer()
+                        .role(AccessibilityRole::Button)
+                        .label("Open background output")
+                        .on_press(move || {
+                            let _ = open.dispatch(DesktopIntent::OpenReader(
+                                ReaderRef::Background(task_id.clone()),
+                            ));
+                        })
+                        .child(
+                            text("Open")
+                                .text_size(px(9.0))
+                                .text_color(move || theme().primary),
+                        ),
+                )
+                .child(
+                    view()
+                        .px_2()
+                        .py(px(1.0))
+                        .rounded(px(4.0))
+                        .cursor_pointer()
+                        .role(AccessibilityRole::Button)
+                        .label("Stop background task")
+                        .on_press(move || {
+                            let _ = cancel.dispatch(DesktopIntent::CancelBackgroundTask {
+                                task_id: cancel_id.clone(),
+                            });
+                        })
+                        .child(
+                            text("Stop")
+                                .text_size(px(9.0))
+                                .text_color(move || theme().muted_foreground),
+                        ),
+                ),
         )
 }
 

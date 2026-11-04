@@ -105,6 +105,9 @@ pub struct AppState {
     pub voice: Signal<VoiceState>,
     pub toast: Signal<Option<ToastMessage>>,
     pub submit_tick: Signal<u64>,
+    pub draft: Signal<String>,
+    pub attachments: Signal<Vec<std::path::PathBuf>>,
+    pub expanded_thinking: Signal<Vec<tact_desktop_core::RowId>>,
 }
 
 /// Installs the controller bridge once, at the root component.
@@ -121,6 +124,9 @@ pub fn install() {
     let voice = signal(VoiceState::default());
     let toast = signal(None::<ToastMessage>);
     let submit_tick = signal(0_u64);
+    let draft = signal(String::new());
+    let attachments = signal(Vec::new());
+    let expanded_thinking = signal(Vec::new());
     provide_context(AppState {
         controller: runtime.controller.clone(),
         snapshot,
@@ -128,6 +134,9 @@ pub fn install() {
         voice,
         toast,
         submit_tick,
+        draft,
+        attachments,
+        expanded_thinking,
     });
     let events = &runtime.events;
     spawn(async move {

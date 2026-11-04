@@ -19,6 +19,7 @@ pub enum Overlay {
     SessionManager,
     Extensions,
     Models,
+    Projects,
 }
 
 pub fn layer(
@@ -81,6 +82,7 @@ fn header(kind: Overlay, overlay: Signal<Option<Overlay>>) -> impl IntoElement {
                     Overlay::SessionManager => "Sessions",
                     Overlay::Extensions => "Extensions",
                     Overlay::Models => "Model",
+                    Overlay::Projects => "Projects",
                 })
                 .text_size(px(13.0))
                 .font_weight(FontWeight::SEMIBOLD),
@@ -117,6 +119,7 @@ fn panel(
         Overlay::SessionManager => session_panel(snapshot, controller).into_element(),
         Overlay::Extensions => extensions_panel(snapshot, controller).into_element(),
         Overlay::Models => models_panel(snapshot, controller, overlay).into_element(),
+        Overlay::Projects => projects_panel(snapshot, controller, overlay).into_element(),
     }
 }
 
@@ -482,6 +485,9 @@ fn session_panel(snapshot: Signal<SnapshotRef>, controller: DesktopController) -
             let archive_id = id.clone();
             let open_controller = controller.clone();
             let open_id = id;
+            let rename_draft = signal(session.title.clone());
+            let rename_controller = controller.clone();
+            let rename_id = SessionId(session.id.clone());
             view()
                 .flex_row()
                 .items_center()
@@ -490,9 +496,24 @@ fn session_panel(snapshot: Signal<SnapshotRef>, controller: DesktopController) -
                 .py_2()
                 .rounded(px(7.0))
                 .child(
-                    text(session.title.clone())
+                    input()
+                        .value(move || rename_draft.get())
+                        .on_change(move |text: &str| rename_draft.set(text.to_owned()))
+                        .on_submit(move |text: &str| {
+                            if !text.trim().is_empty() {
+                                let _ = rename_controller.dispatch(DesktopIntent::RenameSession {
+                                    session_id: rename_id.clone(),
+                                    title: text.trim().to_owned(),
+                                });
+                            }
+                        })
                         .flex_1()
-                        .number_of_lines(1)
+                        .px_2()
+                        .py(px(3.0))
+                        .rounded(px(5.0))
+                        .border_1()
+                        .border_color(move || theme().border)
+                        .bg(move || theme().background)
                         .text_size(px(12.0)),
                 )
                 .child(
@@ -717,4 +738,108 @@ fn models_panel(
                 .child(text(model).text_size(px(12.0)))
         },
     ))
+}
+
+fn projects_panel(
+    snapshot: Signal<SnapshotRef>,
+    controller: DesktopController,
+    overlay: Signal<Option<Overlay>>,
+) -> impl IntoElement {
+    let path = signal(String::new());
+    view()
+        .flex_col()
+        .gap_2()
+        .child(view().flex_col().gap(px(1.0)).child(each(
+            move || snapshot.get().0.projects.to_vec(),
+            |project: &tact_desktop_core::ProjectView| {
+                project
+                    .root
+                    .as_ref()
+                    .map(|root| root.display().to_string())
+                    .unwrap_or_else(|| project.display_name.to_string())
+            },
+            {
+                let controller = controller.clone();
+                move |project: ReadSignal<tact_desktop_core::ProjectView>, _| {
+                    let project = project.get_untracked();
+                    let controller = controller.clone();
+                    let root = project.root.clone();
+                    let current = move || snapshot.get().0.project.id == project.id;
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .px_3()
+                        .py_2()
+                        .rounded(px(7.0))
+                        .cursor_pointer()
+                        .role(AccessibilityRole::Button)
+                        .label(project.display_name.to_string())
+                        .style_when(current, |style| style.bg(move || theme().muted))
+                        .on_press(move || {
+                            if let Some(root) = root.clone() {
+                                let _ = controller.dispatch(DesktopIntent::OpenProject { root });
+                                overlay.set(None);
+                            }
+                        })
+                        .child(
+                            text(project.display_name.to_string())
+                                .flex_1()
+                                .number_of_lines(1)
+                                .text_size(px(12.0)),
+                        )
+                        .child(
+                            text(project.branch.as_deref().unwrap_or("").to_owned())
+                                .text_size(px(10.0))
+                                .text_color(move || theme().muted_foreground),
+                        )
+                }
+            },
+        )))
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(
+                    input()
+                        .value(move || path.get())
+                        .on_change(move |text: &str| path.set(text.to_owned()))
+                        .placeholder("Project path")
+                        .flex_1()
+                        .px_3()
+                        .py(px(5.0))
+                        .rounded(px(7.0))
+                        .border_1()
+                        .border_color(move || theme().border)
+                        .bg(move || theme().background)
+                        .text_size(px(12.0)),
+                )
+                .child(
+                    view()
+                        .px_2()
+                        .py(px(3.0))
+                        .rounded(px(6.0))
+                        .cursor_pointer()
+                        .role(AccessibilityRole::Button)
+                        .label("Open project")
+                        .on_press({
+                            let controller = controller.clone();
+                            move || {
+                                let root = path.get();
+                                if !root.trim().is_empty() {
+                                    let _ = controller.dispatch(DesktopIntent::OpenProject {
+                                        root: std::path::PathBuf::from(root.trim()),
+                                    });
+                                    overlay.set(None);
+                                }
+                            }
+                        })
+                        .child(
+                            text("Open")
+                                .text_size(px(10.0))
+                                .text_color(move || theme().primary),
+                        ),
+                ),
+        )
 }

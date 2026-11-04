@@ -11,11 +11,16 @@ use tact_desktop_core::{
 use crate::app::SnapshotRef;
 use crate::ui::session_rail;
 
+use super::overlays::Overlay;
 use super::token;
 
 pub const WIDTH: f32 = 250.0;
 
-pub fn rail(snapshot: Signal<SnapshotRef>, controller: DesktopController) -> impl IntoElement {
+pub fn rail(
+    snapshot: Signal<SnapshotRef>,
+    controller: DesktopController,
+    overlay: Signal<Option<Overlay>>,
+) -> impl IntoElement {
     let sessions = move || snapshot.get().0.sessions.items.clone();
     view()
         .w(px(WIDTH))
@@ -24,7 +29,7 @@ pub fn rail(snapshot: Signal<SnapshotRef>, controller: DesktopController) -> imp
         .bg(move || token("sidebar"))
         .border_r_1()
         .border_r_color(move || token("sidebar-border"))
-        .child(project_header(snapshot, controller.clone()))
+        .child(project_header(snapshot, controller.clone(), overlay))
         .child(filters(snapshot, controller.clone()))
         .child(
             scroll()
@@ -43,6 +48,7 @@ pub fn rail(snapshot: Signal<SnapshotRef>, controller: DesktopController) -> imp
 fn project_header(
     snapshot: Signal<SnapshotRef>,
     controller: DesktopController,
+    overlay: Signal<Option<Overlay>>,
 ) -> impl IntoElement {
     view()
         .flex_row()
@@ -57,10 +63,25 @@ fn project_header(
                 .flex_col()
                 .gap(px(1.0))
                 .child(
-                    text(move || snapshot.get().0.project.display_name.to_string())
-                        .number_of_lines(1)
-                        .text_size(px(14.0))
-                        .font_weight(FontWeight::SEMIBOLD),
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap_1()
+                        .cursor_pointer()
+                        .role(AccessibilityRole::Button)
+                        .label("Switch project")
+                        .on_press(move || overlay.set(Some(Overlay::Projects)))
+                        .child(
+                            text(move || snapshot.get().0.project.display_name.to_string())
+                                .number_of_lines(1)
+                                .text_size(px(14.0))
+                                .font_weight(FontWeight::SEMIBOLD),
+                        )
+                        .child(
+                            text("▾")
+                                .text_size(px(10.0))
+                                .text_color(move || theme().muted_foreground),
+                        ),
                 )
                 .child(
                     text(move || {

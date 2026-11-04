@@ -10,7 +10,9 @@ use crate::ui::shell::RunTab;
 use crate::views::MenuKind;
 use crate::views::menu;
 use crate::views::overlays::{self, Overlay};
-use crate::views::{composer, inspector, rail, reader, surface, title_bar, toast, transcript};
+use crate::views::{
+    composer, gate_banner, inspector, rail, reader, surface, title_bar, toast, transcript,
+};
 
 pub fn shell() -> impl IntoElement {
     let app = use_app();
@@ -162,7 +164,7 @@ fn body(
         .flex_row()
         .child(when(move || columns().rail_inline, {
             let controller = controller.clone();
-            move || rail::rail(snapshot, controller.clone())
+            move || rail::rail(snapshot, controller.clone(), overlay)
         }))
         .child(
             view()
@@ -170,6 +172,7 @@ fn body(
                 .h_full()
                 .flex_col()
                 .child(transcript::run_room(snapshot, controller.clone(), tab))
+                .child(gate_banner::banner(snapshot, controller.clone()))
                 .child(composer::composer(
                     snapshot,
                     controller.clone(),
