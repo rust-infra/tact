@@ -230,6 +230,8 @@ export type Account =
 
 export interface Snapshot {
   revision: number;
+  voice_enabled: boolean;
+  voice_missing_api_key: boolean;
   appearance: "light" | "dark";
   language: "en" | "zh";
   text_scale: number;
@@ -242,17 +244,72 @@ export interface Snapshot {
   rows: Row[];
   composer: ComposerState;
   inspector: InspectorState;
+  trajectory: TrajectoryState;
   pending_gates: Gate[];
   settings: Settings;
   extensions: Extensions;
+  surface: { title: string; body: string } | null;
   account: Account | null;
   failure: string | null;
+}
+
+export interface TrajectorySummary {
+  turns: number;
+  records: number;
+  tool_calls: number;
+  measured_ms: number;
+  measured: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_hit_tokens: number;
+  cache_miss_tokens: number;
+  context_window: number | null;
+  context_used: number;
+}
+
+export interface TrajectorySpan {
+  index: number;
+  lane: string;
+  is_error: boolean;
+}
+
+export interface TrajectoryRecord {
+  index: number;
+  turn: number;
+  step: number;
+  kind: string;
+  text: string;
+  tool_name: string | null;
+  at: string | null;
+  status: string;
+  status_label: string;
+}
+
+export interface TrajectoryState {
+  summary: TrajectorySummary;
+  spans: TrajectorySpan[];
+  records: TrajectoryRecord[];
+}
+
+export interface TrajectoryDetail {
+  index: number;
+  text: string;
+  kind: string;
+  status: string;
+  status_label: string;
+  tool_name: string | null;
+  at: string | null;
+  input: string | null;
+  output: string | null;
+  duration_ms: number | null;
+  usage: Usage | null;
 }
 
 export type ServerMessage =
   | Snapshot
   | { type: "reader"; title: string; markdown: string }
-  | { type: "toast"; title: string; body: string };
+  | { type: "toast"; title: string; body: string }
+  | { type: "voice"; event: string; text: string };
 
 export function isReader(message: ServerMessage): message is { type: "reader"; title: string; markdown: string } {
   return "type" in message && message.type === "reader";
@@ -260,4 +317,8 @@ export function isReader(message: ServerMessage): message is { type: "reader"; t
 
 export function isToast(message: ServerMessage): message is { type: "toast"; title: string; body: string } {
   return "type" in message && message.type === "toast";
+}
+
+export function isVoice(message: ServerMessage): message is { type: "voice"; event: string; text: string } {
+  return "type" in message && message.type === "voice";
 }

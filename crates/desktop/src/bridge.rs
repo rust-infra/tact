@@ -47,6 +47,37 @@ impl Controller {
         reader_json(&kind, id)
     }
 
+    /// One trajectory record's detail, as JSON.
+    pub fn trajectory_record(&self, index: usize) -> String {
+        let snapshot = app::controller().snapshot();
+        let view = tact_desktop_core::TrajectoryView::from_transcript(&snapshot.transcript);
+        view.records()
+            .get(index)
+            .map(|record| {
+                serde_json::to_string(&crate::json::TrajectoryDetailJson::from(record))
+                    .unwrap_or_default()
+            })
+            .unwrap_or_else(|| "{}".to_owned())
+    }
+
+    /// Writes a picked image to a temporary file; the path to submit.
+    pub fn attachment(&self, name: String, data_base64: String) -> String {
+        use base64::Engine as _;
+        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data_base64) else {
+            return String::new();
+        };
+        let dir = std::env::temp_dir().join("tact-attachments");
+        if std::fs::create_dir_all(&dir).is_err() {
+            return String::new();
+        }
+        let safe = name.rsplit(['/', '\\']).next().unwrap_or("image");
+        let path = dir.join(format!("{}-{}", std::process::id(), safe));
+        if std::fs::write(&path, bytes).is_err() {
+            return String::new();
+        }
+        path.display().to_string()
+    }
+
     /// Pushes a message on every commit, reader and toast until the app ends.
     pub async fn subscribe(this: Instance<Self>, callback: Callback<String>) {
         let _ = this;
@@ -81,6 +112,52 @@ impl Controller {
                             "type": "toast",
                             "title": title,
                             "body": body,
+                        })
+                        .to_string(),
+                    );
+                }
+                tact_desktop_core::DesktopEvent::Effect(
+                    tact_desktop_core::DesktopEffect::CopyText(text),
+                ) => set_clipboard(text),
+                tact_desktop_core::DesktopEvent::Effect(
+                    tact_desktop_core::DesktopEffect::OpenExternal(url),
+                ) => {
+                    drop(open_url(url.to_string()));
+                }
+                tact_desktop_core::DesktopEvent::Effect(
+                    tact_desktop_core::DesktopEffect::OpenPath(path),
+                ) => {
+                    drop(open_url(format!("file://{}", path.display())));
+                }
+                tact_desktop_core::DesktopEvent::Effect(
+                    tact_desktop_core::DesktopEffect::WindowCloseRequested,
+                ) => nsh_core::element::desktop::close_window(),
+                tact_desktop_core::DesktopEvent::Voice(event) => {
+                    let (event, text) = match event {
+                        tact_desktop_core::VoiceEvent::RecordingStarted => {
+                            ("recording_started", String::new())
+                        }
+                        tact_desktop_core::VoiceEvent::RecordingStopped => {
+                            ("recording_stopped", String::new())
+                        }
+                        tact_desktop_core::VoiceEvent::Transcribing => {
+                            ("transcribing", String::new())
+                        }
+                        tact_desktop_core::VoiceEvent::Transcript(text) => ("transcript", text),
+                        tact_desktop_core::VoiceEvent::Error(message) => ("error", message),
+                        tact_desktop_core::VoiceEvent::Cancelled => ("cancelled", String::new()),
+                    };
+                    callback.post(
+                        serde_json::json!({ "type": "voice", "event": event, "text": text })
+                            .to_string(),
+                    );
+                }
+                tact_desktop_core::DesktopEvent::Fatal(failure) => {
+                    callback.post(
+                        serde_json::json!({
+                            "type": "toast",
+                            "title": "Tact stopped",
+                            "body": failure.message,
                         })
                         .to_string(),
                     );
@@ -204,7 +281,7 @@ fn reader_json(kind: &str, id: Option<u64>) -> String {
     }
 }
 
-fn reader_ref(kind: &str, id: Option<u64>) -> Option<ReaderRef> {
+fn reader_ref(kind: &str, id: Option<u64>, key: Option<String>) -> Option<ReaderRef> {
     let row = id.map(tact_desktop_core::RowId::new);
     Some(match kind {
         "tool_output" => ReaderRef::ToolOutput(row?),
@@ -216,8 +293,8 @@ fn reader_ref(kind: &str, id: Option<u64>) -> Option<ReaderRef> {
         "history" => ReaderRef::History,
         "help" => ReaderRef::Help,
         "balance" => ReaderRef::Balance,
-        "subagent" => ReaderRef::Subagent(id.map(|id| id.to_string()).unwrap_or_default()),
-        "background" => ReaderRef::Background(id.map(|id| id.to_string()).unwrap_or_default()),
+        "subagent" => ReaderRef::Subagent(key?),
+        "background" => ReaderRef::Background(key?),
         _ => return None,
     })
 }
@@ -321,8 +398,12 @@ fn dispatch(json: &str) {
                 args: tact_catalog::CommandArguments { tokens },
             }
         }
-        UiCommand::OpenReader { reader_kind, id } => {
-            let Some(reference) = reader_ref(&reader_kind, id) else {
+        UiCommand::OpenReader {
+            reader_kind,
+            id,
+            key,
+        } => {
+            let Some(reference) = reader_ref(&reader_kind, id, key) else {
                 return;
             };
             DesktopIntent::OpenReader(reference)

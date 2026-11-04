@@ -6,7 +6,7 @@ use tact_desktop_core::{
     AccountView, BackgroundTaskView, ComposerView, DesktopSnapshot, ExtensionsView, GateCard,
     GateSelection, GoalView, InspectorView, PermissionModeView, ProjectView, RowBody, RowStatus,
     SessionListState, SessionSummaryView, SessionView, SettingsView, SubagentView, TaskView,
-    ToolBody, ToolGroupItem, ToolGroupRow, ToolRow, TranscriptRow, UsageView,
+    ToolBody, ToolGroupItem, ToolGroupRow, ToolRow, TrajectoryView, TranscriptRow, UsageView,
 };
 
 #[derive(Serialize)]
@@ -16,6 +16,8 @@ pub struct ShellSnapshot {
     pub language: String,
     pub text_scale: f32,
     pub show_hook_output: bool,
+    pub voice_enabled: bool,
+    pub voice_missing_api_key: bool,
     pub project: ProjectJson,
     pub projects: Vec<ProjectJson>,
     pub sessions: SessionListJson,
@@ -24,9 +26,11 @@ pub struct ShellSnapshot {
     pub rows: Vec<RowJson>,
     pub composer: ComposerJson,
     pub inspector: InspectorJson,
+    pub trajectory: TrajectoryJson,
     pub pending_gates: Vec<GateJson>,
     pub settings: SettingsJson,
     pub extensions: ExtensionsJson,
+    pub surface: Option<SurfaceJson>,
     pub account: Option<AccountJson>,
     pub failure: Option<String>,
 }
@@ -46,6 +50,8 @@ impl From<&DesktopSnapshot> for ShellSnapshot {
             .to_owned(),
             text_scale: snapshot.text_scale,
             show_hook_output: snapshot.show_hook_output,
+            voice_enabled: snapshot.voice_enabled,
+            voice_missing_api_key: snapshot.voice_missing_api_key,
             project: ProjectJson::from(&snapshot.project),
             projects: snapshot.projects.iter().map(ProjectJson::from).collect(),
             sessions: SessionListJson::from(&snapshot.sessions),
@@ -58,9 +64,16 @@ impl From<&DesktopSnapshot> for ShellSnapshot {
                 .collect(),
             composer: ComposerJson::from(&snapshot.composer),
             inspector: InspectorJson::from(&snapshot.inspector),
+            trajectory: TrajectoryJson::from(&TrajectoryView::from_transcript(
+                &snapshot.transcript,
+            )),
             pending_gates: snapshot.pending_gates.iter().map(GateJson::from).collect(),
             settings: SettingsJson::from(&snapshot.settings),
             extensions: ExtensionsJson::from(&snapshot.extensions),
+            surface: snapshot.surface.as_ref().map(|surface| {
+                let (title, body) = crate::surface::render(surface);
+                SurfaceJson { title, body }
+            }),
             account: snapshot.account.as_ref().map(AccountJson::from),
             failure: snapshot
                 .failure
@@ -628,6 +641,170 @@ pub struct QueuedJson {
 }
 
 #[derive(Serialize)]
+pub struct TrajectoryJson {
+    pub summary: TrajectorySummaryJson,
+    pub spans: Vec<TrajectorySpanJson>,
+    pub records: Vec<TrajectoryRecordJson>,
+}
+
+impl From<&TrajectoryView> for TrajectoryJson {
+    fn from(view: &TrajectoryView) -> Self {
+        let summary = view.summary();
+        Self {
+            summary: TrajectorySummaryJson {
+                turns: summary.turns,
+                records: summary.records,
+                tool_calls: summary.tool_calls,
+                measured_ms: summary.measured_ms,
+                measured: summary.measured,
+                input_tokens: summary.input_tokens,
+                output_tokens: summary.output_tokens,
+                cache_hit_tokens: summary.cache_hit_tokens,
+                cache_miss_tokens: summary.cache_miss_tokens,
+                context_window: summary.context_window,
+                context_used: summary.context_used,
+            },
+            spans: view
+                .spans()
+                .iter()
+                .map(|span| TrajectorySpanJson {
+                    index: span.index,
+                    lane: span.lane.into(),
+                    is_error: span.is_error,
+                })
+                .collect(),
+            records: view
+                .records()
+                .iter()
+                .map(|record| TrajectoryRecordJson {
+                    index: record.index,
+                    turn: record.turn,
+                    step: record.step,
+                    kind: record.kind.label().to_owned(),
+                    text: record.text.to_string(),
+                    tool_name: record.tool_name.as_deref().map(str::to_owned),
+                    at: record.at.as_deref().map(str::to_owned),
+                    status: record.status.into(),
+                    status_label: record.status_label().to_owned(),
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct TrajectorySummaryJson {
+    pub turns: usize,
+    pub records: usize,
+    pub tool_calls: usize,
+    pub measured_ms: u64,
+    pub measured: usize,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub cache_hit_tokens: u32,
+    pub cache_miss_tokens: u32,
+    pub context_window: Option<usize>,
+    pub context_used: u32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrajectoryLaneJson {
+    Input,
+    Model,
+    Tools,
+}
+
+impl From<tact_desktop_core::TrajectoryLane> for TrajectoryLaneJson {
+    fn from(lane: tact_desktop_core::TrajectoryLane) -> Self {
+        match lane {
+            tact_desktop_core::TrajectoryLane::Input => Self::Input,
+            tact_desktop_core::TrajectoryLane::Model => Self::Model,
+            tact_desktop_core::TrajectoryLane::Tools => Self::Tools,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RowStatusJson {
+    Pending,
+    Running,
+    Success,
+    Failed,
+    Cancelled,
+    Unknown,
+    Resolved,
+}
+
+impl From<RowStatus> for RowStatusJson {
+    fn from(status: RowStatus) -> Self {
+        match status {
+            RowStatus::Pending => Self::Pending,
+            RowStatus::Running => Self::Running,
+            RowStatus::Success => Self::Success,
+            RowStatus::Failed => Self::Failed,
+            RowStatus::Cancelled => Self::Cancelled,
+            RowStatus::Unknown => Self::Unknown,
+            RowStatus::Resolved => Self::Resolved,
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct TrajectorySpanJson {
+    pub index: usize,
+    pub lane: TrajectoryLaneJson,
+    pub is_error: bool,
+}
+
+#[derive(Serialize)]
+pub struct TrajectoryRecordJson {
+    pub index: usize,
+    pub turn: usize,
+    pub step: usize,
+    pub kind: String,
+    pub text: String,
+    pub tool_name: Option<String>,
+    pub at: Option<String>,
+    pub status: RowStatusJson,
+    pub status_label: String,
+}
+
+#[derive(Serialize)]
+pub struct TrajectoryDetailJson {
+    pub index: usize,
+    pub text: String,
+    pub kind: String,
+    pub status: RowStatusJson,
+    pub status_label: String,
+    pub tool_name: Option<String>,
+    pub at: Option<String>,
+    pub input: Option<String>,
+    pub output: Option<String>,
+    pub duration_ms: Option<u64>,
+    pub usage: Option<UsageJson>,
+}
+
+impl From<&tact_desktop_core::TrajectoryRecord> for TrajectoryDetailJson {
+    fn from(record: &tact_desktop_core::TrajectoryRecord) -> Self {
+        Self {
+            index: record.index,
+            text: record.text.to_string(),
+            kind: record.kind.label().to_owned(),
+            status: record.status.into(),
+            status_label: record.status_label().to_owned(),
+            tool_name: record.tool_name.as_deref().map(str::to_owned),
+            at: record.at.as_deref().map(str::to_owned),
+            input: record.input.as_deref().map(str::to_owned),
+            output: record.output.as_deref().map(str::to_owned),
+            duration_ms: record.duration_ms,
+            usage: record.usage.as_ref().map(UsageJson::from),
+        }
+    }
+}
+
+#[derive(Serialize)]
 pub struct InspectorJson {
     pub tab: String,
     pub goals: Vec<GoalJson>,
@@ -772,6 +949,12 @@ impl From<&BackgroundTaskView> for BackgroundJson {
             output_tail: task.output_tail.to_string(),
         }
     }
+}
+
+#[derive(Serialize)]
+pub struct SurfaceJson {
+    pub title: String,
+    pub body: String,
 }
 
 #[derive(Serialize)]
@@ -1001,6 +1184,7 @@ pub enum UiCommand {
     OpenReader {
         reader_kind: String,
         id: Option<u64>,
+        key: Option<String>,
     },
     OpenProject {
         root: String,

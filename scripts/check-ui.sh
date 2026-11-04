@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 # Check the desktop shell on the real engine, headless.
 #
-# The GPUI build rendered the shell off-screen and compared the pixels with
-# the HTML prototype. The Native Shell build drives the real app with
-# `nsh-testing`: every test opens the engine, presses and types like a user,
-# and asserts what the screen shows, so the same checks run on any machine
-# without a window server or Screen Recording permission.
+# The shell is TSX on Native Shell; `nsh test` runs its Rust crate's tests
+# (surface rendering and the catalog parity checks) and every TSX test, each
+# opening the app on a headless engine and driving it as a user would.
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../crates/desktop"
 
-cargo test -p tact-desktop --test shell --test parity
+nsh test

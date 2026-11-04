@@ -22,7 +22,7 @@ This project is a Cargo Workspace containing the following crates:
 | `crates/tact_host`            | `tact_host`            | `2.0.0` (workspace) | UI-independent host services: session bootstrap/locking, command loop, Goal runner, account polling, permission mapping, and input normalization.                                                                                                       |
 | `crates/catalog`              | `tact_catalog`         | `2.0.0` (workspace) | Frontend-neutral slash/CLI/setting command catalog, localization, canonical action IDs, and fuzzy matching shared by the TUI and desktop.                                                                                                               |
 | `crates/desktop_core`         | `tact_desktop_core`    | `2.0.0` (workspace) | Frontend-free desktop controller, transcript reducer, typed snapshots, project/session catalog, desktop settings, and host-session orchestration.                                                                                                       |
-| `crates/desktop`              | `tact-desktop`         | `2.0.0` (workspace) | Native Shell (NSH) desktop app for macOS, Windows, and Linux. Thin UI over `tact_desktop_core` and `tact_catalog`, with NSH components and the app's own theme.                                                                                  |
+| `crates/desktop`              | `tact-desktop`         | `2.0.0` (workspace) | Native Shell (NSH) desktop app for macOS, Windows, and Linux. The TSX shell reads a JSON view of `tact_desktop_core` snapshots through a Rust `Controller` bridge; icons and layout follow the app's own theme.                                                                                  |
 | `crates/tact-ui`              | `tact-ui`              | `2.0.0` (workspace) | TUI adapter and CLI: terminal rendering/input plus headless CLI, consuming `tact_host` for shared orchestration.                                                                                                                                        |
 | `crates/tact_llm`             | `tact_llm`             | `2.0.0` (workspace) | Stable provider SDK and `tact_agent_api::ModelPort` implementation. `core` exposes the facade, builder, endpoint/limit/auth types, and a lazy stream; protocol adapters are feature-isolated behind `anthropic`, `openai-chat`, and `openai-responses`. |
 | `crates/tool_refactor_macros` | `tool_refactor_macros` | `2.0.0` (workspace) | Proc-macro `#[tool]` that generates `Tool` trait implementations from async functions.                                                                                                                                                                  |
@@ -90,7 +90,7 @@ Binaries produced by `crates/tact-ui`:
 | Binary | Source | Mode |
 |---|---|---|
 | `tact-ui` | `crates/tact-ui/` | Interactive TUI by default; `headless` subcommand for CI / non-interactive |
-| `tact-desktop` | `crates/desktop/` | Native GPUI desktop app; packaged for macOS, Windows, and Linux |
+| `tact-desktop` | `crates/desktop/` | TSX shell on Native Shell with a Rust controller bridge; packaged for macOS, Windows, and Linux |
 
 `tact-ui` crate layout: `main.rs` (dispatch), `interactive.rs`, `headless.rs`, and
 the terminal-specific `headless_session.rs` test harness and `sessions.rs`

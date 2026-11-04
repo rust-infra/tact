@@ -232,18 +232,23 @@ jobs:
         include:
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+            nsh_target: linux
             archive: tar.gz
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+            nsh_target: linux
             archive: tar.gz
           - os: macos-15
             target: aarch64-apple-darwin
+            nsh_target: macos
             archive: zip
           - os: macos-15-intel
             target: x86_64-apple-darwin
+            nsh_target: macos
             archive: zip
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            nsh_target: windows
             archive: zip
     steps:
       - name: Resolve and validate the tag
@@ -289,35 +294,13 @@ jobs:
             libasound2-dev libfontconfig1-dev libfreetype6-dev libgtk-4-dev \
             libsqlite3-dev libxkbcommon-dev pkg-config xvfb
 
-      - name: Build desktop release binary
-        run: cargo build --release -p tact-desktop -p tact-ui --target "${{ matrix.target }}"
+      - name: Install Native Shell
+        run: cargo install nsh-cli --version 0.3.0 --locked
         shell: bash
 
-      - name: Smoke-test desktop startup from clean app data
+      - name: Build the desktop CLI
+        run: cargo build --release -p tact-ui --target "${{ matrix.target }}"
         shell: bash
-        run: |
-          set -euo pipefail
-          clean_app="$RUNNER_TEMP/tact-desktop-clean-$RANDOM"
-          mkdir -p "$clean_app"
-          bin="target/${{ matrix.target }}/release/tact-desktop"
-          smoke_log="$RUNNER_TEMP/tact-desktop-smoke.log"
-          if [[ "${{ runner.os }}" == "Windows" ]]; then
-            APPDATA="$clean_app" TACT_DESKTOP_SMOKE=1 "${bin}.exe" \
-              >"$smoke_log" 2>&1
-          elif [[ "${{ runner.os }}" == "Linux" ]]; then
-            HOME="$clean_app" XDG_DATA_HOME="$clean_app/data" \
-              TACT_REDUCED_MOTION=1 TACT_DESKTOP_SMOKE=1 \
-              xvfb-run -a "$bin" >"$smoke_log" 2>&1
-          else
-            HOME="$clean_app" XDG_DATA_HOME="$clean_app/data" \
-              TACT_REDUCED_MOTION=1 TACT_DESKTOP_SMOKE=1 "$bin" \
-              >"$smoke_log" 2>&1
-          fi
-          cat "$smoke_log"
-          if grep -Eq 'Tact shutdown (failed|timed out)|panicked at' "$smoke_log"; then
-            echo "::error::desktop smoke test reported a shutdown failure"
-            exit 1
-          fi
 
       - name: Collect third-party license texts
         shell: bash
@@ -330,6 +313,7 @@ jobs:
         shell: bash
         env:
           TAG: ${{ steps.resolve.outputs.tag }}
+          NSH_TARGET: ${{ matrix.nsh_target }}
           MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
           MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
@@ -342,102 +326,8 @@ jobs:
           version="${TAG#v}"
           target="${{ matrix.target }}"
           asset="tact-desktop-v${version}-${target}.${{ matrix.archive }}"
-          bin="target/${target}/release/tact-desktop"
-          cli_bin="target/${target}/release/tact-ui"
-
-          if [[ "${{ runner.os }}" == "Windows" ]]; then
-            cp "${bin}.exe" tact-desktop.exe
-            cp "${cli_bin}.exe" tact-ui.exe
-            cp LICENSE LICENSE.tact-ui
-            cp crates/desktop/assets/fonts/IBM-Plex-LICENSE.txt .
-            cp crates/desktop/assets/fonts/Lilex-LICENSE.txt .
-            cp crates/desktop/assets/app-icon.png .
-            cp -R "${bin%/*}/tact-desktop-assets" .
-            python3 scripts/normalize-mtime.py tact-desktop.exe tact-ui.exe LICENSE \
-              LICENSE.tact-ui IBM-Plex-LICENSE.txt Lilex-LICENSE.txt \
-              THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt 
-            python3 scripts/package-zip.py --output "${asset}" tact-desktop.exe \
-              tact-ui.exe LICENSE LICENSE.tact-ui IBM-Plex-LICENSE.txt \
-              Lilex-LICENSE.txt THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt 
-          elif [[ "${{ runner.os }}" == "macOS" ]]; then
-            app="Tact Desktop.app"
-            mkdir -p "${app}/Contents/MacOS" "${app}/Contents/Resources"
-            cp "${bin}" "${app}/Contents/MacOS/tact-desktop"
-            cp "${cli_bin}" "${app}/Contents/MacOS/tact-ui"
-            cp LICENSE "${app}/Contents/Resources/LICENSE"
-            cp crates/desktop/assets/fonts/IBM-Plex-LICENSE.txt "${app}/Contents/Resources/"
-            cp crates/desktop/assets/fonts/Lilex-LICENSE.txt "${app}/Contents/Resources/"
-            cp THIRD-PARTY-NOTICES.md "${app}/Contents/Resources/"
-            cp THIRD-PARTY-APACHE-2.0.txt "${app}/Contents/Resources/"
-            cp THIRD-PARTY-LICENSES.txt "${app}/Contents/Resources/"
-            cp Cargo.lock "${app}/Contents/Resources/"
-            cp crates/desktop/assets/app-icon.icns "${app}/Contents/Resources/Tact.icns"
-            cp -R "${bin%/*}/tact-desktop-assets" "${app}/Contents/MacOS/"
-            cat > "${app}/Contents/Info.plist" <<'PLIST'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>CFBundleExecutable</key><string>tact-desktop</string>
-            <key>CFBundleIdentifier</key><string>dev.tact.desktop</string>
-            <key>CFBundleName</key><string>Tact Desktop</string>
-            <key>CFBundlePackageType</key><string>APPL</string>
-            <key>CFBundleIconFile</key><string>Tact</string>
-            <key>LSMinimumSystemVersion</key><string>13.0</string>
-          </dict>
-          </plist>
-          PLIST
-            /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string ${version}" "${app}/Contents/Info.plist"
-            /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string ${version}" "${app}/Contents/Info.plist"
-            : "${MACOS_CERTIFICATE:?macOS signing certificate secret is required}"
-            : "${MACOS_CERTIFICATE_PASSWORD:?macOS signing certificate password secret is required}"
-            : "${MACOS_SIGNING_IDENTITY:?macOS signing identity secret is required}"
-            : "${APPLE_ID:?Apple notarization account secret is required}"
-            : "${APPLE_TEAM_ID:?Apple team id secret is required}"
-            : "${APPLE_APP_PASSWORD:?Apple app password secret is required}"
-            keychain="$RUNNER_TEMP/tact-signing.keychain-db"
-            cert="$RUNNER_TEMP/tact-signing.p12"
-            printf '%s' "${MACOS_CERTIFICATE}" | base64 --decode > "${cert}"
-            security create-keychain -p tact-signing "${keychain}"
-            security set-keychain-settings -lut 21600 "${keychain}"
-            security unlock-keychain -p tact-signing "${keychain}"
-            security import "${cert}" -k "${keychain}" -P "${MACOS_CERTIFICATE_PASSWORD}" \
-              -T /usr/bin/codesign
-            security set-key-partition-list -S apple-tool:,apple: \
-              -s -k tact-signing "${keychain}" >/dev/null
-            security list-keychains -d user -s "${keychain}" $(security list-keychains -d user | tr -d '"')
-            codesign --force --deep --options runtime --timestamp \
-              --sign "${MACOS_SIGNING_IDENTITY}" "${app}"
-            codesign --verify --deep --strict --verbose=2 "${app}"
-            notarize_zip="$RUNNER_TEMP/tact-notarize.zip"
-            ditto -c -k --sequesterRsrc --keepParent "${app}" "${notarize_zip}"
-            xcrun notarytool submit "${notarize_zip}" \
-              --apple-id "${APPLE_ID}" --team-id "${APPLE_TEAM_ID}" \
-              --password "${APPLE_APP_PASSWORD}" --wait
-            xcrun stapler staple "${app}"
-            xcrun stapler validate "${app}"
-            spctl --assess --type execute --verbose=4 "${app}"
-            python3 scripts/normalize-mtime.py "${app}"
-            python3 scripts/package-zip.py --output "${asset}" "${app}"
-          else
-            cp "${bin}" tact-desktop
-            cp "${cli_bin}" tact-ui
-            cp LICENSE LICENSE.tact-ui
-            cp crates/desktop/assets/fonts/IBM-Plex-LICENSE.txt .
-            cp crates/desktop/assets/fonts/Lilex-LICENSE.txt .
-            cp crates/desktop/assets/app-icon.png .
-            cp -R "${bin%/*}/tact-desktop-assets" .
-            strip tact-desktop || true
-            strip tact-ui || true
-            python3 scripts/normalize-mtime.py tact-desktop tact-ui LICENSE \
-              LICENSE.tact-ui IBM-Plex-LICENSE.txt Lilex-LICENSE.txt \
-              THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt 
-            tar --sort=name --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 \
-              --numeric-owner -cf - tact-desktop tact-ui LICENSE LICENSE.tact-ui \
-              IBM-Plex-LICENSE.txt Lilex-LICENSE.txt THIRD-PARTY-NOTICES.md \
-              THIRD-PARTY-APACHE-2.0.txt THIRD-PARTY-LICENSES.txt Cargo.lock 
-          fi
-
+          CLI_BIN="target/${target}/release/tact-ui" \
+            scripts/package-desktop.sh "${NSH_TARGET}" "${version}" "${asset}"
           echo "ASSET_PATH=${asset}" >> "${GITHUB_ENV}"
 
       - name: Verify packaged desktop archive from clean app data
@@ -446,7 +336,6 @@ jobs:
           set -euo pipefail
           verify="$RUNNER_TEMP/tact-desktop-package-$RANDOM"
           clean_app="$RUNNER_TEMP/tact-desktop-clean-package-$RANDOM"
-          smoke_log="$RUNNER_TEMP/tact-desktop-package-smoke.log"
           mkdir -p "$verify/extracted" "$clean_app"
           cp "$ASSET_PATH" "$verify/"
           cd "$verify"
@@ -471,7 +360,7 @@ jobs:
             bin="$verify/extracted/Tact Desktop.app/Contents/MacOS/tact-desktop"
             sidecar="$verify/extracted/Tact Desktop.app/Contents/MacOS/tact-ui"
             test -f "$verify/extracted/Tact Desktop.app/Contents/Resources/THIRD-PARTY-LICENSES.txt"
-            test -f "$verify/extracted/Tact Desktop.app/Contents/Resources/Tact.icns"
+            test -f "$verify/extracted/Tact Desktop.app/Contents/Resources/AppIcon.icns"
             test -f "$verify/extracted/Tact Desktop.app/Contents/Resources/Cargo.lock"
           else
             bin="$verify/extracted/tact-desktop"
@@ -486,24 +375,8 @@ jobs:
             test -x "$bin"
           fi
           test -f "$sidecar"
-          if [[ "${{ runner.os }}" == "Windows" ]]; then
-            APPDATA="$clean_app" LOCALAPPDATA="$clean_app" \
-              TACT_REDUCED_MOTION=1 TACT_DESKTOP_SMOKE=1 "$bin" \
-              >"$smoke_log" 2>&1
-          elif [[ "${{ runner.os }}" == "Linux" ]]; then
-            HOME="$clean_app" XDG_DATA_HOME="$clean_app/data" \
-              TACT_REDUCED_MOTION=1 TACT_DESKTOP_SMOKE=1 \
-              xvfb-run -a "$bin" >"$smoke_log" 2>&1
-          else
-            HOME="$clean_app" XDG_DATA_HOME="$clean_app/data" \
-              TACT_REDUCED_MOTION=1 TACT_DESKTOP_SMOKE=1 "$bin" \
-              >"$smoke_log" 2>&1
-          fi
-          cat "$smoke_log"
-          if grep -Eq 'Tact shutdown (failed|timed out)|panicked at' "$smoke_log"; then
-            echo "::error::packaged desktop smoke test reported a shutdown failure"
-            exit 1
-          fi
+          HOME="$clean_app" XDG_DATA_HOME="$clean_app/data" \
+            "$GITHUB_WORKSPACE/scripts/smoke-desktop.sh" "$bin"
 
       - uses: actions/upload-artifact@v4
         with:

@@ -122,13 +122,16 @@ project-local SQLite store, command catalog, Goals, subagents, and extensions
 as the terminal UI.
 
 ```bash
-cargo run -p tact-desktop
-cargo build --release -p tact-desktop
+cd crates/desktop
+nsh run                        # development host with hot reload
+nsh package --target macos     # or linux / windows
 ```
 
-The release workflow also packages `tact-ui` beside the desktop binary. macOS
-assets are signed/notarized `.app` bundles; Windows and Linux ship matching
-desktop and CLI binaries.
+The shell is TSX on Native Shell; the Rust crate carries the controller bridge
+and the snapshot JSON. `cargo run -p tact-desktop` runs a bundle that
+`nsh build` wrote. The release workflow also packages `tact-ui` beside the
+desktop app. macOS assets are signed/notarized `.app` bundles; Windows and
+Linux ship matching desktop and CLI binaries.
 
 Via Cargo (coming soon to crates.io):
 

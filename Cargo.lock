@@ -6974,6 +6974,7 @@ name = "tact-desktop"
 version = "2.0.4"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "chrono",
  "env_logger",
  "log",

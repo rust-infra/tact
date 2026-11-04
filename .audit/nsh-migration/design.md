@@ -125,8 +125,17 @@ tab is a first-pass record list.
 Verified with `nsh test`: 88 tests pass (Rust unit, parity, Rust headless
 shell, and the three TSX shell tests). `nsh check` type-checks the TSX.
 
-Still to port into TSX: attachments and voice, ANSI rendering in tool
-output, nested subagent transcripts, queue edit/move, the trajectory
-detail panel, and MCP/hook lists in the extensions overlay. The Rust view
-layer stays until the TSX shell reaches parity; packaging will move to
-`nsh package` when the TSX shell becomes the only shell.
+Ported since: attachments and voice, ANSI rendering in tool output, nested
+subagent transcripts, queue edit/move, the trajectory detail panel, mermaid
+diagrams, MCP/hook lists in the extensions overlay, and the old shell's global
+shortcuts (module `keymap`). The Rust view layer (`shell.rs`, `views/`,
+`ui/`, `i18n.rs`) is deleted; only the controller bridge, the JSON snapshot,
+the surface renderer and the bundle runner remain in Rust.
+
+Packaging now runs `nsh package` through `scripts/package-desktop.sh`, with
+`scripts/smoke-desktop.sh` checking the packaged app starts and stays up. The
+old `TACT_DESKTOP_SMOKE` path is gone with the Rust views.
+
+Verified: `nsh check`; `nsh test` (23 tests: Rust unit, catalog parity, TSX
+headless shell); `nsh package --target macos` plus the smoke script (no font
+fallback warnings).

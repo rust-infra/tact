@@ -1,14 +1,10 @@
-//! Tact Desktop on Native Shell: the app's Rust UI, its root component, and
-//! the bridge to `tact_desktop_core`.
+//! Tact Desktop on Native Shell: the app's controller bridge and the JSON
+//! view of its snapshot that the TSX shell renders.
 
 pub mod app;
-mod assets;
 pub mod bridge;
-pub mod i18n;
 pub mod json;
-mod shell;
-pub mod ui;
-pub mod views;
+mod surface;
 
 use nsh_core::prelude::*;
 
@@ -16,14 +12,5 @@ use nsh_core::prelude::*;
 /// `tact-desktop/native`.
 #[native_module("tact-desktop/native")]
 fn native(registry: &mut Registry) {
-    registry.register::<App>();
     registry.class::<bridge::Controller>();
-    registry.assets(assets!());
-}
-
-/// The application's root component.
-#[component]
-pub fn App() -> impl IntoElement {
-    app::install();
-    shell::shell()
 }

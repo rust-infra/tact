@@ -1,5 +1,9 @@
-import { Scroll, Text, View, computed, signal, token } from "nsh";
+import { Picker, Scroll, Text, View, computed, keymap, signal, token } from "nsh";
+import plexSans from "../assets/fonts/IBMPlexSans-Regular.ttf";
+import lilex from "../assets/fonts/Lilex-Regular.ttf";
 import { DiffView, Input, TextView } from "nsh/base";
+import { AnsiBlock } from "./ansi";
+import { MermaidDiagram, splitMermaid } from "./mermaid";
 import type {
   Body,
   Gate,
@@ -10,11 +14,14 @@ import type {
   Task,
   Tool,
   ToolItem,
+  TrajectoryDetail,
 } from "./types";
 
 type Controller = {
   dispatch(command: string): void;
   reader(kind: string, id: number | null): string;
+  trajectoryRecord(index: number): string;
+  attachment(name: string, dataBase64: string): string;
 };
 
 type Overlay =
@@ -31,20 +38,24 @@ interface ShellProps {
   controller: Controller;
   reader: ReturnType<typeof signal<{ title: string; markdown: string } | null>>;
   toast: ReturnType<typeof signal<{ title: string; body: string } | null>>;
+  draft: ReturnType<typeof signal<string>>;
+  attachments: ReturnType<typeof signal<string[]>>;
+  voice: ReturnType<typeof signal<{ phase: string; error?: string }>>;
 }
 
-const sans = "IBM Plex Sans";
-const mono = "Lilex";
+const sans = plexSans;
+const mono = lilex;
 
 function color(name: string): string {
   return token(name as never) as string;
 }
 
+/// The shell binds its shortcuts once per app, not once per render.
+let keysBound = false;
+
 export function Shell(props: ShellProps) {
-  const { snapshot, controller, reader, toast } = props;
+  const { snapshot, controller, reader, toast, draft, attachments, voice } = props;
   const overlay = signal<Overlay | null>(null);
-  const draft = signal("");
-  const attachments = signal<string[]>([]);
   const historyCursor = signal<number | null>(null);
   const expandedThinking = signal<number[]>([]);
   const runTab = signal<"chat" | "trajectory">("chat");
@@ -52,6 +63,7 @@ export function Shell(props: ShellProps) {
   const inspectorOpen = signal(true);
   const slashCursor = signal(0);
   const renaming = signal<string | null>(null);
+  const menu = signal<string | null>(null);
 
   const send = (command: object) => controller.dispatch(JSON.stringify(command));
 
@@ -77,8 +89,69 @@ export function Shell(props: ShellProps) {
     attachments.set([]);
   };
 
-  const openReader = (kind: string, id: number | null) => {
-    send({ kind: "open_reader", reader_kind: kind, id });
+  const showInspector = (tab: string) => {
+    inspectorOpen.set(true);
+    send({ kind: "set_inspector", tab });
+  };
+  if (!keysBound) {
+    keysBound = true;
+    keymap.bind({
+      "mod+k": () => overlay.set({ kind: "command_center" }),
+      "mod+,": () => overlay.set({ kind: "settings" }),
+      "mod+b": () => railOpen.update((open) => !open),
+      "mod+alt+b": () => inspectorOpen.update((open) => !open),
+      "mod+n": () => send({ kind: "new_session" }),
+      "mod+enter": () => submit(draft()),
+      "mod+.": () => send({ kind: "cancel_run" }),
+      "mod+shift+l": () => send({ kind: "back_to_bottom" }),
+      "mod+1": () => showInspector("run"),
+      "mod+2": () => showInspector("goals"),
+      "mod+3": () => showInspector("subagents"),
+      "mod+4": () => showInspector("context"),
+      "mod+5": () => showInspector("background"),
+      escape: dismissTopmost,
+    });
+  }
+  function dismissTopmost() {
+    if (menu()) {
+      menu.set(null);
+      return;
+    }
+    if (overlay()) {
+      overlay.set(null);
+      return;
+    }
+    if (reader()) {
+      reader.set(null);
+      return;
+    }
+    if (toast()) {
+      toast.set(null);
+      return;
+    }
+    const gate = snapshot().pending_gates[0];
+    if (gate) {
+      send({
+        kind: "respond_gate",
+        session_epoch: gate.session_epoch,
+        request_id: gate.request_id,
+        selected: [],
+        single: null,
+      });
+      return;
+    }
+    if (snapshot().session.phase === "running") {
+      send({ kind: "cancel_run" });
+    }
+  }
+
+  const openReader = (kind: string, id: number | string | null) => {
+    send({
+      kind: "open_reader",
+      reader_kind: kind,
+      id: typeof id === "number" ? id : null,
+      key: typeof id === "string" ? id : null,
+    });
   };
 
   const current = computed(() => snapshot());
@@ -104,6 +177,7 @@ export function Shell(props: ShellProps) {
     >
       <TitleBar
         snapshot={snapshot}
+        menu={menu}
         overlay={overlay}
         railOpen={railOpen}
         inspectorOpen={inspectorOpen}
@@ -157,8 +231,10 @@ export function Shell(props: ShellProps) {
               ) : null}
               <Composer
                 snapshot={snapshot}
+                controller={controller}
                 draft={draft}
                 attachments={attachments}
+                voice={voice}
                 historyCursor={historyCursor}
                 slashCursor={slashCursor}
                 overlay={overlay}
@@ -167,11 +243,16 @@ export function Shell(props: ShellProps) {
               />
             </View>
           ) : (
-            <TrajectorySnapshot snapshot={snapshot} />
+            <TrajectorySnapshot snapshot={snapshot} controller={controller} />
           )}
         </View>
         {inspectorOpen() ? (
-          <Inspector snapshot={snapshot} controller={controller} send={send} />
+          <Inspector
+            snapshot={snapshot}
+            controller={controller}
+            send={send}
+            openReader={openReader}
+          />
         ) : null}
       </View>
       {overlay() ? (
@@ -200,10 +281,10 @@ function TitleBar(props: {
   overlay: ReturnType<typeof signal<Overlay | null>>;
   railOpen: ReturnType<typeof signal<boolean>>;
   inspectorOpen: ReturnType<typeof signal<boolean>>;
+  menu: ReturnType<typeof signal<string | null>>;
   send: (command: object) => void;
 }) {
-  const { snapshot, overlay, railOpen, inspectorOpen, send } = props;
-  const menu = signal<string | null>(null);
+  const { snapshot, overlay, railOpen, inspectorOpen, menu, send } = props;
   const session = computed(() => snapshot().session);
   const account = computed(() => snapshot().account);
   return (
@@ -861,7 +942,7 @@ function RowView(props: {
                 · assistant
               </Text>
             </View>
-            <TextView markdown={body.markdown} selectable />
+            <AssistantBody markdown={body.markdown} />
             {body.suggestions.length > 0 ? (
               <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>
                 {body.suggestions.map((suggestion) => (
@@ -1082,6 +1163,21 @@ function RowView(props: {
   }
 }
 
+function AssistantBody(props: { markdown: string }) {
+  const split = splitMermaid(props.markdown);
+  if (split.diagrams.length === 0) {
+    return <TextView markdown={props.markdown} selectable />;
+  }
+  return (
+    <View style={{ flexDirection: "column", gap: 8 }}>
+      <TextView markdown={split.body} selectable />
+      {split.diagrams.map((diagram, index) => (
+        <MermaidDiagram diagram={diagram} index={index} />
+      ))}
+    </View>
+  );
+}
+
 function ToolCard(props: {
   group: number;
   tool: Tool;
@@ -1111,26 +1207,44 @@ function ToolCard(props: {
         <Text style={{ fontSize: 9, color: statusColor(tool.status) }}>{tool.status}</Text>
         <OpenButton onPress={() => openReader("tool_output", tool.id)} />
       </View>
+      {!tool.expanded && tool.output_preview ? (
+        <View style={{ paddingLeft: 18 }}>
+          <OutputBlock text={tool.output_preview} preview />
+        </View>
+      ) : null}
       {tool.expanded ? (
         <View style={{ flexDirection: "column", gap: 4 }}>
           <ToolBodyView body={tool.body} />
           {tool.output_detail || tool.output_preview ? (
-            <Text
-              style={{
-                fontSize: 11,
-                fontFamily: mono,
-                backgroundColor: color("background"),
-                borderRadius: 6,
-                padding: 8,
-                color: color("foreground"),
-              }}
-            >
-              {tool.output_detail ?? tool.output_preview}
-            </Text>
+            <OutputBlock text={tool.output_detail ?? tool.output_preview ?? ""} />
           ) : null}
         </View>
       ) : null}
     </View>
+  );
+}
+
+function OutputBlock(props: { text: string; preview?: boolean }) {
+  const text = () =>
+    props.preview ? props.text.split("\n").slice(0, 3).join("\n") : props.text;
+  return text().includes("\u001b[") ? (
+    <AnsiBlock text={text()} />
+  ) : (
+    <Text
+      style={{
+        fontSize: 11,
+        fontFamily: mono,
+        backgroundColor: color("background"),
+        borderRadius: 6,
+        paddingLeft: 8,
+        paddingRight: 8,
+        paddingTop: props.preview ? 2 : 8,
+        paddingBottom: props.preview ? 2 : 8,
+        color: props.preview ? color("muted-foreground") : color("foreground"),
+      }}
+    >
+      {text()}
+    </Text>
   );
 }
 
@@ -1259,15 +1373,17 @@ function GateCard(props: { gate: Gate; send: (command: object) => void }) {
 
 function Composer(props: {
   snapshot: ReturnType<typeof signal<Snapshot>>;
+  controller: Controller;
   draft: ReturnType<typeof signal<string>>;
   attachments: ReturnType<typeof signal<string[]>>;
+  voice: ReturnType<typeof signal<{ phase: string; error?: string }>>;
   historyCursor: ReturnType<typeof signal<number | null>>;
   slashCursor: ReturnType<typeof signal<number>>;
   overlay: ReturnType<typeof signal<Overlay | null>>;
   send: (command: object) => void;
   submit: (text: string) => void;
 }) {
-  const { snapshot, draft, historyCursor, slashCursor, overlay, send, submit } = props;
+  const { snapshot, controller, draft, attachments, voice, historyCursor, slashCursor, overlay, send, submit } = props;
   const running = computed(() => snapshot().session.phase === "running");
   const slash = computed(() => {
     const text = draft();
@@ -1369,31 +1485,40 @@ function Composer(props: {
         ) : null}
         {snapshot().composer.queue.length > 0 ? (
           <View style={{ flexDirection: "column", gap: 2 }}>
-            {snapshot().composer.queue.slice(0, 4).map((item) => (
+            {snapshot()
+              .composer.queue.slice(0, 4)
+              .map((item) => (
+                <QueueRow
+                  item={item}
+                  count={snapshot().composer.queue.length}
+                  send={send}
+                />
+              ))}
+          </View>
+        ) : null}
+        {attachments().length > 0 ? (
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>
+            {attachments().map((path) => (
               <View
                 style={{
                   flexDirection: "row",
                   alignItems: "center",
-                  gap: 8,
+                  gap: 4,
                   paddingLeft: 8,
-                  paddingRight: 8,
-                  paddingTop: 3,
-                  paddingBottom: 3,
+                  paddingRight: 4,
+                  paddingTop: 2,
+                  paddingBottom: 2,
                   borderRadius: 6,
-                  backgroundColor: color("muted"),
+                  borderWidth: 1,
+                  borderColor: color("border"),
+                  backgroundColor: color("card"),
                 }}
               >
-                <Text style={{ flex: 1, fontSize: 11, color: color("muted-foreground") }}>
-                  {item.text}
-                </Text>
+                <Text style={{ fontSize: 10 }}>{path.split("/").pop() ?? path}</Text>
                 <Text
-                  onPress={() => send({ kind: "send_queued_now", index: item.index })}
-                  style={{ fontSize: 9, color: color("primary") }}
-                >
-                  Send now
-                </Text>
-                <Text
-                  onPress={() => send({ kind: "remove_queued", index: item.index })}
+                  onPress={() =>
+                    attachments.update((list) => list.filter((entry) => entry !== path))
+                  }
                   style={{ fontSize: 10, color: color("muted-foreground") }}
                 >
                   ×
@@ -1460,6 +1585,53 @@ function Composer(props: {
         </View>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
           <Text
+            role="button"
+            accessibilityLabel="Attach image"
+            onPress={async () => {
+              const picked = await Picker.pickImages({ multiple: true, limit: 4 });
+              for (const image of picked) {
+                const bytes = new Uint8Array(await image.file.arrayBuffer());
+                let binary = "";
+                for (let index = 0; index < bytes.length; index += 0x8000) {
+                  binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+                }
+                const path = controller.attachment(image.file.name, btoa(binary));
+                if (path) attachments.update((list) => [...list, path]);
+              }
+            }}
+            style={{ fontSize: 11, color: color("muted-foreground") }}
+          >
+            Attach
+          </Text>
+          <Text
+            role="button"
+            accessibilityLabel="Voice input"
+            onPress={() => {
+              if (!snapshot().voice_enabled || snapshot().voice_missing_api_key) return;
+              const phase = voice().phase;
+              if (phase === "idle") send({ kind: "voice", command: "start" });
+              else if (phase === "recording") send({ kind: "voice", command: "stop" });
+            }}
+            style={{
+              fontSize: 11,
+              color:
+                voice().phase === "recording"
+                  ? color("primary-foreground")
+                  : color("muted-foreground"),
+              backgroundColor:
+                voice().phase === "recording" ? color("danger") : "transparent",
+              paddingLeft: 6,
+              paddingRight: 6,
+              borderRadius: 5,
+            }}
+          >
+            {voice().phase === "recording"
+              ? "● Stop"
+              : voice().phase === "transcribing"
+                ? "…"
+                : "Mic"}
+          </Text>
+          <Text
             onPress={() => overlay.set({ kind: "models" })}
             style={{ fontSize: 11, color: color("muted-foreground") }}
           >
@@ -1493,7 +1665,93 @@ function Composer(props: {
               : " tokens"}
           </Text>
         </View>
+        {voice().error ? (
+          <Text style={{ fontSize: 10, color: color("destructive") }}>{voice().error}</Text>
+        ) : null}
       </View>
+    </View>
+  );
+}
+
+function QueueRow(props: {
+  item: { index: number; text: string };
+  count: number;
+  send: (command: object) => void;
+}) {
+  const text = signal(props.item.text);
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+        paddingLeft: 8,
+        paddingRight: 8,
+        paddingTop: 3,
+        paddingBottom: 3,
+        borderRadius: 6,
+        backgroundColor: color("muted"),
+      }}
+    >
+      <Input
+        value={text()}
+        onChange={(value: string) => text.set(value)}
+        onSubmit={(event: { text: string }) =>
+          props.send({ kind: "edit_queued", index: props.item.index, text: event.text })
+        }
+        style={{
+          flex: 1,
+          fontSize: 11,
+          paddingLeft: 4,
+          paddingRight: 4,
+          paddingTop: 2,
+          paddingBottom: 2,
+          backgroundColor: "transparent",
+          color: color("muted-foreground"),
+        }}
+      />
+      <Text
+        role="button"
+        accessibilityLabel="Move queued prompt up"
+        onPress={() =>
+          props.item.index > 0 &&
+          props.send({
+            kind: "move_queued",
+            from: props.item.index,
+            to: props.item.index - 1,
+          })
+        }
+        style={{ fontSize: 10, color: color("muted-foreground") }}
+      >
+        ↑
+      </Text>
+      <Text
+        role="button"
+        accessibilityLabel="Move queued prompt down"
+        onPress={() =>
+          props.item.index + 1 < props.count &&
+          props.send({
+            kind: "move_queued",
+            from: props.item.index,
+            to: props.item.index + 1,
+          })
+        }
+        style={{ fontSize: 10, color: color("muted-foreground") }}
+      >
+        ↓
+      </Text>
+      <Text
+        onPress={() => props.send({ kind: "send_queued_now", index: props.item.index })}
+        style={{ fontSize: 9, color: color("primary") }}
+      >
+        Send now
+      </Text>
+      <Text
+        onPress={() => props.send({ kind: "remove_queued", index: props.item.index })}
+        style={{ fontSize: 10, color: color("muted-foreground") }}
+      >
+        ×
+      </Text>
     </View>
   );
 }
@@ -1502,8 +1760,9 @@ function Inspector(props: {
   snapshot: ReturnType<typeof signal<Snapshot>>;
   controller: Controller;
   send: (command: object) => void;
+  openReader: (kind: string, id: number | string | null) => void;
 }) {
-  const { snapshot, send } = props;
+  const { snapshot, send, openReader } = props;
   const tab = computed(() => snapshot().inspector.tab);
   return (
     <View
@@ -1545,10 +1804,18 @@ function Inspector(props: {
           {tab() === "run" ? <RunInspector snapshot={snapshot} send={send} /> : null}
           {tab() === "goals" ? <GoalsInspector goals={snapshot().inspector.goals} /> : null}
           {tab() === "subagents" ? (
-            <SubagentsInspector agents={snapshot().inspector.subagents} send={send} />
+            <SubagentsInspector
+              agents={snapshot().inspector.subagents}
+              send={send}
+              openReader={openReader}
+            />
           ) : null}
           {tab() === "background" ? (
-            <BackgroundInspector tasks={snapshot().inspector.background} send={send} />
+            <BackgroundInspector
+              tasks={snapshot().inspector.background}
+              send={send}
+              openReader={openReader}
+            />
           ) : null}
           {tab() === "context" ? <ContextInspector snapshot={snapshot} /> : null}
         </View>
@@ -1621,7 +1888,11 @@ function GoalsInspector(props: { goals: Goal[] }) {
   );
 }
 
-function SubagentsInspector(props: { agents: Subagent[]; send: (command: object) => void }) {
+function SubagentsInspector(props: {
+  agents: Subagent[];
+  send: (command: object) => void;
+  openReader: (kind: string, id: number | string | null) => void;
+}) {
   return (
     <View style={{ flexDirection: "column", gap: 8 }}>
       {props.agents.length === 0 ? (
@@ -1633,6 +1904,12 @@ function SubagentsInspector(props: { agents: Subagent[]; send: (command: object)
           <Text style={{ fontSize: 10, color: color("muted-foreground") }}>{agent.summary}</Text>
           <View style={{ flexDirection: "row", gap: 8 }}>
             <Text style={{ fontSize: 9, color: color("muted-foreground") }}>{agent.status}</Text>
+            <Text
+              onPress={() => props.openReader("subagent", agent.child_id)}
+              style={{ fontSize: 9, color: color("primary") }}
+            >
+              Transcript
+            </Text>
             <Text
               onPress={() => props.send({ kind: "cancel_subagent", child_id: agent.child_id })}
               style={{ fontSize: 9, color: color("muted-foreground") }}
@@ -1649,6 +1926,7 @@ function SubagentsInspector(props: { agents: Subagent[]; send: (command: object)
 function BackgroundInspector(props: {
   tasks: Snapshot["inspector"]["background"];
   send: (command: object) => void;
+  openReader: (kind: string, id: number | string | null) => void;
 }) {
   return (
     <View style={{ flexDirection: "column", gap: 8 }}>
@@ -1658,15 +1936,26 @@ function BackgroundInspector(props: {
       {props.tasks.map((task) => (
         <View style={{ flexDirection: "column", gap: 2 }}>
           <Text style={{ fontSize: 11, fontFamily: mono }}>{task.command}</Text>
-          <Text style={{ fontSize: 10, color: color("muted-foreground") }}>{task.status}</Text>
-          <Text
-            onPress={() =>
-              props.send({ kind: "cancel_background_task", task_id: task.id })
-            }
-            style={{ fontSize: 9, color: color("muted-foreground") }}
-          >
-            Stop
+          <Text style={{ fontSize: 10, color: color("muted-foreground") }}>
+            {task.status}
+            {task.output_tail ? ` · ${task.output_tail}` : ""}
           </Text>
+          <View style={{ flexDirection: "row", gap: 8 }}>
+            <Text
+              onPress={() => props.openReader("background", task.id)}
+              style={{ fontSize: 9, color: color("primary") }}
+            >
+              Output
+            </Text>
+            <Text
+              onPress={() =>
+                props.send({ kind: "cancel_background_task", task_id: task.id })
+              }
+              style={{ fontSize: 9, color: color("muted-foreground") }}
+            >
+              Stop
+            </Text>
+          </View>
         </View>
       ))}
     </View>
@@ -2052,18 +2341,45 @@ function ExtensionsPanel(props: {
         ? extensions().plugins.map((plugin) => (
             <Text style={{ fontSize: 12 }}>
               {plugin.name} · {plugin.marketplace}
+              {plugin.version ? ` · ${plugin.version}` : ""}
             </Text>
           ))
         : null}
-      {tab() === "mcp" ? (
-        <Text style={{ fontSize: 11, color: color("muted-foreground") }}>
-          Run /mcp list to load the servers.
-        </Text>
-      ) : null}
-      {tab() === "hooks" ? (
-        <Text style={{ fontSize: 11, color: color("muted-foreground") }}>
-          Run /hooks list to load the hooks.
-        </Text>
+      {tab() === "mcp" || tab() === "hooks" ? (
+        <View style={{ flexDirection: "column", gap: 6 }}>
+          <Text style={{ fontSize: 10, fontWeight: 600, color: color("muted-foreground") }}>
+            {tab() === "mcp" ? "MCP servers" : "Hooks"}
+          </Text>
+          {props.snapshot().surface ? (
+            <TextView markdown={props.snapshot().surface!.body} selectable />
+          ) : (
+            <Text style={{ fontSize: 11, color: color("muted-foreground") }}>
+              Run the command to load this list.
+            </Text>
+          )}
+          <Text
+            onPress={() =>
+              props.send({
+                kind: "invoke_command",
+                path: tab() === "mcp" ? ["mcp", "list"] : ["hooks", "list"],
+                tokens: [],
+              })
+            }
+            style={{
+              alignSelf: "flex-start",
+              fontSize: 10,
+              paddingLeft: 8,
+              paddingRight: 8,
+              paddingTop: 3,
+              paddingBottom: 3,
+              borderRadius: 6,
+              backgroundColor: color("muted"),
+              color: color("primary"),
+            }}
+          >
+            Load
+          </Text>
+        </View>
       ) : null}
     </View>
   );
@@ -2197,6 +2513,7 @@ function ReaderPanel(props: {
       }}
     >
       <View
+        testID="reader"
         style={{
           width: "100%",
           maxWidth: 760,
@@ -2229,9 +2546,7 @@ function ReaderPanel(props: {
         <Scroll style={{ flex: 1 }}>
           <View style={{ paddingLeft: 20, paddingRight: 20, paddingTop: 16, paddingBottom: 16 }}>
             {isAnsi ? (
-              <Text style={{ fontSize: 11, fontFamily: mono }}>
-                {props.reader.markdown}
-              </Text>
+              <AnsiBlock text={props.reader.markdown} />
             ) : isDiff ? (
               <DiffView patch={props.reader.markdown} layout="unified" fontSize={11} />
             ) : (
@@ -2336,23 +2651,213 @@ function GateBanner(props: { gate: Gate; send: (command: object) => void }) {
   );
 }
 
-function TrajectorySnapshot(props: { snapshot: ReturnType<typeof signal<Snapshot>> }) {
+const DETAIL_TABS = ["Summary", "Payload", "Result", "Schema", "Timing"];
+
+function TrajectorySnapshot(props: {
+  snapshot: ReturnType<typeof signal<Snapshot>>;
+  controller: Controller;
+}) {
+  const { snapshot, controller } = props;
+  const selected = signal<number | null>(null);
+  const tab = signal("Summary");
+  const query = signal("");
+  const detail = signal<TrajectoryDetail | null>(null);
+  const trajectory = computed(() => snapshot().trajectory);
+  const records = computed(() => {
+    const search = query().trim().toLowerCase();
+    const all = trajectory().records;
+    if (!search) return all;
+    return all.filter(
+      (record) =>
+        record.text.toLowerCase().includes(search) ||
+        (record.tool_name ?? "").toLowerCase().includes(search) ||
+        record.kind.toLowerCase().includes(search),
+    );
+  });
+  const select = (index: number) => {
+    selected.set(index);
+    try {
+      detail.set(JSON.parse(controller.trajectoryRecord(index)) as TrajectoryDetail);
+    } catch {
+      detail.set(null);
+    }
+  };
+  const body = computed(() => {
+    const record = detail();
+    if (!record) return "Select a record";
+    if (tab() === "Payload") return record.input ?? "No payload";
+    if (tab() === "Result") return record.output ?? "No result";
+    if (tab() === "Schema") return record.tool_name ?? "No tool";
+    if (tab() === "Timing") {
+      const duration =
+        record.duration_ms != null ? `${record.duration_ms} ms` : "No duration";
+      const usage = record.usage
+        ? `${record.usage.prompt_tokens} prompt · ${record.usage.completion_tokens} completion`
+        : "";
+      return `${duration}\n${usage}`;
+    }
+    return `${record.text}\n\n${record.status_label}\n${record.tool_name ?? ""}\n${record.at ?? ""}`;
+  });
   return (
-    <Scroll style={{ flex: 1 }}>
-      <View style={{ maxWidth: 900, alignSelf: "center", width: "100%", paddingLeft: 24, paddingRight: 24, paddingTop: 24, flexDirection: "column", gap: 4 }}>
-        <Text style={{ fontSize: 12, color: color("muted-foreground") }}>
-          {props.snapshot().rows.length} records · {props.snapshot().runtime.turns} turns
-        </Text>
-        {props.snapshot().rows.map((row) => (
-          <View style={{ flexDirection: "row", gap: 8, paddingTop: 2, paddingBottom: 2 }}>
-            <Text style={{ width: 34, fontSize: 10, fontFamily: mono, color: color("muted-foreground") }}>
-              #{row.ordinal}
-            </Text>
-            <Text style={{ flex: 1, fontSize: 11 }}>{row.body.kind}</Text>
+    <View style={{ flex: 1, flexDirection: "row" }}>
+      <View
+        style={{
+          width: 280,
+          flexDirection: "column",
+          borderRightWidth: 1,
+          borderRightColor: color("border"),
+        }}
+      >
+        <View
+          style={{
+            flexDirection: "column",
+            gap: 2,
+            paddingLeft: 16,
+            paddingRight: 16,
+            paddingTop: 12,
+            paddingBottom: 10,
+            borderBottomWidth: 1,
+            borderBottomColor: color("border"),
+          }}
+        >
+          <Text style={{ fontSize: 12, fontWeight: 600 }}>
+            {trajectory().summary.records} records · {trajectory().summary.turns} turns ·{" "}
+            {trajectory().summary.tool_calls} tools
+          </Text>
+          <Text style={{ fontSize: 10, color: color("muted-foreground") }}>
+            {trajectory().summary.measured} measured · {trajectory().summary.measured_ms} ms ·{" "}
+            {trajectory().summary.input_tokens} in / {trajectory().summary.output_tokens} out
+          </Text>
+        </View>
+        <View
+          style={{
+            flexDirection: "column",
+            gap: 1,
+            paddingLeft: 16,
+            paddingRight: 16,
+            paddingTop: 8,
+            paddingBottom: 8,
+          }}
+        >
+          {["Input", "Model", "Tools"].map((lane) => (
+            <View style={{ flexDirection: "row", height: 8, gap: 1 }}>
+              {trajectory().spans.map((span) => (
+                <View
+                  onPress={() => select(span.index)}
+                  style={{
+                    flex: 1,
+                    height: 6,
+                    borderRadius: 2,
+                    backgroundColor:
+                      span.lane !== lane
+                        ? color("background")
+                        : selected() === span.index
+                          ? color("foreground")
+                          : span.is_error
+                            ? color("danger")
+                            : lane === "Input"
+                              ? color("muted-foreground")
+                              : lane === "Model"
+                                ? color("primary")
+                                : color("success"),
+                  }}
+                />
+              ))}
+            </View>
+          ))}
+        </View>
+        <View style={{ paddingLeft: 16, paddingRight: 16, paddingTop: 4, paddingBottom: 8 }}>
+          <Input
+            testID="trajectory-search"
+            value={query()}
+            placeholder="Search the ledger"
+            onChange={(text: string) => query.set(text)}
+            style={{
+              fontSize: 11,
+              paddingLeft: 8,
+              paddingRight: 8,
+              paddingTop: 4,
+              paddingBottom: 4,
+              borderRadius: 6,
+              borderWidth: 1,
+              borderColor: color("border"),
+              backgroundColor: color("background"),
+            }}
+          />
+        </View>
+        <Scroll style={{ flex: 1 }}>
+          <View style={{ flexDirection: "column", gap: 1, paddingLeft: 12, paddingRight: 12, paddingBottom: 12 }}>
+            {records().map((record) => (
+              <View
+                onPress={() => select(record.index)}
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 8,
+                  paddingLeft: 8,
+                  paddingRight: 8,
+                  paddingTop: 3,
+                  paddingBottom: 3,
+                  borderRadius: 5,
+                  backgroundColor:
+                    selected() === record.index ? color("muted") : "transparent",
+                }}
+              >
+                <Text style={{ width: 34, fontSize: 10, fontFamily: mono, color: color("muted-foreground") }}>
+                  #{record.index}
+                </Text>
+                <Text style={{ flex: 1, fontSize: 11 }}>{record.text}</Text>
+                <Text style={{ fontSize: 9, color: statusColor(record.status) }}>
+                  {record.status_label}
+                </Text>
+              </View>
+            ))}
           </View>
-        ))}
+        </Scroll>
       </View>
-    </Scroll>
+      <View style={{ flex: 1, flexDirection: "column" }}>
+        <View
+          style={{
+            flexDirection: "row",
+            gap: 4,
+            paddingLeft: 16,
+            paddingRight: 16,
+            paddingTop: 8,
+            paddingBottom: 8,
+            borderBottomWidth: 1,
+            borderBottomColor: color("border"),
+          }}
+        >
+          {DETAIL_TABS.map((value) => (
+            <Text
+              onPress={() => tab.set(value)}
+              style={{
+                fontSize: 10,
+                paddingLeft: 8,
+                paddingRight: 8,
+                paddingTop: 3,
+                paddingBottom: 3,
+                borderRadius: 5,
+                backgroundColor: tab() === value ? color("muted") : "transparent",
+                color:
+                  tab() === value ? color("foreground") : color("muted-foreground"),
+              }}
+            >
+              {value}
+            </Text>
+          ))}
+        </View>
+        <Scroll style={{ flex: 1 }}>
+          <View style={{ paddingLeft: 20, paddingRight: 20, paddingTop: 12 }}>
+            {body().includes("\u001b[") ? (
+              <AnsiBlock text={body()} />
+            ) : (
+              <TextView markdown={body()} selectable />
+            )}
+          </View>
+        </Scroll>
+      </View>
+    </View>
   );
 }
 

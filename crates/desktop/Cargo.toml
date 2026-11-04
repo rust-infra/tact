@@ -16,11 +16,13 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = { workspace = true }
+base64 = { workspace = true }
 chrono = { workspace = true }
 env_logger = "0.11"
 log = "0.4"
 nsh-base = "0.3.0"
 nsh-core = "0.3.0"
+nsh-engine = "0.3.0"
 serde = { workspace = true }
 serde_json = { workspace = true }
 tact_catalog = { version = "2.0.0", path = "../catalog" }
@@ -37,6 +39,5 @@ nsh-platform-linux = { version = "0.3.0", default-features = false }
 nsh-platform-windows = { version = "0.3.0", default-features = false }
 
 [dev-dependencies]
-nsh-engine = "0.3.0"
 nsh-testing = "0.3.0"
 tact_desktop_core = { version = "2.0.0", path = "../desktop_core", features = ["ui-capture"] }
