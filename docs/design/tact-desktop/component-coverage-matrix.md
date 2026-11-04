@@ -49,6 +49,25 @@ Status values:
 | `ChoiceGroup` | Compose | `QuestionFlow` renders its options; `ChoiceGroup::cards` provides the bordered option cards. |
 | `QuestionFlow` | Direct | Multi-question clarification sequence; multi-select uses `Toggle`. |
 
+## Tact-owned replacements
+
+The first two migration steps moved the leaf and reader surfaces off
+`gpui-ai` while keeping `gpui-component`:
+
+- `LoadingState`, `ToolChip`, `Suggestions`, `ContextCard`, `ContextMeter`,
+  `Toggle`, `AttachmentStrip` and `Orbs` live in
+  `crates/desktop/src/ui/leaf.rs`.
+- `CommandSearch` lives in `crates/desktop/src/ui/command_search.rs`.
+- `CodeBlock`, `CodeDiff`, `SearchResults`, `ArtifactPanel`, `InsightCard`
+  and `MessageQueue` live in
+  `crates/desktop/src/ui/reader_components.rs`.
+
+The remaining `gpui-ai` surface is the transcript/composer/rail layer:
+`StreamingText`, `Thinking`, `ToolCall`/`ToolGroup`, `PromptBar`,
+`SidebarNav`, `SelectionActions`, `FilterTable` and `DiffTable`, plus the
+shared `ProgressState`/`Progressive`/`StreamedContent` types and
+`gpui_ai::init` (needed for the remaining table and motion policies).
+
 ## Unused Components That Reveal Product Gaps
 
 The following are not silently ignored:

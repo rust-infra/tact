@@ -739,6 +739,7 @@
 <li class="toc-l2"><a href="#31-2026-11-04--desktop-%E4%BB%BB%E5%8A%A1%E6%9D%A1%E6%B7%B7%E5%85%A5%E5%85%B6%E5%AE%83-session-%E7%9A%84%E4%BB%BB%E5%8A%A1" title="31. 2026-11-04 — Desktop 任务条混入其它 session 的任务"><span class="toc-label">31. 2026-11-04 — Desktop 任务条混入其它 session 的任务</span></a></li>
 <li class="toc-l2"><a href="#32-2026-11-04--desktop-%E4%BB%BB%E5%8A%A1%E5%85%A8%E9%83%A8%E5%AE%8C%E6%88%90%E5%90%8E%E9%9A%90%E8%97%8F%E4%BB%BB%E5%8A%A1%E5%8D%A1trajectory-%E6%90%9C%E7%B4%A2%E6%A1%86%E6%94%B9%E4%B8%BA%E5%8D%95%E5%B1%82" title="32. 2026-11-04 — Desktop：任务全部完成后隐藏任务卡；Trajectory 搜索框改为单层"><span class="toc-label">32. 2026-11-04 — Desktop：任务全部完成后隐藏任务卡；Trajectory 搜索框改为单层</span></a></li>
 <li class="toc-l2"><a href="#33-2026-11-04--desktop-%E4%BC%9A%E8%AF%9D%E5%88%87%E6%8D%A2%E4%B8%8D%E5%86%8D%E6%B8%85%E7%A9%BA%E4%BE%A7%E6%A0%8F" title="33. 2026-11-04 — Desktop：会话切换不再清空侧栏"><span class="toc-label">33. 2026-11-04 — Desktop：会话切换不再清空侧栏</span></a></li>
+<li class="toc-l2"><a href="#34-2026-11-04--desktop-%E5%8F%B6%E5%AD%90%E7%BB%84%E4%BB%B6%E5%BC%80%E5%A7%8B%E8%84%B1%E7%A6%BB-gpui-ai" title="34. 2026-11-04 — Desktop：叶子组件开始脱离 gpui-ai"><span class="toc-label">34. 2026-11-04 — Desktop：叶子组件开始脱离 gpui-ai</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -21997,6 +21998,35 @@ active 移到目标行；项目切换仍显式清空目录，旧项目的行不�
 <code>open_project</code>）、<code>crates/desktop/src/root.rs</code>
 （<code>sync_sidebar_nav</code>、<code>AssistantSelection</code>、
 <code>handle_event</code>）。</p>
+<h2 id="34-2026-11-04--desktop-叶子组件开始脱离-gpui-ai">34. 2026-11-04 —
+Desktop：叶子组件开始脱离 gpui-ai</h2>
+<p><strong>目标：</strong> 保留 <code>gpui-component</code>，逐步移除
+<code>gpui-ai</code> 依赖。先处理不依赖 transcript 状态机的叶子和 reader
+组件，避免一次性重写聊天、输入器和侧栏。</p>
+<p><strong>改后行为：</strong> <code>LoadingState</code>、<code>ToolChip</code>、
+<code>Suggestions</code>、<code>ContextCard</code>、<code>ContextMeter</code>、
+<code>Toggle</code>、<code>AttachmentStrip</code>、<code>Orbs</code> 和
+<code>CommandSearch</code> 改由
+<code>crates/desktop/src/ui/{leaf,command_search}.rs</code> 用
+<code>gpui-component</code> 原语实现；<code>CodeBlock</code>、<code>CodeDiff</code>、
+<code>SearchResults</code>、<code>ArtifactPanel</code>、<code>InsightCard</code>
+和 <code>MessageQueue</code> 改由
+<code>crates/desktop/src/ui/reader_components.rs</code> 实现。事件、稳定 ID 和
+现有 debug selector 保持不变，因此 shell 的测试与交互路径不变。</p>
+<p><strong>尚未完成：</strong> <code>StreamingText</code>、<code>Thinking</code>、
+<code>ToolCall</code>/<code>ToolGroup</code>、<code>PromptBar</code>、
+<code>SidebarNav</code>、<code>SelectionActions</code>、<code>FilterTable</code>
+与 <code>DiffTable</code> 仍来自 <code>gpui-ai</code>；<code>gpui_ai::init</code>
+也暂时保留，因为剩余表格和动效策略仍依赖它的全局安装。</p>
+<p><strong>验证：</strong> <code>cargo test -p tact-desktop --lib</code> 200
+通过，<code>cargo clippy -p tact-desktop --all-targets -- -D warnings</code>
+通过；组件覆盖矩阵补充了已迁移和剩余清单。</p>
+<p><strong>Pointers：</strong>
+<code>crates/desktop/src/ui/leaf.rs</code>、
+<code>crates/desktop/src/ui/command_search.rs</code>、
+<code>crates/desktop/src/ui/reader_components.rs</code>、
+<code>crates/desktop/src/root.rs</code>、
+<code>docs/design/tact-desktop/component-coverage-matrix.md</code>。</p>
 <h2 id="related-docs">Related Docs</h2>
 <ul>
 <li><a href="./07_chapter_tool_zh.html">工具系统</a></li>

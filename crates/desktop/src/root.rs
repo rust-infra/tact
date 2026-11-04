@@ -14,7 +14,18 @@ use gpui::{
     StatefulInteractiveElement as _, Styled, Task, WeakEntity, Window, canvas, div, list, point,
     prelude::FluentBuilder as _, px,
 };
-use gpui_ai::prelude::*;
+use gpui_ai::prelude::{
+    ChoiceOption, DiffCell, DiffChangeKind, DiffColumn, DiffProposalAction, DiffProposalState,
+    DiffRow, DiffTable, DiffTableEvent, FilterCell, FilterColumn, FilterDefinition, FilterRow,
+    FilterTable, FilterTableEvent, PlanCard, PlanCardLabels, PlanState, PlanStep, PlanStepStatus,
+    ProgressState, Progressive, PromptAttachment, PromptBar, PromptBarEvent, PromptBarLabels,
+    PromptCommand, PromptMention, PromptModel, PromptSubmit, Question, QuestionFlow,
+    QuestionFlowEvent, SelectionAction, SelectionActions, SelectionActionsEvent, SidebarNav,
+    SidebarNavEvent, SidebarNavItem, SidebarNavLabels, SidebarNavPresentation, SidebarSection,
+    StreamedContent, StreamingText, Thinking, ThinkingEvent, ThinkingLabels, ThinkingTrace,
+    ToolApproval, ToolCall, ToolCallEvent, ToolCallLabels, ToolGroup, ToolGroupEvent,
+    ToolInvocation,
+};
 use gpui_base::FocusTrapElement as _;
 use gpui_component::popover::Popover;
 use gpui_component::scroll::ScrollableElement as _;
@@ -40,6 +51,19 @@ use tact_desktop_core::{
 use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr as _};
 
 use crate::i18n::{self, TextKey};
+use crate::ui::command_search::{
+    CommandSearch, CommandSearchEvent, CommandSearchItem, CommandSearchLabels,
+};
+use crate::ui::leaf::{
+    AttachmentItem, AttachmentStrip, ContextCard, ContextCardEvent, ContextMeter, ContextUsage,
+    LoadingState, Orbs, Suggestion, Suggestions, SuggestionsEvent, Toggle, ToggleEvent,
+    ToggleShape, ToolChip, ToolStatus,
+};
+use crate::ui::reader_components::{
+    Artifact, ArtifactKind, ArtifactPanel, ArtifactPanelEvent, ArtifactView, CodeBlock, CodeDiff,
+    DiffFile, InsightCard, MessageQueue, MessageQueueLabels, QueueEvent, QueuedMessage,
+    SearchResult, SearchResults, SearchResultsEvent,
+};
 use crate::ui::shell::{RunTab, TrajectoryDetailTab};
 use crate::ui::sticky::GroupStatus;
 use crate::ui::trajectory as trajectory_page;
@@ -8743,7 +8767,7 @@ impl DesktopRoot {
                             } else {
                                 tool.arg_summary.to_string()
                             },
-                            StreamedContent::done(text.to_string()),
+                            text.to_string(),
                         )
                         .kind(kind);
                         if let Some(language) = language {
@@ -13113,7 +13137,7 @@ fn transcript_row_element(
                             AttachmentStrip::new(format!("user-attachments-{id}"))
                                 .label(i18n::text(snapshot.language, TextKey::Attachment))
                                 .items(user.attachments.iter().map(|path| {
-                                    PromptAttachment::new(
+                                    AttachmentItem::new(
                                         path.display().to_string(),
                                         path.file_name().and_then(|name| name.to_str()).unwrap_or(
                                             i18n::text(snapshot.language, TextKey::Attachment),
@@ -19333,7 +19357,7 @@ mod tests {
                                     tact_catalog::CatalogLocale::Zh,
                                     TextKey::Attachment,
                                 ))
-                                .items([PromptAttachment::new("notes.md", "notes.md")]),
+                                .items([AttachmentItem::new("notes.md", "notes.md")]),
                             window,
                             cx,
                         )
