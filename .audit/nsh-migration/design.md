@@ -92,7 +92,16 @@ then cross the JS boundary on every commit; the large snapshot and high commit
 rate make that a measurable risk. A pivot also rewrites the ~6k-line Rust view
 layer.
 
-Decision for now: keep the Rust view and align it with the prototype's tokens
-(colors, radii, type scale, spacing, shadows, icons). If TSX parity becomes the
-priority, spike the Rust-to-TSX bridge first (snapshot push, dispatch call) and
-measure the crossing cost before rewriting screens.
+Spike result (2026-11-04, `/tmp/nsh-mixed/spike`): the bridge works. A Rust
+`#[class]` with an async member taking a JS callback
+(`pub async fn subscribe(this: Instance<Self>, callback: Callback<String>)`)
+can `callback.post(..)` from engine timers, and TSX receives the values in a
+signal; `nsh test` showed `tick 0, tick 1, tick 2` on screen. Synchronous class
+members cannot use ambient services (signals, timers): the engine panics with
+"no reactive runtime", so the bridge members that schedule work must be async.
+
+The remaining work for a TSX shell is the data layer: a JSON view of
+`DesktopSnapshot` (the core types do not derive `Serialize`), a JSON intent
+channel for dispatch, and the TSX views. Recommendation: build that bridge
+against the existing Rust controller, keep the Rust UI as the fallback until
+the TSX shell reaches parity, then delete the Rust views.
