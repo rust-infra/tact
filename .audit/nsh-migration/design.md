@@ -60,10 +60,21 @@ Replace the GPUI desktop (`crates/desktop`, ~17k production lines) with a Native
 - The NSH crate is now `crates/desktop` (`tact-desktop`); the GPUI crate and `vendor/gpui-ai` are deleted, GPUI workspace dependencies are gone, syntect uses fancy-regex, CI installs GTK 4, and packaging ships `tact-desktop-assets`.
 - `nsh package --target macos` produced a launchable `Tact Desktop.app`.
 
+## Parity restored after the first pass
+
+- Transcript: run header and hero title, empty state, user bubbles with attachments and timestamps, assistant suggestions and mermaid, collapsible thinking, plan status marks, tool cards with text/code/diff bodies, duration and token metadata, nested subagent transcripts, retryable errors, pending-gate banner.
+- Composer: queued prompts with send-now/remove/edit/move, history recall, context meter, slash suggestions with arrow/Tab navigation and Enter-to-run, model and permission controls, attachments and voice.
+- Rail: project switcher, filters, search, session rename.
+- Inspector: elapsed, context meter, task list, latest-tool open, subagent and background actions.
+- Overlays: command center (prefills commands that need arguments), editable settings, session manager with project filter, extension tabs (MCP/Skills/Plugins/Hooks), model picker, reader with ANSI and diff rendering, typed surfaces.
+- Trajectory: lane overview, search, detail tabs.
+
 ## Known gaps
 
 - The transcript renders with `each` in a scroll. NSH 0.3.0 has `virtual_list` but no programmatic scroll-to-index on the scroll view, so tail-following (the old shell's automatic scroll to the newest row) has no equivalent yet. Revisit when NSH exposes it.
-- The GPUI behavior tests in the old `root.rs` were not ported one by one; the headless shell tests cover the shell, menus, overlays, trajectory, reader, slash suggestions and slash submission.
+- Commands with structured arguments prefill the composer instead of opening the old form overlay; choice lists come from typing or the dedicated pickers.
+- File mentions (`@`) insert the marker but have no workspace file picker; NSH 0.3.0 exposes no file picker, only `pick_images`.
+- The GPUI behavior tests in the old `root.rs` were not ported one by one; the headless shell tests cover the shell, menus, overlays, trajectory, reader, slash suggestions, slash submission and shortcuts.
 - Linux and Windows packaging run in CI only; macOS packaging (`nsh package --target macos`) and the packaged smoke test were verified locally.
 - The app menu is drawn by the app because NSH 0.3.0 exposes native menus only to TSX.
 
