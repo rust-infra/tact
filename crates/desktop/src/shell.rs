@@ -122,7 +122,12 @@ pub fn shell() -> impl IntoElement {
             inspector_open,
             overlay,
         ))
-        .child(overlays::layer(snapshot, controller_for_layer, overlay))
+        .child(overlays::layer(
+            snapshot,
+            controller_for_layer,
+            overlay,
+            app.draft,
+        ))
         .child(surface::layer(snapshot))
         .child(toast::layer(app.toast))
         .child(reader::layer(reader_state))

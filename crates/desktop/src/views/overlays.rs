@@ -26,42 +26,46 @@ pub fn layer(
     snapshot: Signal<SnapshotRef>,
     controller: DesktopController,
     overlay: Signal<Option<Overlay>>,
+    draft: Signal<String>,
 ) -> AnyElement {
     let query = signal(String::new());
     dynamic(move || match overlay.get() {
         None => view().into_element(),
-        Some(kind) => view()
-            .absolute()
-            .top_0()
-            .left_0()
-            .right_0()
-            .bottom_0()
-            .items_center()
-            .justify_center()
-            .p_6()
-            .bg(move || token("scrim"))
-            .child(
-                view()
-                    .w_full()
-                    .max_w(px(640.0))
-                    .max_h(px(540.0))
-                    .flex_col()
-                    .rounded(px(RADIUS + 4.0))
-                    .bg(move || theme().popover)
-                    .border_1()
-                    .border_color(move || theme().border)
-                    .child(header(kind, overlay))
-                    .child(scroll().flex_1().child(
-                        view().flex_col().gap_1().px_4().py_3().child(panel(
-                            kind,
-                            snapshot,
-                            controller.clone(),
-                            overlay,
-                            query,
+        Some(kind) => {
+            view()
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .items_center()
+                .justify_center()
+                .p_6()
+                .bg(move || token("scrim"))
+                .child(
+                    view()
+                        .w_full()
+                        .max_w(px(640.0))
+                        .max_h(px(540.0))
+                        .flex_col()
+                        .rounded(px(RADIUS + 4.0))
+                        .bg(move || theme().popover)
+                        .border_1()
+                        .border_color(move || theme().border)
+                        .child(header(kind, overlay))
+                        .child(scroll().flex_1().child(
+                            view().flex_col().gap_1().px_4().py_3().child(panel(
+                                kind,
+                                snapshot,
+                                controller.clone(),
+                                overlay,
+                                query,
+                                draft,
+                            )),
                         )),
-                    )),
-            )
-            .into_element(),
+                )
+                .into_element()
+        }
     })
 }
 
@@ -112,9 +116,12 @@ fn panel(
     controller: DesktopController,
     overlay: Signal<Option<Overlay>>,
     query: Signal<String>,
+    draft: Signal<String>,
 ) -> AnyElement {
     match kind {
-        Overlay::CommandCenter => command_center_panel(controller, overlay, query).into_element(),
+        Overlay::CommandCenter => {
+            command_center_panel(controller, overlay, query, draft).into_element()
+        }
         Overlay::Settings => settings_panel(snapshot, controller).into_element(),
         Overlay::SessionManager => session_panel(snapshot, controller).into_element(),
         Overlay::Extensions => extensions_panel(snapshot, controller).into_element(),
@@ -127,6 +134,7 @@ fn command_center_panel(
     controller: DesktopController,
     overlay: Signal<Option<Overlay>>,
     query: Signal<String>,
+    draft: Signal<String>,
 ) -> impl IntoElement {
     view()
         .flex_col()
@@ -163,6 +171,16 @@ fn command_center_panel(
                         .label(item.title.clone())
                         .hover(|style| style.bg(move || theme().muted))
                         .on_press(move || {
+                            let route = crate::ui::command_forms::route(&item.id);
+                            if route.form != tact_desktop_core::CommandForm::None {
+                                let path = tact_catalog::builtins()
+                                    .get(&item.id)
+                                    .map(|descriptor| descriptor.path.join(" "))
+                                    .unwrap_or_default();
+                                draft.set(format!("/{path} "));
+                                overlay.set(None);
+                                return;
+                            }
                             let _ = controller.dispatch(DesktopIntent::InvokeCommand {
                                 id: item.id.clone(),
                                 args: CommandArguments { tokens: Vec::new() },
