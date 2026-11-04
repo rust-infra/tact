@@ -231,6 +231,7 @@ pub enum InspectorTab {
     Run,
     Goals,
     Subagents,
+    Background,
     Context,
 }
 

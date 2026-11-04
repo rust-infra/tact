@@ -90,8 +90,8 @@ The desktop shell has four persistent regions:
    the sticky strip and Inspector, not duplicated in the rail.
 3. **Run transcript** - mixed rows in execution order, with a sticky run
    summary and a composer/queue at the bottom.
-4. **Inspector** - Run, Goals, Subagents, and Context views. It is the
-   persistent overview that prevents parallel work from becoming invisible.
+4. **Inspector** - Run, Goals, Subagents, Context, and Background views. It is
+   the persistent overview that prevents parallel work from becoming invisible.
 
 Transient surfaces:
 
@@ -252,8 +252,9 @@ reading.
 - Sticky Tasks is a persistent strip between transcript and composer. It shows
   the plan counter and the active task at rest (the focus-first default in
   section 12); expanding reveals every task row. Goals and Agents remain
-  one-click inspector shortcuts; Background opens the current background-task
-  summary and output/stop actions.
+  one-click inspector shortcuts; Background opens the Background inspector tab,
+  which lists every task this session started with its status, elapsed time,
+  and output/stop actions.
 - The strip lists only the current session's tasks. The task store is
   workspace-global, so the published snapshot is filtered by session before it
   reaches the UI; an unattributed session keeps the whole list rather than
@@ -267,6 +268,12 @@ reading.
   still reads continuously from `01`.
 - The strip shows at most ten rows and scrolls within itself, with one marker
   row naming what is out of view, so a long plan cannot grow the card over the
+  transcript.
+- The Background tab lists every background task the session started, running
+  ones first and the newest start leading within each group, with a `running/
+  total` counter in its header. Each row keeps the output reader and stop
+  actions. It replaces the former Background dialog: one surface per data set,
+  living beside the other inspector facets instead of stacking a modal over the
   transcript.
 - Background task list with open-output action.
 
@@ -461,7 +468,7 @@ The reducer is pure where possible. Runtime effects are emitted as
   selection.
 - `Cmd/Ctrl+.`: stop the current run after confirmation if a destructive tool
   is active.
-- `Cmd/Ctrl+1..4`: switch inspector tabs.
+- `Cmd/Ctrl+1..5`: switch inspector tabs.
 - `Option/Alt+Up/Down`: move through queued prompts.
 - `Space`: toggle selected multi-select options.
 - `Enter`: activate focused row, gate action, or command.

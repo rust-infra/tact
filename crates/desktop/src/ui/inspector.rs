@@ -17,11 +17,12 @@ pub struct InspectorRow {
     pub detail: String,
 }
 
-pub fn tabs() -> [(InspectorTab, &'static str); 4] {
+pub fn tabs() -> [(InspectorTab, &'static str); 5] {
     [
         (InspectorTab::Run, "Run"),
         (InspectorTab::Goals, "Goals"),
         (InspectorTab::Subagents, "Subagents"),
+        (InspectorTab::Background, "Background"),
         (InspectorTab::Context, "Context"),
     ]
 }

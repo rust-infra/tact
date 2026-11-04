@@ -398,7 +398,7 @@ pub fn capture_all(out: &Path) -> Result<Vec<PathBuf>> {
     shoot(&mut harness, "10b-extensions-manager")?;
     harness.with_root(|root, _, cx| root.capture_close_overlay(cx));
 
-    harness.with_root(|root, _, _| root.capture_open_background());
+    harness.with_root(|root, _, cx| root.capture_open_background(cx));
     shoot(&mut harness, "11-background")?;
     harness.with_root(|root, _, cx| root.capture_close_overlay(cx));
 
@@ -604,7 +604,7 @@ pub fn capture_all(out: &Path) -> Result<Vec<PathBuf>> {
     }
     harness.with_root(|root, _, cx| root.capture_close_overlay(cx));
 
-    harness.with_root(|root, _, _| root.capture_open_background());
+    harness.with_root(|root, _, cx| root.capture_open_background(cx));
     shoot(&mut harness, "32-background-populated")?;
     harness.with_root(|root, _, cx| root.capture_close_overlay(cx));
 

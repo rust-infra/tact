@@ -51,7 +51,7 @@ set `CFBundleIconFile`, and ship the PNG in the archives.
   subcommands, CLI management commands, settings/flags, session actions, and
   composer inputs. Empty-query state shows eight recent commands; typing
   searches the full catalog.
-- `Cmd/Ctrl+1..4` switches the inspector tabs.
+- `Cmd/Ctrl+1..5` switches the inspector tabs.
 - `Cmd/Ctrl+B` hides or shows the session sidebar.
 - `Cmd/Ctrl+Alt+B` hides or shows the run inspector.
 - The default state is focus-first: the inspector is collapsed, Sticky Tasks

@@ -480,7 +480,9 @@ pub fn demo_inspector() -> InspectorView {
             id: Arc::from("bg-1"),
             command: Arc::from("cargo test -p tact store::session_store"),
             status: BackgroundTaskStatusSnapshot::Running,
-            started_at: 0,
+            // Relative to now, like every other timestamp in this fixture: a
+            // literal `0` is 1970 and renders as an elapsed time of decades.
+            started_at: now - 96_000,
             finished_at: None,
             output_tail: Arc::from("running 8 tests..."),
             output_path: Some(Arc::from("/tmp/tact-bg-1.log")),

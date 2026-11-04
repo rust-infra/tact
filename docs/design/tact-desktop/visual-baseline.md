@@ -26,9 +26,9 @@ Every surface the prototype defines is implemented and measured against a
 search, sections, trailing times, quota card, settings), transcript (run
 header, user/assistant/tool/diff/notice/hook/error/gate rows, plan card),
 composer (single footer row, running status, stop + send), inspector (Run map,
-goals, subagents, context), and the overlays (command palette, session manager,
-extensions popover/manager, hooks sheet, gate review, subagent drawer,
-settings).
+goals, subagents, context, background), and the overlays (command palette,
+session manager, extensions popover/manager, hooks sheet, gate review, subagent
+drawer, settings).
 
 Automated guards: `chrome_matches_prototype_metrics`,
 `overlays_match_prototype_sizes`, `extensions_overlays_match_prototype_sizes`,

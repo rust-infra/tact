@@ -163,7 +163,6 @@ enum Overlay {
     Extensions(ExtensionsTab),
     Hooks,
     SessionManager,
-    Background,
 }
 
 /// The shell's view of the voice worker.
@@ -1562,7 +1561,6 @@ impl DesktopRoot {
             Overlay::Extensions(_) => "extensions",
             Overlay::Hooks => "hooks",
             Overlay::SessionManager => "session-manager",
-            Overlay::Background => "background",
         })
     }
 
@@ -1939,8 +1937,8 @@ impl DesktopRoot {
     }
 
     #[cfg(feature = "ui-capture")]
-    pub(crate) fn capture_open_background(&mut self) {
-        self.open_overlay(Overlay::Background);
+    pub(crate) fn capture_open_background(&mut self, cx: &mut Context<Self>) {
+        self.select_inspector(InspectorTab::Background, cx);
     }
 
     #[cfg(feature = "ui-capture")]
@@ -4606,10 +4604,8 @@ impl DesktopRoot {
                             cx,
                         )
                         .on_click(cx.listener(
-                            |this, _: &ClickEvent, window, cx| {
-                                this.remember_focus(window, cx);
-                                this.open_overlay(Overlay::Background);
-                                cx.notify();
+                            |this, _: &ClickEvent, _, cx| {
+                                this.select_inspector(InspectorTab::Background, cx);
                             },
                         )),
                     ),
@@ -5982,22 +5978,17 @@ impl DesktopRoot {
 
     fn render_inspector(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let geometry = crate::ui::shell::geometry(self.snapshot.appearance);
-        let goals = self.snapshot.inspector.goals.len();
-        let agents = self.snapshot.inspector.subagents.len();
+        // Labels are bare: the counts already sit in the sticky strip and the
+        // rail on the same screen, and duplicating them costs the width the
+        // fifth tab needs.
         let tabs = [
-            (InspectorTab::Run, self.text(TextKey::Run).to_string()),
-            (
-                InspectorTab::Goals,
-                format!("{} {goals}", self.text(TextKey::Goals)),
-            ),
-            (
-                InspectorTab::Subagents,
-                format!("{} {agents}", self.text(TextKey::Subagents)),
-            ),
-            (
-                InspectorTab::Context,
-                self.text(TextKey::Context).to_string(),
-            ),
+            (InspectorTab::Run, self.text(TextKey::Run)),
+            (InspectorTab::Goals, self.text(TextKey::Goals)),
+            (InspectorTab::Subagents, self.text(TextKey::Subagents)),
+            (InspectorTab::Context, self.text(TextKey::Context)),
+            // Appended last so the digit shortcuts keep their existing
+            // meanings: Ctrl+4 still opens Context, Ctrl+5 opens Background.
+            (InspectorTab::Background, self.text(TextKey::Background)),
         ]
         .into_iter()
         .enumerate()
@@ -6011,12 +6002,13 @@ impl DesktopRoot {
                 .tab_stop(true)
                 .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
                 .aria_selected(selected)
-                .aria_label(label.clone())
+                .aria_label(label)
+                .flex_none()
                 .cursor_pointer()
-                .px(px(10.))
+                .px(px(6.))
                 .pt(px(8.))
                 .pb(px(7.))
-                .text_size(px(12.))
+                .text_size(px(11.))
                 .when(selected, |tab| {
                     tab.text_color(cx.theme().foreground)
                         .border_b_2()
@@ -6035,12 +6027,14 @@ impl DesktopRoot {
             InspectorTab::Goals => self.render_goals_inspector(cx),
             InspectorTab::Subagents => self.render_subagents_inspector(cx),
             InspectorTab::Context => self.render_context_inspector(cx),
+            InspectorTab::Background => self.render_background_inspector(cx),
         };
         let tab_index = match self.snapshot.inspector.tab {
             InspectorTab::Run => 0,
             InspectorTab::Goals => 1,
             InspectorTab::Subagents => 2,
             InspectorTab::Context => 3,
+            InspectorTab::Background => 4,
         };
         let direct_motion = crate::ui::shell::motion_policy(self.snapshot.motion)
             .direct_state_changes
@@ -6101,6 +6095,9 @@ impl DesktopRoot {
                     .w_full()
                     .border_b_1()
                     .border_color(cx.theme().border)
+                    // A fifth tab does not always fit 318px, and text scale can
+                    // widen every label. Scroll instead of clipping one away.
+                    .overflow_x_scroll()
                     .children(tab_buttons),
             )
             .child(
@@ -6474,7 +6471,8 @@ impl DesktopRoot {
                             .status(status)
                             .status_label(status_label);
                         if let Some(duration_ms) = tool.duration_ms {
-                            chip = chip.detail(format_duration_ms(duration_ms));
+                            chip =
+                                chip.detail(crate::ui::background::format_duration_ms(duration_ms));
                         }
                         if let (Some(group), Some(row)) = (tool.group, tool.row) {
                             let weak = cx.weak_entity();
@@ -6553,38 +6551,89 @@ impl DesktopRoot {
                     .text_color(cx.theme().muted_foreground)
                     .child(match self.snapshot.language {
                         tact_catalog::CatalogLocale::En => {
-                            "Ctrl 1-4 · Inspect without losing the run"
+                            "Ctrl 1-5 · Inspect without losing the run"
                         }
-                        tact_catalog::CatalogLocale::Zh => "Ctrl 1-4 · 检查而不离开运行",
+                        tact_catalog::CatalogLocale::Zh => "Ctrl 1-5 · 检查而不离开运行",
                     }),
             )
             .into_any_element()
     }
 
-    fn background_task_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        self.snapshot
-            .inspector
-            .background
+    /// The Background inspector: every background task this session started,
+    /// running ones first.
+    ///
+    /// Ordering mirrors the sticky task strip — what is still moving leads —
+    /// and within a group the most recently started task comes first, so the
+    /// top row is always the newest activity.
+    fn render_background_inspector(&self, cx: &mut Context<Self>) -> AnyElement {
+        let tasks = &self.snapshot.inspector.background;
+        let running = tasks
+            .iter()
+            .filter(|task| task.status == tact_desktop_core::BackgroundTaskStatusSnapshot::Running)
+            .count();
+        let mut ordered: Vec<&tact_desktop_core::BackgroundTaskView> = tasks.iter().collect();
+        ordered.sort_by_key(|task| {
+            let running = task.status == tact_desktop_core::BackgroundTaskStatusSnapshot::Running;
+            (
+                std::cmp::Reverse(running),
+                std::cmp::Reverse(task.started_at),
+            )
+        });
+        let rows = self.background_task_rows_for(&ordered, cx);
+        v_flex()
+            .gap_2()
+            .child(
+                h_flex()
+                    .id("background-inspector-summary")
+                    .debug_selector(|| "background-inspector-summary".into())
+                    .justify_between()
+                    .child(section_label(self.text(TextKey::Background), cx))
+                    .child(
+                        div()
+                            .id("background-inspector-running")
+                            .debug_selector(|| "background-inspector-running".into())
+                            .text_size(px(10.))
+                            .font_family("Lilex")
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("{running}/{}", tasks.len())),
+                    ),
+            )
+            .when(tasks.is_empty(), |column| {
+                column.child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(self.text(TextKey::NoItems)),
+                )
+            })
+            .children(rows)
+            .into_any_element()
+    }
+
+    fn background_task_rows_for(
+        &self,
+        tasks: &[&tact_desktop_core::BackgroundTaskView],
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        tasks
             .iter()
             .map(|task| {
-                let elapsed = task
-                    .finished_at
-                    .unwrap_or_else(|| chrono::Utc::now().timestamp_millis())
-                    .saturating_sub(task.started_at)
-                    .max(0) as u64;
-                let elapsed = format_duration_ms(elapsed);
+                let meta = crate::ui::background::meta_label(
+                    task,
+                    chrono::Utc::now().timestamp_millis(),
+                    background_status_label(task.status, self.snapshot.language),
+                );
                 v_flex()
                     .id(SharedString::from(format!(
                         "inspector-background-{}",
                         task.id
                     )))
+                    .debug_selector({
+                        let selector = format!("background-row-{}", task.id);
+                        move || selector.clone()
+                    })
                     .role(Role::Status)
-                    .aria_label(format!(
-                        "{} · {} · {}",
-                        background_status_label(task.status, self.snapshot.language),
-                        task.command,
-                        elapsed
-                    ))
+                    .aria_label(format!("{meta} · {}", task.command))
                     .gap_1()
                     .w_full()
                     .min_w_0()
@@ -6599,10 +6648,7 @@ impl DesktopRoot {
                     .child(
                         h_flex()
                             .gap_1()
-                            .child(div().text_xs().child(format!(
-                                "{} · {elapsed}",
-                                background_status_label(task.status, self.snapshot.language)
-                            )))
+                            .child(div().text_xs().child(meta))
                             .child(
                                 div()
                                     .id(SharedString::from(format!("open-background-{}", task.id)))
@@ -7000,7 +7046,7 @@ impl DesktopRoot {
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
                             .child(subagent_status_label(agent.status, self.snapshot.language))
-                            .child(format_duration_ms(agent.elapsed_ms)),
+                            .child(crate::ui::background::format_duration_ms(agent.elapsed_ms)),
                     )
                     .child(
                         v_flex()
@@ -7602,22 +7648,19 @@ impl DesktopRoot {
                                     self.text(TextKey::Goals),
                                     goals,
                                     InspectorTab::Goals,
-                                    false,
                                     cx,
                                 ))
                                 .child(sticky_count(
                                     self.text(TextKey::Subagents),
                                     agents,
                                     InspectorTab::Subagents,
-                                    false,
                                     cx,
                                 ))
                                 .when(background > 0, |header| {
                                     header.child(sticky_count(
                                         self.text(TextKey::Background),
                                         background,
-                                        InspectorTab::Run,
-                                        true,
+                                        InspectorTab::Background,
                                         cx,
                                     ))
                                 })
@@ -8592,7 +8635,6 @@ impl DesktopRoot {
             Overlay::Hooks => Some(self.render_hooks_overlay(window, cx)),
             Overlay::Extensions(tab) => Some(self.render_extensions_overlay(tab, window, cx)),
             Overlay::SessionManager => Some(self.render_session_manager_overlay(window, cx)),
-            Overlay::Background => Some(self.render_background_overlay(window, cx)),
         }
     }
 
@@ -8784,7 +8826,7 @@ impl DesktopRoot {
                         .unwrap_or_else(|| chrono::Utc::now().timestamp_millis())
                         .saturating_sub(task.started_at)
                         .max(0) as u64;
-                    let elapsed = format_duration_ms(elapsed);
+                    let elapsed = crate::ui::background::format_duration_ms(elapsed);
                     return v_flex()
                         .debug_selector(|| "reader-background-ansi".into())
                         .w_full()
@@ -8924,64 +8966,6 @@ impl DesktopRoot {
             .w_full()
             .debug_selector(|| "reader-diff-table".into())
             .child(reader.diff_table.clone().unwrap())
-            .into_any_element()
-    }
-
-    fn render_background_overlay(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let tasks = self.background_task_rows(cx);
-        v_flex()
-            .id("background-overlay")
-            .role(Role::Dialog)
-            .aria_label(self.text(TextKey::Background))
-            .w(overlay_width(window, 560.))
-            .max_h(px(520.))
-            .p_4()
-            .gap_3()
-            .rounded_lg()
-            .border_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().popover)
-            .shadow_lg()
-            .child(
-                h_flex()
-                    .justify_between()
-                    .child(div().font_semibold().child(self.text(TextKey::Background)))
-                    .child(
-                        div()
-                            .id("close-background")
-                            .role(Role::Button)
-                            .focusable()
-                            .tab_stop(true)
-                            .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
-                            .aria_label(self.text(TextKey::Close))
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                this.close_overlay();
-                                this.restore_focus(window, cx);
-                                cx.notify();
-                            }))
-                            .child(self.text(TextKey::Close)),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .id("background-task-list")
-                    .gap_2()
-                    .overflow_y_scroll()
-                    .when(tasks.is_empty(), |list| {
-                        list.child(
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(self.text(TextKey::NoItems)),
-                        )
-                    })
-                    .children(tasks),
-            )
             .into_any_element()
     }
 
@@ -11578,6 +11562,12 @@ impl Render for DesktopRoot {
                 }
                 this.select_inspector(InspectorTab::Context, cx);
             }))
+            .on_action(cx.listener(|this, _: &keymap::ShowBackground, _, cx| {
+                if this.overlay.is_some() {
+                    return;
+                }
+                this.select_inspector(InspectorTab::Background, cx);
+            }))
             .on_action(cx.listener(|this, _: &keymap::QueuePrevious, window, cx| {
                 if this.overlay.is_some() {
                     return;
@@ -12243,7 +12233,6 @@ fn goal_invoke(verb: &'static str, goal_id: &str, text: Option<&str>) -> Desktop
 fn sticky_shortcut(
     label: &'static str,
     tab: InspectorTab,
-    opens_background: bool,
     cx: &mut Context<DesktopRoot>,
 ) -> impl IntoElement {
     div()
@@ -12257,13 +12246,8 @@ fn sticky_shortcut(
         .text_xs()
         .text_color(cx.theme().link)
         .child(label)
-        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-            if opens_background {
-                this.remember_focus(window, cx);
-                this.open_overlay(Overlay::Background);
-            } else {
-                this.select_inspector(tab, cx);
-            }
+        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+            this.select_inspector(tab, cx);
             cx.notify();
         }))
 }
@@ -12272,7 +12256,6 @@ fn sticky_count(
     label: &'static str,
     count: usize,
     tab: InspectorTab,
-    opens_background: bool,
     cx: &mut Context<DesktopRoot>,
 ) -> impl IntoElement {
     let text = format!("{label} {count}");
@@ -12291,13 +12274,8 @@ fn sticky_count(
         .text_color(cx.theme().muted_foreground)
         .hover(|style| style.bg(cx.theme().muted))
         .child(text)
-        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-            if opens_background {
-                this.remember_focus(window, cx);
-                this.open_overlay(Overlay::Background);
-            } else {
-                this.select_inspector(tab, cx);
-            }
+        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+            this.select_inspector(tab, cx);
             cx.notify();
         }))
 }
@@ -12333,16 +12311,6 @@ fn signal_row(
                 .text_color(cx.theme().muted_foreground)
                 .child(value),
         )
-}
-
-fn format_duration_ms(ms: u64) -> String {
-    if ms < 1_000 {
-        format!("{ms} ms")
-    } else if ms < 60_000 {
-        format!("{:.1}s", ms as f64 / 1_000.0)
-    } else {
-        format!("{}m {:02}s", ms / 60_000, (ms % 60_000) / 1_000)
-    }
 }
 
 fn metric(label: &'static str, value: &str, cx: &mut Context<DesktopRoot>) -> impl IntoElement {
@@ -15447,16 +15415,18 @@ fn next_inspector(tab: InspectorTab) -> InspectorTab {
         InspectorTab::Run => InspectorTab::Goals,
         InspectorTab::Goals => InspectorTab::Subagents,
         InspectorTab::Subagents => InspectorTab::Context,
-        InspectorTab::Context => InspectorTab::Run,
+        InspectorTab::Context => InspectorTab::Background,
+        InspectorTab::Background => InspectorTab::Run,
     }
 }
 
 fn previous_inspector(tab: InspectorTab) -> InspectorTab {
     match tab {
-        InspectorTab::Run => InspectorTab::Context,
+        InspectorTab::Run => InspectorTab::Background,
         InspectorTab::Goals => InspectorTab::Run,
         InspectorTab::Subagents => InspectorTab::Goals,
         InspectorTab::Context => InspectorTab::Subagents,
+        InspectorTab::Background => InspectorTab::Context,
     }
 }
 
@@ -16695,7 +16665,6 @@ mod tests {
             Overlay::Hooks,
             Overlay::Extensions(ExtensionsTab::Plugins),
             Overlay::SessionManager,
-            Overlay::Background,
         ] {
             window.update(|window, cx| {
                 root.update(cx, |this, cx| {
@@ -17247,7 +17216,7 @@ mod tests {
     fn background_readers_preserve_ansi_output(cx: &mut TestAppContext) {
         let (root, window, shutdown, data_dir) = probe_root(cx);
         window.update(|window, cx| {
-            root.update(cx, |this, _| {
+            root.update(cx, |this, cx| {
                 let mut snapshot = (*this.snapshot).clone();
                 snapshot.inspector.background =
                     Arc::from([tact_desktop_core::BackgroundTaskView {
@@ -17260,7 +17229,7 @@ mod tests {
                         output_path: None,
                     }]);
                 this.snapshot = Arc::new(snapshot);
-                this.open_overlay(Overlay::Background);
+                this.select_inspector(InspectorTab::Background, cx);
             });
             window.draw(cx).clear(cx);
         });
@@ -17295,6 +17264,77 @@ mod tests {
         assert!(
             window.debug_bounds("reader-ansi").is_some(),
             "the coloured background surface must mount"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn the_background_inspector_leads_with_running_work(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.inspector.background = Arc::from([
+                    tact_desktop_core::BackgroundTaskView {
+                        id: Arc::from("finished"),
+                        command: Arc::from("cargo check"),
+                        status: tact_desktop_core::BackgroundTaskStatusSnapshot::Completed,
+                        started_at: 1,
+                        finished_at: Some(2),
+                        ..tact_desktop_core::BackgroundTaskView::default()
+                    },
+                    tact_desktop_core::BackgroundTaskView {
+                        id: Arc::from("newer"),
+                        command: Arc::from("sleep 30"),
+                        status: tact_desktop_core::BackgroundTaskStatusSnapshot::Running,
+                        started_at: 900,
+                        ..tact_desktop_core::BackgroundTaskView::default()
+                    },
+                    tact_desktop_core::BackgroundTaskView {
+                        id: Arc::from("older"),
+                        command: Arc::from("tail -f log"),
+                        status: tact_desktop_core::BackgroundTaskStatusSnapshot::Running,
+                        started_at: 500,
+                        ..tact_desktop_core::BackgroundTaskView::default()
+                    },
+                ]);
+                this.snapshot = Arc::new(snapshot);
+                this.select_inspector(InspectorTab::Background, cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        // The tab is reachable as a fifth inspector facet, not a dialog.
+        assert!(
+            window.debug_bounds("inspector-tab-4").is_some(),
+            "Background is the fifth inspector tab"
+        );
+        assert!(
+            window
+                .debug_bounds("background-inspector-summary")
+                .is_some(),
+            "the tab paints its own summary rather than an overlay"
+        );
+
+        // Running work leads and the newest start wins within the group; the
+        // finished task keeps a row but sinks below both.
+        let newer = window
+            .debug_bounds("background-row-newer")
+            .expect("running task row");
+        let older = window
+            .debug_bounds("background-row-older")
+            .expect("running task row");
+        let finished = window
+            .debug_bounds("background-row-finished")
+            .expect("finished tasks stay listed");
+        assert!(
+            newer.origin.y < older.origin.y,
+            "newest running task leads: {newer:?} vs {older:?}"
+        );
+        assert!(
+            older.origin.y < finished.origin.y,
+            "a finished task sinks below running ones: {older:?} vs {finished:?}"
         );
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
@@ -19425,7 +19465,7 @@ mod tests {
                         .size(px(240.))
                         .items_center()
                         .justify_center()
-                        .child(sticky_shortcut("Background", InspectorTab::Run, true, cx))
+                        .child(sticky_shortcut("Background", InspectorTab::Background, cx))
                 })
             }
         }
@@ -19456,7 +19496,13 @@ mod tests {
         let bounds = window.debug_bounds("sticky-host").expect("sticky probe");
         window.simulate_click(bounds.center(), gpui::Modifiers::default());
         window.update(|window, cx| window.draw(cx).clear(cx));
-        assert!(window.update(|_, cx| probe.read(cx).root.read(cx).overlay.is_some()));
+        // The strip's Background shortcut opens the Background tab rather
+        // than a dialog: one surface per data set, and it lives beside the
+        // other inspector facets.
+        assert!(window.update(|_, cx| {
+            let root = probe.read(cx).root.read(cx);
+            root.overlay.is_none() && root.snapshot.inspector.tab == InspectorTab::Background
+        }));
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
     }
