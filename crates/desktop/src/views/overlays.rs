@@ -466,98 +466,163 @@ fn optional(value: Option<u64>) -> String {
 }
 
 fn session_panel(snapshot: Signal<SnapshotRef>, controller: DesktopController) -> impl IntoElement {
-    view().flex_col().gap_2().child(each(
-        move || {
-            let snapshot = snapshot.get();
-            let view = session_manager::SessionManagerView::default();
-            session_manager::filter_sessions(&snapshot.0.sessions.items, &view)
-                .into_iter()
-                .cloned()
-                .collect::<Vec<_>>()
-        },
-        |session: &tact_desktop_core::SessionSummaryView| session.id.clone(),
-        move |session, _| {
-            let session = session.get_untracked();
-            let controller = controller.clone();
-            let id = SessionId(session.id.clone());
-            let archived = session.archived_at.is_some();
-            let archive_controller = controller.clone();
-            let archive_id = id.clone();
-            let open_controller = controller.clone();
-            let open_id = id;
-            let rename_draft = signal(session.title.clone());
-            let rename_controller = controller.clone();
-            let rename_id = SessionId(session.id.clone());
-            view()
-                .flex_row()
-                .items_center()
-                .gap_3()
-                .px_3()
-                .py_2()
-                .rounded(px(7.0))
-                .child(
-                    input()
-                        .value(move || rename_draft.get())
-                        .on_change(move |text: &str| rename_draft.set(text.to_owned()))
-                        .on_submit(move |text: &str| {
-                            if !text.trim().is_empty() {
-                                let _ = rename_controller.dispatch(DesktopIntent::RenameSession {
-                                    session_id: rename_id.clone(),
-                                    title: text.trim().to_owned(),
+    let project_filter = signal(None::<String>);
+    view()
+        .flex_col()
+        .gap_2()
+        .child(
+            view().flex_row().flex_wrap().gap_1().children(
+                std::iter::once(None)
+                    .chain(
+                        snapshot
+                            .get()
+                            .0
+                            .projects
+                            .iter()
+                            .map(|project| Some(project.display_name.to_string())),
+                    )
+                    .map(|name| {
+                        let value = name.clone();
+                        let style_value = value.clone();
+                        let active = move || project_filter.get() == style_value;
+                        let text_value = value.clone();
+                        let active_text = move || project_filter.get() == text_value;
+                        let chosen = name.clone();
+                        view()
+                            .px_2()
+                            .py(px(2.0))
+                            .rounded(px(5.0))
+                            .cursor_pointer()
+                            .role(AccessibilityRole::Button)
+                            .label(name.clone().unwrap_or_else(|| "All projects".to_owned()))
+                            .style_when(active, |style| style.bg(move || theme().muted))
+                            .on_press(move || project_filter.set(chosen.clone()))
+                            .child(
+                                text(name.unwrap_or_else(|| "All projects".to_owned()))
+                                    .text_size(px(10.0))
+                                    .text_color(move || {
+                                        if active_text() {
+                                            theme().foreground
+                                        } else {
+                                            theme().muted_foreground
+                                        }
+                                    }),
+                            )
+                    }),
+            ),
+        )
+        .child(each(
+            move || {
+                let current = snapshot.get();
+                let filter = project_filter.get();
+                let sessions: Vec<_> = current
+                    .0
+                    .sessions
+                    .items
+                    .iter()
+                    .filter(|session| {
+                        filter.as_ref().is_none_or(|project| {
+                            current
+                                .0
+                                .projects
+                                .iter()
+                                .find(|view| view.display_name.as_ref() == project)
+                                .is_some_and(|view| view.id.as_ref() == Some(&session.project_id))
+                        })
+                    })
+                    .cloned()
+                    .collect();
+                let view = session_manager::SessionManagerView::default();
+                session_manager::filter_sessions(&sessions, &view)
+                    .into_iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+            },
+            |session: &tact_desktop_core::SessionSummaryView| session.id.clone(),
+            move |session, _| {
+                let session = session.get_untracked();
+                let controller = controller.clone();
+                let id = SessionId(session.id.clone());
+                let archived = session.archived_at.is_some();
+                let archive_controller = controller.clone();
+                let archive_id = id.clone();
+                let open_controller = controller.clone();
+                let open_id = id;
+                let rename_draft = signal(session.title.clone());
+                let rename_controller = controller.clone();
+                let rename_id = SessionId(session.id.clone());
+                view()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
+                    .px_3()
+                    .py_2()
+                    .rounded(px(7.0))
+                    .child(
+                        input()
+                            .value(move || rename_draft.get())
+                            .on_change(move |text: &str| rename_draft.set(text.to_owned()))
+                            .on_submit(move |text: &str| {
+                                if !text.trim().is_empty() {
+                                    let _ =
+                                        rename_controller.dispatch(DesktopIntent::RenameSession {
+                                            session_id: rename_id.clone(),
+                                            title: text.trim().to_owned(),
+                                        });
+                                }
+                            })
+                            .flex_1()
+                            .px_2()
+                            .py(px(3.0))
+                            .rounded(px(5.0))
+                            .border_1()
+                            .border_color(move || theme().border)
+                            .bg(move || theme().background)
+                            .text_size(px(12.0)),
+                    )
+                    .child(
+                        view()
+                            .px_2()
+                            .py(px(3.0))
+                            .rounded(px(6.0))
+                            .cursor_pointer()
+                            .role(AccessibilityRole::Button)
+                            .label(if archived { "Restore" } else { "Archive" })
+                            .on_press(move || {
+                                let _ = archive_controller.dispatch(
+                                    DesktopIntent::SetSessionArchived {
+                                        session_id: archive_id.clone(),
+                                        archived: !archived,
+                                    },
+                                );
+                            })
+                            .child(
+                                text(if archived { "Restore" } else { "Archive" })
+                                    .text_size(px(10.0))
+                                    .text_color(move || theme().muted_foreground),
+                            ),
+                    )
+                    .child(
+                        view()
+                            .px_2()
+                            .py(px(3.0))
+                            .rounded(px(6.0))
+                            .cursor_pointer()
+                            .role(AccessibilityRole::Button)
+                            .label("Open")
+                            .on_press(move || {
+                                let _ = open_controller.dispatch(DesktopIntent::ResumeSession {
+                                    session_id: open_id.clone(),
                                 });
-                            }
-                        })
-                        .flex_1()
-                        .px_2()
-                        .py(px(3.0))
-                        .rounded(px(5.0))
-                        .border_1()
-                        .border_color(move || theme().border)
-                        .bg(move || theme().background)
-                        .text_size(px(12.0)),
-                )
-                .child(
-                    view()
-                        .px_2()
-                        .py(px(3.0))
-                        .rounded(px(6.0))
-                        .cursor_pointer()
-                        .role(AccessibilityRole::Button)
-                        .label(if archived { "Restore" } else { "Archive" })
-                        .on_press(move || {
-                            let _ =
-                                archive_controller.dispatch(DesktopIntent::SetSessionArchived {
-                                    session_id: archive_id.clone(),
-                                    archived: !archived,
-                                });
-                        })
-                        .child(
-                            text(if archived { "Restore" } else { "Archive" })
-                                .text_size(px(10.0))
-                                .text_color(move || theme().muted_foreground),
-                        ),
-                )
-                .child(
-                    view()
-                        .px_2()
-                        .py(px(3.0))
-                        .rounded(px(6.0))
-                        .cursor_pointer()
-                        .role(AccessibilityRole::Button)
-                        .label("Open")
-                        .on_press(move || {
-                            let _ = open_controller.dispatch(DesktopIntent::ResumeSession {
-                                session_id: open_id.clone(),
-                            });
-                        })
-                        .child(
-                            text("Open")
-                                .text_size(px(10.0))
-                                .text_color(move || theme().primary),
-                        ),
-                )
-        },
-    ))
+                            })
+                            .child(
+                                text("Open")
+                                    .text_size(px(10.0))
+                                    .text_color(move || theme().primary),
+                            ),
+                    )
+            },
+        ))
 }
 
 fn extensions_panel(

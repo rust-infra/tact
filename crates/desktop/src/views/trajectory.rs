@@ -26,6 +26,7 @@ pub fn page(snapshot: Signal<SnapshotRef>) -> impl IntoElement {
                 .border_r_1()
                 .border_r_color(move || theme().border)
                 .child(header(trajectory))
+                .child(overview(trajectory, selected))
                 .child(scroll().flex_1().child(
                     view().flex_col().gap(px(1.0)).px_3().py_2().child(each(
                         move || trajectory().records().to_vec(),
@@ -88,6 +89,60 @@ pub fn page(snapshot: Signal<SnapshotRef>) -> impl IntoElement {
                     ),
                 ),
         )
+}
+
+fn overview(
+    trajectory: impl Fn() -> TrajectoryView + Copy + 'static,
+    selected: Signal<Option<usize>>,
+) -> AnyElement {
+    dynamic(move || {
+        let ledger = trajectory();
+        let spans = ledger.spans().to_vec();
+        let count = spans.len().max(1);
+        view()
+            .flex_col()
+            .gap(px(1.0))
+            .px_4()
+            .py_2()
+            .children(tact_desktop_core::TrajectoryLane::ALL.map(|lane| {
+                view()
+                    .flex_row()
+                    .h(px(8.0))
+                    .gap(px(1.0))
+                    .children((0..count).map(|index| {
+                        let span = spans.get(index).copied();
+                        let in_lane = span.is_some_and(|span| span.lane == lane);
+                        let is_error = span.is_some_and(|span| span.is_error);
+                        let active = move || selected.get() == Some(index);
+                        view()
+                            .flex_1()
+                            .h(px(6.0))
+                            .rounded(px(2.0))
+                            .bg(move || {
+                                if !in_lane {
+                                    theme().background
+                                } else if active() {
+                                    theme().foreground
+                                } else if is_error {
+                                    theme().color("danger").unwrap_or(theme().primary)
+                                } else {
+                                    match lane {
+                                        tact_desktop_core::TrajectoryLane::Input => {
+                                            theme().muted_foreground
+                                        }
+                                        tact_desktop_core::TrajectoryLane::Model => theme().primary,
+                                        tact_desktop_core::TrajectoryLane::Tools => {
+                                            theme().color("success").unwrap_or(theme().primary)
+                                        }
+                                    }
+                                }
+                            })
+                            .cursor_pointer()
+                            .on_press(move || selected.set(Some(index)))
+                    }))
+            }))
+            .into_element()
+    })
 }
 
 fn header(trajectory: impl Fn() -> TrajectoryView + Copy + 'static) -> impl IntoElement {
