@@ -103,3 +103,27 @@ fn the_app_menu_opens_and_escape_closes_it() {
         .expect("frames run");
     assert!(!app.screen().texts().contains(&"Command Center"));
 }
+
+#[test]
+fn submitting_a_slash_command_runs_it() {
+    let _serial = serial();
+    let mut app = Headless::start(config()).expect("the Tact shell starts");
+    app.wait_for("id:composer-input")
+        .expect("the composer shows");
+    app.type_text("id:composer-input", "/help")
+        .expect("typing the command works");
+    app.press_key("mod+enter")
+        .expect("the submit shortcut works");
+    app.wait_for("id:reader")
+        .expect("the help reader opens instead of sending a prompt");
+}
+
+#[test]
+fn the_command_center_shortcut_works() {
+    let _serial = serial();
+    let mut app = Headless::start(config()).expect("the Tact shell starts");
+    app.wait_for("label:Commands").expect("the shell shows");
+    app.press_key("mod+k").expect("the shortcut presses");
+    app.wait_for("text:Command center")
+        .expect("the command center opens");
+}

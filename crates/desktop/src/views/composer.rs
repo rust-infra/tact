@@ -24,6 +24,7 @@ pub fn composer(
     controller: DesktopController,
     overlay: Signal<Option<Overlay>>,
     voice: Signal<VoiceState>,
+    submit_tick: Signal<u64>,
 ) -> impl IntoElement {
     let draft = signal(String::new());
     let attachments = signal(Vec::<PathBuf>::new());
@@ -47,6 +48,16 @@ pub fn composer(
             if text.is_empty() {
                 return;
             }
+            if let Some(path) = slash_overlay::parse(text)
+                && let Some(id) = slash_overlay::execute_id(&path.path)
+            {
+                let _ = controller.dispatch(DesktopIntent::InvokeCommand {
+                    id,
+                    args: path.tokens,
+                });
+                draft.set(String::new());
+                return;
+            }
             let _ = controller.dispatch(DesktopIntent::Submit(Submission {
                 text: text.to_owned(),
                 attachments: attachments.get(),
@@ -57,6 +68,17 @@ pub fn composer(
             attachments.set(Vec::new());
         }
     };
+    let last_submit = std::cell::Cell::new(0_u64);
+    effect({
+        let send = send.clone();
+        move || {
+            let tick = submit_tick.get();
+            if tick != last_submit.get() {
+                last_submit.set(tick);
+                send(&draft.get());
+            }
+        }
+    });
     let candidates = move || {
         let current = snapshot.get();
         let availability = CommandAvailability {

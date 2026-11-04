@@ -23,8 +23,12 @@ pub fn shell() -> impl IntoElement {
     let inspector_open = signal(true);
     set_title_bar(TitleBarStyle::Hidden, Some(px(title_bar::HEIGHT)));
     if std::env::var_os("TACT_DESKTOP_SMOKE").is_some() {
-        set_timeout(std::time::Duration::from_millis(250), || {
-            nsh_core::element::desktop::close_window();
+        // Stop the controller and leave from a thread of our own: closing the
+        // window from a timer re-enters NSH's surface borrow and panics.
+        std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(750));
+            crate::app::shutdown();
+            std::process::exit(0);
         });
     }
     on_key("mod+k", move |_| {
@@ -39,6 +43,52 @@ pub fn shell() -> impl IntoElement {
         overlay.set(None);
         menu.set(None);
     });
+    let keys = controller.clone();
+    on_key("mod+b", move |_| rail_open.update(|open| *open = !*open));
+    on_key("mod+alt+b", move |_| {
+        inspector_open.update(|open| *open = !*open);
+    });
+    on_key("mod+n", {
+        let controller = keys.clone();
+        move |_| {
+            let _ = controller.dispatch(tact_desktop_core::DesktopIntent::NewSession);
+        }
+    });
+    on_key_with(
+        "mod+enter",
+        KeyOptions {
+            when: nsh_core::keymap::When::Always,
+            repeat: false,
+        },
+        move |_| {
+            app.submit_tick.update(|tick| *tick += 1);
+        },
+    );
+    on_key("mod+.", {
+        let controller = keys.clone();
+        move |_| {
+            let _ = controller.dispatch(tact_desktop_core::DesktopIntent::CancelRun);
+        }
+    });
+    on_key("mod+shift+l", {
+        let controller = keys.clone();
+        move |_| {
+            let _ = controller.dispatch(tact_desktop_core::DesktopIntent::BackToBottom);
+        }
+    });
+    for (key, tab) in [
+        ("mod+1", tact_desktop_core::InspectorTab::Run),
+        ("mod+2", tact_desktop_core::InspectorTab::Goals),
+        ("mod+3", tact_desktop_core::InspectorTab::Subagents),
+        ("mod+4", tact_desktop_core::InspectorTab::Context),
+        ("mod+5", tact_desktop_core::InspectorTab::Background),
+    ] {
+        let controller = keys.clone();
+        on_key(key, move |_| {
+            inspector_open.set(true);
+            let _ = controller.dispatch(tact_desktop_core::DesktopIntent::SetInspector(tab));
+        });
+    }
     let controller_for_layer = controller.clone();
     let controller_for_menu = controller.clone();
     view()
@@ -54,11 +104,14 @@ pub fn shell() -> impl IntoElement {
         .child(body(
             snapshot,
             controller,
-            tab,
-            overlay,
-            app.voice,
-            rail_open,
-            inspector_open,
+            ShellSignals {
+                tab,
+                overlay,
+                voice: app.voice,
+                submit_tick: app.submit_tick,
+                rail_open,
+                inspector_open,
+            },
         ))
         .child(menu::layer(
             menu,
@@ -73,15 +126,29 @@ pub fn shell() -> impl IntoElement {
         .child(reader::layer(reader_state))
 }
 
-fn body(
-    snapshot: Signal<crate::app::SnapshotRef>,
-    controller: tact_desktop_core::DesktopController,
+#[derive(Clone, Copy)]
+struct ShellSignals {
     tab: Signal<RunTab>,
     overlay: Signal<Option<Overlay>>,
     voice: Signal<crate::app::VoiceState>,
+    submit_tick: Signal<u64>,
     rail_open: Signal<bool>,
     inspector_open: Signal<bool>,
+}
+
+fn body(
+    snapshot: Signal<crate::app::SnapshotRef>,
+    controller: tact_desktop_core::DesktopController,
+    signals: ShellSignals,
 ) -> impl IntoElement {
+    let ShellSignals {
+        tab,
+        overlay,
+        voice,
+        submit_tick,
+        rail_open,
+        inspector_open,
+    } = signals;
     let columns = move || {
         layout::layout(
             window().width.0,
@@ -108,6 +175,7 @@ fn body(
                     controller.clone(),
                     overlay,
                     voice,
+                    submit_tick,
                 )),
         )
         .child(when(

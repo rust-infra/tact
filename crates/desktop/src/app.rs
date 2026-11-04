@@ -104,6 +104,7 @@ pub struct AppState {
     pub reader: Signal<Option<ReaderRequest>>,
     pub voice: Signal<VoiceState>,
     pub toast: Signal<Option<ToastMessage>>,
+    pub submit_tick: Signal<u64>,
 }
 
 /// Installs the controller bridge once, at the root component.
@@ -119,12 +120,14 @@ pub fn install() {
     let reader = signal(None::<ReaderRequest>);
     let voice = signal(VoiceState::default());
     let toast = signal(None::<ToastMessage>);
+    let submit_tick = signal(0_u64);
     provide_context(AppState {
         controller: runtime.controller.clone(),
         snapshot,
         reader,
         voice,
         toast,
+        submit_tick,
     });
     let events = &runtime.events;
     spawn(async move {
