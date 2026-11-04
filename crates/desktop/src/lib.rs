@@ -3,7 +3,9 @@
 
 pub mod app;
 mod assets;
+pub mod bridge;
 pub mod i18n;
+pub mod json;
 mod shell;
 pub mod ui;
 pub mod views;
@@ -15,6 +17,7 @@ use nsh_core::prelude::*;
 #[native_module("tact-desktop/native")]
 fn native(registry: &mut Registry) {
     registry.register::<App>();
+    registry.class::<bridge::Controller>();
     registry.assets(assets!());
 }
 

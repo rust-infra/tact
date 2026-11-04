@@ -61,6 +61,16 @@ fn runtime() -> &'static Runtime {
     RUNTIME.get().expect("Tact Desktop runtime started")
 }
 
+/// The running controller, for the TSX bridge.
+pub fn controller() -> &'static DesktopController {
+    &runtime().controller
+}
+
+/// The event stream, for the TSX bridge.
+pub fn events() -> &'static DesktopEvents {
+    &runtime().events
+}
+
 /// The snapshot a commit carries. Compared by identity so a commit never
 /// deep-compares two full view models on the engine thread.
 #[derive(Clone)]

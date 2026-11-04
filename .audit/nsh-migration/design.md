@@ -105,3 +105,28 @@ The remaining work for a TSX shell is the data layer: a JSON view of
 channel for dispatch, and the TSX views. Recommendation: build that bridge
 against the existing Rust controller, keep the Rust UI as the fallback until
 the TSX shell reaches parity, then delete the Rust views.
+
+## TSX shell (first version, 2026-11-04)
+
+The app is now mixed: `App.tsx` is the NSH entry, and the Rust crate exposes
+`Controller` through `#[native_module("tact-desktop/native")]`. The class
+starts the existing controller, pushes `ShellSnapshot` JSON on every commit,
+serves reader content on demand, and maps `UiCommand` JSON to
+`DesktopIntent`. `json.rs` is the snapshot/intent schema.
+
+`tsx/Shell.tsx` renders the shell in TSX: title bar with menus, rail, run
+tabs, run header, sticky task strip, transcript rows (user, assistant,
+thinking, plan, tools with bodies, diff, gate, notices, hooks, errors),
+composer with slash suggestions, model/permission controls, queue actions
+and context meter, inspector tabs, overlays (command center, settings,
+sessions, extensions, models, projects), reader and toasts. The trajectory
+tab is a first-pass record list.
+
+Verified with `nsh test`: 88 tests pass (Rust unit, parity, Rust headless
+shell, and the three TSX shell tests). `nsh check` type-checks the TSX.
+
+Still to port into TSX: attachments and voice, ANSI rendering in tool
+output, nested subagent transcripts, queue edit/move, the trajectory
+detail panel, and MCP/hook lists in the extensions overlay. The Rust view
+layer stays until the TSX shell reaches parity; packaging will move to
+`nsh package` when the TSX shell becomes the only shell.

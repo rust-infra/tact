@@ -6984,6 +6984,7 @@ dependencies = [
  "nsh-platform-macos",
  "nsh-platform-windows",
  "nsh-testing",
+ "serde",
  "serde_json",
  "tact_catalog",
  "tact_desktop_core",
