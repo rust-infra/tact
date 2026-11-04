@@ -1,5 +1,4 @@
 [workspace]
-exclude = ["vendor/gpui-ai"]
 members = [
     "crates/protocol",
     "crates/agent_tui_kit",
@@ -14,7 +13,6 @@ members = [
     "crates/catalog",
     "crates/desktop_core",
     "crates/desktop",
-    "crates/desktop_nsh",
     "crates/tool_refactor_macros",
 ]
 resolver = "2"
@@ -53,7 +51,7 @@ pulldown-cmark = "0.13"
 quote = "1.0"
 ratatui = "0.30"
 regex = "1"
-syntect = "5.3"
+syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 reqwest13 = { package = "reqwest", version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
 reqwest-eventsource = "0.6"
@@ -97,24 +95,14 @@ url = "2"
 walkdir = "2.5"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"] }
 ratatui-markdown = { git = "https://github.com/celestia-island/ratatui-markdown", rev = "3a8bcbe", default-features = false, features = ["mermaid"] }
-gpui = { package = "gpui-pre", version = "=0.3.3" }
-gpui_platform = { package = "gpui-pre-platform", version = "=0.3.3" }
-gpui_component = { package = "gpui-component", version = "=0.6.0" }
-gpui_base = { package = "gpui-base", version = "=0.6.0" }
-gpui_component_assets = { package = "gpui-kit-assets", version = "=0.6.0" }
-gpui-ai = "=0.8.0"
-gpui-component-macros = "=0.6.0"
 im = "15"
-
-[patch.crates-io]
-gpui-ai = { path = "vendor/gpui-ai" }
 
 # Keep the dev build fast to compile and small on disk. This workspace has ~30
 # bin/test units per crate and Cargo stores every unit's artifacts in its own
 # hash directory, so a rebuilt unit hash keeps a full copy of its outputs: a
 # fully-debug tact-ui binary is 576 MB (76% of it DWARF). Debug info and
 # incremental caches stay off, and only dependencies pay for optimization:
-# workspace units rebuild constantly, while gpui and tokio need the speed at
+# workspace units rebuild constantly, while nsh and tokio need the speed at
 # runtime. Line tables would keep backtraces useful, but they cost disk.
 [profile.dev]
 #debug = "line-tables-only"
@@ -123,7 +111,7 @@ opt-level = 0
 incremental = false
 
 # Dependencies are rebuilt far less often than workspace crates, so their
-# one-time optimization is cheap and the runtime difference in gpui is not.
+# one-time optimization is cheap and the runtime difference in nsh is not.
 [profile.dev.package."*"]
 opt-level = 1
 

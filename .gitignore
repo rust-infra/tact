@@ -26,3 +26,7 @@ skills
 tmp/
 crates/tui/agent_log_*.txt
 *.jpeg
+
+# NSH generated runner sources and build output.
+crates/desktop/.nsh/
+crates/desktop/target/

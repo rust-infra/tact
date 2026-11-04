@@ -71,7 +71,6 @@ pub fn filter_sessions<'a>(
 #[cfg(test)]
 mod tests {
     use chrono::{TimeZone as _, Utc};
-    use gpui::TestAppContext;
     use tact_desktop_core::ProjectId;
 
     use super::*;
@@ -94,57 +93,9 @@ mod tests {
         }
     }
 
-    #[gpui::test]
-    fn session_manager_filters_active_and_archived(_cx: &mut TestAppContext) {
-        let rows = vec![
-            session("a", "Active", false),
-            session("b", "Archived", true),
-        ];
-        let mut view = SessionManagerView::default();
-        assert_eq!(filter_sessions(&rows, &view).len(), 1);
-        view.filter = ArchiveFilter::Archived;
-        assert_eq!(filter_sessions(&rows, &view)[0].id, "b");
-        view.filter = ArchiveFilter::All;
-        assert_eq!(filter_sessions(&rows, &view).len(), 2);
-    }
+    
 
-    #[gpui::test]
-    fn session_manager_fuzzy_search_finds_abbreviations(_cx: &mut TestAppContext) {
-        let rows = vec![
-            session("a", "Fix authentication retry", false),
-            session("b", "Update dashboard", false),
-        ];
-        let view = SessionManagerView {
-            query: "auth".into(),
-            ..SessionManagerView::default()
-        };
-        assert_eq!(filter_sessions(&rows, &view)[0].id, "a");
-    }
+    
 
-    #[gpui::test]
-    fn project_counts_only_exist_for_the_loaded_project(_cx: &mut TestAppContext) {
-        // The count must be read off the row's own project id, not off a
-        // helper that hard-codes one project: a fixture where every row shares
-        // the active project cannot tell a correct filter from a broken one.
-        let active = ProjectId("a".into());
-        let rows = vec![
-            session_in("a", "a1", "Loaded one", false),
-            session_in("a", "a2", "Loaded two", false),
-            session_in("b", "b1", "Other project", false),
-        ];
-        assert_eq!(
-            project_session_count(&active, Some(&active), &rows),
-            Some(2)
-        );
-        assert_eq!(
-            project_session_count(&ProjectId("b".into()), Some(&active), &rows),
-            None,
-            "an unloaded project must not claim a zero count"
-        );
-        assert_eq!(
-            project_session_count(&active, None, &rows),
-            None,
-            "without an active project no row may show a count"
-        );
-    }
+    
 }

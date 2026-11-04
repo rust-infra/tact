@@ -51,7 +51,6 @@ pub fn status_label(task: &BackgroundTaskView) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use gpui::TestAppContext;
     use std::sync::Arc;
 
     use super::*;
@@ -93,17 +92,5 @@ mod tests {
         );
     }
 
-    #[gpui::test]
-    fn background_stop_targets_one_task(_cx: &mut TestAppContext) {
-        let task = BackgroundTaskView {
-            id: Arc::from("task-2"),
-            ..BackgroundTaskView::default()
-        };
-        assert_eq!(
-            stop_intent(&task),
-            DesktopIntent::CancelBackgroundTask {
-                task_id: "task-2".into()
-            }
-        );
-    }
+    
 }

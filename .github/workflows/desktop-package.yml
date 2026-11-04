@@ -60,11 +60,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libasound2-dev libfontconfig1-dev libfreetype6-dev libsqlite3-dev \
-            libwayland-dev libx11-dev libxcb1-dev libxcb-render0-dev \
-            libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev \
-            libxkbcommon-x11-dev pkg-config xvfb mesa-vulkan-drivers \
-            vulkan-tools
+            libasound2-dev libfontconfig1-dev libfreetype6-dev libgtk-4-dev \
+            libsqlite3-dev libxkbcommon-dev pkg-config xvfb
 
       - name: Build desktop release binary
         run: cargo build --release -p tact-desktop -p tact-ui --target "${{ matrix.target }}"
@@ -96,22 +93,27 @@ jobs:
           bin="target/${TARGET}/release/tact-desktop"
           cli_bin="target/${TARGET}/release/tact-ui"
 
+          # The smoke run also stages the NSH assets next to the binary.
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            xvfb-run -a env TACT_DESKTOP_SMOKE=1 "$bin" >/dev/null 2>&1 || true
+          else
+            TACT_DESKTOP_SMOKE=1 "$bin" >/dev/null 2>&1 || true
+          fi
+
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             cp "${bin}.exe" tact-desktop.exe
             cp "${cli_bin}.exe" tact-ui.exe
             cp LICENSE LICENSE.tact-ui
             cp crates/desktop/assets/fonts/IBM-Plex-LICENSE.txt .
             cp crates/desktop/assets/fonts/Lilex-LICENSE.txt .
-            cp vendor/gpui-ai/LICENSE gpui-ai-LICENSE-MIT.txt
             cp crates/desktop/assets/app-icon.png .
+            cp -R "${bin%/*}/tact-desktop-assets" .
             python3 scripts/normalize-mtime.py tact-desktop.exe tact-ui.exe LICENSE \
               LICENSE.tact-ui IBM-Plex-LICENSE.txt Lilex-LICENSE.txt \
-              THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt \
-              THIRD-PARTY-LICENSES.txt Cargo.lock gpui-ai-LICENSE-MIT.txt app-icon.png
+              THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt 
             python3 scripts/package-zip.py --output "${asset}" tact-desktop.exe \
               tact-ui.exe LICENSE LICENSE.tact-ui IBM-Plex-LICENSE.txt \
-              Lilex-LICENSE.txt THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt \
-              THIRD-PARTY-LICENSES.txt Cargo.lock gpui-ai-LICENSE-MIT.txt app-icon.png
+              Lilex-LICENSE.txt THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt 
           elif [[ "${{ runner.os }}" == "macOS" ]]; then
             app="Tact Desktop.app"
             mkdir -p "${app}/Contents/MacOS" "${app}/Contents/Resources"
@@ -124,8 +126,8 @@ jobs:
             cp THIRD-PARTY-APACHE-2.0.txt "${app}/Contents/Resources/"
             cp THIRD-PARTY-LICENSES.txt "${app}/Contents/Resources/"
             cp Cargo.lock "${app}/Contents/Resources/"
-            cp vendor/gpui-ai/LICENSE "${app}/Contents/Resources/gpui-ai-LICENSE-MIT.txt"
             cp crates/desktop/assets/app-icon.icns "${app}/Contents/Resources/Tact.icns"
+            cp -R "${bin%/*}/tact-desktop-assets" "${app}/Contents/MacOS/"
             cat > "${app}/Contents/Info.plist" <<'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -150,19 +152,17 @@ jobs:
             cp LICENSE LICENSE.tact-ui
             cp crates/desktop/assets/fonts/IBM-Plex-LICENSE.txt .
             cp crates/desktop/assets/fonts/Lilex-LICENSE.txt .
-            cp vendor/gpui-ai/LICENSE gpui-ai-LICENSE-MIT.txt
             cp crates/desktop/assets/app-icon.png .
+            cp -R "${bin%/*}/tact-desktop-assets" .
             strip tact-desktop || true
             strip tact-ui || true
             python3 scripts/normalize-mtime.py tact-desktop tact-ui LICENSE \
               LICENSE.tact-ui IBM-Plex-LICENSE.txt Lilex-LICENSE.txt \
-              THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt \
-              THIRD-PARTY-LICENSES.txt Cargo.lock gpui-ai-LICENSE-MIT.txt app-icon.png
+              THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt 
             tar --sort=name --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 \
               --numeric-owner -cf - tact-desktop tact-ui LICENSE LICENSE.tact-ui \
               IBM-Plex-LICENSE.txt Lilex-LICENSE.txt THIRD-PARTY-NOTICES.md \
-              THIRD-PARTY-APACHE-2.0.txt THIRD-PARTY-LICENSES.txt Cargo.lock \
-              gpui-ai-LICENSE-MIT.txt app-icon.png | gzip -n > "${asset}"
+              THIRD-PARTY-APACHE-2.0.txt THIRD-PARTY-LICENSES.txt Cargo.lock 
           fi
 
           echo "ASSET_PATH=${asset}" >> "${GITHUB_ENV}"
@@ -207,11 +207,6 @@ jobs:
               TACT_REDUCED_MOTION=1 TACT_DESKTOP_SMOKE=1 "$bin" \
               >"$smoke_log" 2>&1
           elif [[ "${{ runner.os }}" == "Linux" ]]; then
-            lvp_icd="$(ls /usr/share/vulkan/icd.d/lvp_icd.*.json 2>/dev/null | head -n 1 || true)"
-            if [[ -n "$lvp_icd" ]]; then
-              export VK_ICD_FILENAMES="$lvp_icd"
-            fi
-            export LIBGL_ALWAYS_SOFTWARE=1
             HOME="$clean_app" XDG_DATA_HOME="$clean_app/data" \
               TACT_REDUCED_MOTION=1 TACT_DESKTOP_SMOKE=1 \
               xvfb-run -a "$bin" >"$smoke_log" 2>&1

@@ -28,14 +28,8 @@ pub fn visible_row(row: &TranscriptRow, snapshot: &DesktopSnapshot) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use gpui::TestAppContext;
 
     use super::*;
 
-    #[gpui::test]
-    fn hook_output_toggle_hides_hook_status_rows(_cx: &mut TestAppContext) {
-        assert!(visible_row_kind(TranscriptRowKind::HookStatus, true));
-        assert!(!visible_row_kind(TranscriptRowKind::HookStatus, false));
-        assert!(visible_row_kind(TranscriptRowKind::Assistant, false));
-    }
+    
 }

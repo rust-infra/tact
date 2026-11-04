@@ -21,8 +21,8 @@ This project is a Cargo Workspace containing the following crates:
 | `crates/tact`                 | `tact`                 | `2.0.0` (workspace) | Product composition root and compatibility facade: tool router, MCP client, hooks, permissions, prompt/compaction policy, persistence adapters, and kernel wiring.                                                                                      |
 | `crates/tact_host`            | `tact_host`            | `2.0.0` (workspace) | UI-independent host services: session bootstrap/locking, command loop, Goal runner, account polling, permission mapping, and input normalization.                                                                                                       |
 | `crates/catalog`              | `tact_catalog`         | `2.0.0` (workspace) | Frontend-neutral slash/CLI/setting command catalog, localization, canonical action IDs, and fuzzy matching shared by the TUI and desktop.                                                                                                               |
-| `crates/desktop_core`         | `tact_desktop_core`    | `2.0.0` (workspace) | GPUI-free desktop controller, transcript reducer, typed snapshots, project/session catalog, desktop settings, and host-session orchestration.                                                                                                           |
-| `crates/desktop`              | `tact-desktop`         | `2.0.0` (workspace) | Native GPUI desktop shell for macOS, Windows, and Linux. Thin UI over `tact_desktop_core` and `tact_catalog`, with gpui-ai/gpui-component leaf surfaces.                                                                                                |
+| `crates/desktop_core`         | `tact_desktop_core`    | `2.0.0` (workspace) | Frontend-free desktop controller, transcript reducer, typed snapshots, project/session catalog, desktop settings, and host-session orchestration.                                                                                                       |
+| `crates/desktop`              | `tact-desktop`         | `2.0.0` (workspace) | Native Shell (NSH) desktop app for macOS, Windows, and Linux. Thin UI over `tact_desktop_core` and `tact_catalog`, with NSH components and the app's own theme.                                                                                  |
 | `crates/tact-ui`              | `tact-ui`              | `2.0.0` (workspace) | TUI adapter and CLI: terminal rendering/input plus headless CLI, consuming `tact_host` for shared orchestration.                                                                                                                                        |
 | `crates/tact_llm`             | `tact_llm`             | `2.0.0` (workspace) | Stable provider SDK and `tact_agent_api::ModelPort` implementation. `core` exposes the facade, builder, endpoint/limit/auth types, and a lazy stream; protocol adapters are feature-isolated behind `anthropic`, `openai-chat`, and `openai-responses`. |
 | `crates/tool_refactor_macros` | `tool_refactor_macros` | `2.0.0` (workspace) | Proc-macro `#[tool]` that generates `Tool` trait implementations from async functions.                                                                                                                                                                  |
@@ -38,7 +38,7 @@ flowchart TB
     tact_host --> tact_protocol
     tact_desktop["tact-desktop"] --> tact_desktop_core["tact_desktop_core"]
     tact_desktop --> tact_catalog
-    tact_desktop --> gpui_ai["gpui-ai (vendored localization fork)"]
+    tact_desktop --> nsh["Native Shell (nsh-core, nsh-base)"]
     tact_desktop_core --> tact_host
     tact_desktop_core --> tact_catalog
     tact_desktop_core --> tact_protocol

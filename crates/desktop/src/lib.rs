@@ -1,40 +1,25 @@
-//! Native Tact Desktop shell.
+//! Tact Desktop on Native Shell: the app's Rust UI, its root component, and
+//! the bridge to `tact_desktop_core`.
 
-mod app;
-mod assets;
-// GPUI's deterministic off-screen compositor currently exists only on macOS.
-// Linux and Windows verification uses the real packaged window, as documented
-// in `docs/design/tact-desktop/visual-verification.md`.
-#[cfg(all(feature = "ui-capture", target_os = "macos"))]
-pub mod capture;
+pub mod app;
 pub mod i18n;
-mod keymap;
-mod platform;
-mod root;
-mod theme;
-mod ui;
+mod shell;
+pub mod views;
+pub mod ui;
 
-pub use app::{run, run_smoke};
+use nsh_core::prelude::*;
 
-pub fn shell_name() -> &'static str {
-    "Tact Desktop"
+/// The app's UI set (`nsh.json` `"rust"`): what a TSX entry may import from
+/// `tact-desktop/native`.
+#[native_module("tact-desktop/native")]
+fn native(registry: &mut Registry) {
+    registry.register::<App>();
+    registry.assets(assets!());
 }
 
-pub fn smoke_test() -> Result<(), tact_desktop_core::DesktopStartError> {
-    let data_dir = tact_desktop_core::app_support_dir()
-        .map_err(|error| tact_desktop_core::DesktopStartError::Config(error.to_string()))?;
-    let _ = tact_desktop_core::DesktopConfig::load(data_dir)?;
-    let sidecar = tact_desktop_core::tact_ui_binary_path();
-    if sidecar.is_file() {
-        let status = std::process::Command::new(&sidecar)
-            .arg("--version")
-            .status()
-            .map_err(|error| tact_desktop_core::DesktopStartError::Config(error.to_string()))?;
-        if !status.success() {
-            return Err(tact_desktop_core::DesktopStartError::Config(format!(
-                "bundled tact-ui sidecar failed its version check: {status}"
-            )));
-        }
-    }
-    Ok(())
+/// The application's root component.
+#[component]
+pub fn App() -> impl IntoElement {
+    app::install();
+    shell::shell()
 }

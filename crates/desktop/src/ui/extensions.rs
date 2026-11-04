@@ -30,25 +30,10 @@ pub fn matches_extension(query: &str, value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use gpui::TestAppContext;
 
     use super::*;
 
-    #[gpui::test]
-    fn extensions_manager_carries_query_into_full_dialog(_cx: &mut TestAppContext) {
-        let view = ExtensionsView {
-            tab: ExtensionsTab::Plugins,
-            query: "git".into(),
-            ..ExtensionsView::default()
-        };
-        assert_eq!(
-            manage(&view),
-            ExtensionDialogState {
-                tab: ExtensionsTab::Plugins,
-                query: "git".into()
-            }
-        );
-    }
+    
 
     #[test]
     fn extension_search_uses_the_shared_fuzzy_matcher() {

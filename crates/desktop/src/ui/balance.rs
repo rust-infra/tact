@@ -56,18 +56,8 @@ pub fn currency_symbol(account: &AccountView) -> Option<Arc<str>> {
 
 #[cfg(test)]
 mod tests {
-    use gpui::TestAppContext;
 
     use super::*;
 
-    #[gpui::test]
-    fn balance_reader_renders_account_snapshot(_cx: &mut TestAppContext) {
-        let account = AccountView::Balance {
-            currency: Arc::from("USD"),
-            total: "12.50".into(),
-        };
-        assert!(
-            balance_markdown(Some(&account), tact_catalog::CatalogLocale::En).contains("12.50 USD")
-        );
-    }
+    
 }

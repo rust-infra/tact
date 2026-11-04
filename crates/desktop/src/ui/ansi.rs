@@ -7,10 +7,9 @@
 //! design's monospace scale. Sequences the terminal would not paint (cursor
 //! movement, OSC titles) are dropped, and the text around them is kept.
 
-use gpui::{
-    AnyElement, InteractiveElement as _, IntoElement, ParentElement as _, Styled as _, div, px,
-};
-use gpui_component::{h_flex, v_flex};
+use nsh_base::theme;
+use nsh_core::element::{AdaptiveColor, AnyElement};
+use nsh_core::prelude::*;
 
 /// One ANSI colour, resolved to RGB.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -247,53 +246,61 @@ pub fn parse(input: &str) -> Vec<AnsiLine> {
 }
 
 /// Renders parsed terminal output on the reader's monospace scale.
-pub fn element(id: &'static str, lines: &[AnsiLine], dark: bool) -> AnyElement {
-    let default_ink = if dark { 0xd8d8dc } else { 0x1c1c1e };
-    let mut body = v_flex()
-        .id(id)
-        .debug_selector(move || id.to_string())
+pub fn element(id: &'static str, lines: &[AnsiLine]) -> AnyElement {
+    view()
+        .test_id(id)
+        .flex_col()
         .w_full()
-        .min_w_0()
-        .rounded_md()
-        .bg(gpui::rgb(if dark { 0x141416 } else { 0xf7f7f8 }))
+        .rounded(px(8.0))
+        .p(px(10.0))
+        .gap(px(1.0))
+        .bg(AdaptiveColor::new(rgb(0xf7f7f8), rgb(0x141416)))
         .border_1()
-        .border_color(gpui::rgb(if dark { 0x2a2a2e } else { 0xe4e4e7 }))
-        .p(px(10.))
-        .gap(px(1.));
-    for line in lines {
-        if line.is_empty() {
-            body = body.child(div().h(px(8.)));
-            continue;
-        }
-        let mut row = h_flex().min_h(px(16.)).flex_wrap();
-        for span in &line.spans {
-            let mut text = span.text.replace(' ', "\u{00a0}");
-            if text.is_empty() {
-                continue;
-            }
-            let mut run = div().font_family("Lilex").text_size(px(11.5));
-            let ink = span.style.fg.map(Rgb::hex).unwrap_or(default_ink);
-            run = run.text_color(gpui::rgb(ink));
-            if let Some(background) = span.style.bg {
-                run = run.bg(gpui::rgb(background.hex()));
-            }
-            if span.style.bold {
-                run = run.font_weight(gpui::FontWeight::SEMIBOLD);
-            }
-            if span.style.dim {
-                run = run.opacity(0.65);
-            }
-            if span.style.italic {
-                run = run.italic();
-            }
-            if span.style.underline {
-                run = run.underline();
-            }
-            row = row.child(run.child(std::mem::take(&mut text)));
-        }
-        body = body.child(row);
+        .border_color(AdaptiveColor::new(rgb(0xe4e4e7), rgb(0x2a2a2e)))
+        .children(lines.iter().map(line_element))
+        .into_element()
+}
+
+fn line_element(line: &AnsiLine) -> AnyElement {
+    if line.is_empty() {
+        return view().h(px(8.0)).into_element();
     }
-    body.into_any_element()
+    view()
+        .flex_row()
+        .flex_wrap()
+        .min_h(px(16.0))
+        .children(line.spans.iter().filter_map(span_element))
+        .into_element()
+}
+
+fn span_element(span: &AnsiSpan) -> Option<AnyElement> {
+    let content = span.text.replace(' ', "\u{00a0}");
+    if content.is_empty() {
+        return None;
+    }
+    let mut run = text(content)
+        .font_family("Lilex")
+        .text_size(px(11.5))
+        .text_color(match span.style.fg {
+            Some(color) => AdaptiveColor::from(rgb(color.hex())),
+            None => theme().foreground,
+        });
+    if let Some(background) = span.style.bg {
+        run = run.bg(rgb(background.hex()));
+    }
+    if span.style.bold {
+        run = run.font_weight(FontWeight::SEMIBOLD);
+    }
+    if span.style.dim {
+        run = run.opacity(0.65);
+    }
+    if span.style.italic {
+        run = run.italic();
+    }
+    if span.style.underline {
+        run = run.underline();
+    }
+    Some(run.into_element())
 }
 
 #[cfg(test)]

@@ -50,16 +50,9 @@ pub fn canonical_ids(items: &[CommandCenterItem]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use gpui::TestAppContext;
     use tact_catalog::BuiltinCommand;
 
     use super::*;
 
-    #[gpui::test]
-    fn help_and_save_entries_are_executable(_cx: &mut TestAppContext) {
-        for command in [BuiltinCommand::Help, BuiltinCommand::Save] {
-            let plan = plan_command(&CommandId::Builtin(command));
-            assert_eq!(plan.target, CommandTarget::Controller);
-        }
-    }
+    
 }

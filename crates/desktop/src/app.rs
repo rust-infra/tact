@@ -1,126 +1,28 @@
-use std::{
-    borrow::Cow,
-    sync::{Arc, Condvar, Mutex},
+use std::sync::{Arc, Mutex, OnceLock};
+
+use nsh_core::prelude::*;
+use tact_desktop_core::{
+    DesktopConfig, DesktopController, DesktopEffect, DesktopEvent, DesktopEvents,
+    DesktopSnapshot, DesktopStartError, ReaderRequest,
 };
 
-use gpui::{App, AppContext as _, Bounds, Menu, MenuItem, WindowBounds, px, size};
-use gpui_component::{Root, TitleBar};
-use tact_desktop_core::{DesktopConfig, DesktopController, DesktopStartError};
-
-use crate::root::DesktopRoot;
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-enum ShutdownPhase {
-    #[default]
-    Idle,
-    Running,
-    Complete,
+/// The one controller of this process and the events it publishes.
+pub struct Runtime {
+    controller: DesktopController,
+    events: DesktopEvents,
+    initial: Arc<DesktopSnapshot>,
 }
 
-#[derive(Default)]
-struct ShutdownInner {
-    phase: ShutdownPhase,
-    result: Option<Result<(), String>>,
-}
+static RUNTIME: OnceLock<Runtime> = OnceLock::new();
+static START: Mutex<()> = Mutex::new(());
 
-#[derive(Default)]
-struct ShutdownState {
-    inner: Mutex<ShutdownInner>,
-    finished: Condvar,
-}
-
-impl ShutdownState {
-    fn shutdown(&self, controller: &DesktopController) -> Result<(), String> {
-        self.shutdown_with(|| {
-            controller
-                .shutdown_blocking()
-                .map_err(|error| format!("Tact shutdown failed: {error:?}"))
-        })
+/// Loads the desktop configuration and starts the controller before the
+/// window opens, so a startup failure is reported instead of an empty window.
+pub fn start() -> Result<(), DesktopStartError> {
+    let _start = START.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if RUNTIME.get().is_some() {
+        return Ok(());
     }
-
-    fn shutdown_with(&self, shutdown: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        loop {
-            match (inner.phase, inner.result.as_ref()) {
-                (ShutdownPhase::Complete, Some(Ok(()))) => return Ok(()),
-                // A failed attempt is retryable. Only a successful terminal
-                // shutdown may be replayed without invoking the controller.
-                (ShutdownPhase::Complete, Some(Err(_))) => {
-                    inner.phase = ShutdownPhase::Idle;
-                    inner.result = None;
-                }
-                (ShutdownPhase::Running, _) => {
-                    inner = self
-                        .finished
-                        .wait(inner)
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                }
-                (ShutdownPhase::Idle, _) => {
-                    inner.phase = ShutdownPhase::Running;
-                    inner.result = None;
-                    break;
-                }
-                (ShutdownPhase::Complete, None) => {
-                    inner.phase = ShutdownPhase::Idle;
-                }
-            }
-        }
-        drop(inner);
-
-        let next = shutdown();
-        if let Err(error) = &next {
-            eprintln!("{error}");
-        }
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        inner.phase = ShutdownPhase::Complete;
-        inner.result = Some(next.clone());
-        self.finished.notify_all();
-        next
-    }
-
-    fn is_running(&self) -> bool {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .phase
-            == ShutdownPhase::Running
-    }
-
-    fn is_succeeded(&self) -> bool {
-        matches!(
-            self.inner
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .result
-                .as_ref(),
-            Some(Ok(()))
-        )
-    }
-
-    fn result(&self) -> Option<Result<(), String>> {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .result
-            .clone()
-    }
-}
-
-pub fn run() -> Result<(), DesktopStartError> {
-    run_inner(false)
-}
-
-pub fn run_smoke() -> Result<(), DesktopStartError> {
-    run_inner(true)
-}
-
-fn run_inner(smoke: bool) -> Result<(), DesktopStartError> {
     let data_dir = tact_desktop_core::app_support_dir()
         .map_err(|error| DesktopStartError::Config(error.to_string()))?;
     let mut config = DesktopConfig::load(data_dir)?;
@@ -135,191 +37,155 @@ fn run_inner(smoke: bool) -> Result<(), DesktopStartError> {
     }
     tact_desktop_core::install_exit_listener()?;
     let (controller, events) = DesktopController::start(config)?;
-    let shutdown_state = Arc::new(ShutdownState::default());
-    let shutdown_for_result = shutdown_state.clone();
-    let shutdown_for_quit = shutdown_state.clone();
+    let initial = controller.snapshot();
+    let _ = RUNTIME.set(Runtime {
+        controller,
+        events,
+        initial,
+    });
+    Ok(())
+}
 
-    gpui_platform::application()
-        .with_assets(crate::assets::Assets)
-        .run(move |cx: &mut App| {
-            gpui_ai::init(cx);
-            if let Err(error) = cx.text_system().add_fonts(vec![
-                Cow::Borrowed(include_bytes!("../assets/fonts/IBMPlexSans-Regular.ttf").as_slice()),
-                Cow::Borrowed(include_bytes!("../assets/fonts/Lilex-Regular.ttf").as_slice()),
-            ]) {
-                eprintln!("failed to register Tact Desktop fonts: {error:#}");
-            }
-            let initial = controller.snapshot();
-            let close_language = initial.language;
-            let system_reduce_motion =
-                cx.reduce_motion() || crate::platform::system_reduced_motion();
-            cx.set_reduce_motion(initial.motion.reduce(system_reduce_motion));
-            cx.bind_keys(crate::keymap::bindings());
-            cx.set_menus([
-                Menu::new("File").items([
-                    MenuItem::action("New Session", crate::keymap::NewSession),
-                    MenuItem::action("Command Center", crate::keymap::CommandCenter),
-                    MenuItem::action("Settings", crate::keymap::OpenSettings),
-                    MenuItem::action("Quit", crate::keymap::Quit),
-                ]),
-                Menu::new("View").items([
-                    MenuItem::action("Toggle Sessions", crate::keymap::ToggleLeft),
-                    MenuItem::action("Toggle Inspector", crate::keymap::ToggleRight),
-                    MenuItem::action("Back to Bottom", crate::keymap::BackToBottom),
-                ]),
-                Menu::new("Session").items([
-                    MenuItem::action("Send", crate::keymap::SubmitComposer),
-                    MenuItem::action("Stop", crate::keymap::CancelRun),
-                ]),
-            ]);
-            let shutdown_controller = controller.clone();
-            let quit_subscription = cx.on_app_quit(move |cx| {
-                let shutdown = shutdown_for_quit.clone();
-                let controller = shutdown_controller.clone();
-                let background = cx.background_executor().clone();
-                async move {
-                    background
-                        .spawn(async move { shutdown.shutdown(&controller) })
-                        .await
-                        .ok();
-                }
-            });
-            std::mem::forget(quit_subscription);
-            crate::theme::apply(initial.appearance, None, cx);
-            let controller_for_root = controller.clone();
-            let controller_for_close = controller.clone();
-            let shutdown_for_close = shutdown_state.clone();
-            let bounds = Bounds::centered(None, size(px(1280.), px(840.)), cx);
-            let mut window_options = TitleBar::window_options();
-            if let Some(titlebar) = &mut window_options.titlebar {
-                titlebar.appears_transparent = !crate::theme::reduced_transparency();
-            }
-            #[cfg(target_os = "linux")]
-            {
-                window_options.window_decorations = Some(gpui::WindowDecorations::Client);
-            }
-            window_options.window_bounds = Some(WindowBounds::Windowed(bounds));
-            cx.open_window(window_options, move |window, cx| {
-                crate::theme::apply(initial.appearance, Some(window), cx);
-                window.on_window_should_close(cx, move |_, cx| {
-                    if shutdown_for_close.is_succeeded() {
-                        return true;
-                    }
-                    if !shutdown_for_close.is_running() {
-                        let controller = controller_for_close.clone();
-                        let shutdown = shutdown_for_close.clone();
-                        let close_language = close_language;
-                        let background = cx.background_executor().clone();
-                        cx.spawn(async move |cx| {
-                            match background
-                                .spawn(async move { shutdown.shutdown(&controller) })
-                                .await
-                            {
-                                Ok(()) => cx.update(|cx| cx.quit()),
-                                Err(error) => cx.update(|cx| {
-                                    cx.show_system_notification(gpui::SystemNotification {
-                                        tag: "tact-desktop-close-blocked".into(),
-                                        title: match close_language {
-                                            tact_catalog::CatalogLocale::En => {
-                                                "Tact could not close"
-                                            }
-                                            tact_catalog::CatalogLocale::Zh => "Tact 无法关闭",
-                                        }
-                                        .into(),
-                                        body: error.into(),
-                                        actions: Vec::new(),
-                                    });
-                                }),
-                            }
-                        })
-                        .detach();
-                    }
-                    cx.show_system_notification(gpui::SystemNotification {
-                        tag: "tact-desktop-stopping".into(),
-                        title: match close_language {
-                            tact_catalog::CatalogLocale::En => "Tact is stopping",
-                            tact_catalog::CatalogLocale::Zh => "Tact 正在停止",
-                        }
-                        .into(),
-                        body: crate::i18n::text(close_language, crate::i18n::TextKey::Stopping)
-                            .into(),
-                        actions: Vec::new(),
-                    });
-                    false
-                });
-                let root = cx.new(|cx| DesktopRoot::new(controller_for_root, events, window, cx));
-                cx.new(|cx| Root::new(root, window, cx))
-            })
-            .expect("failed to open Tact Desktop window");
-            cx.activate(true);
-            if smoke {
-                cx.spawn(async move |cx| {
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_millis(250))
-                        .await;
-                    cx.update(|cx| cx.quit());
-                })
-                .detach();
-            }
-        });
-    match shutdown_for_result.result() {
-        Some(Err(error)) => Err(DesktopStartError::Runtime(error)),
-        Some(Ok(())) | None => Ok(()),
+/// Stops the controller after the window closes.
+pub fn shutdown() {
+    if let Some(runtime) = RUNTIME.get()
+        && let Err(error) = runtime.controller.shutdown_blocking()
+    {
+        eprintln!("Tact shutdown failed: {error:?}");
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::{
-        Barrier,
-        atomic::{AtomicUsize, Ordering},
-    };
-    use std::time::Duration;
+fn runtime() -> &'static Runtime {
+    RUNTIME.get().expect("Tact Desktop runtime started")
+}
 
-    #[test]
-    fn failed_shutdown_is_retryable() {
-        let state = ShutdownState::default();
-        assert_eq!(
-            state.shutdown_with(|| Err("first attempt failed".into())),
-            Err("first attempt failed".into())
-        );
-        assert_eq!(state.shutdown_with(|| Ok(())), Ok(()));
+/// The snapshot a commit carries. Compared by identity so a commit never
+/// deep-compares two full view models on the engine thread.
+#[derive(Clone)]
+pub struct SnapshotRef(pub Arc<DesktopSnapshot>);
+
+impl PartialEq for SnapshotRef {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
     }
+}
 
-    #[test]
-    fn successful_shutdown_is_cached_for_later_requests() {
-        let state = ShutdownState::default();
-        assert_eq!(state.shutdown_with(|| Ok(())), Ok(()));
-        assert_eq!(
-            state.shutdown_with(|| panic!("successful shutdown must not run twice")),
-            Ok(())
-        );
+/// The voice worker's phase as the composer shows it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum VoicePhase {
+    #[default]
+    Idle,
+    Recording,
+    Transcribing,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct VoiceState {
+    pub phase: VoicePhase,
+    pub transcript: Option<String>,
+    pub error: Option<String>,
+}
+
+/// A transient message the controller asked the shell to show.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ToastMessage {
+    pub title: String,
+    pub body: String,
+}
+
+/// The controller and the latest committed snapshot, available to every
+/// component of the app.
+#[derive(Clone)]
+pub struct AppState {
+    pub controller: DesktopController,
+    pub snapshot: Signal<SnapshotRef>,
+    pub reader: Signal<Option<ReaderRequest>>,
+    pub voice: Signal<VoiceState>,
+    pub toast: Signal<Option<ToastMessage>>,
+}
+
+/// Installs the controller bridge once, at the root component.
+pub fn install() {
+    if RUNTIME.get().is_none() {
+        start().expect("Tact Desktop starts");
     }
-
-    #[test]
-    fn concurrent_shutdown_requests_share_one_run() {
-        let state = Arc::new(ShutdownState::default());
-        let calls = Arc::new(AtomicUsize::new(0));
-        let barrier = Arc::new(Barrier::new(3));
-        let mut workers = Vec::new();
-        for _ in 0..2 {
-            let state = state.clone();
-            let calls = calls.clone();
-            let barrier = barrier.clone();
-            workers.push(std::thread::spawn(move || {
-                barrier.wait();
-                state.shutdown_with(|| {
-                    calls.fetch_add(1, Ordering::SeqCst);
-                    std::thread::sleep(Duration::from_millis(25));
-                    Ok(())
-                })
-            }));
+    if use_context::<AppState>().is_some() {
+        return;
+    }
+    let runtime = runtime();
+    let snapshot = signal(SnapshotRef(runtime.initial.clone()));
+    let reader = signal(None::<ReaderRequest>);
+    let voice = signal(VoiceState::default());
+    let toast = signal(None::<ToastMessage>);
+    provide_context(AppState {
+        controller: runtime.controller.clone(),
+        snapshot,
+        reader,
+        voice,
+        toast,
+    });
+    let events = &runtime.events;
+    spawn(async move {
+        while let Ok(event) = events.recv().await {
+            match event {
+                DesktopEvent::Committed(commit) => snapshot.set(SnapshotRef(commit.snapshot)),
+                DesktopEvent::Effect(DesktopEffect::OpenReader(request)) => {
+                    reader.set(Some(request));
+                }
+                DesktopEvent::Effect(DesktopEffect::CopyText(text)) => {
+                    set_clipboard(text);
+                }
+                DesktopEvent::Effect(DesktopEffect::OpenExternal(url)) => {
+                    let _ = open_url(url.to_string());
+                }
+                DesktopEvent::Effect(DesktopEffect::OpenPath(path)) => {
+                    let _ = open_url(format!("file://{}", path.display()));
+                }
+                DesktopEvent::Effect(DesktopEffect::WindowCloseRequested) => {
+                    nsh_core::element::desktop::close_window();
+                }
+                DesktopEvent::Effect(DesktopEffect::Notify { title, body }) => {
+                    toast.set(Some(ToastMessage { title, body }));
+                    set_timeout(std::time::Duration::from_secs(4), move || {
+                        toast.set(None);
+                    });
+                }
+                DesktopEvent::Fatal(failure) => {
+                    toast.set(Some(ToastMessage {
+                        title: "Tact stopped".to_owned(),
+                        body: failure.message.to_string(),
+                    }));
+                }
+                DesktopEvent::Voice(event) => {
+                    use tact_desktop_core::VoiceEvent;
+                    voice.update(|state| match event {
+                        VoiceEvent::RecordingStarted => {
+                            state.phase = VoicePhase::Recording;
+                            state.error = None;
+                        }
+                        VoiceEvent::RecordingStopped | VoiceEvent::Transcribing => {
+                            state.phase = VoicePhase::Transcribing;
+                        }
+                        VoiceEvent::Transcript(text) => {
+                            state.phase = VoicePhase::Idle;
+                            state.transcript = Some(text);
+                        }
+                        VoiceEvent::Error(message) => {
+                            state.phase = VoicePhase::Idle;
+                            state.error = Some(message);
+                        }
+                        VoiceEvent::Cancelled => {
+                            state.phase = VoicePhase::Idle;
+                        }
+                    });
+                }
+                _ => {}
+            }
         }
-        barrier.wait();
-        for worker in workers {
-            assert_eq!(worker.join().unwrap(), Ok(()));
-        }
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-    }
+    });
+}
+
+/// The app state of the calling component tree.
+pub fn use_app() -> AppState {
+    use_context::<AppState>().expect("Tact Desktop installs its app state at the root")
 }

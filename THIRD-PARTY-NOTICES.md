@@ -3,22 +3,15 @@
 Tact binaries include third-party Rust crates distributed under their own
 licenses. The primary UI dependencies are:
 
-- `gpui-ai` 0.8.0 (local localization patch): MIT. See
-  `vendor/gpui-ai/LICENSE`.
-- `gpui-pre` 0.3.3: Apache-2.0.
-- `gpui-component` 0.6.0: Apache-2.0.
-- `gpui-base` 0.6.0: Apache-2.0.
-- `gpui-kit-assets` 0.6.0: Apache-2.0.
+- Native Shell 0.3.0 (`nsh-core`, `nsh-base`, `nsh-engine`,
+  `nsh-platform-macos`, `nsh-platform-linux`, `nsh-platform-windows`):
+  Apache-2.0.
 - IBM Plex Sans: SIL Open Font License 1.1. See
   `crates/desktop/assets/fonts/IBM-Plex-LICENSE.txt`.
 - Lilex: SIL Open Font License 1.1. See
   `crates/desktop/assets/fonts/Lilex-LICENSE.txt`.
 - Lucide icons (the composer's `send` glyph, copied into
-  `crates/desktop/assets/icons/send.svg`): ISC. The pinned
-  `gpui-kit-assets` bundle ships the same icon set.
-- `cocoa` 0.26.0 (macOS Dock badge): MIT / Apache-2.0.
-- `objc` 0.2.7 (macOS Dock badge): MIT.
-- `windows` 0.61.3 (Windows taskbar badge): MIT OR Apache-2.0.
+  `crates/desktop/assets/icons/send.svg`): ISC.
 
 The Apache License 2.0 text is included in
 `THIRD-PARTY-APACHE-2.0.txt`. Release archives also include

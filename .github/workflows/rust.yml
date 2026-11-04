@@ -60,10 +60,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libasound2-dev libfontconfig1-dev libfreetype6-dev libsqlite3-dev \
-            libwayland-dev libx11-dev libxcb1-dev libxcb-render0-dev \
-            libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev \
-            libxkbcommon-x11-dev pkg-config clang libclang-dev
+            libasound2-dev libfontconfig1-dev libfreetype6-dev libgtk-4-dev \
+            libsqlite3-dev libxkbcommon-dev pkg-config clang libclang-dev
       - name: Cache Cargo
         uses: actions/cache@v4
         with:
@@ -85,10 +83,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libasound2-dev libfontconfig1-dev libfreetype6-dev libsqlite3-dev \
-            libwayland-dev libx11-dev libxcb1-dev libxcb-render0-dev \
-            libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev \
-            libxkbcommon-x11-dev pkg-config clang libclang-dev
+            libasound2-dev libfontconfig1-dev libfreetype6-dev libgtk-4-dev \
+            libsqlite3-dev libxkbcommon-dev pkg-config clang libclang-dev
       - name: Cache Cargo
         uses: actions/cache@v4
         with:
@@ -128,10 +124,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libasound2-dev libfontconfig1-dev libfreetype6-dev libsqlite3-dev \
-            libwayland-dev libx11-dev libxcb1-dev libxcb-render0-dev \
-            libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev \
-            libxkbcommon-x11-dev pkg-config clang libclang-dev
+            libasound2-dev libfontconfig1-dev libfreetype6-dev libgtk-4-dev \
+            libsqlite3-dev libxkbcommon-dev pkg-config clang libclang-dev
       - name: Cache Cargo
         uses: actions/cache@v4
         with:
@@ -159,10 +153,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libasound2-dev libfontconfig1-dev libfreetype6-dev libsqlite3-dev \
-            libwayland-dev libx11-dev libxcb1-dev libxcb-render0-dev \
-            libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev \
-            libxkbcommon-x11-dev pkg-config
+            libasound2-dev libfontconfig1-dev libfreetype6-dev libgtk-4-dev             libsqlite3-dev libxkbcommon-dev pkg-config
       - name: Check desktop crates
         run: cargo check -p tact_catalog -p tact_desktop_core -p tact-desktop
       - name: Check desktop dependency boundaries

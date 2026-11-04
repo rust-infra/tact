@@ -9,11 +9,9 @@
 
 use std::collections::HashMap;
 
-use gpui::{
-    AnyElement, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
-    StatefulInteractiveElement as _, Styled as _, div, px,
-};
-use gpui_component::{h_flex, v_flex};
+use nsh_base::theme;
+use nsh_core::element::AnyElement;
+use nsh_core::prelude::*;
 
 /// Flow direction from the diagram header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -327,83 +325,70 @@ fn push_node(nodes: &mut Vec<Node>, id: &str, label: String, shape: Shape) {
 }
 
 /// Renders one diagram with the design's compact mono scale.
-pub fn element(id: impl Into<SharedString>, diagram: &Diagram, dark: bool) -> AnyElement {
-    let id = id.into();
+pub fn element(id: &str, diagram: &Diagram) -> AnyElement {
     let layers = diagram.layers();
-    let border = if dark { 0x3a3a3f } else { 0xd8d8dd };
-    let surface = if dark { 0x1c1c1f } else { 0xffffff };
-    let ink = if dark { 0xd8d8dc } else { 0x1c1c1e };
-    let muted = if dark { 0x8e8e93 } else { 0x6e6e73 };
-
-    // A left-to-right flow lays its layers out as columns; a top-down flow
-    // stacks them, with each layer's siblings side by side.
     let mut body = if diagram.direction == Direction::LeftRight {
-        h_flex().flex_wrap().items_center().gap_2()
+        view().flex_row().flex_wrap().items_center().gap_2()
     } else {
-        v_flex().items_start().gap_1()
+        view().flex_col().items_start().gap_1()
     };
 
     for (layer_index, layer) in layers.iter().enumerate() {
-        let mut nodes = h_flex().flex_wrap().items_center().gap_1();
+        let mut nodes = view().flex_row().flex_wrap().items_center().gap_1();
         for index in layer {
             let node = &diagram.nodes[*index];
-            let shape_radius = match node.shape {
-                Shape::Diamond => 2.,
-                Shape::Stadium => 12.,
-                _ => 6.,
+            let radius = match node.shape {
+                Shape::Diamond => 2.0,
+                Shape::Stadium => 12.0,
+                _ => 6.0,
             };
-            let label = node.label.clone();
             nodes = nodes.child(
-                div()
-                    .id(SharedString::from(format!("mermaid-{id}-{index}")))
-                    .rounded(px(shape_radius))
+                view()
+                    .test_id(&format!("mermaid-{id}-{index}"))
+                    .rounded(px(radius))
                     .border_1()
-                    .border_color(gpui::rgb(border))
-                    .bg(gpui::rgb(surface))
-                    .px(px(9.))
-                    .py(px(5.))
-                    .font_family("Lilex")
-                    .text_size(px(10.))
-                    .text_color(gpui::rgb(ink))
-                    .child(label),
+                    .border_color(move || theme().border)
+                    .bg(move || theme().card)
+                    .px(px(9.0))
+                    .py(px(5.0))
+                    .child(
+                        text(node.label.clone())
+                            .font_family("Lilex")
+                            .text_size(px(10.0))
+                            .text_color(move || theme().foreground),
+                    ),
             );
         }
         body = body.child(nodes);
         if layer_index + 1 < layers.len() {
             body = body.child(
-                div()
-                    .font_family("Lilex")
-                    .text_size(px(12.))
-                    .text_color(gpui::rgb(muted))
-                    .child(if diagram.direction == Direction::LeftRight {
-                        "→"
-                    } else {
-                        "↓"
-                    }),
+                text(if diagram.direction == Direction::LeftRight {
+                    "→"
+                } else {
+                    "↓"
+                })
+                .font_family("Lilex")
+                .text_size(px(12.0))
+                .text_color(move || theme().muted_foreground),
             );
         }
     }
 
-    let selector = id.clone();
-    let mut card = v_flex()
-        .id(id)
-        .debug_selector(move || format!("mermaid-diagram-{selector}"))
-        .role(gpui::Role::Group)
-        .aria_label("Mermaid diagram")
+    let mut card = view()
+        .test_id(&format!("mermaid-diagram-{id}"))
+        .label("Mermaid diagram")
         .w_full()
-        .min_w_0()
-        .rounded_md()
+        .rounded(px(8.0))
         .border_1()
-        .border_color(gpui::rgb(border))
-        .bg(gpui::rgb(if dark { 0x141416 } else { 0xfafafa }))
+        .border_color(move || theme().border)
+        .bg(move || theme().background)
         .p_3()
         .gap_2()
         .child(
-            div()
+            text("MERMAID")
                 .font_family("Lilex")
-                .text_size(px(9.))
-                .text_color(gpui::rgb(muted))
-                .child("MERMAID"),
+                .text_size(px(9.0))
+                .text_color(move || theme().muted_foreground),
         )
         .child(body);
     let labels: Vec<&Edge> = diagram
@@ -412,24 +397,23 @@ pub fn element(id: impl Into<SharedString>, diagram: &Diagram, dark: bool) -> An
         .filter(|edge| edge.label.is_some())
         .collect();
     if !labels.is_empty() {
-        let mut notes = v_flex().gap(px(1.));
+        let mut notes = view().flex_col().gap(px(1.0));
         for edge in labels {
             notes = notes.child(
-                div()
-                    .font_family("Lilex")
-                    .text_size(px(9.))
-                    .text_color(gpui::rgb(muted))
-                    .child(format!(
-                        "{} — {} → {}",
-                        edge.from,
-                        edge.label.as_deref().unwrap_or_default(),
-                        edge.to
-                    )),
+                text(format!(
+                    "{} — {} → {}",
+                    edge.from,
+                    edge.label.as_deref().unwrap_or_default(),
+                    edge.to
+                ))
+                .font_family("Lilex")
+                .text_size(px(9.0))
+                .text_color(move || theme().muted_foreground),
             );
         }
         card = card.child(notes);
     }
-    card.into_any_element()
+    card.into_element()
 }
 
 #[cfg(test)]

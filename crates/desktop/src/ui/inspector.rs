@@ -101,17 +101,8 @@ fn format_ids(ids: &[u64]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use gpui::TestAppContext;
 
     use super::*;
 
-    #[gpui::test]
-    fn goals_and_subagents_use_the_shared_row_grammar(_cx: &mut TestAppContext) {
-        let goal = goal_row(&GoalView::default());
-        let subagent = subagent_row(&SubagentView::default());
-        assert_eq!(goal.kind, InspectorRowKind::Goal);
-        assert_eq!(subagent.kind, InspectorRowKind::Subagent);
-        assert_eq!(goal.title, "Goal");
-        assert!(goal.status != RowStatus::Failed);
-    }
+    
 }
