@@ -8,6 +8,8 @@ use crate::app::use_app;
 use crate::ui::layout;
 use crate::ui::shell::RunTab;
 use crate::views::overlays::{self, Overlay};
+use crate::views::menu;
+use crate::views::MenuKind;
 use crate::views::{composer, inspector, rail, reader, surface, title_bar, transcript};
 
 pub fn shell() -> impl IntoElement {
@@ -16,6 +18,9 @@ pub fn shell() -> impl IntoElement {
     let controller = app.controller.clone();
     let tab = signal(RunTab::Chat);
     let overlay = signal(None::<Overlay>);
+    let menu = signal(None::<MenuKind>);
+    let rail_open = signal(true);
+    let inspector_open = signal(true);
     set_title_bar(TitleBarStyle::Hidden, Some(px(title_bar::HEIGHT)));
     on_key("mod+k", move |_| {
         overlay.set(Some(Overlay::CommandCenter));
@@ -27,15 +32,32 @@ pub fn shell() -> impl IntoElement {
     on_key("escape", move |_| {
         reader_state.set(None);
         overlay.set(None);
+        menu.set(None);
     });
     let controller_for_layer = controller.clone();
+    let controller_for_menu = controller.clone();
     view()
         .flex_1()
         .flex_col()
         .bg(move || nsh_base::theme().background)
         .text_color(move || nsh_base::theme().foreground)
-        .child(title_bar::title_bar(snapshot, overlay))
-        .child(body(snapshot, controller, tab, overlay, app.voice))
+        .child(title_bar::title_bar(snapshot, overlay, menu))
+        .child(body(
+            snapshot,
+            controller,
+            tab,
+            overlay,
+            app.voice,
+            rail_open,
+            inspector_open,
+        ))
+        .child(menu::layer(
+            menu,
+            controller_for_menu,
+            rail_open,
+            inspector_open,
+            overlay,
+        ))
         .child(overlays::layer(snapshot, controller_for_layer, overlay))
         .child(surface::layer(snapshot))
         .child(reader::layer(reader_state))
@@ -47,13 +69,15 @@ fn body(
     tab: Signal<RunTab>,
     overlay: Signal<Option<Overlay>>,
     voice: Signal<crate::app::VoiceState>,
+    rail_open: Signal<bool>,
+    inspector_open: Signal<bool>,
 ) -> impl IntoElement {
     let columns = move || {
         layout::layout(
             window().width.0,
             untracked(|| snapshot.get().0.text_scale),
-            true,
-            true,
+            rail_open.get(),
+            inspector_open.get(),
         )
     };
     view()

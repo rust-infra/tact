@@ -2,6 +2,7 @@
 
 pub mod composer;
 pub mod inspector;
+pub mod menu;
 pub mod overlays;
 pub mod rail;
 pub mod reader;
@@ -20,3 +21,21 @@ pub(crate) fn token(name: &str) -> AdaptiveColor {
 }
 
 pub(crate) const RADIUS: f32 = 10.0;
+
+/// One of the app's own menu bar menus.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuKind {
+    File,
+    View,
+    Session,
+}
+
+impl MenuKind {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::File => "File",
+            Self::View => "View",
+            Self::Session => "Session",
+        }
+    }
+}

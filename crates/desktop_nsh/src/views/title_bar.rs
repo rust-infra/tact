@@ -10,12 +10,15 @@ use crate::ui::title_bar as title_bar_text;
 
 use super::overlays::Overlay;
 use super::token;
+use crate::views::MenuKind;
+use crate::views::menu;
 
 pub const HEIGHT: f32 = 44.0;
 
 pub fn title_bar(
     snapshot: Signal<SnapshotRef>,
     overlay: Signal<Option<Overlay>>,
+    menu: Signal<Option<MenuKind>>,
 ) -> impl IntoElement {
     view()
         .h(px(HEIGHT))
@@ -34,6 +37,7 @@ pub fn title_bar(
                 .text_size(px(13.0))
                 .font_weight(FontWeight::SEMIBOLD),
         )
+        .child(menu::bar(menu))
         .child(
             text(move || {
                 let snapshot = snapshot.get();

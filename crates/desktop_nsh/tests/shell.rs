@@ -85,3 +85,17 @@ fn the_settings_overlay_lists_the_settings() {
     app.wait_for("text:Reasoning effort")
         .expect("the effort setting shows");
 }
+
+#[test]
+fn the_app_menu_opens_and_escape_closes_it() {
+    let _serial = serial();
+    let mut app = Headless::start(config()).expect("the Tact shell starts");
+    app.wait_for("label:File").expect("the File menu shows");
+    app.press("label:File").expect("the File menu opens");
+    app.wait_for("label:Command Center")
+        .expect("the File menu items show");
+    app.press_key("escape").expect("escape presses");
+    app.run_for(std::time::Duration::from_millis(100))
+        .expect("frames run");
+    assert!(!app.screen().texts().contains(&"Command Center"));
+}
