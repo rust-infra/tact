@@ -14,6 +14,7 @@ use super::token;
 pub fn page(snapshot: Signal<SnapshotRef>) -> impl IntoElement {
     let selected = signal(None::<usize>);
     let tab = signal(TrajectoryDetailTab::Summary);
+    let query = signal(String::new());
     let trajectory = move || TrajectoryView::from_transcript(&snapshot.get().0.transcript);
     view()
         .flex_1()
@@ -27,6 +28,21 @@ pub fn page(snapshot: Signal<SnapshotRef>) -> impl IntoElement {
                 .border_r_color(move || theme().border)
                 .child(header(trajectory))
                 .child(overview(trajectory, selected))
+                .child(
+                    view().px_4().py_2().child(
+                        nsh_base::input()
+                            .value(move || query.get())
+                            .on_change(move |text: &str| query.set(text.to_owned()))
+                            .placeholder("Search the ledger")
+                            .px_2()
+                            .py(px(4.0))
+                            .rounded(px(6.0))
+                            .border_1()
+                            .border_color(move || theme().border)
+                            .bg(move || theme().background)
+                            .text_size(px(11.0)),
+                    ),
+                )
                 .child(scroll().flex_1().child(
                     view().flex_col().gap(px(1.0)).px_3().py_2().child(each(
                         move || trajectory().records().to_vec(),

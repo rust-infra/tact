@@ -514,6 +514,9 @@ fn queue_list(snapshot: Signal<SnapshotRef>, controller: DesktopController) -> i
             let index = at.get_untracked();
             let controller = controller.clone();
             let remove_controller = controller.clone();
+            let move_controller = controller.clone();
+            let edit_controller = controller.clone();
+            let edit_draft = signal(item.text.to_string());
             view()
                 .flex_row()
                 .items_center()
@@ -523,11 +526,45 @@ fn queue_list(snapshot: Signal<SnapshotRef>, controller: DesktopController) -> i
                 .rounded(px(6.0))
                 .bg(move || theme().muted)
                 .child(
-                    text(item.text.to_string())
+                    input()
+                        .value(move || edit_draft.get())
+                        .on_change(move |text: &str| edit_draft.set(text.to_owned()))
+                        .on_submit(move |text: &str| {
+                            if !text.trim().is_empty() {
+                                let _ = edit_controller.dispatch(DesktopIntent::EditQueued {
+                                    index,
+                                    text: text.to_owned(),
+                                });
+                            }
+                        })
                         .flex_1()
-                        .number_of_lines(1)
-                        .text_size(px(11.0))
-                        .text_color(move || theme().muted_foreground),
+                        .px_2()
+                        .py(px(2.0))
+                        .rounded(px(4.0))
+                        .border_1()
+                        .border_color(move || theme().border)
+                        .bg(move || theme().background)
+                        .text_size(px(11.0)),
+                )
+                .child(
+                    view()
+                        .px_1()
+                        .cursor_pointer()
+                        .role(AccessibilityRole::Button)
+                        .label("Move queued prompt up")
+                        .on_press(move || {
+                            if index > 0 {
+                                let _ = move_controller.dispatch(DesktopIntent::MoveQueued {
+                                    from: index,
+                                    to: index - 1,
+                                });
+                            }
+                        })
+                        .child(
+                            text("↑")
+                                .text_size(px(10.0))
+                                .text_color(move || theme().muted_foreground),
+                        ),
                 )
                 .child(
                     view()
