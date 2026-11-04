@@ -737,6 +737,7 @@
 <li class="toc-l2"><a href="#29-2026-11-01--%E5%8F%96%E6%B6%88%E8%BF%90%E8%A1%8C%E5%90%8E%E9%98%9F%E5%88%97%E4%B8%8D%E5%86%8D%E6%8A%A2%E8%B7%91" title="29. 2026-11-01 — 取消运行后队列不再抢跑"><span class="toc-label">29. 2026-11-01 — 取消运行后队列不再抢跑</span></a></li>
 <li class="toc-l2"><a href="#30-2026-11-02--desktop-%E6%BB%9A%E5%8A%A8%E5%90%88%E5%B9%B6%E4%B8%8E%E5%BC%B9%E7%AA%97%E5%8D%A1%E6%AD%BB" title="30. 2026-11-02 — Desktop 滚动合并与弹窗卡死"><span class="toc-label">30. 2026-11-02 — Desktop 滚动合并与弹窗卡死</span></a></li>
 <li class="toc-l2"><a href="#31-2026-11-04--desktop-%E4%BB%BB%E5%8A%A1%E6%9D%A1%E6%B7%B7%E5%85%A5%E5%85%B6%E5%AE%83-session-%E7%9A%84%E4%BB%BB%E5%8A%A1" title="31. 2026-11-04 — Desktop 任务条混入其它 session 的任务"><span class="toc-label">31. 2026-11-04 — Desktop 任务条混入其它 session 的任务</span></a></li>
+<li class="toc-l2"><a href="#32-2026-11-04--desktop-%E4%BB%BB%E5%8A%A1%E5%85%A8%E9%83%A8%E5%AE%8C%E6%88%90%E5%90%8E%E9%9A%90%E8%97%8F%E4%BB%BB%E5%8A%A1%E5%8D%A1trajectory-%E6%90%9C%E7%B4%A2%E6%A1%86%E6%94%B9%E4%B8%BA%E5%8D%95%E5%B1%82" title="32. 2026-11-04 — Desktop：任务全部完成后隐藏任务卡；Trajectory 搜索框改为单层"><span class="toc-label">32. 2026-11-04 — Desktop：任务全部完成后隐藏任务卡；Trajectory 搜索框改为单层</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -21931,6 +21932,40 @@ TUI 侧 <code>agent_tui_kit::state::task_panel</code> 对齐：只分「进行�
 <code>task_update</code>）、<code>crates/tact_host/src/driver.rs</code>
 （<code>publish_session_tasks</code>）、<code>crates/desktop/src/ui/sticky.rs</code>
 （<code>GROUPS</code>、<code>group_tasks</code>、<code>active_task</code>）。</p>
+<h2 id="32-2026-11-04--desktop-任务全部完成后隐藏任务卡trajectory-搜索框改为单层">32. 2026-11-04 — Desktop：任务全部完成后隐藏任务卡；Trajectory 搜索框改为单层</h2>
+<p><strong>现象：</strong> 两处界面问题。其一，一轮任务全部完成后，sticky
+任务卡仍停在对话上方：标题写着 <code>TASKS 3/3</code>、进度条全绿，但没有任何事在跑；
+TUI 下同一条早已消失。其二，Trajectory 页的搜索框聚焦时出现双层描边和一圈发虚的阴影。</p>
+<p><strong>根因：</strong> 桌面卡片以 <code>task_total &gt; 0</code>
+作为绘制条件，而 TUI 宿主按各域自己的 <code>visible</code>
+判断——任务域只认 <code>has_open_items</code>（存在 pending 或
+in-progress），全部完成即整条隐藏，重现时再默认展开。搜索框则是外层容器画了一层边框，
+内层 <code>Input</code> 又画自己的边框、背景与焦点环，聚焦时两套 chrome
+叠在一起。</p>
+<p><strong>决策：</strong> 新增纯函数
+<code>ui::sticky::card_visible</code>，按 TUI 的四域规则判定卡片是否绘制：存在
+pending/in-progress 任务、存在任意 Goal、存在运行中的 subagent、或存在运行中的
+background 任务，任一成立即显示。已完成的 background
+任务不能单独撑住卡片——kit 的 8 秒 linger 由空闲 tick 驱动，桌面端没有这个
+tick，任务结束即退出可见性判断（卡片因其它原因显示时，它的芯片照常出现）。
+搜索框改为单层：去掉外层带边框容器，图标走 <code>Input</code> 自带的
+<code>prefix</code>，尺寸 <code>xsmall</code>、宽 180px，与摘要行等高；与模型搜索、
+扩展搜索的用法一致，由组件自己管边框与焦点态。</p>
+<p><strong>改后行为：</strong> 任务全部完成且没有活跃 Goal、子代理或后台任务时，
+sticky 卡片整条消失，恢复干净对话区；有任一域活跃时卡片照常出现，任务列表与计数
+不变。Trajectory 搜索框只剩一层圆角边框，图标内嵌，聚焦时是组件标准的一圈描边，
+不再叠第二层框和外环阴影。</p>
+<p><strong>验证：</strong> <code>a_quiet_board_hides_the_card_and_a_moving_one_keeps_it</code>
+（四域逐一开合）、<code>an_all_completed_quiet_board_hides_the_task_card</code>
+（<code>debug_bounds</code> 断言全完成时无卡片、补一个运行中的 background
+任务后卡片回来）；<code>cargo test -p tact-desktop --lib</code> 199 全绿，
+<code>scripts/check-rust.sh</code> 全量通过（含 book checks）。截图
+<code>47-trajectory.png</code> / <code>49-trajectory-search.png</code>
+确认搜索框新外观。</p>
+<p><strong>Pointers：</strong>
+<code>crates/desktop/src/ui/sticky.rs</code>（<code>card_visible</code>）、
+<code>crates/desktop/src/root.rs</code>（<code>render_sticky</code>、
+<code>render_trajectory_summary</code>）。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>
