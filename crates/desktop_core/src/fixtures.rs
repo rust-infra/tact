@@ -391,7 +391,16 @@ pub fn demo_transcript() -> TranscriptView {
 }
 
 /// Inspector panels populated with goals-free live data.
+///
+/// Task timestamps are relative to the call rather than fixed: the strip sorts
+/// by elapsed time and prints a duration, so a pinned epoch would date the
+/// preview from whenever it was written.
 pub fn demo_inspector() -> InspectorView {
+    const MINUTE: i64 = 60_000;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
     InspectorView {
         tab: crate::snapshot::InspectorTab::Run,
         goals: Arc::from([]),
@@ -403,6 +412,11 @@ pub fn demo_inspector() -> InspectorView {
                 owner: Arc::from("main"),
                 blocks: Arc::from([2]),
                 blocked_by: Arc::from([]),
+                // Finished before the panel opened, so it draws no elapsed label
+                // in the strip — completed rows are hidden anyway.
+                created_at: Some(now.saturating_sub(12 * MINUTE)),
+                started_at: Some(now.saturating_sub(10 * MINUTE)),
+                completed_at: Some(now.saturating_sub(9 * MINUTE)),
             },
             TaskView {
                 id: 2,
@@ -411,6 +425,10 @@ pub fn demo_inspector() -> InspectorView {
                 owner: Arc::from("main"),
                 blocks: Arc::from([]),
                 blocked_by: Arc::from([1]),
+                // Still running: the elapsed label runs up to now.
+                created_at: Some(now.saturating_sub(6 * MINUTE)),
+                started_at: Some(now.saturating_sub(4 * MINUTE)),
+                completed_at: None,
             },
             TaskView {
                 id: 3,
@@ -419,6 +437,9 @@ pub fn demo_inspector() -> InspectorView {
                 owner: Arc::from("main"),
                 blocks: Arc::from([]),
                 blocked_by: Arc::from([2]),
+                created_at: Some(now.saturating_sub(MINUTE)),
+                started_at: None,
+                completed_at: None,
             },
         ]),
         subagents: Arc::from([
@@ -459,7 +480,9 @@ pub fn demo_inspector() -> InspectorView {
             id: Arc::from("bg-1"),
             command: Arc::from("cargo test -p tact store::session_store"),
             status: BackgroundTaskStatusSnapshot::Running,
-            started_at: 0,
+            // Relative to now, like every other timestamp in this fixture: a
+            // literal `0` is 1970 and renders as an elapsed time of decades.
+            started_at: now - 96_000,
             finished_at: None,
             output_tail: Arc::from("running 8 tests..."),
             output_path: Some(Arc::from("/tmp/tact-bg-1.log")),

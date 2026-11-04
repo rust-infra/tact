@@ -86,12 +86,14 @@ The desktop shell has four persistent regions:
 1. **Title bar** - workspace, repository, branch/worktree, session status,
    command palette, theme, and window controls.
 2. **Session rail** - project switcher, new session, recent sessions,
-   Extensions and Settings. Durable Goals/Subagents/Background shortcuts live in
-   the sticky strip and Inspector, not duplicated in the rail.
+   Extensions and Settings. The session list stretches to fill the rail, with
+   Extensions, the quota card and Settings pinned to its bottom edge. Goals,
+   Subagents and Background live only in the Inspector tabs and the sticky
+   strip; the rail no longer keeps a second copy of those shortcuts.
 3. **Run transcript** - mixed rows in execution order, with a sticky run
    summary and a composer/queue at the bottom.
-4. **Inspector** - Run, Goals, Subagents, and Context views. It is the
-   persistent overview that prevents parallel work from becoming invisible.
+4. **Inspector** - Run, Goals, Subagents, Context, and Background views. It is
+   the persistent overview that prevents parallel work from becoming invisible.
 
 Transient surfaces:
 
@@ -211,8 +213,38 @@ Two alternatives were evaluated:
 - Session teardown that sends `UserCommand::Cancel`, closes the command channel,
   and releases the session lock.
 
-### P0: Run Inspector
+### P0: Trajectory Page
 
+The run room has two pages behind one tab strip: Chat and Trajectory. Trajectory
+shows the same evidence as the transcript, reorganized for review rather than
+reading.
+
+- Overview plot with three lanes (Input, Model, Tools), one equal-width column
+  per record so the plot's painters and its hit test agree on one projection;
+  clicking a block selects the record under the pointer.
+- Ledger grouped by turn. Every row prints its stable record index, kind chip,
+  one-line text, duration when measured, and a failed status chip. Turn headers
+  survive a filter, so a filtered ledger still groups what it shows.
+- Live search over record text. Non-matching spans dim in the overview instead
+  of disappearing, and the header reports `matched / total`.
+- Selecting a record opens a local inspector in the right column with that
+  record's own facets. The column collapses when nothing is selected, so the
+  ledger keeps the full width while scanning, and its header carries the kind
+  chip, `Turn N · steps M`, and a close control.
+- The inspector is tabbed so each facet gets the full column instead of stacking
+  into one long scroll: Summary (hierarchy, status, started, duration), Payload
+  (the input), Result (the output), Schema (tool name and id), and Timing (the
+  measured duration). A facet the record never reported says so rather than
+  showing an empty block.
+- A result longer than the column scrolls inside the tab body rather than
+  setting the panel's height and painting over the ledger.
+- A footer under the ledger carries session totals: turns and steps, throughput,
+  total tokens, cache-hit share, and how full the context window got. Every
+  figure is optional — a producer that reported no usage, no cache counters, or
+  no window leaves that figure out instead of showing a zero the page cannot
+  back with evidence.
+
+### P0: Run Inspector
 - Active run status and elapsed time.
 - Current phase and latest tool. The tool chip shows pending, running,
   completed, failed, cancelled, or unknown state; activating it opens that
@@ -222,8 +254,29 @@ Two alternatives were evaluated:
 - Sticky Tasks is a persistent strip between transcript and composer. It shows
   the plan counter and the active task at rest (the focus-first default in
   section 12); expanding reveals every task row. Goals and Agents remain
-  one-click inspector shortcuts; Background opens the current background-task
-  summary and output/stop actions.
+  one-click inspector shortcuts; Background opens the Background inspector tab,
+  which lists every task this session started with its status, elapsed time,
+  and output/stop actions.
+- The strip lists only the current session's tasks. The task store is
+  workspace-global, so the published snapshot is filtered by session before it
+  reaches the UI; an unattributed session keeps the whole list rather than
+  hiding its own work.
+- Expanded rows follow the same rule as the TUI sticky host: two groups, in
+  progress then pending, with completed work left out — the `n/m` counter is
+  what reports it. In progress sorts by elapsed time ascending and pending by
+  `created_at` descending, so each group leads with the newest activity. Rows
+  carry owner, blocking dependency, and elapsed time in that order, each
+  omitted when unreported. Row numbers count paint order, so a grouped strip
+  still reads continuously from `01`.
+- The strip shows at most ten rows and scrolls within itself, with one marker
+  row naming what is out of view, so a long plan cannot grow the card over the
+  transcript.
+- The Background tab lists every background task the session started, running
+  ones first and the newest start leading within each group, with a `running/
+  total` counter in its header. Each row keeps the output reader and stop
+  actions. It replaces the former Background dialog: one surface per data set,
+  living beside the other inspector facets instead of stacking a modal over the
+  transcript.
 - Background task list with open-output action.
 
 ### P1: Tact Feature Parity
@@ -417,7 +470,7 @@ The reducer is pure where possible. Runtime effects are emitted as
   selection.
 - `Cmd/Ctrl+.`: stop the current run after confirmation if a destructive tool
   is active.
-- `Cmd/Ctrl+1..4`: switch inspector tabs.
+- `Cmd/Ctrl+1..5`: switch inspector tabs.
 - `Option/Alt+Up/Down`: move through queued prompts.
 - `Space`: toggle selected multi-select options.
 - `Enter`: activate focused row, gate action, or command.

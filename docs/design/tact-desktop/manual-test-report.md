@@ -28,7 +28,7 @@ scripts/check-rust.sh
 | A8 | Archive/restore filters the manager | `session_manager_filters_active_and_archived`; capture `06` | pass |
 | A9 | Fuzzy search in the session manager | `session_manager_fuzzy_search_finds_abbreviations` | pass |
 | A10 | Rename / archive actions restore trigger focus | `multistep_forms_restore_the_original_trigger_focus`; capture `06` | pass |
-| A11 | DURABLE rail shortcuts open Goals, Subagents and Background | capture `01`; `rail-durable` | pass |
+| A11 | Goals, Subagents and Background are reachable only from the Inspector tabs and the sticky strip; the rail keeps no duplicate block | capture `01`; `inspector-tab-1..4` | pass |
 
 ## B. Transcript and run control
 

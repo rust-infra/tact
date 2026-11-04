@@ -14,6 +14,7 @@ mod session;
 mod session_lock;
 mod snapshot;
 mod state;
+pub mod trajectory;
 pub mod transcript;
 
 #[cfg(any(test, feature = "ui-capture"))]
@@ -50,6 +51,10 @@ pub use tact_protocol::{
     BackgroundTaskStatusSnapshot, GoalCriterionStatusSnapshot, GoalPhaseSnapshot,
     GoalStatusSnapshot, HookItemSnapshot, HookSnapshot, McpServerStatusSnapshot,
     SubagentStatusSnapshot, SurfaceSnapshot, TaskStatusSnapshot, UiRequestPurpose,
+};
+pub use trajectory::{
+    TrajectoryKind, TrajectoryLane, TrajectoryRecord, TrajectoryRecordId, TrajectorySpan,
+    TrajectorySummary, TrajectoryTurn, TrajectoryView, fold_step_status, search_terms,
 };
 pub use transcript::{
     BackgroundTaskView, GateCard, GateKind, GateOrigin, GateSelection, GateState, GoalView, LoopId,

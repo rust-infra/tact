@@ -14,6 +14,7 @@ actions!(
         ShowGoals,
         ShowSubagents,
         ShowContext,
+        ShowBackground,
         SubmitComposer,
         QueuePrevious,
         QueueNext,
@@ -43,6 +44,7 @@ pub const SHORTCUTS: &[&str] = &[
     "secondary-2",
     "secondary-3",
     "secondary-4",
+    "secondary-5",
     "alt-up",
     "alt-down",
     "up",
@@ -74,6 +76,7 @@ pub(crate) enum BindingAction {
     ShowGoals,
     ShowSubagents,
     ShowContext,
+    ShowBackground,
     SubmitComposer,
     QueuePrevious,
     QueueNext,
@@ -104,6 +107,7 @@ pub(crate) const GLOBAL_BINDINGS: &[(&str, Option<&str>, BindingAction)] = &[
     ("secondary-2", None, BindingAction::ShowGoals),
     ("secondary-3", None, BindingAction::ShowSubagents),
     ("secondary-4", None, BindingAction::ShowContext),
+    ("secondary-5", None, BindingAction::ShowBackground),
     ("alt-up", None, BindingAction::QueuePrevious),
     ("alt-down", None, BindingAction::QueueNext),
     ("enter", Some("Queue"), BindingAction::QueueSendNow),
@@ -143,6 +147,9 @@ pub fn bindings() -> Vec<gpui::KeyBinding> {
                 gpui::KeyBinding::new(keystroke, ShowSubagents, context)
             }
             BindingAction::ShowContext => gpui::KeyBinding::new(keystroke, ShowContext, context),
+            BindingAction::ShowBackground => {
+                gpui::KeyBinding::new(keystroke, ShowBackground, context)
+            }
             BindingAction::SubmitComposer => {
                 gpui::KeyBinding::new(keystroke, SubmitComposer, context)
             }

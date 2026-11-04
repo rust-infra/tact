@@ -35,6 +35,80 @@ pub const TRANSCRIPT_ROW_KINDS: [TranscriptRowKind; 11] = [
     TranscriptRowKind::Error,
 ];
 
+/// The run room's two pages: the conversation, and the evidence ledger built
+/// from the same rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RunTab {
+    #[default]
+    Chat,
+    Trajectory,
+}
+
+impl RunTab {
+    pub const ALL: [Self; 2] = [Self::Chat, Self::Trajectory];
+
+    /// Zero-based position in the tab strip, used for the switch animation.
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Chat => 0,
+            Self::Trajectory => 1,
+        }
+    }
+
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Chat => Self::Trajectory,
+            Self::Trajectory => Self::Chat,
+        }
+    }
+}
+
+/// The Trajectory detail panel's tabs.
+///
+/// Each tab answers one question about the selected record, so the panel stays
+/// scannable instead of stacking every body into one column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TrajectoryDetailTab {
+    #[default]
+    Summary,
+    Payload,
+    Result,
+    Schema,
+    Timing,
+}
+
+impl TrajectoryDetailTab {
+    pub const ALL: [Self; 5] = [
+        Self::Summary,
+        Self::Payload,
+        Self::Result,
+        Self::Schema,
+        Self::Timing,
+    ];
+
+    pub const fn label_key(self) -> crate::i18n::TextKey {
+        use crate::i18n::TextKey;
+        match self {
+            Self::Summary => TextKey::DetailSummary,
+            Self::Payload => TextKey::DetailPayload,
+            Self::Result => TextKey::DetailResult,
+            Self::Schema => TextKey::DetailSchema,
+            Self::Timing => TextKey::DetailTiming,
+        }
+    }
+
+    /// The tab's own debug selector, so a test can click it.
+    pub const fn selector(self) -> &'static str {
+        match self {
+            Self::Summary => "trajectory-tab-summary",
+            Self::Payload => "trajectory-tab-payload",
+            Self::Result => "trajectory-tab-result",
+            Self::Schema => "trajectory-tab-schema",
+            Self::Timing => "trajectory-tab-timing",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ThemeGeometry {
     pub rail_width: u16,
@@ -112,6 +186,16 @@ mod tests {
     use gpui::TestAppContext;
 
     use super::*;
+
+    #[test]
+    fn run_tabs_are_a_two_page_cycle() {
+        assert_eq!(RunTab::default(), RunTab::Chat);
+        assert_eq!(RunTab::ALL.len(), 2);
+        for (index, tab) in RunTab::ALL.into_iter().enumerate() {
+            assert_eq!(tab.index(), index);
+            assert_eq!(tab.next().next(), tab);
+        }
+    }
 
     #[gpui::test]
     fn desktop_shell_renders_all_transcript_row_kinds(_cx: &mut TestAppContext) {

@@ -698,6 +698,9 @@ fn task_view(task: &TaskSnapshot) -> TaskView {
         owner: Arc::from(task.owner.clone()),
         blocks: task.blocks.clone().into(),
         blocked_by: task.blocked_by.clone().into(),
+        created_at: task.created_at,
+        started_at: task.started_at,
+        completed_at: task.completed_at,
     }
 }
 

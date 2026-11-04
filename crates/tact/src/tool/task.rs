@@ -7,7 +7,9 @@ use serde::Deserialize;
 use tool_refactor_macros::tool;
 
 use crate::{
-    task::{TaskStatus, TaskUpdate, emit_tasks_changed, render_task_json, render_task_list},
+    task::{
+        TaskStatus, TaskUpdate, emit_session_tasks_changed, render_task_json, render_task_list,
+    },
     tool::ToolContext,
 };
 
@@ -53,9 +55,10 @@ pub async fn task_create(ctx: ToolContext, input: TaskCreateInput) -> Result<Str
         }
     };
     let listed = ctx.task_manager.list().await.unwrap_or_default();
-    emit_tasks_changed(
+    emit_session_tasks_changed(
         &ctx.events,
         listed,
+        ctx.session_id.as_deref(),
         tact_protocol::TasksChangeReason::Created,
     );
     render_task_json(&task)
@@ -154,9 +157,10 @@ pub async fn task_update(ctx: ToolContext, input: TaskUpdateInput) -> Result<Str
         )
         .await?;
     let listed = ctx.task_manager.list().await.unwrap_or_default();
-    emit_tasks_changed(
+    emit_session_tasks_changed(
         &ctx.events,
         listed,
+        ctx.session_id.as_deref(),
         tact_protocol::TasksChangeReason::Updated,
     );
     render_task_json(&task)
@@ -348,6 +352,55 @@ mod tests {
             AgentUpdate::TasksChanged { tasks, reason } => {
                 assert!(matches!(reason, TasksChangeReason::Updated));
                 assert!(tasks.is_empty(), "deleted tasks omitted from snapshot");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    /// A task tool publishes only the calling session's tasks.
+    ///
+    /// `task_manager.list()` is workspace-global, so publishing it verbatim
+    /// would show one session another's tasks — the regression this pins.
+    #[tokio::test]
+    async fn task_tools_publish_only_the_calling_sessions_tasks() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let router = ToolRouter::new().route(TaskCreateTool).unwrap();
+        let mut context = test_context("task_create_scopes_to_session");
+        context.events = UpdateSink::for_ui(tx.clone());
+
+        // One task created under another session's identity, then one of ours.
+        context.session_id = Some("other-session".to_string());
+        router
+            .call(
+                &context,
+                "task_create",
+                serde_json::json!({ "subject": "theirs" }),
+            )
+            .await
+            .unwrap();
+        let _ = rx.try_recv();
+
+        context.session_id = Some("mine".to_string());
+        router
+            .call(
+                &context,
+                "task_create",
+                serde_json::json!({ "subject": "mine" }),
+            )
+            .await
+            .unwrap();
+
+        let update = rx.try_recv().expect("TasksChanged");
+        match update {
+            AgentUpdate::TasksChanged { tasks, .. } => {
+                assert_eq!(
+                    tasks
+                        .iter()
+                        .map(|task| task.subject.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["mine"],
+                    "the other session's task is not published"
+                );
             }
             other => panic!("unexpected {other:?}"),
         }
