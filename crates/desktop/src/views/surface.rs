@@ -44,11 +44,14 @@ pub fn layer(snapshot: Signal<SnapshotRef>) -> AnyElement {
                     .border_1()
                     .border_color(move || theme().border)
                     .child(header(title, move || dismissed.set(Some(revision))))
-                    .child(scroll().flex_1().child(
-                        view().px_5().py_4().child(
-                            text_view().markdown(body).selectable(true),
+                    .child(
+                        scroll().flex_1().child(
+                            view()
+                                .px_5()
+                                .py_4()
+                                .child(text_view().markdown(body).selectable(true)),
                         ),
-                    )),
+                    ),
             )
             .into_element()
     })

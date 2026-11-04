@@ -51,12 +51,13 @@ pub fn layer(
                     .border_color(move || theme().border)
                     .child(header(kind, overlay))
                     .child(scroll().flex_1().child(
-                        view()
-                            .flex_col()
-                            .gap_1()
-                            .px_4()
-                            .py_3()
-                            .child(panel(kind, snapshot, controller.clone(), overlay, query)),
+                        view().flex_col().gap_1().px_4().py_3().child(panel(
+                            kind,
+                            snapshot,
+                            controller.clone(),
+                            overlay,
+                            query,
+                        )),
                     )),
             )
             .into_element(),
@@ -140,49 +141,44 @@ fn command_center_panel(
                 .border_color(move || theme().border)
                 .bg(move || theme().background),
         )
-        .child(
-            view()
-                .flex_col()
-                .gap(px(2.0))
-                .child(each(
-                    move || command_center::items(&query.get()),
-                    |item: &command_center::CommandCenterItem| item.title.clone(),
-                    {
-                        let controller = controller.clone();
-                        move |item: ReadSignal<command_center::CommandCenterItem>, _| {
-                            let item = item.get_untracked();
-                            let controller = controller.clone();
-                            view()
-                                .flex_col()
-                                .gap(px(1.0))
-                                .px_3()
-                                .py_2()
-                                .rounded(px(7.0))
-                                .cursor_pointer()
-                                .role(AccessibilityRole::Button)
-                                .label(item.title.clone())
-                                .hover(|style| style.bg(move || theme().muted))
-                                .on_press(move || {
-                                    let _ = controller.dispatch(DesktopIntent::InvokeCommand {
-                                        id: item.id.clone(),
-                                        args: CommandArguments { tokens: Vec::new() },
-                                    });
-                                    overlay.set(None);
-                                })
-                                .child(
-                                    text(item.title.clone())
-                                        .text_size(px(13.0))
-                                        .font_weight(FontWeight::MEDIUM),
-                                )
-                                .child(
-                                    text(item.subtitle.clone())
-                                        .text_size(px(11.0))
-                                        .text_color(move || theme().muted_foreground),
-                                )
-                        }
-                    },
-                )),
-        )
+        .child(view().flex_col().gap(px(2.0)).child(each(
+            move || command_center::items(&query.get()),
+            |item: &command_center::CommandCenterItem| item.title.clone(),
+            {
+                let controller = controller.clone();
+                move |item: ReadSignal<command_center::CommandCenterItem>, _| {
+                    let item = item.get_untracked();
+                    let controller = controller.clone();
+                    view()
+                        .flex_col()
+                        .gap(px(1.0))
+                        .px_3()
+                        .py_2()
+                        .rounded(px(7.0))
+                        .cursor_pointer()
+                        .role(AccessibilityRole::Button)
+                        .label(item.title.clone())
+                        .hover(|style| style.bg(move || theme().muted))
+                        .on_press(move || {
+                            let _ = controller.dispatch(DesktopIntent::InvokeCommand {
+                                id: item.id.clone(),
+                                args: CommandArguments { tokens: Vec::new() },
+                            });
+                            overlay.set(None);
+                        })
+                        .child(
+                            text(item.title.clone())
+                                .text_size(px(13.0))
+                                .font_weight(FontWeight::MEDIUM),
+                        )
+                        .child(
+                            text(item.subtitle.clone())
+                                .text_size(px(11.0))
+                                .text_color(move || theme().muted_foreground),
+                        )
+                }
+            },
+        )))
 }
 
 fn settings_panel(
@@ -256,7 +252,7 @@ fn control(
                 .rounded(px(7.0))
                 .cursor_pointer()
                 .role(AccessibilityRole::Button)
-                .label(move || label_value())
+                .label(label_value)
                 .bg(move || theme().muted)
                 .on_press(move || {
                     let _ = toggle.dispatch(DesktopIntent::SetSetting {
@@ -265,7 +261,7 @@ fn control(
                     });
                 })
                 .child(
-                    text(move || text_value())
+                    text(text_value)
                         .text_size(px(12.0))
                         .text_color(move || theme().foreground),
                 )
@@ -286,7 +282,7 @@ fn control(
                 .rounded(px(7.0))
                 .cursor_pointer()
                 .role(AccessibilityRole::Button)
-                .label(move || label_value())
+                .label(label_value)
                 .bg(move || theme().muted)
                 .on_press(move || {
                     let _ = cycle.dispatch(DesktopIntent::SetSetting {
@@ -295,13 +291,13 @@ fn control(
                     });
                 })
                 .child(
-                    text(move || text_value())
+                    text(text_value)
                         .text_size(px(12.0))
                         .text_color(move || theme().foreground),
                 )
                 .into_element()
         }
-        SettingId::ConfigPath => text(move || value())
+        SettingId::ConfigPath => text(value)
             .text_size(px(11.0))
             .font_family("Lilex")
             .text_color(move || theme().muted_foreground)
@@ -385,7 +381,10 @@ fn next_choice(id: SettingId, current: &str) -> String {
         SettingId::ReasoningEffort => &["low", "medium", "high", "xhigh", "max"],
         _ => &[],
     };
-    let index = options.iter().position(|option| *option == current).unwrap_or(0);
+    let index = options
+        .iter()
+        .position(|option| *option == current)
+        .unwrap_or(0);
     options
         .get((index + 1) % options.len().max(1))
         .copied()
@@ -441,9 +440,12 @@ fn setting_value(id: SettingId, snapshot: &tact_desktop_core::DesktopSnapshot) -
         SettingId::ModelContextWindow => {
             optional(snapshot.settings.context_window.map(|value| value as u64))
         }
-        SettingId::SnapshotMaxItems => {
-            optional(snapshot.settings.snapshot_max_items.map(|value| value as u64))
-        }
+        SettingId::SnapshotMaxItems => optional(
+            snapshot
+                .settings
+                .snapshot_max_items
+                .map(|value| value as u64),
+        ),
         SettingId::MicroCompact => on_off(snapshot.settings.micro_compact),
         SettingId::TokioConsole => on_off(snapshot.settings.tokio_console),
         SettingId::SkillBodyAutoInject => on_off(snapshot.settings.skill_body_auto_inject),
@@ -460,10 +462,7 @@ fn optional(value: Option<u64>) -> String {
     value.map(|value| value.to_string()).unwrap_or_default()
 }
 
-fn session_panel(
-    snapshot: Signal<SnapshotRef>,
-    controller: DesktopController,
-) -> impl IntoElement {
+fn session_panel(snapshot: Signal<SnapshotRef>, controller: DesktopController) -> impl IntoElement {
     view().flex_col().gap_2().child(each(
         move || {
             let snapshot = snapshot.get();
@@ -505,10 +504,11 @@ fn session_panel(
                         .role(AccessibilityRole::Button)
                         .label(if archived { "Restore" } else { "Archive" })
                         .on_press(move || {
-                            let _ = archive_controller.dispatch(DesktopIntent::SetSessionArchived {
-                                session_id: archive_id.clone(),
-                                archived: !archived,
-                            });
+                            let _ =
+                                archive_controller.dispatch(DesktopIntent::SetSessionArchived {
+                                    session_id: archive_id.clone(),
+                                    archived: !archived,
+                                });
                         })
                         .child(
                             text(if archived { "Restore" } else { "Archive" })
@@ -543,65 +543,53 @@ fn extensions_panel(snapshot: Signal<SnapshotRef>) -> impl IntoElement {
     view()
         .flex_col()
         .gap_2()
-        .child(section(
-            "Skills",
-            move || {
-                snapshot
-                    .get()
-                    .0
-                    .extensions
-                    .snapshot
-                    .skills
-                    .iter()
-                    .map(|skill| format!("{} · {}", skill.name, skill.description))
-                    .collect::<Vec<_>>()
-            },
-        ))
-        .child(section(
-            "Plugins",
-            move || {
-                snapshot
-                    .get()
-                    .0
-                    .extensions
-                    .snapshot
-                    .plugins
-                    .iter()
-                    .map(|plugin| {
-                        format!(
-                            "{} · {}{}",
-                            plugin.name,
-                            plugin.marketplace,
-                            plugin
-                                .version
-                                .as_deref()
-                                .map(|version| format!(" · {version}"))
-                                .unwrap_or_default()
-                        )
-                    })
-                    .collect::<Vec<_>>()
-            },
-        ))
-        .child(section(
-            "Marketplaces",
-            move || {
-                snapshot
-                    .get()
-                    .0
-                    .extensions
-                    .snapshot
-                    .marketplaces
-                    .iter()
-                    .map(|marketplace| format!("{} · {}", marketplace.name, marketplace.source))
-                    .collect::<Vec<_>>()
-            },
-        ))
+        .child(section("Skills", move || {
+            snapshot
+                .get()
+                .0
+                .extensions
+                .snapshot
+                .skills
+                .iter()
+                .map(|skill| format!("{} · {}", skill.name, skill.description))
+                .collect::<Vec<_>>()
+        }))
+        .child(section("Plugins", move || {
+            snapshot
+                .get()
+                .0
+                .extensions
+                .snapshot
+                .plugins
+                .iter()
+                .map(|plugin| {
+                    format!(
+                        "{} · {}{}",
+                        plugin.name,
+                        plugin.marketplace,
+                        plugin
+                            .version
+                            .as_deref()
+                            .map(|version| format!(" · {version}"))
+                            .unwrap_or_default()
+                    )
+                })
+                .collect::<Vec<_>>()
+        }))
+        .child(section("Marketplaces", move || {
+            snapshot
+                .get()
+                .0
+                .extensions
+                .snapshot
+                .marketplaces
+                .iter()
+                .map(|marketplace| format!("{} · {}", marketplace.name, marketplace.source))
+                .collect::<Vec<_>>()
+        }))
 }
 
-fn section(
-    title: &'static str,
-    rows: impl Fn() -> Vec<String> + 'static,
-) -> impl IntoElement {
+fn section(title: &'static str, rows: impl Fn() -> Vec<String> + 'static) -> impl IntoElement {
     view()
         .flex_col()
         .gap(px(1.0))

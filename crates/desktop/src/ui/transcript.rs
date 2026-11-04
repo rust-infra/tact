@@ -25,11 +25,3 @@ pub fn row_kind(row: &TranscriptRow) -> TranscriptRowKind {
 pub fn visible_row(row: &TranscriptRow, snapshot: &DesktopSnapshot) -> bool {
     visible_row_kind(row_kind(row), snapshot.show_hook_output)
 }
-
-#[cfg(test)]
-mod tests {
-
-    use super::*;
-
-    
-}

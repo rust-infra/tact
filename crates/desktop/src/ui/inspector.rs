@@ -98,11 +98,3 @@ fn format_ids(ids: &[u64]) -> String {
             .join(", ")
     }
 }
-
-#[cfg(test)]
-mod tests {
-
-    use super::*;
-
-    
-}

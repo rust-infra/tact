@@ -10,42 +10,34 @@ use super::overlays::Overlay;
 use crate::views::MenuKind;
 
 pub fn bar(menu: Signal<Option<MenuKind>>) -> impl IntoElement {
-    view()
-        .flex_row()
-        .items_center()
-        .gap(px(1.0))
-        .children([MenuKind::File, MenuKind::View, MenuKind::Session].map(
-            |kind| {
-                let active = move || menu.get() == Some(kind);
-                view()
-                    .px_2()
-                    .py(px(3.0))
-                    .rounded(px(6.0))
-                    .cursor_pointer()
-                    .role(AccessibilityRole::Button)
-                    .label(kind.label())
-                    .style_when(active, |style| style.bg(move || theme().muted))
-                    .hover(|style| style.bg(move || theme().muted))
-                    .on_press(move || {
-                        if active() {
-                            menu.set(None);
-                        } else {
-                            menu.set(Some(kind));
-                        }
-                    })
-                    .child(
-                        text(kind.label())
-                            .text_size(px(11.0))
-                            .text_color(move || {
-                                if active() {
-                                    theme().foreground
-                                } else {
-                                    theme().muted_foreground
-                                }
-                            }),
-                    )
-            },
-        ))
+    view().flex_row().items_center().gap(px(1.0)).children(
+        [MenuKind::File, MenuKind::View, MenuKind::Session].map(|kind| {
+            let active = move || menu.get() == Some(kind);
+            view()
+                .px_2()
+                .py(px(3.0))
+                .rounded(px(6.0))
+                .cursor_pointer()
+                .role(AccessibilityRole::Button)
+                .label(kind.label())
+                .style_when(active, |style| style.bg(move || theme().muted))
+                .hover(|style| style.bg(move || theme().muted))
+                .on_press(move || {
+                    if active() {
+                        menu.set(None);
+                    } else {
+                        menu.set(Some(kind));
+                    }
+                })
+                .child(text(kind.label()).text_size(px(11.0)).text_color(move || {
+                    if active() {
+                        theme().foreground
+                    } else {
+                        theme().muted_foreground
+                    }
+                }))
+        }),
+    )
 }
 
 pub fn layer(

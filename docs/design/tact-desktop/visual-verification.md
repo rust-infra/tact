@@ -1,3 +1,10 @@
+> **2026-11-04:** the desktop now runs on Native Shell. The GPUI off-screen
+> capture harness (`cargo run -p tact-desktop --example ui_capture`) no longer
+> exists. Verification is `scripts/check-ui.sh`, which runs the headless
+> `nsh-testing` shell and parity tests against the real engine. The pixel
+> comparison notes below describe the retired GPUI build and are kept for
+> history.
+
 # Tact Desktop visual verification
 
 The desktop shell ships three verification paths. The off-screen harness is

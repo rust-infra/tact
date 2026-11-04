@@ -4,8 +4,8 @@
 pub mod app;
 pub mod i18n;
 mod shell;
-pub mod views;
 pub mod ui;
+pub mod views;
 
 use nsh_core::prelude::*;
 

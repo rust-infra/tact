@@ -6,9 +6,8 @@ use nsh_base::{text_view, theme};
 use nsh_core::element::{AccessibilityRole, AnyElement};
 use nsh_core::prelude::*;
 use tact_desktop_core::{
-    DesktopController, DesktopIntent, GateCard, GateKind, GateResponse, GateSelection,
-    GateState, ReaderRef, RowBody, RowId, RowStatus, ToolGroupItem, ToolGroupRow, ToolRow,
-    TranscriptRow,
+    DesktopController, DesktopIntent, GateCard, GateKind, GateResponse, GateSelection, GateState,
+    ReaderRef, RowBody, RowId, RowStatus, ToolGroupItem, ToolGroupRow, ToolRow, TranscriptRow,
 };
 
 use crate::app::SnapshotRef;
@@ -89,21 +88,16 @@ fn chat(snapshot: Signal<SnapshotRef>, controller: DesktopController) -> impl In
             .collect::<Vec<_>>()
     };
     view().flex_1().child(
-        scroll().flex_1().child(
-            view()
-                .flex_col()
-                .gap_3()
-                .px_6()
-                .py_4()
-                .child(each(
-                    rows,
-                    |row: &Arc<TranscriptRow>| row.ordinal,
-                    move |row, _| {
-                        let controller = row_controller.clone();
-                        dynamic(move || row_element(row.get(), snapshot, controller.clone()))
-                    },
-                )),
-        ),
+        scroll()
+            .flex_1()
+            .child(view().flex_col().gap_3().px_6().py_4().child(each(
+                rows,
+                |row: &Arc<TranscriptRow>| row.ordinal,
+                move |row, _| {
+                    let controller = row_controller.clone();
+                    dynamic(move || row_element(row.get(), snapshot, controller.clone()))
+                },
+            ))),
     )
 }
 
@@ -185,13 +179,8 @@ fn row_element(
             .text_color(move || theme().color("danger").unwrap_or(theme().foreground))
             .into_element(),
     };
-    view()
-        .role(role)
-        .label(label)
-        .child(body)
-        .into_element()
+    view().role(role).label(label).child(body).into_element()
 }
-
 
 fn tool_group(row: RowId, group: &ToolGroupRow, controller: DesktopController) -> AnyElement {
     let mut card = view()
@@ -259,7 +248,10 @@ fn tool_card(row: RowId, tool: &ToolRow, controller: DesktopController) -> AnyEl
                         .text_size(px(9.0))
                         .text_color(move || status_color(status)),
                 )
-                .child(open_button(controller.clone(), ReaderRef::ToolOutput(tool.id))),
+                .child(open_button(
+                    controller.clone(),
+                    ReaderRef::ToolOutput(tool.id),
+                )),
         );
     if tool.expanded && !tool.output.preview.is_empty() {
         card = card.child(ansi::element(
@@ -392,17 +384,13 @@ fn gate_card(gate: &GateCard, controller: DesktopController) -> AnyElement {
                         });
                     }
                 })
-                .child(
-                    text(label)
-                        .text_size(px(12.0))
-                        .text_color(move || {
-                            if selected {
-                                theme().primary_foreground
-                            } else {
-                                theme().foreground
-                            }
-                        }),
-                ),
+                .child(text(label).text_size(px(12.0)).text_color(move || {
+                    if selected {
+                        theme().primary_foreground
+                    } else {
+                        theme().foreground
+                    }
+                })),
         );
     }
     let submit = if multi {

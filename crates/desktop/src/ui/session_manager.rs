@@ -92,10 +92,4 @@ mod tests {
             search_score: 0,
         }
     }
-
-    
-
-    
-
-    
 }

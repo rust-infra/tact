@@ -7,8 +7,8 @@ pub mod overlays;
 pub mod rail;
 pub mod reader;
 pub mod surface;
-pub mod toast;
 pub mod title_bar;
+pub mod toast;
 pub mod trajectory;
 pub mod transcript;
 

@@ -46,9 +46,7 @@ compile_error!("Tact Desktop runs on macOS, Windows and Linux.");
 /// Copies the crate's registered assets next to the executable, where
 /// `asset:/` resolves them in a `cargo run` build.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-fn asset_directory(
-    registry: &nsh_core::element::Registry,
-) -> std::io::Result<std::path::PathBuf> {
+fn asset_directory(registry: &nsh_core::element::Registry) -> std::io::Result<std::path::PathBuf> {
     let executable = std::env::current_exe()?;
     let base = executable
         .parent()
@@ -59,7 +57,11 @@ fn asset_directory(
         if destination.is_file() {
             continue;
         }
-        std::fs::create_dir_all(destination.parent().expect("an asset has a parent directory"))?;
+        std::fs::create_dir_all(
+            destination
+                .parent()
+                .expect("an asset has a parent directory"),
+        )?;
         std::fs::copy(file.source, destination)?;
     }
     Ok(base)

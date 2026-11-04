@@ -32,13 +32,15 @@ pub fn layer(reader: Signal<Option<ReaderRequest>>) -> AnyElement {
                     .border_1()
                     .border_color(move || theme().border)
                     .child(header(request.title.to_string(), reader))
-                    .child(scroll().flex_1().child(
-                        view().px_5().py_4().child(
-                            text_view()
-                                .markdown(request.markdown.to_string())
-                                .selectable(true),
+                    .child(
+                        scroll().flex_1().child(
+                            view().px_5().py_4().child(
+                                text_view()
+                                    .markdown(request.markdown.to_string())
+                                    .selectable(true),
+                            ),
                         ),
-                    )),
+                    ),
             )
             .into_element(),
     })

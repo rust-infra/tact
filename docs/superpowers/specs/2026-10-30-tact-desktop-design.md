@@ -1,5 +1,10 @@
 # Tact Desktop Architecture
 
+> **2026-11-04:** the desktop moved from GPUI to Native Shell. This document
+> describes the retired GPUI build; the current architecture and remaining
+> work are in `.audit/nsh-migration/design.md`.
+
+
 > Date: 2026-10-30
 > Status: implemented; verification is tracked by the implementation plan and
 > the repository Rust/book gates.

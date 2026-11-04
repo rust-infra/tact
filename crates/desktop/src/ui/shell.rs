@@ -180,5 +180,3 @@ pub fn narrow_overlay_count(width: f32) -> usize {
     let layout = layout::layout(width, 1.0, true, true);
     usize::from(layout.rail_overlay) + usize::from(layout.inspector_overlay)
 }
-
-

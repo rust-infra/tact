@@ -47,12 +47,3 @@ pub fn canonical_ids(items: &[CommandCenterItem]) -> Vec<String> {
         })
         .collect()
 }
-
-#[cfg(test)]
-mod tests {
-    use tact_catalog::BuiltinCommand;
-
-    use super::*;
-
-    
-}

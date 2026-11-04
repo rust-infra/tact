@@ -91,6 +91,4 @@ mod tests {
             Some("2.0s")
         );
     }
-
-    
 }

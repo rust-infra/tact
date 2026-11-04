@@ -33,8 +33,6 @@ mod tests {
 
     use super::*;
 
-    
-
     #[test]
     fn extension_search_uses_the_shared_fuzzy_matcher() {
         assert!(matches_extension("gthb", "GitHub Marketplace"));

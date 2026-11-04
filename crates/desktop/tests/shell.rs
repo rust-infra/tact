@@ -11,8 +11,7 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
 
 fn config() -> EngineConfig {
     let mut config = EngineConfig::new(Root::of::<tact_desktop::App>());
-    config.clock =
-        nsh_core::time::Clock::manual(std::time::SystemTime::now()).with_frames();
+    config.clock = nsh_core::time::Clock::manual(std::time::SystemTime::now()).with_frames();
     config
 }
 
@@ -31,8 +30,10 @@ fn the_shell_renders_its_title_bar_and_run_room_tabs() {
 fn the_command_center_opens_from_the_title_bar() {
     let _serial = serial();
     let mut app = Headless::start(config()).expect("the Tact shell starts");
-    app.wait_for("label:Commands").expect("the Commands button shows");
-    app.press("label:Commands").expect("the Commands button presses");
+    app.wait_for("label:Commands")
+        .expect("the Commands button shows");
+    app.press("label:Commands")
+        .expect("the Commands button presses");
     app.wait_for("text:Command center")
         .expect("the command center opens");
     app.press("label:Close").expect("the close button shows");
@@ -55,19 +56,21 @@ fn the_trajectory_page_shows_the_ledger() {
 fn a_command_opens_the_reader() {
     let _serial = serial();
     let mut app = Headless::start(config()).expect("the Tact shell starts");
-    app.wait_for("label:Commands").expect("the Commands button shows");
-    app.press("label:Commands").expect("the command center opens");
+    app.wait_for("label:Commands")
+        .expect("the Commands button shows");
+    app.press("label:Commands")
+        .expect("the command center opens");
     app.wait_for("label:help").expect("the help command shows");
     app.press("label:help").expect("the command runs");
     app.wait_for("id:reader").expect("the reader opens");
 }
 
-
 #[test]
 fn slash_opens_the_command_suggestions() {
     let _serial = serial();
     let mut app = Headless::start(config()).expect("the Tact shell starts");
-    app.wait_for("id:composer-input").expect("the composer shows");
+    app.wait_for("id:composer-input")
+        .expect("the composer shows");
     app.type_text("id:composer-input", "/")
         .expect("typing the slash works");
     app.wait_for("label:theme")
@@ -78,7 +81,8 @@ fn slash_opens_the_command_suggestions() {
 fn the_settings_overlay_lists_the_settings() {
     let _serial = serial();
     let mut app = Headless::start(config()).expect("the Tact shell starts");
-    app.wait_for("label:Settings").expect("the Settings button shows");
+    app.wait_for("label:Settings")
+        .expect("the Settings button shows");
     app.press("label:Settings").expect("the settings open");
     app.wait_for("text:Provider")
         .expect("the provider setting shows");

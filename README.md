@@ -116,9 +116,10 @@ cargo build --release --locked -p tact-ui
 
 ### Tact Desktop
 
-`tact-desktop` is the native GPUI frontend for macOS, Windows, and Linux. It
-uses the same `tact_host` session runtime, project-local SQLite store, command
-catalog, Goals, subagents, and extensions as the terminal UI.
+`tact-desktop` is the native [Native Shell](https://nsh.dev) frontend for
+macOS, Windows, and Linux. It uses the same `tact_host` session runtime,
+project-local SQLite store, command catalog, Goals, subagents, and extensions
+as the terminal UI.
 
 ```bash
 cargo run -p tact-desktop

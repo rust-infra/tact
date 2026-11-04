@@ -1,8 +1,8 @@
 //! The window's own title bar, with the native controls over it.
 
 use nsh_base::theme;
-use nsh_core::element::desktop::title_bar as native_title_bar;
 use nsh_core::element::AccessibilityRole;
+use nsh_core::element::desktop::title_bar as native_title_bar;
 use nsh_core::prelude::*;
 
 use crate::app::SnapshotRef;

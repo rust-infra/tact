@@ -739,6 +739,7 @@
 <li class="toc-l2"><a href="#31-2026-11-04--desktop-%E4%BB%BB%E5%8A%A1%E6%9D%A1%E6%B7%B7%E5%85%A5%E5%85%B6%E5%AE%83-session-%E7%9A%84%E4%BB%BB%E5%8A%A1" title="31. 2026-11-04 — Desktop 任务条混入其它 session 的任务"><span class="toc-label">31. 2026-11-04 — Desktop 任务条混入其它 session 的任务</span></a></li>
 <li class="toc-l2"><a href="#32-2026-11-04--desktop-%E4%BB%BB%E5%8A%A1%E5%85%A8%E9%83%A8%E5%AE%8C%E6%88%90%E5%90%8E%E9%9A%90%E8%97%8F%E4%BB%BB%E5%8A%A1%E5%8D%A1trajectory-%E6%90%9C%E7%B4%A2%E6%A1%86%E6%94%B9%E4%B8%BA%E5%8D%95%E5%B1%82" title="32. 2026-11-04 — Desktop：任务全部完成后隐藏任务卡；Trajectory 搜索框改为单层"><span class="toc-label">32. 2026-11-04 — Desktop：任务全部完成后隐藏任务卡；Trajectory 搜索框改为单层</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
+<li class="toc-l2"><a href="#2026-11-04--tact-desktop-%E8%BF%81%E7%A7%BB%E5%88%B0-native-shellgpui-%E5%A3%B3%E9%80%80%E5%9C%BA" title="2026-11-04 — Tact Desktop 迁移到 Native Shell：GPUI 壳退场"><span class="toc-label">2026-11-04 — Tact Desktop 迁移到 Native Shell：GPUI 壳退场</span></a></li>
 </ol>
 </div>
 </nav>
@@ -21975,6 +21976,42 @@ sticky 卡片整条消失，恢复干净对话区；有任一域活跃时卡片�
 循环中的幻觉</a></li>
 <li><a href="../AGENTS.md">AGENTS.md</a> — 含本章的文档同步触发条件</li>
 </ul>
+<h2 id="2026-11-04--tact-desktop-迁移到-native-shellgpui-壳退场">2026-11-04 — Tact Desktop 迁移到 Native Shell：GPUI 壳退场</h2>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Type</strong></td>
+<td>change（用户可见：桌面应用改为 Native Shell 原生后端，保留会话、对话、输入、Inspector 与命令入口）</td>
+</tr>
+<tr>
+<td><strong>Related</strong></td>
+<td><code>crates/desktop/</code>、<code>crates/desktop_core/</code>、<code>Cargo.toml</code>、<code>.github/workflows/{rust,release,desktop-package}.yml</code>、<code>scripts/check-ui.sh</code>、<code>THIRD-PARTY-NOTICES.md</code>；<a href="../.audit/nsh-migration/design.md">迁移设计</a>、<a href="../.audit/nsh-migration/api-notes.md">NSH Rust API 速查</a></td>
+</tr>
+</tbody>
+</table>
+<p><strong>现象 / 动机：</strong> 桌面壳直接建在 Zed 的 GPUI 预发布快照上，还带一份 vendored 的
+<code>gpui-ai</code>；升级、跨平台依赖和自绘控件都要跟着上游走。Native Shell（NSH）0.3.0
+提供 Rust 组件、原生文本输入与 IME、内置 <code>TextView</code>、<code>Editor</code>、<code>DiffView</code>、<code>List</code>，并能在
+macOS、Windows、Linux 上各用系统后端。</p>
+<p><strong>改法：</strong></p>
+<ol>
+<li>新增 NSH 应用，<code>tact_desktop_core</code> 原样保留；controller 事件通过 signal 推给 UI。</li>
+<li>Tact 调色板、IBM Plex Sans 与 Lilex 映射到 <code>theme.json</code> 和 <code>assets/</code>。</li>
+<li>会话栏、对话区（Markdown、ANSI、mermaid、DiffView）、输入框（附件、语音、模型、权限）、Inspector、命令中心、设置、会话管理、扩展、reader、轨迹页和应用菜单按 NSH 组件重写。</li>
+<li>测试改为 <code>nsh-testing</code> 无头测试、纯模块单测和 catalog parity。</li>
+<li>删除 GPUI crate 与 <code>vendor/gpui-ai</code>，syntect 改用 fancy-regex，CI 安装 GTK 4，打包时把 NSH assets 目录放到可执行文件旁。</li>
+</ol>
+<p><strong>Verification：</strong> <code>cargo test -p tact-desktop</code>（65 个单元测试、10 个 parity、7 个无头 UI 测试）与
+<code>cargo check --workspace</code> 通过；<code>nsh package --target macos</code> 产出可启动的
+<code>Tact Desktop.app</code>。</p>
+<p><strong>Pointers:</strong> <code>crates/desktop/src/{app,shell,views}</code>、<code>crates/desktop/{theme.json,nsh.json}</code>、<code>.audit/nsh-migration/{design,api-notes}.md</code>。</p>
+
 </main>
 <script>
   (() => {

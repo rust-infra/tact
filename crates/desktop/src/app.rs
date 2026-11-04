@@ -2,8 +2,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use nsh_core::prelude::*;
 use tact_desktop_core::{
-    DesktopConfig, DesktopController, DesktopEffect, DesktopEvent, DesktopEvents,
-    DesktopSnapshot, DesktopStartError, ReaderRequest,
+    DesktopConfig, DesktopController, DesktopEffect, DesktopEvent, DesktopEvents, DesktopSnapshot,
+    DesktopStartError, ReaderRequest,
 };
 
 /// The one controller of this process and the events it publishes.
@@ -19,7 +19,9 @@ static START: Mutex<()> = Mutex::new(());
 /// Loads the desktop configuration and starts the controller before the
 /// window opens, so a startup failure is reported instead of an empty window.
 pub fn start() -> Result<(), DesktopStartError> {
-    let _start = START.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _start = START
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if RUNTIME.get().is_some() {
         return Ok(());
     }
@@ -136,10 +138,10 @@ pub fn install() {
                     set_clipboard(text);
                 }
                 DesktopEvent::Effect(DesktopEffect::OpenExternal(url)) => {
-                    let _ = open_url(url.to_string());
+                    std::mem::drop(open_url(url.to_string()));
                 }
                 DesktopEvent::Effect(DesktopEffect::OpenPath(path)) => {
-                    let _ = open_url(format!("file://{}", path.display()));
+                    std::mem::drop(open_url(format!("file://{}", path.display())));
                 }
                 DesktopEvent::Effect(DesktopEffect::WindowCloseRequested) => {
                     nsh_core::element::desktop::close_window();

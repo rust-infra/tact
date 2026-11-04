@@ -1,5 +1,10 @@
 # Tact Desktop Implementation Plan
 
+> **2026-11-04:** the desktop moved from GPUI to Native Shell. This document
+> describes the retired GPUI build; the current architecture and remaining
+> work are in `.audit/nsh-migration/design.md`.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
 > `superpowers:subagent-driven-development` (recommended) or
 > `superpowers:executing-plans` to implement this plan task-by-task. Steps use

@@ -24,20 +24,22 @@ pub fn inspector(snapshot: Signal<SnapshotRef>, controller: DesktopController) -
         .border_l_color(move || theme().border)
         .child(tabs(snapshot, controller.clone()))
         .child(
-            scroll().flex_1().child(
-                view()
-                    .flex_col()
-                    .gap_2()
-                    .px_4()
-                    .py_3()
-                    .child(dynamic(move || match snapshot.get().0.inspector.tab {
-                        InspectorTab::Run => run_tab(snapshot).into_element(),
-                        InspectorTab::Goals => goals_tab(snapshot).into_element(),
-                        InspectorTab::Subagents => subagents_tab(snapshot).into_element(),
-                        InspectorTab::Background => background_tab(snapshot).into_element(),
-                        InspectorTab::Context => context_tab(snapshot).into_element(),
-                    })),
-            ),
+            scroll()
+                .flex_1()
+                .child(
+                    view()
+                        .flex_col()
+                        .gap_2()
+                        .px_4()
+                        .py_3()
+                        .child(dynamic(move || match snapshot.get().0.inspector.tab {
+                            InspectorTab::Run => run_tab(snapshot).into_element(),
+                            InspectorTab::Goals => goals_tab(snapshot).into_element(),
+                            InspectorTab::Subagents => subagents_tab(snapshot).into_element(),
+                            InspectorTab::Background => background_tab(snapshot).into_element(),
+                            InspectorTab::Context => context_tab(snapshot).into_element(),
+                        })),
+                ),
         )
 }
 
@@ -141,7 +143,16 @@ fn subagents_tab(snapshot: Signal<SnapshotRef>) -> impl IntoElement {
 
 fn background_tab(snapshot: Signal<SnapshotRef>) -> impl IntoElement {
     view().flex_col().gap_2().child(each(
-        move || snapshot.get().0.inspector.background.iter().cloned().collect::<Vec<_>>(),
+        move || {
+            snapshot
+                .get()
+                .0
+                .inspector
+                .background
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+        },
         |task: &BackgroundTaskView| task.id.clone(),
         |task, _| background_row(task),
     ))
@@ -191,9 +202,7 @@ fn context_tab(snapshot: Signal<SnapshotRef>) -> impl IntoElement {
         )
 }
 
-fn row_list(
-    rows: impl Fn() -> Vec<inspector::InspectorRow> + 'static,
-) -> impl IntoElement {
+fn row_list(rows: impl Fn() -> Vec<inspector::InspectorRow> + 'static) -> impl IntoElement {
     view().flex_col().gap_2().child(each(
         rows,
         |row: &inspector::InspectorRow| row.id.clone(),
@@ -240,8 +249,6 @@ fn status_color(status: RowStatus) -> nsh_core::element::AdaptiveColor {
         RowStatus::Failed => token("danger"),
         RowStatus::Success | RowStatus::Resolved => token("success"),
         RowStatus::Running => theme().primary,
-        RowStatus::Pending | RowStatus::Cancelled | RowStatus::Unknown => {
-            theme().muted_foreground
-        }
+        RowStatus::Pending | RowStatus::Cancelled | RowStatus::Unknown => theme().muted_foreground,
     }
 }

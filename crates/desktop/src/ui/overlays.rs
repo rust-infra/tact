@@ -26,5 +26,3 @@ pub const MOUNTED_P2_COMPONENTS: &[(&str, &str)] = &[
     ("DiffTable", "root.rs"),
     ("ContextCard", "root.rs"),
 ];
-
-

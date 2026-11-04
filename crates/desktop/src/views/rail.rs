@@ -27,25 +27,23 @@ pub fn rail(snapshot: Signal<SnapshotRef>, controller: DesktopController) -> imp
         .child(project_header(snapshot, controller.clone()))
         .child(filters(snapshot, controller.clone()))
         .child(
-            scroll().flex_1().child(
-                view()
-                    .flex_col()
-                    .gap(px(2.0))
-                    .px_2()
-                    .pb_3()
-                    .child(each(
-                        sessions,
-                        |session: &SessionSummaryView| session.id.clone(),
-                        {
-                            let controller = controller.clone();
-                            move |session, _| session_row(session, snapshot, controller.clone())
-                        },
-                    )),
-            ),
+            scroll()
+                .flex_1()
+                .child(view().flex_col().gap(px(2.0)).px_2().pb_3().child(each(
+                    sessions,
+                    |session: &SessionSummaryView| session.id.clone(),
+                    {
+                        let controller = controller.clone();
+                        move |session, _| session_row(session, snapshot, controller.clone())
+                    },
+                ))),
         )
 }
 
-fn project_header(snapshot: Signal<SnapshotRef>, controller: DesktopController) -> impl IntoElement {
+fn project_header(
+    snapshot: Signal<SnapshotRef>,
+    controller: DesktopController,
+) -> impl IntoElement {
     view()
         .flex_row()
         .items_center()
@@ -113,36 +111,39 @@ fn filters(snapshot: Signal<SnapshotRef>, controller: DesktopController) -> impl
         .px_3()
         .pb_3()
         .child(
-            view().flex_row().gap(px(4.0)).children(filters.map(|filter| {
-                let controller = controller.clone();
-                let active = move || snapshot.get().0.sessions.filter == filter;
-                view()
-                    .flex_1()
-                    .items_center()
-                    .py(px(4.0))
-                    .rounded(px(6.0))
-                    .cursor_pointer()
-                    .role(AccessibilityRole::Button)
-                    .label(session_rail::filter_label(filter))
-                    .style_when(active, |style| style.bg(move || token("sidebar-accent")))
-                    .hover(|style| style.bg(move || theme().muted))
-                    .on_press(move || {
-                        let _ = controller.dispatch(DesktopIntent::SetSessionFilter(filter));
-                    })
-                    .child(
-                        text(session_rail::filter_label(filter))
-                            .text_size(px(11.0))
-                            .font_weight(FontWeight::NORMAL)
-                            .style_when(active, |style| style.font_weight(FontWeight::SEMIBOLD))
-                            .text_color(move || {
-                                if active() {
-                                    theme().foreground
-                                } else {
-                                    theme().muted_foreground
-                                }
-                            }),
-                    )
-            })),
+            view()
+                .flex_row()
+                .gap(px(4.0))
+                .children(filters.map(|filter| {
+                    let controller = controller.clone();
+                    let active = move || snapshot.get().0.sessions.filter == filter;
+                    view()
+                        .flex_1()
+                        .items_center()
+                        .py(px(4.0))
+                        .rounded(px(6.0))
+                        .cursor_pointer()
+                        .role(AccessibilityRole::Button)
+                        .label(session_rail::filter_label(filter))
+                        .style_when(active, |style| style.bg(move || token("sidebar-accent")))
+                        .hover(|style| style.bg(move || theme().muted))
+                        .on_press(move || {
+                            let _ = controller.dispatch(DesktopIntent::SetSessionFilter(filter));
+                        })
+                        .child(
+                            text(session_rail::filter_label(filter))
+                                .text_size(px(11.0))
+                                .font_weight(FontWeight::NORMAL)
+                                .style_when(active, |style| style.font_weight(FontWeight::SEMIBOLD))
+                                .text_color(move || {
+                                    if active() {
+                                        theme().foreground
+                                    } else {
+                                        theme().muted_foreground
+                                    }
+                                }),
+                        )
+                })),
         )
         .child(
             input()
@@ -184,9 +185,7 @@ fn session_row(
         .cursor_pointer()
         .role(AccessibilityRole::Button)
         .label(move || session.get().title.clone())
-        .style_when(selected, |style| {
-            style.bg(move || token("sidebar-accent"))
-        })
+        .style_when(selected, |style| style.bg(move || token("sidebar-accent")))
         .hover(|style| style.bg(move || theme().muted))
         .on_press(move || {
             let _ = controller.dispatch(DesktopIntent::ResumeSession {

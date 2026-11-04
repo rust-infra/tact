@@ -52,12 +52,18 @@ Replace the GPUI desktop (`crates/desktop`, ~17k production lines) with a Native
 - 2026-11-04: the composer lists slash-command suggestions from the catalog and runs the chosen command; the settings overlay edits booleans, choices and text settings; gates support multi-select with a draft and a Submit button.
 - Verified: 16 unit tests and 6 headless shell tests pass; the app launches with no warnings.
 
+## Done
+
+- Attachments write picked image bytes to a temp directory and submit the paths; voice drives `VoiceCommand` and inserts the transcript.
+- The app menu is drawn by the app (File/View/Session) because NSH 0.3.0 exposes native menus only to TSX.
+- Toasts, the failure banner, the smoke mode, and the catalog parity tests are in.
+- The NSH crate is now `crates/desktop` (`tact-desktop`); the GPUI crate and `vendor/gpui-ai` are deleted, GPUI workspace dependencies are gone, syntect uses fancy-regex, CI installs GTK 4, and packaging ships `tact-desktop-assets`.
+- `nsh package --target macos` produced a launchable `Tact Desktop.app`.
+
 ## Left
 
-- Attachments: NSH's picker returns image bytes, not paths; the desktop needs a temp-file bridge before `Submission.attachments` can be filled. Voice is still unported.
-- Application menu: NSH 0.3.0 exposes it only to TSX (`nsh/desktop`); Rust has `set_title_bar`, `title_bar`, `close_window`, `window_drag`. This is the largest parity blocker.
-- Virtualized transcript list (`virtual_list`) instead of `each` in a scroll, once row heights are measured.
-- Port the remaining behavior tests to `nsh-testing`; add fixtures for transcript rows.
-- `nsh package` for the three desktops, then delete `crates/desktop` and every GPUI dependency.
+- The transcript still renders with `each` in a scroll; `virtual_list` is the next performance step once row heights are measured.
+- The GPUI behavior tests in `root.rs` were not ported one by one; the headless shell tests cover the shell, overlays, trajectory, reader and slash flows.
+- Linux and Windows packaging run in CI only; only macOS was verified locally.
 
 The API cheat sheet from the porting agent is at `.audit/nsh-migration/api-notes.md`.

@@ -4,10 +4,10 @@ use std::path::PathBuf;
 
 use nsh_base::{input, theme};
 use nsh_core::element::{AccessibilityRole, ReadSignal};
-use nsh_core::prelude::*;
-use tact_catalog::SettingId;
 use nsh_core::picker::PickRequest;
+use nsh_core::prelude::*;
 use tact_catalog::CommandArguments;
+use tact_catalog::SettingId;
 use tact_desktop_core::{
     CommandAvailability, DesktopController, DesktopIntent, PermissionModeView, SessionPhase,
     SettingValue, Submission, VoiceCommand,
@@ -59,12 +59,12 @@ pub fn composer(
     };
     let candidates = move || {
         let current = snapshot.get();
-            let availability = CommandAvailability {
-                has_project: current.0.project.id.is_some(),
-                has_session: current.0.session.id.is_some(),
-                has_account: current.0.account_supported,
-                has_installed_skill: !current.0.extensions.snapshot.skills.is_empty(),
-            };
+        let availability = CommandAvailability {
+            has_project: current.0.project.id.is_some(),
+            has_session: current.0.session.id.is_some(),
+            has_account: current.0.account_supported,
+            has_installed_skill: !current.0.extensions.snapshot.skills.is_empty(),
+        };
         slash_overlay::command_candidates(&draft.get(), current.0.language, availability, &[])
     };
     view()

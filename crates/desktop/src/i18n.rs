@@ -1199,5 +1199,3 @@ pub fn text(locale: CatalogLocale, key: TextKey) -> &'static str {
         (CatalogLocale::Zh, TextKey::ContextMeter) => "上下文",
     }
 }
-
-

@@ -7,9 +7,9 @@ use nsh_core::prelude::*;
 use crate::app::use_app;
 use crate::ui::layout;
 use crate::ui::shell::RunTab;
-use crate::views::overlays::{self, Overlay};
-use crate::views::menu;
 use crate::views::MenuKind;
+use crate::views::menu;
+use crate::views::overlays::{self, Overlay};
 use crate::views::{composer, inspector, rail, reader, surface, title_bar, toast, transcript};
 
 pub fn shell() -> impl IntoElement {
@@ -93,23 +93,16 @@ fn body(
     view()
         .flex_1()
         .flex_row()
-        .child(when(
-            move || columns().rail_inline,
-            {
-                let controller = controller.clone();
-                move || rail::rail(snapshot, controller.clone())
-            },
-        ))
+        .child(when(move || columns().rail_inline, {
+            let controller = controller.clone();
+            move || rail::rail(snapshot, controller.clone())
+        }))
         .child(
             view()
                 .flex_1()
                 .h_full()
                 .flex_col()
-                .child(transcript::run_room(
-                    snapshot,
-                    controller.clone(),
-                    tab,
-                ))
+                .child(transcript::run_room(snapshot, controller.clone(), tab))
                 .child(composer::composer(
                     snapshot,
                     controller.clone(),
@@ -127,7 +120,11 @@ fn failure_banner(snapshot: Signal<crate::app::SnapshotRef>) -> impl IntoElement
     view()
         .px_4()
         .py_2()
-        .bg(move || nsh_base::theme().color("danger").unwrap_or(nsh_base::theme().foreground))
+        .bg(move || {
+            nsh_base::theme()
+                .color("danger")
+                .unwrap_or(nsh_base::theme().foreground)
+        })
         .child(
             text(move || {
                 snapshot
