@@ -51,14 +51,7 @@ pub fn title_bar(
             .text_size(px(13.0))
             .text_color(move || theme().muted_foreground),
         )
-        .child(
-            text(move || {
-                let snapshot = snapshot.get();
-                title_bar_text::status_text(&snapshot.0.session, snapshot.0.language).to_owned()
-            })
-            .text_size(px(12.0))
-            .text_color(move || theme().muted_foreground),
-        )
+        .children(account_chip(snapshot))
         .child(chrome_button("Commands", move || {
             overlay.set(Some(Overlay::CommandCenter));
         }))
@@ -82,4 +75,32 @@ fn chrome_button(label: &'static str, on_press: impl Fn() + 'static) -> impl Int
                 .text_size(px(11.0))
                 .text_color(move || theme().muted_foreground),
         )
+}
+
+fn account_chip(snapshot: Signal<SnapshotRef>) -> Option<impl IntoElement> {
+    let account = snapshot.get().0.account.clone()?;
+    let label = match account {
+        tact_desktop_core::AccountView::Balance { currency, total } => {
+            format!("{total} {currency}")
+        }
+        tact_desktop_core::AccountView::UsageQuota {
+            plan, used, limit, ..
+        } => match (used, limit) {
+            (Some(used), Some(limit)) => format!("{used} / {limit}"),
+            _ => plan
+                .map(|plan| plan.to_string())
+                .unwrap_or_else(|| "Quota".to_owned()),
+        },
+        tact_desktop_core::AccountView::Error(_) => return None,
+    };
+    Some(
+        text(label)
+            .px_2()
+            .py(px(2.0))
+            .rounded(px(5.0))
+            .bg(move || theme().muted)
+            .text_size(px(10.0))
+            .font_family("Lilex")
+            .text_color(move || theme().muted_foreground),
+    )
 }

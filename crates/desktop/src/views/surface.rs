@@ -92,7 +92,7 @@ fn header(title: String, close: impl Fn() + 'static) -> impl IntoElement {
         )
 }
 
-fn render(surface: &SurfaceSnapshot) -> (String, String) {
+pub(crate) fn render(surface: &SurfaceSnapshot) -> (String, String) {
     match surface {
         SurfaceSnapshot::SystemPrompt(prompt) => ("System prompt".to_owned(), prompt.clone()),
         SurfaceSnapshot::Stats(stats) => (

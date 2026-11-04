@@ -1,6 +1,6 @@
 //! The reader: a tool output, diff, thinking, prompt or report shown whole.
 
-use nsh_base::{text_view, theme};
+use nsh_base::{DiffLayout, diff_view, text_view, theme};
 use nsh_core::element::{AccessibilityRole, AnyElement};
 use nsh_core::prelude::*;
 use tact_desktop_core::ReaderRequest;
@@ -33,13 +33,9 @@ pub fn layer(reader: Signal<Option<ReaderRequest>>) -> AnyElement {
                     .border_color(move || theme().border)
                     .child(header(request.title.to_string(), reader))
                     .child(
-                        scroll().flex_1().child(
-                            view().px_5().py_4().child(
-                                text_view()
-                                    .markdown(request.markdown.to_string())
-                                    .selectable(true),
-                            ),
-                        ),
+                        scroll()
+                            .flex_1()
+                            .child(view().px_5().py_4().child(reader_body(&request.markdown))),
                     ),
             )
             .into_element(),
@@ -79,4 +75,28 @@ fn header(title: String, reader: Signal<Option<ReaderRequest>>) -> impl IntoElem
                         .text_color(move || theme().muted_foreground),
                 ),
         )
+}
+
+fn reader_body(markdown: &str) -> AnyElement {
+    if markdown.contains("\u{1b}[") {
+        return crate::ui::ansi::element("reader-ansi", &crate::ui::ansi::parse(markdown));
+    }
+    if looks_like_diff(markdown) {
+        return diff_view()
+            .patch(markdown.to_string())
+            .layout(DiffLayout::Unified)
+            .font_size(px(11.0))
+            .into_element();
+    }
+    text_view()
+        .markdown(markdown.to_string())
+        .selectable(true)
+        .into_element()
+}
+
+fn looks_like_diff(text: &str) -> bool {
+    text.starts_with("diff --git")
+        || text.starts_with("--- ")
+        || text.contains("\n@@ ")
+        || text.starts_with("@@ ")
 }

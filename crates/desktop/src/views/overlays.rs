@@ -564,43 +564,150 @@ fn extensions_panel(
     snapshot: Signal<SnapshotRef>,
     controller: DesktopController,
 ) -> impl IntoElement {
+    let tab = signal(snapshot.get().0.extensions.tab);
     view()
         .flex_col()
         .gap_2()
-        .child(skills_section(snapshot, controller))
-        .child(section("Plugins", move || {
-            snapshot
-                .get()
-                .0
-                .extensions
-                .snapshot
-                .plugins
-                .iter()
-                .map(|plugin| {
-                    format!(
-                        "{} · {}{}",
-                        plugin.name,
-                        plugin.marketplace,
-                        plugin
-                            .version
-                            .as_deref()
-                            .map(|version| format!(" · {version}"))
-                            .unwrap_or_default()
-                    )
+        .child(
+            view().flex_row().gap_1().children(
+                [
+                    tact_desktop_core::ExtensionsTab::Mcp,
+                    tact_desktop_core::ExtensionsTab::Skills,
+                    tact_desktop_core::ExtensionsTab::Plugins,
+                    tact_desktop_core::ExtensionsTab::Hooks,
+                ]
+                .map(|value| {
+                    let active = move || tab.get() == value;
+                    view()
+                        .px_2()
+                        .py(px(3.0))
+                        .rounded(px(5.0))
+                        .cursor_pointer()
+                        .role(AccessibilityRole::Button)
+                        .label(extension_tab_label(value))
+                        .style_when(active, |style| style.bg(move || theme().muted))
+                        .on_press(move || tab.set(value))
+                        .child(
+                            text(extension_tab_label(value))
+                                .text_size(px(10.0))
+                                .text_color(move || {
+                                    if active() {
+                                        theme().foreground
+                                    } else {
+                                        theme().muted_foreground
+                                    }
+                                }),
+                        )
+                }),
+            ),
+        )
+        .child(dynamic(move || {
+            let controller = controller.clone();
+            match tab.get() {
+                tact_desktop_core::ExtensionsTab::Skills => {
+                    skills_section(snapshot, controller.clone()).into_element()
+                }
+                tact_desktop_core::ExtensionsTab::Plugins => section("Plugins", move || {
+                    snapshot
+                        .get()
+                        .0
+                        .extensions
+                        .snapshot
+                        .plugins
+                        .iter()
+                        .map(|plugin| {
+                            format!(
+                                "{} · {}{}",
+                                plugin.name,
+                                plugin.marketplace,
+                                plugin
+                                    .version
+                                    .as_deref()
+                                    .map(|version| format!(" · {version}"))
+                                    .unwrap_or_default()
+                            )
+                        })
+                        .collect::<Vec<_>>()
                 })
-                .collect::<Vec<_>>()
+                .into_element(),
+                tact_desktop_core::ExtensionsTab::Mcp => {
+                    surface_list(snapshot, controller.clone(), "MCP servers", "mcp list")
+                }
+                tact_desktop_core::ExtensionsTab::Hooks => {
+                    surface_list(snapshot, controller, "Hooks", "hooks list")
+                }
+            }
         }))
-        .child(section("Marketplaces", move || {
-            snapshot
-                .get()
-                .0
-                .extensions
-                .snapshot
-                .marketplaces
-                .iter()
-                .map(|marketplace| format!("{} · {}", marketplace.name, marketplace.source))
-                .collect::<Vec<_>>()
+}
+
+fn extension_tab_label(tab: tact_desktop_core::ExtensionsTab) -> &'static str {
+    match tab {
+        tact_desktop_core::ExtensionsTab::Mcp => "MCP",
+        tact_desktop_core::ExtensionsTab::Skills => "Skills",
+        tact_desktop_core::ExtensionsTab::Plugins => "Plugins",
+        tact_desktop_core::ExtensionsTab::Hooks => "Hooks",
+    }
+}
+
+fn surface_list(
+    snapshot: Signal<SnapshotRef>,
+    controller: DesktopController,
+    title: &'static str,
+    command: &'static str,
+) -> AnyElement {
+    let root = if command.starts_with("mcp") {
+        tact_catalog::BuiltinCommand::Mcp
+    } else {
+        tact_catalog::BuiltinCommand::Hooks
+    };
+    let subcommand = command.split_whitespace().nth(1).unwrap_or("list");
+    view()
+        .flex_col()
+        .gap_2()
+        .child(
+            text(title)
+                .text_size(px(10.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(move || theme().muted_foreground),
+        )
+        .child(dynamic(move || match snapshot.get().0.surface.clone() {
+            Some(surface) => {
+                let (_, body) = crate::views::surface::render(&surface);
+                nsh_base::text_view()
+                    .markdown(body)
+                    .selectable(true)
+                    .into_element()
+            }
+            None => text("Run the command to load this list.")
+                .text_size(px(11.0))
+                .text_color(move || theme().muted_foreground)
+                .into_element(),
         }))
+        .child(
+            view()
+                .px_2()
+                .py(px(3.0))
+                .rounded(px(6.0))
+                .bg(move || theme().muted)
+                .cursor_pointer()
+                .role(AccessibilityRole::Button)
+                .label(format!("Load {title}"))
+                .on_press(move || {
+                    let _ = controller.dispatch(DesktopIntent::InvokeCommand {
+                        id: tact_catalog::CommandId::BuiltinPath {
+                            root,
+                            path: vec![subcommand],
+                        },
+                        args: CommandArguments { tokens: Vec::new() },
+                    });
+                })
+                .child(
+                    text("Load")
+                        .text_size(px(10.0))
+                        .text_color(move || theme().primary),
+                ),
+        )
+        .into_element()
 }
 
 fn skills_section(

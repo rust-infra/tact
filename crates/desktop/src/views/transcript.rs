@@ -97,6 +97,7 @@ fn chat(snapshot: Signal<SnapshotRef>, controller: DesktopController) -> AnyElem
         .flex_1()
         .flex_col()
         .child(run_header(snapshot))
+        .child(sticky_strip(snapshot))
         .child(when(empty, {
             let controller = controller.clone();
             move || empty_state(snapshot, controller.clone())
@@ -1194,4 +1195,56 @@ fn first_line(text: &str) -> String {
 
 fn user_initials() -> &'static str {
     "ME"
+}
+
+fn sticky_strip(snapshot: Signal<SnapshotRef>) -> AnyElement {
+    dynamic(move || {
+        let current = snapshot.get();
+        let Some(task) = crate::ui::sticky::active_task(&current.0.inspector) else {
+            return view().into_element();
+        };
+        let subject = task.subject.to_string();
+        let status = task.status;
+        let elapsed = crate::ui::sticky::elapsed_label(
+            task.started_at,
+            task.completed_at,
+            chrono::Utc::now().timestamp_millis(),
+        );
+        view()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .px_6()
+            .py_2()
+            .bg(move || theme().muted)
+            .child(
+                text("TASK")
+                    .text_size(px(9.0))
+                    .font_family("Lilex")
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(move || theme().muted_foreground),
+            )
+            .child(
+                text(subject)
+                    .flex_1()
+                    .number_of_lines(1)
+                    .text_size(px(11.0)),
+            )
+            .children(elapsed.map(|elapsed| {
+                text(elapsed)
+                    .text_size(px(9.0))
+                    .font_family("Lilex")
+                    .text_color(move || theme().muted_foreground)
+            }))
+            .child(
+                text(match status {
+                    tact_desktop_core::TaskStatusSnapshot::InProgress => "running",
+                    tact_desktop_core::TaskStatusSnapshot::Pending => "pending",
+                    tact_desktop_core::TaskStatusSnapshot::Completed => "done",
+                })
+                .text_size(px(9.0))
+                .text_color(move || theme().muted_foreground),
+            )
+            .into_element()
+    })
 }

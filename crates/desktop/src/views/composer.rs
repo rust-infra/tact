@@ -30,6 +30,7 @@ pub fn composer(
     let draft = app.draft;
     let attachments = app.attachments;
     let history_cursor = signal(None::<usize>);
+    let slash_cursor = signal(0_usize);
     effect(move || {
         if let Some(text) = voice.get().transcript.clone() {
             draft.update(|current| {
@@ -119,10 +120,12 @@ pub fn composer(
                         |candidate: &slash_overlay::CommandCandidate| candidate.title.clone(),
                         {
                             let controller = controller.clone();
-                            move |candidate: ReadSignal<slash_overlay::CommandCandidate>, _| {
+                            move |candidate: ReadSignal<slash_overlay::CommandCandidate>, at| {
                                 let candidate = candidate.get_untracked();
                                 let controller = controller.clone();
                                 let chosen = candidate.clone();
+                                let index = at.get_untracked();
+                                let selected = move || slash_cursor.get() == index;
                                 view()
                                     .flex_col()
                                     .gap(px(1.0))
@@ -132,6 +135,7 @@ pub fn composer(
                                     .cursor_pointer()
                                     .role(AccessibilityRole::Button)
                                     .label(candidate.title.clone())
+                                    .style_when(selected, |style| style.bg(move || theme().muted))
                                     .hover(|style| style.bg(move || theme().muted))
                                     .on_press(move || {
                                         if chosen.has_children {
@@ -185,6 +189,28 @@ pub fn composer(
                         .on_key_press({
                             let controller = controller.clone();
                             move |key: &str| {
+                                let items = candidates();
+                                if !items.is_empty() {
+                                    match key {
+                                        "down" => {
+                                            slash_cursor.update(|cursor| {
+                                                *cursor = (*cursor + 1) % items.len();
+                                            });
+                                        }
+                                        "up" => {
+                                            slash_cursor.update(|cursor| {
+                                                *cursor = cursor.saturating_sub(1);
+                                            });
+                                        }
+                                        "tab" => {
+                                            if let Some(item) = items.get(slash_cursor.get()) {
+                                                draft.set(item.insertion.clone());
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                    return;
+                                }
                                 let history = snapshot.get().0.composer.history.clone();
                                 if history.is_empty() {
                                     return;
@@ -217,6 +243,13 @@ pub fn composer(
                             }
                         })
                         .multiline(true)
+                        .submit_behavior(move || {
+                            if draft.get().starts_with('/') {
+                                SubmitBehavior::Submit
+                            } else {
+                                SubmitBehavior::Newline
+                            }
+                        })
                         .placeholder(crate::i18n::text(
                             snapshot.get().0.language,
                             crate::i18n::TextKey::SteerPlaceholder,
