@@ -15,7 +15,9 @@ pub struct ShellSnapshot {
     pub appearance: &'static str,
     pub language: String,
     pub text_scale: f32,
+    pub tail_following: bool,
     pub show_hook_output: bool,
+    pub notifications: bool,
     pub voice_enabled: bool,
     pub voice_missing_api_key: bool,
     pub project: ProjectJson,
@@ -26,7 +28,6 @@ pub struct ShellSnapshot {
     pub rows: Vec<RowJson>,
     pub composer: ComposerJson,
     pub inspector: InspectorJson,
-    pub trajectory: TrajectoryJson,
     pub pending_gates: Vec<GateJson>,
     pub settings: SettingsJson,
     pub extensions: ExtensionsJson,
@@ -49,7 +50,9 @@ impl From<&DesktopSnapshot> for ShellSnapshot {
             }
             .to_owned(),
             text_scale: snapshot.text_scale,
+            tail_following: snapshot.tail_following,
             show_hook_output: snapshot.show_hook_output,
+            notifications: snapshot.notifications,
             voice_enabled: snapshot.voice_enabled,
             voice_missing_api_key: snapshot.voice_missing_api_key,
             project: ProjectJson::from(&snapshot.project),
@@ -64,9 +67,6 @@ impl From<&DesktopSnapshot> for ShellSnapshot {
                 .collect(),
             composer: ComposerJson::from(&snapshot.composer),
             inspector: InspectorJson::from(&snapshot.inspector),
-            trajectory: TrajectoryJson::from(&TrajectoryView::from_transcript(
-                &snapshot.transcript,
-            )),
             pending_gates: snapshot.pending_gates.iter().map(GateJson::from).collect(),
             settings: SettingsJson::from(&snapshot.settings),
             extensions: ExtensionsJson::from(&snapshot.extensions),
@@ -595,6 +595,10 @@ impl From<&ComposerView> for ComposerJson {
                         .description
                         .get(tact_catalog::CatalogLocale::En)
                         .to_string(),
+                    needs_arguments: !matches!(
+                        tact_desktop_core::form_for(&entry.id),
+                        tact_desktop_core::CommandForm::None
+                    ),
                 })
                 .collect(),
             model: composer.model.to_string(),
@@ -632,6 +636,8 @@ pub struct CommandJson {
     pub path: Vec<String>,
     pub title: String,
     pub description: String,
+    /// The command asks for an argument the command center cannot supply.
+    pub needs_arguments: bool,
 }
 
 #[derive(Serialize)]

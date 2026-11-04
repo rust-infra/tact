@@ -1,4 +1,15 @@
-import { Picker, Scroll, Text, View, computed, keymap, signal, token } from "nsh";
+import {
+  List,
+  Picker,
+  Scroll,
+  Text,
+  View,
+  computed,
+  effect,
+  keymap,
+  signal,
+  token,
+} from "nsh";
 import plexSans from "../assets/fonts/IBMPlexSans-Regular.ttf";
 import lilex from "../assets/fonts/Lilex-Regular.ttf";
 import { DiffView, Input, TextView } from "nsh/base";
@@ -15,13 +26,19 @@ import type {
   Tool,
   ToolItem,
   TrajectoryDetail,
+  TrajectoryState,
 } from "./types";
 
 type Controller = {
   dispatch(command: string): void;
   reader(kind: string, id: number | null): string;
+  trajectory(): string;
   trajectoryRecord(index: number): string;
   attachment(name: string, dataBase64: string): string;
+};
+
+type TranscriptList = {
+  scrollToEnd(options?: { animated?: boolean }): void;
 };
 
 type Overlay =
@@ -50,8 +67,6 @@ function color(name: string): string {
   return token(name as never) as string;
 }
 
-/// The shell binds its shortcuts once per app, not once per render.
-let keysBound = false;
 
 export function Shell(props: ShellProps) {
   const { snapshot, controller, reader, toast, draft, attachments, voice } = props;
@@ -61,11 +76,32 @@ export function Shell(props: ShellProps) {
   const runTab = signal<"chat" | "trajectory">("chat");
   const railOpen = signal(true);
   const inspectorOpen = signal(true);
+  const viewportWidth = signal(0);
+  const lastNarrow = signal<boolean | null>(null);
+  const transcriptRef = signal<TranscriptList | null>(null);
+  const followingTail = signal(snapshot().tail_following);
+  let scrollTimer: ReturnType<typeof setTimeout> | null = null;
   const slashCursor = signal(0);
-  const renaming = signal<string | null>(null);
   const menu = signal<string | null>(null);
+  const narrow = computed(() => viewportWidth() > 0 && viewportWidth() < 1080);
 
   const send = (command: object) => controller.dispatch(JSON.stringify(command));
+  const resize = (width: number) => {
+    viewportWidth.set(width);
+    const next = width > 0 && width < 1080;
+    if (lastNarrow() === next) return;
+    lastNarrow.set(next);
+    railOpen.set(!next);
+    inspectorOpen.set(!next);
+  };
+  const toggleRail = () => {
+    if (narrow()) inspectorOpen.set(false);
+    railOpen.update((open) => !open);
+  };
+  const toggleInspector = () => {
+    if (narrow()) railOpen.set(false);
+    inspectorOpen.update((open) => !open);
+  };
 
   const submit = (text: string) => {
     const value = text.trim();
@@ -90,28 +126,26 @@ export function Shell(props: ShellProps) {
   };
 
   const showInspector = (tab: string) => {
+    if (narrow()) railOpen.set(false);
     inspectorOpen.set(true);
     send({ kind: "set_inspector", tab });
   };
-  if (!keysBound) {
-    keysBound = true;
-    keymap.bind({
-      "mod+k": () => overlay.set({ kind: "command_center" }),
-      "mod+,": () => overlay.set({ kind: "settings" }),
-      "mod+b": () => railOpen.update((open) => !open),
-      "mod+alt+b": () => inspectorOpen.update((open) => !open),
-      "mod+n": () => send({ kind: "new_session" }),
-      "mod+enter": () => submit(draft()),
-      "mod+.": () => send({ kind: "cancel_run" }),
-      "mod+shift+l": () => send({ kind: "back_to_bottom" }),
-      "mod+1": () => showInspector("run"),
-      "mod+2": () => showInspector("goals"),
-      "mod+3": () => showInspector("subagents"),
-      "mod+4": () => showInspector("context"),
-      "mod+5": () => showInspector("background"),
-      escape: dismissTopmost,
-    });
-  }
+  keymap.bind({
+    "mod+k": () => overlay.set({ kind: "command_center" }),
+    "mod+,": () => overlay.set({ kind: "settings" }),
+    "mod+b": toggleRail,
+    "mod+alt+b": toggleInspector,
+    "mod+n": () => send({ kind: "new_session" }),
+    "mod+enter": () => submit(draft()),
+    "mod+.": () => send({ kind: "cancel_run" }),
+    "mod+shift+l": () => send({ kind: "back_to_bottom" }),
+    "mod+1": () => showInspector("run"),
+    "mod+2": () => showInspector("goals"),
+    "mod+3": () => showInspector("subagents"),
+    "mod+4": () => showInspector("context"),
+    "mod+5": () => showInspector("background"),
+    escape: dismissTopmost,
+  }, { when: "always" });
   function dismissTopmost() {
     if (menu()) {
       menu.set(null);
@@ -127,6 +161,14 @@ export function Shell(props: ShellProps) {
     }
     if (toast()) {
       toast.set(null);
+      return;
+    }
+    if (narrow() && railOpen()) {
+      railOpen.set(false);
+      return;
+    }
+    if (narrow() && inspectorOpen()) {
+      inspectorOpen.set(false);
       return;
     }
     const gate = snapshot().pending_gates[0];
@@ -154,9 +196,35 @@ export function Shell(props: ShellProps) {
     });
   };
 
+  const onTranscriptScroll = (event: {
+    offset: { y: number };
+    contentSize: { height: number };
+    size: { height: number };
+  }) => {
+    const distance =
+      event.contentSize.height - event.size.height - event.offset.y;
+    const next = distance <= 32;
+    if (next === followingTail()) return;
+    followingTail.set(next);
+    send({ kind: "set_tail_following", following: next });
+  };
+
   const current = computed(() => snapshot());
   const rows = computed(() => current().rows);
-  const firstUser = computed(() => rows().find((row) => row.body.kind === "user"));
+  effect(() => {
+    followingTail.set(snapshot().tail_following);
+  });
+  effect(() => {
+    snapshot().revision;
+    rows().length;
+    const list = transcriptRef();
+    if (!followingTail() || !list) return;
+    if (scrollTimer != null) return;
+    scrollTimer = setTimeout(() => {
+      scrollTimer = null;
+      list.scrollToEnd({ animated: false });
+    }, 0);
+  });
   const activeTask = computed(() => {
     const tasks = current().inspector.tasks;
     return (
@@ -169,6 +237,9 @@ export function Shell(props: ShellProps) {
 
   return (
     <View
+      onLayout={(bounds: { size: { width: number; height: number } }) =>
+        resize(bounds.size.width)
+      }
       style={{
         flex: 1,
         flexDirection: "column",
@@ -181,14 +252,24 @@ export function Shell(props: ShellProps) {
         overlay={overlay}
         railOpen={railOpen}
         inspectorOpen={inspectorOpen}
+        narrow={narrow()}
+        toggleRail={toggleRail}
+        toggleInspector={toggleInspector}
         send={send}
       />
       <View style={{ flex: 1, flexDirection: "row" }}>
-        {railOpen() ? (
+        {railOpen() && !narrow() ? (
           <Rail snapshot={snapshot} controller={controller} overlay={overlay} />
         ) : null}
         <View style={{ flex: 1, flexDirection: "column", minWidth: 0 }}>
           <RunTabs runTab={runTab} />
+          {current().failure ? (
+            <FailureBanner
+              message={current().failure!}
+              onSessions={() => overlay.set({ kind: "sessions" })}
+              onSettings={() => overlay.set({ kind: "settings" })}
+            />
+          ) : null}
           {runTab() === "chat" ? (
             <View style={{ flex: 1, flexDirection: "column", minHeight: 0 }}>
               <RunHeader snapshot={snapshot} draft={draft} />
@@ -196,35 +277,40 @@ export function Shell(props: ShellProps) {
               {rows().length === 0 ? (
                 <EmptyState snapshot={snapshot} draft={draft} send={send} />
               ) : (
-                <Scroll style={{ flex: 1 }}>
-                  <View
-                    style={{
-                      width: "100%",
-                      maxWidth: 900,
-                      alignSelf: "center",
-                      paddingLeft: 12,
-                      paddingRight: 12,
-                      paddingTop: 8,
-                      paddingBottom: 8,
-                      gap: 8,
-                      flexDirection: "column",
-                    }}
-                  >
-                    <Each of={rows()}>
-                      {(row) => (
-                        <RowView
-                          row={row()}
-                          snapshot={snapshot}
-                          controller={controller}
-                          draft={draft}
-                          expandedThinking={expandedThinking}
-                          openReader={openReader}
-                          send={send}
-                        />
-                      )}
-                    </Each>
-                  </View>
-                </Scroll>
+                <List
+                  testID="transcript-list"
+                  each={rows()}
+                  keyExtractor={(row) => String(row.id)}
+                  ref={(node) => transcriptRef.set(node)}
+                  onScroll={onTranscriptScroll}
+                  scrollEventThrottle={16}
+                  maintainVisibleContentPosition={{ autoscrollToBottomThreshold: 32 }}
+                  style={{ flex: 1 }}
+                >
+                  {(row) => (
+                    <View
+                      style={{
+                        width: "100%",
+                        maxWidth: 900,
+                        alignSelf: "center",
+                        paddingLeft: 12,
+                        paddingRight: 12,
+                        paddingTop: 4,
+                        paddingBottom: 4,
+                      }}
+                    >
+                      <RowView
+                        row={row()}
+                        snapshot={snapshot}
+                        controller={controller}
+                        draft={draft}
+                        expandedThinking={expandedThinking}
+                        openReader={openReader}
+                        send={send}
+                      />
+                    </View>
+                  )}
+                </List>
               )}
               {pendingGate() ? (
                 <GateBanner gate={pendingGate()!} send={send} />
@@ -246,7 +332,7 @@ export function Shell(props: ShellProps) {
             <TrajectorySnapshot snapshot={snapshot} controller={controller} />
           )}
         </View>
-        {inspectorOpen() ? (
+        {inspectorOpen() && !narrow() ? (
           <Inspector
             snapshot={snapshot}
             controller={controller}
@@ -255,13 +341,65 @@ export function Shell(props: ShellProps) {
           />
         ) : null}
       </View>
+      {narrow() && railOpen() ? (
+        <View
+          testID="rail-drawer-scrim"
+          onPress={() => railOpen.set(false)}
+          style={{
+            position: "fixed",
+            top: 44,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            zIndex: 20,
+            backgroundColor: color("scrim"),
+          }}
+        >
+          <View onPress={() => {}} style={{ width: 250, height: "100%" }}>
+            <Rail snapshot={snapshot} controller={controller} overlay={overlay} />
+          </View>
+        </View>
+      ) : null}
+      {narrow() && inspectorOpen() ? (
+        <View
+          testID="inspector-drawer-scrim"
+          onPress={() => inspectorOpen.set(false)}
+          style={{
+            position: "fixed",
+            top: 44,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            zIndex: 20,
+            alignItems: "flex-end",
+            backgroundColor: color("scrim"),
+          }}
+        >
+          <View onPress={() => {}} style={{ width: 318, height: "100%" }}>
+            <Inspector
+              snapshot={snapshot}
+              controller={controller}
+              send={send}
+              openReader={openReader}
+            />
+          </View>
+        </View>
+      ) : null}
+      {menu() ? (
+        <AppMenu
+          menu={menu}
+          overlay={overlay}
+          toggleRail={toggleRail}
+          toggleInspector={toggleInspector}
+          send={send}
+        />
+      ) : null}
       {overlay() ? (
         <OverlayPanel
           overlay={overlay()!}
           snapshot={snapshot}
           controller={controller}
           draft={draft}
-          renaming={renaming}
           send={send}
           close={() => overlay.set(null)}
         />
@@ -281,10 +419,14 @@ function TitleBar(props: {
   overlay: ReturnType<typeof signal<Overlay | null>>;
   railOpen: ReturnType<typeof signal<boolean>>;
   inspectorOpen: ReturnType<typeof signal<boolean>>;
+  narrow: boolean;
+  toggleRail: () => void;
+  toggleInspector: () => void;
   menu: ReturnType<typeof signal<string | null>>;
   send: (command: object) => void;
 }) {
-  const { snapshot, overlay, railOpen, inspectorOpen, menu, send } = props;
+  const { snapshot, overlay, railOpen, inspectorOpen, toggleRail, toggleInspector, menu, send } =
+    props;
   const session = computed(() => snapshot().session);
   const account = computed(() => snapshot().account);
   return (
@@ -319,6 +461,8 @@ function TitleBar(props: {
         <Text style={{ fontSize: 13, fontWeight: 600 }}>Tact</Text>
         {["File", "View", "Session"].map((label) => (
           <Text
+            role="button"
+            accessibilityLabel={`${label} menu`}
             onPress={() => menu.set(menu() === label ? null : label)}
             style={{
               fontSize: 11,
@@ -335,26 +479,31 @@ function TitleBar(props: {
           </Text>
         ))}
       </View>
-      <Text
-        style={{
-          flex: 1,
-          fontSize: 13,
-          color: color("muted-foreground"),
-        }}
-      >
-        {snapshot().project.name}
-        {snapshot().project.branch ? ` · ${snapshot().project.branch}` : ""}
-      </Text>
+      {props.narrow ? (
+        <View style={{ flex: 1 }} />
+      ) : (
+        <Text
+          testID="titlebar-project"
+          style={{
+            flex: 1,
+            fontSize: 13,
+            color: color("muted-foreground"),
+          }}
+        >
+          {snapshot().project.name}
+          {snapshot().project.branch ? ` · ${snapshot().project.branch}` : ""}
+        </Text>
+      )}
       {account() ? <AccountChip account={account()!} /> : null}
       <ChromeButton
         label={railOpen() ? "Hide sessions" : "Show sessions"}
         text="Sessions"
-        onPress={() => railOpen.update((open) => !open)}
+        onPress={toggleRail}
       />
       <ChromeButton
         label={inspectorOpen() ? "Hide inspector" : "Show inspector"}
         text="Inspector"
-        onPress={() => inspectorOpen.update((open) => !open)}
+        onPress={toggleInspector}
       />
       <ChromeButton
         label="Open command center"
@@ -366,60 +515,85 @@ function TitleBar(props: {
         text="Settings"
         onPress={() => overlay.set({ kind: "settings" })}
       />
-      {menu() ? (
-        <View
-          style={{
-            position: "absolute",
-            top: 44,
-            left: 78,
-            width: 220,
-            flexDirection: "column",
-            gap: 1,
-            padding: 4,
-            borderRadius: 12,
-            backgroundColor: color("popover"),
-            borderWidth: 1,
-            borderColor: color("line-strong"),
-            boxShadow: "0 24px 60px rgba(22, 22, 30, 0.26)",
-            zIndex: 20,
-          }}
-        >
-          {(menu() === "File"
-            ? [
-                ["New Session", () => send({ kind: "new_session" })],
-                ["Command Center", () => overlay.set({ kind: "command_center" })],
-                ["Settings", () => overlay.set({ kind: "settings" })],
-              ]
-            : menu() === "View"
-              ? [
-                  ["Toggle Sessions", () => railOpen.update((open) => !open)],
-                  ["Toggle Inspector", () => inspectorOpen.update((open) => !open)],
-                  ["Back to Bottom", () => send({ kind: "back_to_bottom" })],
-                ]
-              : [
-                  ["Stop", () => send({ kind: "cancel_run" })],
-                ]
-          ).map(([label, action]) => (
-            <Text
-              onPress={() => {
-                (action as () => void)();
-                menu.set(null);
-              }}
-              style={{
-                fontSize: 12,
-                paddingLeft: 12,
-                paddingRight: 12,
-                paddingTop: 6,
-                paddingBottom: 6,
-                borderRadius: 6,
-                color: color("foreground"),
-              }}
-            >
-              {label as string}
-            </Text>
-          ))}
-        </View>
-      ) : null}
+    </View>
+  );
+}
+
+function AppMenu(props: {
+  menu: ReturnType<typeof signal<string | null>>;
+  overlay: ReturnType<typeof signal<Overlay | null>>;
+  toggleRail: () => void;
+  toggleInspector: () => void;
+  send: (command: object) => void;
+}) {
+  const items: Array<[string, () => void]> =
+    props.menu() === "File"
+      ? [
+          ["New Session", () => props.send({ kind: "new_session" })],
+          ["Command Center", () => props.overlay.set({ kind: "command_center" })],
+          ["Settings", () => props.overlay.set({ kind: "settings" })],
+          ["Extensions", () => props.overlay.set({ kind: "extensions" })],
+        ]
+      : props.menu() === "View"
+        ? [
+            ["Toggle Sessions", props.toggleRail],
+            ["Toggle Inspector", props.toggleInspector],
+            ["Back to Bottom", () => props.send({ kind: "back_to_bottom" })],
+          ]
+        : [["Stop", () => props.send({ kind: "cancel_run" })]];
+  return (
+    <View
+      testID="app-menu-scrim"
+      onPress={() => props.menu.set(null)}
+      style={{
+        position: "fixed",
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        zIndex: 39,
+      }}
+    >
+      <View
+        onPress={() => {}}
+        style={{
+          position: "absolute",
+          top: 44,
+          left: props.menu() === "File" ? 198 : props.menu() === "View" ? 236 : 284,
+          width: 220,
+          flexDirection: "column",
+          gap: 1,
+          padding: 4,
+          borderRadius: 12,
+          backgroundColor: color("popover"),
+          borderWidth: 1,
+          borderColor: color("line-strong"),
+          boxShadow: "0 24px 60px rgba(22, 22, 30, 0.26)",
+          zIndex: 40,
+        }}
+      >
+        {items.map(([label, action]) => (
+          <Text
+            role="button"
+            accessibilityLabel={label}
+            onPress={() => {
+              action();
+              props.menu.set(null);
+            }}
+            style={{
+              fontSize: 12,
+              paddingLeft: 12,
+              paddingRight: 12,
+              paddingTop: 6,
+              paddingBottom: 6,
+              borderRadius: 6,
+              color: color("foreground"),
+            }}
+          >
+            {label}
+          </Text>
+        ))}
+      </View>
     </View>
   );
 }
@@ -482,8 +656,10 @@ function Rail(props: {
   const query = computed(() => snapshot().sessions.query);
   return (
     <View
+      testID="rail"
       style={{
         width: 250,
+        height: "100%",
         flexDirection: "column",
         backgroundColor: color("sidebar"),
         borderRightWidth: 1,
@@ -534,6 +710,8 @@ function Rail(props: {
           ["all", "All"],
         ].map(([value, label]) => (
           <Text
+            role="button"
+            accessibilityLabel={`${label} sessions`}
             onPress={() => send({ kind: "set_session_filter", filter: value })}
             style={{
               flex: 1,
@@ -555,6 +733,7 @@ function Rail(props: {
         ))}
       </View>
       <Input
+        testID="session-search"
         value={query()}
         placeholder="Search sessions"
         onChange={(text: string) => send({ kind: "set_session_query", query: text })}
@@ -570,61 +749,74 @@ function Rail(props: {
           color: color("sidebar-foreground"),
         }}
       />
-      <Text
-        style={{
-          fontSize: 10,
-          fontFamily: mono,
-          letterSpacing: 1.5,
-          color: color("muted-foreground"),
-          paddingTop: 8,
-        }}
+      <View style={{ flexDirection: "row", alignItems: "center", paddingTop: 8 }}>
+        <Text
+          style={{
+            flex: 1,
+            fontSize: 10,
+            fontFamily: mono,
+            letterSpacing: 1.5,
+            color: color("muted-foreground"),
+          }}
+        >
+          SESSIONS
+        </Text>
+        <Text
+          role="button"
+          accessibilityLabel="Manage sessions"
+          onPress={() => overlay.set({ kind: "sessions" })}
+          style={{ fontSize: 10, color: color("primary") }}
+        >
+          Manage
+        </Text>
+      </View>
+      <List
+        testID="session-list"
+        each={snapshot().sessions.items}
+        keyExtractor={(session) => session.id}
+        style={{ flex: 1 }}
+        empty={
+          <Text style={{ fontSize: 11, color: color("muted-foreground"), paddingLeft: 10 }}>
+            No sessions
+          </Text>
+        }
       >
-        SESSIONS
-      </Text>
-      <Scroll style={{ flex: 1 }}>
-        <View style={{ flexDirection: "column", gap: 2 }}>
-          <Each of={snapshot().sessions.items}>
-            {(session) => {
-              const selected = computed(
-                () => snapshot().sessions.selected === session().id,
-              );
-              return (
-                <View
-                  role="button"
-                  accessibilityLabel={session().title}
-                  onPress={() =>
-                    send({ kind: "resume_session", session_id: session().id })
-                  }
-                  style={{
-                    flexDirection: "column",
-                    gap: 2,
-                    minHeight: 37,
-                    paddingLeft: 10,
-                    paddingRight: 10,
-                    paddingTop: 6,
-                    paddingBottom: 6,
-                    borderRadius: 7,
-                    backgroundColor: selected() ? color("sidebar-accent") : "transparent",
-                  }}
-                >
-                  <Text
-                    style={{
-                      fontSize: 13,
-                      fontWeight: 500,
-                      color: color("sidebar-foreground"),
-                    }}
-                  >
-                    {session().title}
-                  </Text>
-                  <Text style={{ fontSize: 11, color: color("muted-foreground") }}>
-                    {relativeTime(session().updated_at)} · {session().message_count} messages
-                  </Text>
-                </View>
-              );
+        {(session) => (
+          <View
+            role="button"
+            accessibilityLabel={displayTitle(session().title)}
+            onPress={() => send({ kind: "resume_session", session_id: session().id })}
+            style={{
+              flexDirection: "column",
+              gap: 2,
+              minHeight: 37,
+              marginBottom: 2,
+              paddingLeft: 10,
+              paddingRight: 10,
+              paddingTop: 6,
+              paddingBottom: 6,
+              borderRadius: 7,
+              backgroundColor:
+                snapshot().sessions.selected === session().id
+                  ? color("sidebar-accent")
+                  : "transparent",
             }}
-          </Each>
-        </View>
-      </Scroll>
+          >
+            <Text
+              style={{
+                fontSize: 13,
+                fontWeight: 500,
+                color: color("sidebar-foreground"),
+              }}
+            >
+              {displayTitle(session().title)}
+            </Text>
+            <Text style={{ fontSize: 11, color: color("muted-foreground") }}>
+              {relativeTime(session().updated_at)} · {session().message_count} messages
+            </Text>
+          </View>
+        )}
+      </List>
     </View>
   );
 }
@@ -639,6 +831,10 @@ function relativeTime(iso: string): string {
   if (seconds < 172800) return "Yesterday";
   if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`;
   return new Date(then).toLocaleDateString();
+}
+
+function displayTitle(title: string): string {
+  return title.trim() || "Untitled session";
 }
 
 function RunTabs(props: { runTab: ReturnType<typeof signal<"chat" | "trajectory">> }) {
@@ -657,6 +853,8 @@ function RunTabs(props: { runTab: ReturnType<typeof signal<"chat" | "trajectory"
     >
       {(["chat", "trajectory"] as const).map((tab) => (
         <Text
+          role="button"
+          accessibilityLabel={tab === "chat" ? "Chat" : "Trajectory"}
           onPress={() => props.runTab.set(tab)}
           style={{
             fontSize: 12,
@@ -746,6 +944,8 @@ function InsertChip(props: {
 }) {
   return (
     <Text
+      role="button"
+      accessibilityLabel={`Insert ${props.label}`}
       onPress={() => props.draft.set(props.draft() + props.insertion)}
       style={{
         fontSize: 10,
@@ -783,6 +983,51 @@ function StickyTask(props: { task: Task }) {
       </Text>
       <Text style={{ flex: 1, fontSize: 11 }}>{props.task.subject}</Text>
       <Text style={{ fontSize: 9, color: color("muted-foreground") }}>{props.task.status}</Text>
+    </View>
+  );
+}
+
+function FailureBanner(props: {
+  message: string;
+  onSessions: () => void;
+  onSettings: () => void;
+}) {
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 12,
+        marginLeft: 16,
+        marginRight: 16,
+        marginTop: 10,
+        paddingLeft: 12,
+        paddingRight: 12,
+        paddingTop: 9,
+        paddingBottom: 9,
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: color("danger"),
+        backgroundColor: color("muted"),
+      }}
+    >
+      <Text style={{ flex: 1, fontSize: 11, color: color("danger") }}>{props.message}</Text>
+      <Text
+        role="button"
+        accessibilityLabel="Open sessions after a failure"
+        onPress={props.onSessions}
+        style={{ fontSize: 10, color: color("primary") }}
+      >
+        Sessions
+      </Text>
+      <Text
+        role="button"
+        accessibilityLabel="Open settings to fix the failure"
+        onPress={props.onSettings}
+        style={{ fontSize: 10, color: color("primary") }}
+      >
+        Settings
+      </Text>
     </View>
   );
 }
@@ -947,6 +1192,8 @@ function RowView(props: {
               <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>
                 {body.suggestions.map((suggestion) => (
                   <Text
+                    role="button"
+                    accessibilityLabel={`Use suggestion ${suggestion}`}
                     onPress={() => draft.set(suggestion)}
                     style={{
                       fontSize: 11,
@@ -973,6 +1220,8 @@ function RowView(props: {
       return (
         <View style={{ flexDirection: "column", gap: 4, paddingTop: 6, paddingBottom: 6 }}>
           <View
+            role="button"
+            accessibilityLabel="Toggle thinking"
             onPress={() =>
               expandedThinking.update((ids) =>
                 ids.includes(row.id) ? ids.filter((id) => id !== row.id) : [...ids, row.id],
@@ -1044,6 +1293,8 @@ function RowView(props: {
           }}
         >
           <View
+            role="button"
+            accessibilityLabel={`Toggle tool group ${body.summary}`}
             onPress={() => send({ kind: "toggle_group", id: row.id })}
             style={{ flexDirection: "row", alignItems: "center", gap: 8 }}
           >
@@ -1141,6 +1392,8 @@ function RowView(props: {
           </Text>
           {body.retryable ? (
             <Text
+              role="button"
+              accessibilityLabel="Retry provider"
               onPress={() => send({ kind: "retry_provider" })}
               style={{
                 fontSize: 10,
@@ -1189,6 +1442,8 @@ function ToolCard(props: {
   return (
     <View style={{ flexDirection: "column", gap: 4, paddingLeft: 8, paddingRight: 8, paddingTop: 3, paddingBottom: 3, borderRadius: 6 }}>
       <View
+        role="button"
+        accessibilityLabel={`Toggle tool ${tool.name}`}
         onPress={() => send({ kind: "toggle_tool", group, tool: tool.id })}
         style={{ flexDirection: "row", alignItems: "center", gap: 8 }}
       >
@@ -1276,6 +1531,8 @@ function ToolBodyView(props: { body: Tool["body"] }) {
 function OpenButton(props: { onPress: () => void }) {
   return (
     <Text
+      role="button"
+      accessibilityLabel="Open detail"
       onPress={props.onPress}
       style={{ fontSize: 10, color: color("primary"), paddingLeft: 6, paddingRight: 6 }}
     >
@@ -1305,6 +1562,8 @@ function GateCard(props: { gate: Gate; send: (command: object) => void }) {
           const selected = gate.selected.includes(index);
           return (
             <Text
+              role="button"
+              accessibilityLabel={`Choose ${option}`}
               onPress={() => {
                 if (multi) {
                   const next = selected
@@ -1343,6 +1602,8 @@ function GateCard(props: { gate: Gate; send: (command: object) => void }) {
         })}
         {multi ? (
           <Text
+            role="button"
+            accessibilityLabel="Submit gate selection"
             onPress={() =>
               props.send({
                 kind: "respond_gate",
@@ -1406,7 +1667,7 @@ function Composer(props: {
       }
       if (key === "tab") {
         const item = items[slashCursor()];
-        if (item) draft.set("/" + item.path.join(" "));
+        if (item) draft.set("/" + item.path.join(" ") + (item.needs_arguments ? " " : ""));
         return;
       }
     }
@@ -1583,7 +1844,14 @@ function Composer(props: {
             {running() ? "■" : "↑"}
           </Text>
         </View>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <View
+          style={{
+            flexDirection: "row",
+            flexWrap: "wrap",
+            alignItems: "center",
+            gap: 8,
+          }}
+        >
           <Text
             role="button"
             accessibilityLabel="Attach image"
@@ -1632,12 +1900,25 @@ function Composer(props: {
                 : "Mic"}
           </Text>
           <Text
+            role="button"
+            accessibilityLabel="Choose model"
             onPress={() => overlay.set({ kind: "models" })}
-            style={{ fontSize: 11, color: color("muted-foreground") }}
+            style={{
+              fontSize: 11,
+              color: color("muted-foreground"),
+              paddingLeft: 6,
+              paddingRight: 6,
+              paddingTop: 2,
+              paddingBottom: 2,
+              borderRadius: 5,
+              backgroundColor: color("muted"),
+            }}
           >
             {snapshot().composer.model || "Model"}
           </Text>
           <Text
+            role="button"
+            accessibilityLabel="Cycle permission mode"
             onPress={() =>
               send({
                 kind: "set_setting",
@@ -1653,7 +1934,16 @@ function Composer(props: {
                 },
               })
             }
-            style={{ fontSize: 11, color: color("muted-foreground") }}
+            style={{
+              fontSize: 11,
+              color: color("muted-foreground"),
+              paddingLeft: 6,
+              paddingRight: 6,
+              paddingTop: 2,
+              paddingBottom: 2,
+              borderRadius: 5,
+              backgroundColor: color("muted"),
+            }}
           >
             {snapshot().composer.permission}
           </Text>
@@ -1741,12 +2031,16 @@ function QueueRow(props: {
         ↓
       </Text>
       <Text
+        role="button"
+        accessibilityLabel="Send queued prompt now"
         onPress={() => props.send({ kind: "send_queued_now", index: props.item.index })}
         style={{ fontSize: 9, color: color("primary") }}
       >
         Send now
       </Text>
       <Text
+        role="button"
+        accessibilityLabel="Remove queued prompt"
         onPress={() => props.send({ kind: "remove_queued", index: props.item.index })}
         style={{ fontSize: 10, color: color("muted-foreground") }}
       >
@@ -1766,8 +2060,10 @@ function Inspector(props: {
   const tab = computed(() => snapshot().inspector.tab);
   return (
     <View
+      testID="inspector-panel"
       style={{
         width: 318,
+        height: "100%",
         flexDirection: "column",
         borderLeftWidth: 1,
         borderLeftColor: color("border"),
@@ -1783,6 +2079,8 @@ function Inspector(props: {
           ["context", "Context"],
         ].map(([value, label]) => (
           <Text
+            role="button"
+            accessibilityLabel={`${label} inspector`}
             onPress={() => send({ kind: "set_inspector", tab: value })}
             style={{
               fontSize: 11,
@@ -1842,6 +2140,8 @@ function RunInspector(props: {
         </Text>
         {runtime().latest_tool_row != null ? (
           <Text
+            role="button"
+            accessibilityLabel="Open tool output"
             onPress={() =>
               send({ kind: "open_reader", reader_kind: "tool_output", id: runtime().latest_tool_row })
             }
@@ -1905,12 +2205,16 @@ function SubagentsInspector(props: {
           <View style={{ flexDirection: "row", gap: 8 }}>
             <Text style={{ fontSize: 9, color: color("muted-foreground") }}>{agent.status}</Text>
             <Text
+              role="button"
+              accessibilityLabel={`Open subagent transcript ${agent.child_id}`}
               onPress={() => props.openReader("subagent", agent.child_id)}
               style={{ fontSize: 9, color: color("primary") }}
             >
               Transcript
             </Text>
             <Text
+              role="button"
+              accessibilityLabel={`Cancel subagent ${agent.child_id}`}
               onPress={() => props.send({ kind: "cancel_subagent", child_id: agent.child_id })}
               style={{ fontSize: 9, color: color("muted-foreground") }}
             >
@@ -1942,12 +2246,16 @@ function BackgroundInspector(props: {
           </Text>
           <View style={{ flexDirection: "row", gap: 8 }}>
             <Text
+              role="button"
+              accessibilityLabel={`Open background output ${task.id}`}
               onPress={() => props.openReader("background", task.id)}
               style={{ fontSize: 9, color: color("primary") }}
             >
               Output
             </Text>
             <Text
+              role="button"
+              accessibilityLabel={`Stop background task ${task.id}`}
               onPress={() =>
                 props.send({ kind: "cancel_background_task", task_id: task.id })
               }
@@ -1983,15 +2291,14 @@ function OverlayPanel(props: {
   snapshot: ReturnType<typeof signal<Snapshot>>;
   controller: Controller;
   draft: ReturnType<typeof signal<string>>;
-  renaming: ReturnType<typeof signal<string | null>>;
   send: (command: object) => void;
   close: () => void;
 }) {
-  const { overlay, snapshot, draft, renaming, send, close } = props;
+  const { overlay, snapshot, draft, send, close } = props;
   return (
     <View
       style={{
-        position: "absolute",
+        position: "fixed",
         top: 0,
         left: 0,
         right: 0,
@@ -2003,10 +2310,17 @@ function OverlayPanel(props: {
       }}
     >
       <View
+        testID="overlay-scrim"
+        onPress={close}
+        style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }}
+      />
+      <View
         style={{
           width: "100%",
           maxWidth: 640,
-          maxHeight: 540,
+          height:
+            overlay.kind === "models" || overlay.kind === "projects" ? "52%" : "70%",
+          flexShrink: 0,
           flexDirection: "column",
           borderRadius: 12,
           backgroundColor: color("popover"),
@@ -2028,20 +2342,44 @@ function OverlayPanel(props: {
           }}
         >
           <Text style={{ flex: 1, fontSize: 13, fontWeight: 600 }}>{overlayTitle(overlay)}</Text>
-          <Text role="button" accessibilityLabel="Close" onPress={close} style={{ fontSize: 11, color: color("muted-foreground") }}>
+          <Text
+            role="button"
+            accessibilityLabel="Close"
+            onPress={close}
+            style={{
+              fontSize: 11,
+              color: color("muted-foreground"),
+              paddingLeft: 8,
+              paddingRight: 8,
+              paddingTop: 4,
+              paddingBottom: 4,
+              borderRadius: 5,
+              backgroundColor: color("muted"),
+            }}
+          >
             Close
           </Text>
         </View>
-        <Scroll style={{ flex: 1 }}>
-          <View style={{ flexDirection: "column", gap: 8, paddingLeft: 16, paddingRight: 16, paddingTop: 12, paddingBottom: 12 }}>
+        {overlay.kind === "sessions" ? (
+          <View
+            style={{
+              flex: 1,
+              paddingLeft: 16,
+              paddingRight: 16,
+              paddingTop: 12,
+              paddingBottom: 12,
+            }}
+          >
+            <SessionsPanel snapshot={snapshot} send={send} close={close} />
+          </View>
+        ) : (
+          <Scroll style={{ flex: 1 }}>
+            <View style={{ flexDirection: "column", gap: 8, paddingLeft: 16, paddingRight: 16, paddingTop: 12, paddingBottom: 12 }}>
             {overlay.kind === "command_center" ? (
               <CommandCenter snapshot={snapshot} draft={draft} send={send} close={close} />
             ) : null}
             {overlay.kind === "settings" ? (
               <SettingsPanel snapshot={snapshot} send={send} />
-            ) : null}
-            {overlay.kind === "sessions" ? (
-              <SessionsPanel snapshot={snapshot} renaming={renaming} send={send} close={close} />
             ) : null}
             {overlay.kind === "extensions" ? (
               <ExtensionsPanel snapshot={snapshot} send={send} />
@@ -2052,8 +2390,9 @@ function OverlayPanel(props: {
             {overlay.kind === "projects" ? (
               <ProjectsPanel snapshot={snapshot} send={send} close={close} />
             ) : null}
-          </View>
-        </Scroll>
+            </View>
+          </Scroll>
+        )}
       </View>
     </View>
   );
@@ -2085,20 +2424,57 @@ function CommandCenter(props: {
   close: () => void;
 }) {
   const query = signal("");
+  const cursor = signal(0);
   const commands = computed(() => {
-    const fragment = query().toLowerCase();
+    const terms = query()
+      .trim()
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(Boolean);
     return props
       .snapshot()
-      .composer.commands.filter((command) => command.title.toLowerCase().includes(fragment))
+      .composer.commands
+      .filter((command) => {
+        if (terms.length === 0) return true;
+        const haystack = `${command.title} ${command.path.join(" ")} ${command.description}`.toLowerCase();
+        return terms.every((term) => haystack.includes(term));
+      })
       .slice(0, 60);
   });
+  const choose = (command: Snapshot["composer"]["commands"][number] | undefined) => {
+    if (!command) return;
+    if (command.needs_arguments) {
+      props.draft.set(`/${command.path.join(" ")} `);
+    } else {
+      props.send({ kind: "invoke_command", path: command.path, tokens: [] });
+    }
+    props.close();
+  };
+  const onKey = (key: string) => {
+    const count = commands().length;
+    if (count === 0) return;
+    if (key === "down") cursor.update((index) => (index + 1) % count);
+    if (key === "up") cursor.update((index) => (index - 1 + count) % count);
+  };
+  keymap.bind(
+    {
+      Down: () => onKey("down"),
+      Up: () => onKey("up"),
+      Return: () => choose(commands()[cursor()]),
+    },
+    { when: "always" },
+  );
   return (
     <View style={{ flexDirection: "column", gap: 8 }}>
       <Input
         value={query()}
         autoFocus
+        submitBehavior="submit"
         placeholder="Search commands"
-        onChange={(text: string) => query.set(text)}
+        onChange={(text: string) => {
+          query.set(text);
+          cursor.set(0);
+        }}
         style={{
           fontSize: 12,
           paddingLeft: 12,
@@ -2112,13 +2488,21 @@ function CommandCenter(props: {
         }}
       />
       <View style={{ flexDirection: "column", gap: 2 }}>
-        {commands().map((command) => (
+        {commands().map((command, index) => (
           <View
-            onPress={() => {
-              props.send({ kind: "invoke_command", path: command.path, tokens: [] });
-              props.close();
+            role="button"
+            accessibilityLabel={command.path.join(" ")}
+            onPress={() => choose(command)}
+            style={{
+              flexDirection: "column",
+              gap: 1,
+              paddingLeft: 12,
+              paddingRight: 12,
+              paddingTop: 6,
+              paddingBottom: 6,
+              borderRadius: 7,
+              backgroundColor: cursor() === index ? color("muted") : "transparent",
             }}
-            style={{ flexDirection: "column", gap: 1, paddingLeft: 12, paddingRight: 12, paddingTop: 6, paddingBottom: 6, borderRadius: 7 }}
           >
             <Text style={{ fontSize: 13, fontFamily: mono }}>{command.title}</Text>
             <Text style={{ fontSize: 11, color: color("muted-foreground") }}>
@@ -2126,6 +2510,11 @@ function CommandCenter(props: {
             </Text>
           </View>
         ))}
+        {commands().length === 0 ? (
+          <Text style={{ fontSize: 11, color: color("muted-foreground") }}>
+            No matching commands
+          </Text>
+        ) : null}
       </View>
     </View>
   );
@@ -2140,15 +2529,42 @@ function SettingsPanel(props: {
     ["theme", "Theme", "choice", current().appearance],
     ["language", "Language", "choice", current().language],
     ["model", "Model", "text", current().composer.model],
+    ["model-subagent", "Subagent model", "text", current().composer.subagent_model],
     ["permission-mode", "Permission", "choice", current().composer.permission],
     ["reasoning-effort", "Reasoning effort", "choice", current().composer.effort ?? ""],
-    ["notifications", "Notifications", "bool", "on"],
+    [
+      "thinking-budget",
+      "Thinking budget",
+      "text",
+      current().composer.thinking_budget?.toString() ?? "",
+    ],
+    ["notifications", "Notifications", "bool", current().notifications ? "on" : "off"],
     ["hook-output", "Hook output", "bool", current().show_hook_output ? "on" : "off"],
     ["provider", "Provider", "text", current().settings.provider],
     ["base-url", "Base URL", "text", current().settings.base_url],
-    ["api-key", "API key", "text", current().settings.api_key_set ? "••••••" : ""],
+    ["api-key", "API key", "text", ""],
     ["max-tokens", "Max tokens", "text", current().settings.max_tokens?.toString() ?? ""],
+    [
+      "model-context-window",
+      "Context window",
+      "text",
+      current().settings.context_window?.toString() ?? "",
+    ],
+    [
+      "snapshot-max-items",
+      "Snapshot max items",
+      "text",
+      current().settings.snapshot_max_items?.toString() ?? "",
+    ],
     ["micro-compact", "Micro compact", "bool", current().settings.micro_compact ? "on" : "off"],
+    ["tokio-console", "Tokio console", "bool", current().settings.tokio_console ? "on" : "off"],
+    [
+      "skill-body-auto-inject",
+      "Skill body inject",
+      "bool",
+      current().settings.skill_body_auto_inject ? "on" : "off",
+    ],
+    ["config", "Config path", "text", current().settings.config_path ?? ""],
   ];
   return (
     <View style={{ flexDirection: "column", gap: 8 }}>
@@ -2156,30 +2572,22 @@ function SettingsPanel(props: {
         <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
           <Text style={{ flex: 1, fontSize: 12 }}>{label}</Text>
           {kind === "text" ? (
-            <Input
+            <SettingTextRow
+              id={id}
               value={value}
-              onSubmit={(event: { text: string }) =>
-                props.send({
-                  kind: "set_setting",
-                  id,
-                  value: { kind: "text", value: event.text },
-                })
+              placeholder={
+                id === "api-key"
+                  ? current().settings.api_key_set
+                    ? "Configured"
+                    : "Not set"
+                  : undefined
               }
-              style={{
-                width: 240,
-                fontSize: 12,
-                paddingLeft: 8,
-                paddingRight: 8,
-                paddingTop: 4,
-                paddingBottom: 4,
-                borderRadius: 6,
-                borderWidth: 1,
-                borderColor: color("border"),
-                backgroundColor: color("background"),
-              }}
+              send={props.send}
             />
           ) : (
             <Text
+              role="button"
+              accessibilityLabel={`${label} setting`}
               onPress={() => {
                 if (kind === "bool") {
                   props.send({
@@ -2224,59 +2632,207 @@ function SettingsPanel(props: {
   );
 }
 
+function SettingTextRow(props: {
+  id: string;
+  value: string;
+  placeholder?: string;
+  send: (command: object) => void;
+}) {
+  const text = signal(props.value);
+  return (
+    <Input
+      testID={`setting-${props.id}`}
+      value={text()}
+      placeholder={props.placeholder}
+      onChange={(value: string) => text.set(value)}
+      onSubmit={(event: { text: string }) =>
+        props.send({
+          kind: "set_setting",
+          id: props.id,
+          value: { kind: "text", value: event.text },
+        })
+      }
+      style={{
+        width: 240,
+        fontSize: 12,
+        paddingLeft: 8,
+        paddingRight: 8,
+        paddingTop: 4,
+        paddingBottom: 4,
+        borderRadius: 6,
+        borderWidth: 1,
+        borderColor: color("border"),
+        backgroundColor: color("background"),
+      }}
+    />
+  );
+}
+
 function SessionsPanel(props: {
   snapshot: ReturnType<typeof signal<Snapshot>>;
-  renaming: ReturnType<typeof signal<string | null>>;
+  send: (command: object) => void;
+  close: () => void;
+}) {
+  const drafts = signal<Record<string, string>>({});
+  const titleOf = (session: Snapshot["sessions"]["items"][number]) =>
+    drafts()[session.id] ?? session.title;
+  const setDraft = (id: string, title: string) =>
+    drafts.update((current) => ({ ...current, [id]: title }));
+  const clearDraft = (id: string) =>
+    drafts.update((current) => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+  return (
+    <View testID="sessions-panel" style={{ flex: 1, flexDirection: "column", gap: 4 }}>
+      <View style={{ flexDirection: "row", gap: 4, marginBottom: 4 }}>
+        {[
+          ["active", "Active"],
+          ["archived", "Archived"],
+          ["all", "All"],
+        ].map(([value, label]) => (
+          <Text
+            role="button"
+            accessibilityLabel={`${label} sessions`}
+            onPress={() => props.send({ kind: "set_session_filter", filter: value })}
+            style={{
+              flex: 1,
+              textAlign: "center",
+              fontSize: 11,
+              paddingTop: 4,
+              paddingBottom: 4,
+              borderRadius: 6,
+              backgroundColor:
+                props.snapshot().sessions.filter === value
+                  ? color("muted")
+                  : "transparent",
+              color:
+                props.snapshot().sessions.filter === value
+                  ? color("foreground")
+                  : color("muted-foreground"),
+            }}
+          >
+            {label}
+          </Text>
+        ))}
+      </View>
+      <Input
+        testID="session-manager-search"
+        value={props.snapshot().sessions.query}
+        placeholder={`Search ${props.snapshot().project.name} sessions`}
+        onChange={(text: string) =>
+          props.send({ kind: "set_session_query", query: text })
+        }
+        style={{
+          fontSize: 11,
+          paddingLeft: 10,
+          paddingRight: 10,
+          paddingTop: 5,
+          paddingBottom: 5,
+          marginBottom: 4,
+          borderRadius: 7,
+          borderWidth: 1,
+          borderColor: color("border"),
+          backgroundColor: color("background"),
+        }}
+      />
+      <List
+        testID="session-manager-list"
+        each={props.snapshot().sessions.items}
+        keyExtractor={(session) => session.id}
+        style={{ flex: 1 }}
+        empty={
+          <Text style={{ fontSize: 11, color: color("muted-foreground") }}>No sessions</Text>
+        }
+      >
+        {(session) => (
+          <SessionRow
+            session={session()}
+            title={titleOf(session())}
+            onChangeTitle={(text) => setDraft(session().id, text)}
+            onRename={(text) => {
+              props.send({
+                kind: "rename_session",
+                session_id: session().id,
+                title: text,
+              });
+              clearDraft(session().id);
+            }}
+            send={props.send}
+            close={props.close}
+          />
+        )}
+      </List>
+    </View>
+  );
+}
+
+function SessionRow(props: {
+  session: Snapshot["sessions"]["items"][number];
+  title: string;
+  onChangeTitle: (text: string) => void;
+  onRename: (text: string) => void;
   send: (command: object) => void;
   close: () => void;
 }) {
   return (
-    <View style={{ flexDirection: "column", gap: 4 }}>
-      {props.snapshot().sessions.items.map((session) => (
-        <View
-          style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingLeft: 8, paddingRight: 8, paddingTop: 4, paddingBottom: 4, borderRadius: 7 }}
-        >
-          <Input
-            value={props.renaming() === session.id ? session.title : session.title}
-            onSubmit={(event: { text: string }) =>
-              props.send({ kind: "rename_session", session_id: session.id, title: event.text })
-            }
-            style={{
-              flex: 1,
-              fontSize: 12,
-              paddingLeft: 8,
-              paddingRight: 8,
-              paddingTop: 3,
-              paddingBottom: 3,
-              borderRadius: 5,
-              borderWidth: 1,
-              borderColor: color("border"),
-              backgroundColor: color("background"),
-            }}
-          />
-          <Text
-            onPress={() =>
-              props.send({
-                kind: "set_session_archived",
-                session_id: session.id,
-                archived: !session.archived,
-              })
-            }
-            style={{ fontSize: 10, color: color("muted-foreground") }}
-          >
-            {session.archived ? "Restore" : "Archive"}
-          </Text>
-          <Text
-            onPress={() => {
-              props.send({ kind: "resume_session", session_id: session.id });
-              props.close();
-            }}
-            style={{ fontSize: 10, color: color("primary") }}
-          >
-            Open
-          </Text>
-        </View>
-      ))}
+    <View
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        paddingLeft: 8,
+        paddingRight: 8,
+        paddingTop: 4,
+        paddingBottom: 4,
+        borderRadius: 7,
+      }}
+    >
+      <Input
+        testID="session-title"
+        value={props.title}
+        placeholder={props.title.trim() ? undefined : "Untitled session"}
+        onChange={(text: string) => props.onChangeTitle(text)}
+        onSubmit={(event: { text: string }) => props.onRename(event.text)}
+        style={{
+          flex: 1,
+          fontSize: 12,
+          paddingLeft: 8,
+          paddingRight: 8,
+          paddingTop: 3,
+          paddingBottom: 3,
+          borderRadius: 5,
+          borderWidth: 1,
+          borderColor: color("border"),
+          backgroundColor: color("background"),
+        }}
+      />
+      <Text
+        role="button"
+        accessibilityLabel={props.session.archived ? "Restore session" : "Archive session"}
+        onPress={() =>
+          props.send({
+            kind: "set_session_archived",
+            session_id: props.session.id,
+            archived: !props.session.archived,
+          })
+        }
+        style={{ fontSize: 10, color: color("muted-foreground") }}
+      >
+        {props.session.archived ? "Restore" : "Archive"}
+      </Text>
+      <Text
+        role="button"
+        accessibilityLabel="Open session"
+        onPress={() => {
+          props.send({ kind: "resume_session", session_id: props.session.id });
+          props.close();
+        }}
+        style={{ fontSize: 10, color: color("primary") }}
+      >
+        Open
+      </Text>
     </View>
   );
 }
@@ -2286,7 +2842,32 @@ function ExtensionsPanel(props: {
   send: (command: object) => void;
 }) {
   const tab = signal(props.snapshot().extensions.tab);
+  const query = signal("");
   const extensions = computed(() => props.snapshot().extensions);
+  const terms = computed(() =>
+    query()
+      .trim()
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(Boolean),
+  );
+  const skills = computed(() =>
+    extensions().skills.filter((skill) => {
+      const words = terms();
+      if (words.length === 0) return true;
+      const haystack = `${skill.name} ${skill.description}`.toLowerCase();
+      return words.every((word) => haystack.includes(word));
+    }),
+  );
+  const plugins = computed(() =>
+    extensions().plugins.filter((plugin) => {
+      const words = terms();
+      if (words.length === 0) return true;
+      const haystack =
+        `${plugin.name} ${plugin.marketplace} ${plugin.version ?? ""}`.toLowerCase();
+      return words.every((word) => haystack.includes(word));
+    }),
+  );
   return (
     <View style={{ flexDirection: "column", gap: 8 }}>
       <View style={{ flexDirection: "row", gap: 4 }}>
@@ -2297,7 +2878,12 @@ function ExtensionsPanel(props: {
           ["hooks", "Hooks"],
         ].map(([value, label]) => (
           <Text
-            onPress={() => tab.set(value)}
+            role="button"
+            accessibilityLabel={`${label} extensions`}
+            onPress={() => {
+              tab.set(value);
+              query.set("");
+            }}
             style={{
               fontSize: 10,
               paddingLeft: 8,
@@ -2313,8 +2899,33 @@ function ExtensionsPanel(props: {
           </Text>
         ))}
       </View>
+      {tab() === "skills" || tab() === "plugins" ? (
+        <Input
+          testID="extensions-search"
+          value={query()}
+          placeholder={tab() === "skills" ? "Search skills" : "Search plugins"}
+          onChange={(text: string) => query.set(text)}
+          style={{
+            fontSize: 11,
+            paddingLeft: 10,
+            paddingRight: 10,
+            paddingTop: 5,
+            paddingBottom: 5,
+            borderRadius: 7,
+            borderWidth: 1,
+            borderColor: color("border"),
+            backgroundColor: color("background"),
+          }}
+        />
+      ) : null}
+      {tab() === "skills" && skills().length === 0 ? (
+        <Text style={{ fontSize: 11, color: color("muted-foreground") }}>No skills</Text>
+      ) : null}
+      {tab() === "plugins" && plugins().length === 0 ? (
+        <Text style={{ fontSize: 11, color: color("muted-foreground") }}>No plugins</Text>
+      ) : null}
       {tab() === "skills"
-        ? extensions().skills.map((skill) => (
+        ? skills().map((skill) => (
             <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
               <View style={{ flex: 1, flexDirection: "column" }}>
                 <Text style={{ fontSize: 12 }}>{skill.name}</Text>
@@ -2323,6 +2934,8 @@ function ExtensionsPanel(props: {
                 </Text>
               </View>
               <Text
+                role="button"
+                accessibilityLabel={`${skill.enabled ? "Disable" : "Enable"} skill ${skill.name}`}
                 onPress={() =>
                   props.send({
                     kind: "set_skill_enabled",
@@ -2338,7 +2951,7 @@ function ExtensionsPanel(props: {
           ))
         : null}
       {tab() === "plugins"
-        ? extensions().plugins.map((plugin) => (
+        ? plugins().map((plugin) => (
             <Text style={{ fontSize: 12 }}>
               {plugin.name} · {plugin.marketplace}
               {plugin.version ? ` · ${plugin.version}` : ""}
@@ -2358,6 +2971,8 @@ function ExtensionsPanel(props: {
             </Text>
           )}
           <Text
+            role="button"
+            accessibilityLabel={`Load ${tab() === "mcp" ? "MCP servers" : "hooks"}`}
             onPress={() =>
               props.send({
                 kind: "invoke_command",
@@ -2392,8 +3007,15 @@ function ModelsPanel(props: {
 }) {
   return (
     <View style={{ flexDirection: "column", gap: 2 }}>
+      {props.snapshot().composer.models.length === 0 ? (
+        <Text style={{ fontSize: 11, color: color("muted-foreground") }}>
+          No models configured
+        </Text>
+      ) : null}
       {props.snapshot().composer.models.map((model) => (
         <Text
+          role="button"
+          accessibilityLabel={`Use model ${model}`}
           onPress={() => {
             props.send({
               kind: "set_setting",
@@ -2430,6 +3052,8 @@ function ProjectsPanel(props: {
     <View style={{ flexDirection: "column", gap: 8 }}>
       {props.snapshot().projects.map((project) => (
         <View
+          role="button"
+          accessibilityLabel={`Open project ${project.name}`}
           onPress={() => {
             if (project.root) {
               props.send({ kind: "open_project", root: project.root });
@@ -2446,7 +3070,7 @@ function ProjectsPanel(props: {
             paddingBottom: 6,
             borderRadius: 7,
             backgroundColor:
-              props.snapshot().project.name === project.name ? color("muted") : "transparent",
+              props.snapshot().project.id === project.id ? color("muted") : "transparent",
           }}
         >
           <Text style={{ flex: 1, fontSize: 12 }}>{project.name}</Text>
@@ -2457,6 +3081,7 @@ function ProjectsPanel(props: {
       ))}
       <View style={{ flexDirection: "row", gap: 8 }}>
         <Input
+          testID="project-path"
           value={path()}
           placeholder="Project path"
           onChange={(text: string) => path.set(text)}
@@ -2474,6 +3099,8 @@ function ProjectsPanel(props: {
           }}
         />
         <Text
+          role="button"
+          accessibilityLabel="Open project path"
           onPress={() => {
             if (path().trim()) {
               props.send({ kind: "open_project", root: path().trim() });
@@ -2501,7 +3128,7 @@ function ReaderPanel(props: {
   return (
     <View
       style={{
-        position: "absolute",
+        position: "fixed",
         top: 0,
         left: 0,
         right: 0,
@@ -2513,11 +3140,16 @@ function ReaderPanel(props: {
       }}
     >
       <View
+        testID="reader-scrim"
+        onPress={props.close}
+        style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }}
+      />
+      <View
         testID="reader"
         style={{
           width: "100%",
           maxWidth: 760,
-          maxHeight: 600,
+          height: "70%",
           flexDirection: "column",
           borderRadius: 12,
           backgroundColor: color("popover"),
@@ -2539,7 +3171,21 @@ function ReaderPanel(props: {
           }}
         >
           <Text style={{ flex: 1, fontSize: 13, fontWeight: 600 }}>{props.reader.title}</Text>
-          <Text role="button" accessibilityLabel="Close" onPress={props.close} style={{ fontSize: 11, color: color("muted-foreground") }}>
+          <Text
+            role="button"
+            accessibilityLabel="Close"
+            onPress={props.close}
+            style={{
+              fontSize: 11,
+              color: color("muted-foreground"),
+              paddingLeft: 8,
+              paddingRight: 8,
+              paddingTop: 4,
+              paddingBottom: 4,
+              borderRadius: 5,
+              backgroundColor: color("muted"),
+            }}
+          >
             Close
           </Text>
         </View>
@@ -2566,7 +3212,7 @@ function ToastPanel(props: {
   return (
     <View
       style={{
-        position: "absolute",
+        position: "fixed",
         left: 0,
         right: 0,
         bottom: 24,
@@ -2574,6 +3220,8 @@ function ToastPanel(props: {
       }}
     >
       <View
+        role="button"
+        accessibilityLabel="Dismiss notification"
         onPress={props.close}
         style={{
           maxWidth: 520,
@@ -2622,6 +3270,8 @@ function GateBanner(props: { gate: Gate; send: (command: object) => void }) {
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
           {props.gate.options.map((option, index) => (
             <Text
+              role="button"
+              accessibilityLabel={`Answer ${option}`}
               onPress={() =>
                 props.send({
                   kind: "respond_gate",
@@ -2662,7 +3312,34 @@ function TrajectorySnapshot(props: {
   const tab = signal("Summary");
   const query = signal("");
   const detail = signal<TrajectoryDetail | null>(null);
-  const trajectory = computed(() => snapshot().trajectory);
+  const readTrajectory = (): TrajectoryState => {
+    try {
+      return JSON.parse(controller.trajectory()) as TrajectoryState;
+    } catch {
+      return {
+        summary: {
+          turns: 0,
+          records: 0,
+          tool_calls: 0,
+          measured_ms: 0,
+          measured: 0,
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_hit_tokens: 0,
+          cache_miss_tokens: 0,
+          context_window: null,
+          context_used: 0,
+        },
+        spans: [],
+        records: [],
+      };
+    }
+  };
+  const trajectory = signal<TrajectoryState>(readTrajectory());
+  effect(() => {
+    snapshot().revision;
+    trajectory.set(readTrajectory());
+  });
   const records = computed(() => {
     const search = query().trim().toLowerCase();
     const all = trajectory().records;
@@ -2743,6 +3420,8 @@ function TrajectorySnapshot(props: {
             <View style={{ flexDirection: "row", height: 8, gap: 1 }}>
               {trajectory().spans.map((span) => (
                 <View
+                  role="button"
+                  accessibilityLabel={`Open trajectory record ${span.index}`}
                   onPress={() => select(span.index)}
                   style={{
                     flex: 1,
@@ -2785,35 +3464,43 @@ function TrajectorySnapshot(props: {
             }}
           />
         </View>
-        <Scroll style={{ flex: 1 }}>
-          <View style={{ flexDirection: "column", gap: 1, paddingLeft: 12, paddingRight: 12, paddingBottom: 12 }}>
-            {records().map((record) => (
-              <View
-                onPress={() => select(record.index)}
-                style={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 8,
-                  paddingLeft: 8,
-                  paddingRight: 8,
-                  paddingTop: 3,
-                  paddingBottom: 3,
-                  borderRadius: 5,
-                  backgroundColor:
-                    selected() === record.index ? color("muted") : "transparent",
-                }}
-              >
-                <Text style={{ width: 34, fontSize: 10, fontFamily: mono, color: color("muted-foreground") }}>
-                  #{record.index}
-                </Text>
-                <Text style={{ flex: 1, fontSize: 11 }}>{record.text}</Text>
-                <Text style={{ fontSize: 9, color: statusColor(record.status) }}>
-                  {record.status_label}
-                </Text>
-              </View>
-            ))}
-          </View>
-        </Scroll>
+        <List
+          testID="trajectory-records"
+          each={records()}
+          keyExtractor={(record) => String(record.index)}
+          style={{ flex: 1 }}
+        >
+          {(record) => (
+            <View
+              role="button"
+              accessibilityLabel={`Open record ${record().index} ${record().text}`}
+              onPress={() => select(record().index)}
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 8,
+                marginLeft: 12,
+                marginRight: 12,
+                marginBottom: 1,
+                paddingLeft: 8,
+                paddingRight: 8,
+                paddingTop: 3,
+                paddingBottom: 3,
+                borderRadius: 5,
+                backgroundColor:
+                  selected() === record().index ? color("muted") : "transparent",
+              }}
+            >
+              <Text style={{ width: 34, fontSize: 10, fontFamily: mono, color: color("muted-foreground") }}>
+                #{record().index}
+              </Text>
+              <Text style={{ flex: 1, fontSize: 11 }}>{record().text}</Text>
+              <Text style={{ fontSize: 9, color: statusColor(record().status) }}>
+                {record().status_label}
+              </Text>
+            </View>
+          )}
+        </List>
       </View>
       <View style={{ flex: 1, flexDirection: "column" }}>
         <View
@@ -2830,6 +3517,8 @@ function TrajectorySnapshot(props: {
         >
           {DETAIL_TABS.map((value) => (
             <Text
+              role="button"
+              accessibilityLabel={`${value} detail`}
               onPress={() => tab.set(value)}
               style={{
                 fontSize: 10,

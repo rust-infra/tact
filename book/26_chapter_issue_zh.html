@@ -741,6 +741,7 @@
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 <li class="toc-l2"><a href="#2026-11-04--tact-desktop-%E8%BF%81%E7%A7%BB%E5%88%B0-native-shellgpui-%E5%A3%B3%E9%80%80%E5%9C%BA" title="2026-11-04 — Tact Desktop 迁移到 Native Shell：GPUI 壳退场"><span class="toc-label">2026-11-04 — Tact Desktop 迁移到 Native Shell：GPUI 壳退场</span></a></li>
 <li class="toc-l2"><a href="#2026-11-04--tact-desktop-%E6%8D%A2%E6%88%90-tsx-%E5%A3%B3rust-%E8%A7%86%E5%9B%BE%E5%B1%82%E9%80%80%E5%9C%BAnsh-package-%E6%89%93%E5%8C%85" title="2026-11-04 — Tact Desktop 换成 TSX 壳：Rust 视图层退场，nsh package 打包"><span class="toc-label">2026-11-04 — Tact Desktop 换成 TSX 壳：Rust 视图层退场，nsh package 打包</span></a></li>
+<li class="toc-l2"><a href="#2026-11-04--tact-desktop-tsx-%E5%85%A5%E5%8F%A3%E5%9B%9E%E5%BD%92%E5%BC%B9%E7%AA%97%E9%AB%98%E5%BA%A6%E8%8F%9C%E5%8D%95%E5%B1%82%E7%BA%A7%E4%B8%8E%E4%BA%8C%E7%BA%A7%E6%8E%A7%E4%BB%B6" title="2026-11-04 — Tact Desktop TSX 入口回归：弹窗高度、菜单层级与二级控件"><span class="toc-label">2026-11-04 — Tact Desktop TSX 入口回归：弹窗高度、菜单层级与二级控件</span></a></li>
 </ol>
 </div>
 </nav>
@@ -22045,6 +22046,48 @@ NSH 0.3.0 支持同一引擎上混用 Rust 与 TSX，TSX 直接写 flex 布局�
 <p><strong>Verification：</strong> <code>nsh check</code> 与 <code>nsh test</code>（23 个测试：Rust 单测、catalog parity、TSX 无头壳测试）通过；
 <code>nsh package --target macos</code> 的产物启动 8 秒无崩溃、无字体回退警告；<code>scripts/check-ui.sh</code> 现在跑 <code>nsh test</code>。</p>
 <p><strong>Pointers:</strong> <code>crates/desktop/tsx/{Shell,ansi,mermaid}.tsx</code>、<code>crates/desktop/src/{bridge,json,surface,main}.rs</code>、<code>scripts/{package-desktop,smoke-desktop}.sh</code>。</p>
+
+<h2 id="2026-11-04--tact-desktop-tsx-入口回归弹窗高度菜单层级与二级控件">2026-11-04 — Tact Desktop TSX 入口回归：弹窗高度、菜单层级与二级控件</h2>
+<p><strong>现象：</strong> Command Center、Settings、Extensions 等覆盖层只剩标题条，搜索框、列表和设置项全部不可见；File 菜单的
+<code>Extensions</code> 被主内容盖住，只能看到前三项；Trajectory 详情页的标签、Extensions 标签、会话过滤等二级入口可点，
+但没有按钮语义，键盘与辅助功能无法定位；启动失败时 Run Inspector 只显示 <code>failed</code>，没有原因或修复入口；
+五类设置（Subagent model、Thinking budget、Context window、Snapshot max items、Config path）在弹窗里缺席；窗口缩到
+800px 左右时固定三栏把对话区和 Composer 压到不可用，标题栏项目名还会折成多行；超过一千条消息的 session 中，侧栏
+列表和聊天面板滚动明显掉帧，点击不同入口的切换也被全量行创建拖慢。</p>
+<p><strong>根因：</strong> 覆盖层面板高度由内容推导，而正文 <code>Scroll</code> 使用 <code>flex: 1</code>，在无确定高度的父视图里
+量成 0；应用菜单挂在标题栏内部，绝对定位的溢出部分被后面的主内容覆盖；多个 <code>Text onPress</code> 未声明
+<code>role="button"</code> / <code>accessibilityLabel</code>；快照里的 <code>failure</code> 字段没有被 UI 使用；
+侧栏、聊天、Trajectory 和 Session Manager 都用 <code>Scroll + Each/map</code> 创建全部行；每次快照还序列化整份
+Trajectory，即使当前在 Chat 页。</p>
+<p><strong>决策：</strong> 把应用菜单提升为 Shell 根节点的固定定位层，并按 File/View/Session 对齐；覆盖层改为确定高度的
+<code>70%</code>（模型与项目选择为 <code>52%</code>），正文 <code>Scroll</code> 在确定高度内滚动；reader 使用同一规则；给标题栏、
+Run/Inspector 标签、会话过滤、Extensions 标签、设置项、模型/项目行和会话操作补齐按钮语义与可读标签；菜单与覆盖层的
+空白区域点击即关闭。Command Center 用 keymap 接管 Up/Down/Return 并高亮当前项；Session Manager 增加项目名搜索框与
+Active/Archived/All；Extensions 的 Skills/Plugins 增加筛选框。Settings 补齐 Subagent model、Thinking budget、Context
+window、Snapshot max items 和 Config path，API key 只显示 <code>Configured</code> 占位而不再把掩码当可提交值。Run Header
+下新增失败横幅，直接显示快照错误并提供 Sessions/Settings 入口；Trajectory 测试改为验证选中记录后详情从空态切换，不再假设
+第一条记录没有 payload。根视图监听宽度，低于 1080px 时隐藏固定侧栏，Sessions/Inspector 改为带 scrim 的抽屉，Escape
+可关闭；窄窗口隐藏标题栏项目名，避免换行。</p>
+<p><strong>性能收口：</strong> 侧栏 session、聊天 transcript、Trajectory 记录和 Session Manager 全部改用原生回收
+<code>List</code>，只创建视口附近的行；侧栏和转写行用稳定 id 作 key。Trajectory 从 <code>DesktopSnapshot</code>
+移除，改由 <code>Controller.trajectory()</code> 在 Trajectory 页挂载/版本变化时按需读取，Chat 页不再承担这份
+序列化与 JSON 解析。空标题统一显示 <code>Untitled session</code>，Session Manager 的草稿改名状态按 session id 存在
+列表外，避免回收行丢失输入。实时输出接入快照里的 <code>tail_following</code>：Chat List 用
+<code>maintainVisibleContentPosition</code> 保持流式增长时的底部位置，快照 revision 变化时在布局后
+<code>scrollToEnd</code>；用户滚离底部会通过 <code>set_tail_following</code> 停止跟随，Back to Bottom
+重新开启并滚到底部。</p>
+<p><strong>改后行为：</strong> 所有覆盖层打开即可看到正文并可滚动；File 菜单四项完整显示，点击 Settings/Extensions 正常进入；
+二级标签与列表项可被辅助功能定位；启动失败不再只留一个无解释的 <code>failed</code> 状态；宽窗口保留三栏，窄窗口对话区
+占满宽度，侧栏按需滑出并可点击空白/Escape 关闭。大会话中列表只渲染可见行，滚动与入口切换不再随历史消息数线性变慢；
+Chat 页快照不再携带 Trajectory。</p>
+<p><strong>Verification：</strong> <code>nsh test</code> 48 个测试全绿；<code>scripts/check-rust.sh</code>（fmt、clippy、workspace tests、book checks）通过；在 macOS 实际窗口中逐项打开
+Command Center、Settings、Extensions、File 菜单和 Trajectory，确认正文、菜单末项和二级标签可见可点；
+<code>700px</code> / <code>820px</code> 窗口截图确认侧栏收起、Composer 与模型/权限控件完整可见；在 1071-message
+session 上实际滚动 <code>id:transcript-list</code> 与 <code>id:session-list</code>，确认虚拟列表可用且只保留可见行；
+<code>nsh test --fps</code> 记录滚动稳定在 112–120 fps，对象数保持在可见行量级；新会话实际提交
+<code>Reply with exactly: streaming ok</code>，流式 assistant 行出现并保持在 Composer 上方的最新位置。</p>
+<p><strong>Pointers：</strong> <code>crates/desktop/tsx/Shell.tsx</code>（<code>AppMenu</code>、<code>OverlayPanel</code>、
+<code>ReaderPanel</code>、<code>FailureBanner</code>）、<code>crates/desktop/Sweep.test.tsx</code>。</p>
 
 </main>
 <script>

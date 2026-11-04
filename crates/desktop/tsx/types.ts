@@ -123,6 +123,7 @@ export interface CommandInfo {
   path: string[];
   title: string;
   description: string;
+  needs_arguments: boolean;
 }
 
 export interface ComposerState {
@@ -235,7 +236,9 @@ export interface Snapshot {
   appearance: "light" | "dark";
   language: "en" | "zh";
   text_scale: number;
+  tail_following: boolean;
   show_hook_output: boolean;
+  notifications: boolean;
   project: Project;
   projects: Project[];
   sessions: SessionList;
@@ -244,7 +247,6 @@ export interface Snapshot {
   rows: Row[];
   composer: ComposerState;
   inspector: InspectorState;
-  trajectory: TrajectoryState;
   pending_gates: Gate[];
   settings: Settings;
   extensions: Extensions;

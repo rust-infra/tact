@@ -47,6 +47,11 @@ impl Controller {
         reader_json(&kind, id)
     }
 
+    /// The current trajectory ledger, as JSON.
+    pub fn trajectory(&self) -> String {
+        trajectory_json()
+    }
+
     /// One trajectory record's detail, as JSON.
     pub fn trajectory_record(&self, index: usize) -> String {
         let snapshot = app::controller().snapshot();
@@ -66,12 +71,14 @@ impl Controller {
         let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data_base64) else {
             return String::new();
         };
-        let dir = std::env::temp_dir().join("tact-attachments");
+        let dir = std::env::temp_dir()
+            .join("tact-attachments")
+            .join(std::process::id().to_string());
         if std::fs::create_dir_all(&dir).is_err() {
             return String::new();
         }
         let safe = name.rsplit(['/', '\\']).next().unwrap_or("image");
-        let path = dir.join(format!("{}-{}", std::process::id(), safe));
+        let path = dir.join(safe);
         if std::fs::write(&path, bytes).is_err() {
             return String::new();
         }
@@ -176,6 +183,13 @@ impl Controller {
 fn snapshot_json() -> String {
     let snapshot = app::controller().snapshot();
     serde_json::to_string(&ShellSnapshot::from(&*snapshot)).expect("the shell snapshot serializes")
+}
+
+fn trajectory_json() -> String {
+    let snapshot = app::controller().snapshot();
+    let view = tact_desktop_core::TrajectoryView::from_transcript(&snapshot.transcript);
+    serde_json::to_string(&crate::json::TrajectoryJson::from(&view))
+        .expect("the trajectory view serializes")
 }
 
 fn reader_json(kind: &str, id: Option<u64>) -> String {
