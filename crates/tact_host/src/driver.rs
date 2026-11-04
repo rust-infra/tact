@@ -22,7 +22,7 @@ use tact::{
     },
     hook::HookControl,
     store::goal_store::GoalStoreError,
-    task::{SharedTaskManager, TaskStatus, emit_tasks_changed},
+    task::{SharedTaskManager, TaskStatus, emit_session_tasks_changed},
     utils::RwLockExt,
 };
 use tact_llm::{Message, Role};
@@ -249,7 +249,7 @@ pub async fn run_command_loop_with_account(
     // panel (and the `/goal <verb>` completion that reads it) must not stay
     // empty until some later Goal command happens to emit a snapshot.
     emit_goals_changed(&goal_manager, &task_manager, limits, &events).await;
-    emit_session_tasks_changed(&task_manager, background_session_id.as_deref(), &events).await;
+    publish_session_tasks(&task_manager, background_session_id.as_deref(), &events).await;
 
     let mut agent = Some(agent);
     let mut active: Option<JoinHandle<Agent>> = None;
@@ -884,7 +884,7 @@ pub(crate) async fn emit_goals_changed(
 ///
 /// `/tasks-dag` is read-only and the task list is persisted, so a resumed
 /// session must not look empty until the next `task_create` or `task_update`.
-async fn emit_session_tasks_changed(
+async fn publish_session_tasks(
     task_manager: &SharedTaskManager,
     session_id: Option<&str>,
     events: &UpdateSink,
@@ -892,14 +892,7 @@ async fn emit_session_tasks_changed(
     let Ok(tasks) = task_manager.list().await else {
         return;
     };
-    let tasks = tasks
-        .into_iter()
-        .filter(|task| {
-            session_id
-                .is_none_or(|session_id| session_id.is_empty() || task.session_id == session_id)
-        })
-        .collect();
-    emit_tasks_changed(events, tasks, TasksChangeReason::Updated);
+    emit_session_tasks_changed(events, tasks, session_id, TasksChangeReason::Updated);
 }
 
 /// `/goal list` read-out.
@@ -2792,7 +2785,7 @@ mod tests {
             .await
             .unwrap();
 
-        super::emit_session_tasks_changed(&task_manager, Some("session-a"), agent.events()).await;
+        super::publish_session_tasks(&task_manager, Some("session-a"), agent.events()).await;
 
         let update = tokio::time::timeout(std::time::Duration::from_secs(1), agent_rx.recv())
             .await

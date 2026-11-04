@@ -324,9 +324,13 @@ pub fn to_ui_snapshots(tasks: Vec<TaskRecord>) -> Vec<tact_protocol::TaskSnapsho
         .collect()
 }
 
-/// Notify the frontend that the persistent task list changed (no-op without an
-/// attached sink).
-pub fn emit_tasks_changed(
+/// Send an already-scoped task list to the frontend (no-op without a sink).
+///
+/// Private on purpose: the store is workspace-global, so publishing
+/// `TaskManager::list()` verbatim would show one session another's tasks. Call
+/// [`emit_session_tasks_changed`] instead — it is the only public entry point,
+/// so a new call site cannot skip the filter.
+fn emit_tasks_changed(
     events: &UpdateSink,
     tasks: Vec<TaskRecord>,
     reason: tact_protocol::TasksChangeReason,
@@ -340,9 +344,97 @@ pub fn emit_tasks_changed(
     });
 }
 
+/// Publish the task list one session can see.
+///
+/// The task store is workspace-global: every session in the workspace writes to
+/// the same `tasks` table. The panel, though, is a per-session surface, so a
+/// plain [`TaskManager::list`] would paint another session's work as this
+/// session's — including its completed rows, which then read as already-done
+/// work the reader never did.
+///
+/// Filtering here rather than at each call site means a new tool cannot forget:
+/// producing a snapshot goes through this one function.
+pub fn emit_session_tasks_changed(
+    events: &UpdateSink,
+    tasks: Vec<TaskRecord>,
+    session_id: Option<&str>,
+    reason: tact_protocol::TasksChangeReason,
+) {
+    let tasks = match session_id {
+        // An unattributed session cannot be told apart from the others, so it
+        // keeps the whole list rather than hiding its own work.
+        Some(session_id) if !session_id.is_empty() => tasks
+            .into_iter()
+            .filter(|task| task.session_id == session_id)
+            .collect(),
+        _ => tasks,
+    };
+    emit_tasks_changed(events, tasks, reason);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn record(id: u64, session_id: &str) -> TaskRecord {
+        TaskRecord::new(id, format!("task {id}"), None, session_id.to_string())
+    }
+
+    /// Another session's tasks must not reach this session's panel.
+    ///
+    /// The store is workspace-global, so the filter is the only thing keeping
+    /// one session's completed work from painting as another's history.
+    #[test]
+    fn publishing_keeps_only_the_session_own_tasks() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let events = UpdateSink::for_ui(tx);
+        let tasks = vec![record(1, "mine"), record(2, "theirs"), record(3, "mine")];
+
+        emit_session_tasks_changed(
+            &events,
+            tasks,
+            Some("mine"),
+            tact_protocol::TasksChangeReason::Updated,
+        );
+
+        let update = rx.try_recv().expect("a snapshot was published");
+        match update {
+            tact_protocol::AgentUpdate::TasksChanged { tasks, .. } => {
+                assert_eq!(
+                    tasks.iter().map(|task| task.id).collect::<Vec<_>>(),
+                    vec![1, 3],
+                    "the other session's task is dropped"
+                );
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    /// An unattributed session keeps the whole list rather than hiding its own.
+    ///
+    /// Without an id there is nothing to filter by, and dropping everything
+    /// would make the panel silently empty instead of merely over-inclusive.
+    #[test]
+    fn an_unattributed_session_keeps_the_whole_list() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let events = UpdateSink::for_ui(tx);
+
+        for session_id in [None, Some("")] {
+            emit_session_tasks_changed(
+                &events,
+                vec![record(1, "a"), record(2, "b")],
+                session_id,
+                tact_protocol::TasksChangeReason::Updated,
+            );
+            let update = rx.try_recv().expect("a snapshot was published");
+            match update {
+                tact_protocol::AgentUpdate::TasksChanged { tasks, .. } => {
+                    assert_eq!(tasks.len(), 2, "nothing is filtered without an id");
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+    }
 
     async fn test_manager(name: &str) -> (TaskManager, std::path::PathBuf) {
         let root_dir = std::env::temp_dir().join(format!("tact-task-test-{name}"));

@@ -34,11 +34,14 @@ use tact_desktop_core::{
     DesktopEvent, DesktopIntent, DesktopSnapshot, ExtensionsTab, GateCard, GateKind, GateResponse,
     GateSelection, GateState, InspectorTab, PermissionModeView, ProjectId, ReaderRef, RowBody,
     RowId, RowStatus, SectionMask, SessionId, SessionPhase, SettingValue, Submission,
-    SurfaceSnapshot, ToolGroupItem, ToolRow, TranscriptRow, TranscriptView, is_enabled,
+    SurfaceSnapshot, ToolGroupItem, ToolRow, TrajectoryRecordId, TrajectoryView, TranscriptRow,
+    TranscriptView, is_enabled,
 };
 use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr as _};
 
 use crate::i18n::{self, TextKey};
+use crate::ui::shell::{RunTab, TrajectoryDetailTab};
+use crate::ui::trajectory as trajectory_page;
 use crate::ui::{ansi, diff_review, mermaid, web_search};
 use crate::{keymap, theme};
 
@@ -640,6 +643,10 @@ pub(crate) struct DesktopRoot {
     queue_expanded: bool,
     recent_commands: Vec<CommandId>,
     sticky_tasks_collapsed: bool,
+    /// First row the expanded strip paints. The strip shows at most
+    /// `sticky::MAX_VISIBLE_ROWS` rows, so this is bounded by the list length
+    /// rather than free-running.
+    sticky_tasks_scroll: usize,
     /// Whether transcript rows arrived while the reader was scrolled away.
     ///
     /// The pill's Back to bottom control is about position; the New activity
@@ -668,6 +675,34 @@ pub(crate) struct DesktopRoot {
     rail_search: Entity<gpui_component::input::InputState>,
     _subscriptions: Vec<gpui::Subscription>,
     attachments: Vec<PathBuf>,
+    /// Which page of the run room is showing: the conversation or the
+    /// trajectory ledger.
+    run_tab: RunTab,
+    /// Cached projection of the current transcript for the Trajectory page.
+    ///
+    /// The projection is pure, so it is rebuilt only when the transcript's
+    /// length or revision changes rather than on every frame.
+    trajectory: RefCell<Option<(u64, Arc<TrajectoryView>)>>,
+    /// The record the Trajectory detail panel is showing.
+    trajectory_selected: Option<TrajectoryRecordId>,
+    /// Which tab the detail panel is on.
+    trajectory_tab: TrajectoryDetailTab,
+    /// Live search over the ledger. Empty means "show everything".
+    trajectory_query: String,
+    trajectory_search: Entity<gpui_component::input::InputState>,
+    /// Scroll owner for the ledger list, shared with the capture harness.
+    trajectory_scroller: Entity<TranscriptListState>,
+    /// Item count the ledger list was last reset to.
+    trajectory_row_count: Rc<Cell<usize>>,
+    /// The selected record's list position, so the ledger can paint it without
+    /// re-walking the projection.
+    trajectory_selected_index: Option<usize>,
+    /// The overview plot's painted track origin and width, written by the
+    /// canvas prepaint so a click maps back to the block it landed on.
+    trajectory_track: Rc<Cell<(f32, f32)>>,
+    /// Scroll owner for the detail panel's body, so a tool result longer than
+    /// the column scrolls instead of painting past it.
+    trajectory_detail_scroll: gpui::ScrollHandle,
 }
 
 impl DesktopRoot {
@@ -772,9 +807,24 @@ impl DesktopRoot {
             gpui_component::input::InputState::new(window, cx)
                 .placeholder(i18n::text(snapshot.language, TextKey::SearchModels))
         });
+        let trajectory_search = cx.new(|cx| {
+            gpui_component::input::InputState::new(window, cx)
+                .placeholder(i18n::text(snapshot.language, TextKey::SearchTrajectory))
+        });
+        let trajectory_scroller = cx.new(|_| TranscriptListState::new(0));
         let queue_focus = cx.focus_handle();
         let overlay_focus = cx.focus_handle();
 
+        let trajectory_search_subscription = cx.subscribe_in(
+            &trajectory_search,
+            window,
+            |this, _, event: &gpui_component::input::InputEvent, window, cx| {
+                if matches!(event, gpui_component::input::InputEvent::Change) {
+                    let query = this.trajectory_search.read(cx).value().to_string();
+                    this.set_trajectory_query(query, window, cx);
+                }
+            },
+        );
         let editor_subscription = cx.subscribe_in(
             &prompt,
             window,
@@ -1006,6 +1056,7 @@ impl DesktopRoot {
             queue_expanded: false,
             recent_commands: Vec::new(),
             sticky_tasks_collapsed: true,
+            sticky_tasks_scroll: 0,
             new_activity: false,
             voice,
             pending_voice_text: None,
@@ -1033,8 +1084,20 @@ impl DesktopRoot {
                 session_search_subscription,
                 extension_search_subscription,
                 model_search_subscription,
+                trajectory_search_subscription,
             ],
             attachments: Vec::new(),
+            run_tab: RunTab::Chat,
+            trajectory: RefCell::new(None),
+            trajectory_selected: None,
+            trajectory_tab: TrajectoryDetailTab::Summary,
+            trajectory_query: String::new(),
+            trajectory_search,
+            trajectory_scroller,
+            trajectory_row_count: Rc::new(Cell::new(0)),
+            trajectory_selected_index: None,
+            trajectory_track: Rc::new(Cell::new((0., 0.))),
+            trajectory_detail_scroll: gpui::ScrollHandle::new(),
         };
         root.last_appearance = root.snapshot.appearance;
         root.sync_prompt_commands(cx);
@@ -1080,6 +1143,124 @@ impl DesktopRoot {
 
     fn text(&self, key: TextKey) -> &'static str {
         i18n::text(self.snapshot.language, key)
+    }
+
+    /// Switch the run room between the conversation and the ledger.
+    ///
+    /// Entering the ledger also gives it focus for scrolling, so the wheel
+    /// addresses the page the reader is looking at rather than the chat
+    /// transcript behind it.
+    fn select_run_tab(&mut self, tab: RunTab, cx: &mut Context<Self>) {
+        if self.run_tab == tab {
+            return;
+        }
+        self.run_tab = tab;
+        if tab == RunTab::Trajectory {
+            self.sync_trajectory_scroller(cx);
+        }
+        cx.notify();
+    }
+
+    /// The current transcript projected as a ledger, rebuilt only when the
+    /// transcript changed.
+    fn trajectory_view(&self) -> Arc<TrajectoryView> {
+        let revision = self.snapshot.revision;
+        if let Some((cached, view)) = self.trajectory.borrow().as_ref()
+            && *cached == revision
+        {
+            return view.clone();
+        }
+        let view = Arc::new(TrajectoryView::from_transcript(&self.snapshot.transcript));
+        *self.trajectory.borrow_mut() = Some((revision, view.clone()));
+        view
+    }
+
+    /// Update the ledger's live filter and keep the list in step.
+    fn set_trajectory_query(&mut self, query: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.trajectory_query == query {
+            return;
+        }
+        self.trajectory_query = query;
+        if self.trajectory_selected.is_some() && !self.trajectory_matches_selected() {
+            self.trajectory_selected = None;
+        }
+        self.sync_trajectory_scroller(cx);
+        let _ = window;
+        cx.notify();
+    }
+
+    fn trajectory_matches_selected(&self) -> bool {
+        let view = self.trajectory_view();
+        let visible = self.trajectory_visible_indexes(&view);
+        match (self.trajectory_selected, visible) {
+            (None, _) => true,
+            (Some(id), None) => view.position_of(id).is_some(),
+            (Some(id), Some(indexes)) => view
+                .position_of(id)
+                .is_some_and(|position| indexes.contains(&(position + 1))),
+        }
+    }
+
+    /// 1-based record indexes the live query keeps, or `None` for "all".
+    fn trajectory_visible_indexes(&self, view: &TrajectoryView) -> Option<Vec<usize>> {
+        if self.trajectory_query.trim().is_empty() {
+            return None;
+        }
+        let matches = view.matches(&self.trajectory_query);
+        Some(
+            matches
+                .into_iter()
+                .map(|position| position + 1)
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    /// One list item per ledger row: a turn header or a record.
+    fn trajectory_list_rows(&self, view: &TrajectoryView) -> Vec<trajectory_page::LedgerRow> {
+        let visible = self.trajectory_visible_indexes(view);
+        trajectory_page::ledger_rows(view, visible.as_deref())
+    }
+
+    /// Keep the ledger's list item count in step with its projection. A turn
+    /// header is a property of the record that opens the turn, so every list
+    /// item is one record and the count is the projection's length.
+    fn sync_trajectory_scroller(&mut self, cx: &mut Context<Self>) {
+        let view = self.trajectory_view();
+        let target = self.trajectory_list_rows(&view).len();
+        if self.trajectory_row_count.get() == target {
+            return;
+        }
+        self.trajectory_row_count.set(target);
+        self.trajectory_scroller
+            .update(cx, |state, cx| state.reset(target, cx));
+    }
+
+    /// Select one ledger record and reveal it in the ledger.
+    fn select_trajectory_record(&mut self, id: TrajectoryRecordId, cx: &mut Context<Self>) -> bool {
+        let view = self.trajectory_view();
+        if view.position_of(id).is_none() {
+            return false;
+        }
+        self.trajectory_selected = Some(id);
+        let rows = self.trajectory_list_rows(&view);
+        if let Some(index) = rows.iter().position(|row| row.id == id) {
+            self.trajectory_selected_index = Some(index);
+            self.trajectory_scroller
+                .update(cx, |state, cx| state.scroll_to_item(index, cx));
+        }
+        cx.notify();
+        true
+    }
+
+    /// The record the detail panel shows, cloned so the render pass can hold
+    /// it while it mutates the root.
+    fn trajectory_selected_record(
+        &self,
+        view: &TrajectoryView,
+    ) -> Option<tact_desktop_core::TrajectoryRecord> {
+        let id = self.trajectory_selected?;
+        let position = view.position_of(id)?;
+        view.record(position).cloned()
     }
 
     fn session_title(&self, session: &tact_desktop_core::SessionSummaryView) -> String {
@@ -1810,6 +1991,61 @@ impl DesktopRoot {
         snapshot.inspector.tab = tab;
         self.snapshot = Arc::new(snapshot);
         self.right_visible = true;
+        cx.notify();
+    }
+
+    /// Switch the run room's page for the capture harness.
+    #[cfg(any(test, feature = "ui-capture"))]
+    pub(crate) fn capture_set_run_tab(&mut self, tab: RunTab, cx: &mut Context<Self>) {
+        self.select_run_tab(tab, cx);
+    }
+
+    /// Turn the ledger's live filter on for the capture harness.
+    #[cfg(any(test, feature = "ui-capture"))]
+    pub(crate) fn capture_set_trajectory_query(
+        &mut self,
+        query: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.trajectory_search
+            .update(cx, |input, cx| input.set_value(query, window, cx));
+        self.set_trajectory_query(query.to_string(), window, cx);
+    }
+
+    /// Select one ledger record for the capture harness.
+    #[cfg(any(test, feature = "ui-capture"))]
+    pub(crate) fn capture_select_trajectory_record(
+        &mut self,
+        id: TrajectoryRecordId,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_trajectory_record(id, cx);
+    }
+
+    /// Expand the sticky strip for a capture, so the grouped task list is
+    /// reviewable rather than only its collapsed header.
+    ///
+    /// Capture-only: the strip's grouping is asserted through
+    /// `debug_bounds` in `root::tests`, so a test build has no caller.
+    #[cfg(feature = "ui-capture")]
+    pub(crate) fn capture_set_sticky_tasks_collapsed(
+        &mut self,
+        collapsed: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.sticky_tasks_collapsed = collapsed;
+        cx.notify();
+    }
+
+    /// Record a capture-facing detail-tab switch.
+    #[cfg(any(test, feature = "ui-capture"))]
+    pub(crate) fn capture_set_trajectory_tab(
+        &mut self,
+        tab: TrajectoryDetailTab,
+        cx: &mut Context<Self>,
+    ) {
+        self.trajectory_tab = tab;
         cx.notify();
     }
 
@@ -2842,6 +3078,17 @@ impl DesktopRoot {
         self.pending_reader = Some(reference.clone());
         self.dispatch(DesktopIntent::OpenReader(reference));
         cx.notify();
+    }
+
+    /// Open the Chat page's reader for one transcript row.
+    ///
+    /// The Trajectory detail panel is a summary; the row's own reader is where
+    /// the complete body lives, so "open" from the ledger lands on the same
+    /// surface the row itself opens and returns the reader to the chat page
+    /// where the row is addressable.
+    fn open_transcript_row_reader(&mut self, row: RowId, cx: &mut Context<Self>) {
+        self.select_run_tab(RunTab::Chat, cx);
+        self.open_transcript_reader(ReaderRef::ToolOutput(row), cx);
     }
 
     fn refresh_typed_reader(&mut self) {
@@ -4676,6 +4923,796 @@ impl DesktopRoot {
         self.assistant_selections.clone()
     }
 
+    /// The run room's page tabs: the conversation and the trajectory ledger
+    /// are two views of the same rows, not two sessions.
+    fn render_run_tabs(&self, cx: &mut Context<Self>) -> AnyElement {
+        let labels = [
+            (RunTab::Chat, self.text(TextKey::ChatTab)),
+            (RunTab::Trajectory, self.text(TextKey::TrajectoryTab)),
+        ];
+        h_flex()
+            .id("run-tabs")
+            .debug_selector(|| "run-tabs".into())
+            .role(Role::TabList)
+            .aria_label(self.text(TextKey::TrajectoryTab))
+            .w_full()
+            .flex_none()
+            .gap(px(2.))
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .children(labels.into_iter().enumerate().map(|(index, (tab, label))| {
+                let selected = self.run_tab == tab;
+                div()
+                    .id(SharedString::from(format!("run-tab-{index}")))
+                    .debug_selector(move || format!("run-tab-{index}"))
+                    .role(Role::Tab)
+                    .focusable()
+                    .tab_stop(true)
+                    .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
+                    .aria_selected(selected)
+                    .aria_label(label)
+                    .cursor_pointer()
+                    .px(px(12.))
+                    .pt(px(9.))
+                    .pb(px(8.))
+                    .text_size(px(12.5))
+                    .font_semibold()
+                    .when(selected, |tab| {
+                        tab.text_color(cx.theme().foreground)
+                            .border_b_2()
+                            .border_color(cx.theme().primary)
+                    })
+                    .when(!selected, |tab| {
+                        tab.text_color(cx.theme().muted_foreground)
+                            .hover(|style| style.text_color(cx.theme().foreground))
+                    })
+                    .child(label)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.select_run_tab(tab, cx);
+                    }))
+            }))
+            .into_any_element()
+    }
+
+    /// Header figures for the ledger: how many turns, records and calls the
+    /// run produced, and the duration it can actually back with evidence.
+    fn render_trajectory_summary(
+        &self,
+        view: &TrajectoryView,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let line = trajectory_page::SummaryLine::new(view.summary(), self.text(TextKey::Measured));
+        let metric = |label: &'static str, value: String, cx: &mut Context<Self>| {
+            h_flex()
+                .items_center()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(cx.theme().muted_foreground)
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .font_family("Lilex")
+                        .text_color(cx.theme().foreground)
+                        .child(value),
+                )
+        };
+        h_flex()
+            .id("trajectory-summary")
+            .debug_selector(|| "trajectory-summary".into())
+            .w_full()
+            .flex_none()
+            .gap(px(18.))
+            .items_center()
+            .child(metric(self.text(TextKey::Duration), line.measured, cx))
+            .child(metric(self.text(TextKey::Turns), line.turns, cx))
+            .child(metric(self.text(TextKey::Calls), line.calls, cx))
+            .child(metric(self.text(TextKey::RecordPrefix), line.records, cx))
+            .child(div().flex_1())
+            .child(
+                h_flex()
+                    .w(px(180.))
+                    .items_center()
+                    .gap(px(6.))
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().input)
+                    .px(px(7.))
+                    .py(px(2.))
+                    .child(
+                        Icon::new(IconName::Search)
+                            .size(px(12.))
+                            .text_color(cx.theme().muted_foreground),
+                    )
+                    .child(
+                        div().flex_1().min_w_0().child(
+                            Input::new(&self.trajectory_search)
+                                .aria_label(self.text(TextKey::SearchTrajectory)),
+                        ),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// The Firefox-Network-style overview: every record as one block in the
+    /// lane its kind belongs to, with a rule at each turn boundary.
+    /// The Chrome-Network-style overview: every record as one block in the
+    /// lane its kind belongs to, with a rule at each turn boundary.
+    ///
+    /// The plot is one `canvas`: paints are cheap for a ledger of hundreds of
+    /// records, and a single hit test keeps the click target identical to what
+    /// was drawn.
+    fn render_trajectory_overview(
+        &mut self,
+        view: &TrajectoryView,
+        matches: Option<&[usize]>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let match_set: Option<HashSet<usize>> =
+            matches.map(|matches| matches.iter().map(|index| index - 1).collect());
+        let spans: Vec<(usize, bool, bool)> = view
+            .spans()
+            .iter()
+            .map(|span| {
+                (
+                    span.lane.row(),
+                    span.is_error,
+                    match_set
+                        .as_ref()
+                        .is_some_and(|matches| matches.contains(&span.index)),
+                )
+            })
+            .collect();
+        let has_filter = match_set.is_some();
+        let boundaries = view.boundaries().to_vec();
+        let count = spans.len();
+        let selected = self.trajectory_selected.and_then(|id| view.position_of(id));
+        let palette = TrajectoryPalette::new(cx);
+        let track = self.trajectory_track.clone();
+        let plot = canvas(
+            move |bounds, _, _| {
+                track.set((f32::from(bounds.origin.x), f32::from(bounds.size.width)));
+                bounds
+            },
+            move |bounds, _, window, _| {
+                let track_left = bounds.origin.x + px(trajectory_page::LABELS_WIDTH);
+                let track_width = f32::from(bounds.size.width) - trajectory_page::LABELS_WIDTH;
+                if track_width <= 0. || count == 0 {
+                    return;
+                }
+                let slot_width = track_width / count as f32;
+                // Turn rules sit behind the blocks so a boundary reads as a
+                // divider, not as another record.
+                for boundary in &boundaries {
+                    let left = track_left + px(*boundary as f32 * slot_width);
+                    window.paint_quad(paint_rect(
+                        left,
+                        bounds.origin.y,
+                        px(1.),
+                        bounds.size.height,
+                        palette.rule,
+                        px(0.),
+                        None,
+                    ));
+                }
+                for (index, (lane, is_error, matched)) in spans.iter().enumerate() {
+                    let color = if *is_error {
+                        palette.error
+                    } else {
+                        palette.lanes[*lane]
+                    };
+                    let color = if has_filter && !*matched {
+                        palette.dim(color)
+                    } else {
+                        color
+                    };
+                    let left = track_left
+                        + px(index as f32 * slot_width + trajectory_page::BLOCK_GAP / 2.);
+                    let width = px((slot_width - trajectory_page::BLOCK_GAP)
+                        .max(trajectory_page::MIN_SPAN_WIDTH));
+                    let top = bounds.origin.y
+                        + px(
+                            trajectory_page::LANE_TOP + *lane as f32 * trajectory_page::LANE_HEIGHT
+                        );
+                    window.paint_quad(paint_rect(
+                        left,
+                        top,
+                        width,
+                        px(trajectory_page::BLOCK_HEIGHT),
+                        color,
+                        px(1.),
+                        None,
+                    ));
+                }
+                if let Some(selected) = selected {
+                    let left = track_left
+                        + px(selected as f32 * slot_width + trajectory_page::BLOCK_GAP / 2.);
+                    let width = px((slot_width - trajectory_page::BLOCK_GAP)
+                        .max(trajectory_page::MIN_SPAN_WIDTH));
+                    window.paint_quad(paint_rect(
+                        left,
+                        bounds.origin.y,
+                        width,
+                        bounds.size.height,
+                        palette.selection,
+                        px(1.),
+                        Some(palette.accent),
+                    ));
+                }
+            },
+        )
+        .absolute()
+        .inset_0();
+        let labels: Vec<&'static str> =
+            [TextKey::InputLane, TextKey::ModelLane, TextKey::ToolsLane]
+                .into_iter()
+                .map(|key| self.text(key))
+                .collect();
+        let lanes = v_flex()
+            .w(px(trajectory_page::LABELS_WIDTH))
+            .flex_none()
+            .h_full()
+            .border_r_1()
+            .border_color(cx.theme().border)
+            .children(labels.into_iter().enumerate().map(|(index, label)| {
+                div()
+                    .h(px(trajectory_page::LANE_HEIGHT))
+                    .when(index == 0, |row| row.mt(px(trajectory_page::LANE_TOP)))
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .pr(px(4.))
+                    .text_size(px(10.))
+                    .text_color(cx.theme().muted_foreground)
+                    .child(label)
+            }));
+        let track_width = self.trajectory_track.clone();
+        h_flex()
+            .id("trajectory-overview")
+            .debug_selector(|| "trajectory-overview".into())
+            .role(Role::Group)
+            .aria_label(self.text(TextKey::Overview))
+            .w_full()
+            .flex_none()
+            .h(px(trajectory_page::PLOT_HEIGHT))
+            .items_start()
+            .border_1()
+            .border_color(cx.theme().border)
+            .rounded(px(6.))
+            .overflow_hidden()
+            .bg(cx.theme().group_box)
+            .child(lanes)
+            .child(
+                div()
+                    .id("trajectory-overview-plot")
+                    .debug_selector(|| "trajectory-overview-plot".into())
+                    .relative()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .cursor_pointer()
+                    .child(plot)
+                    .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+                        let (origin, width) = track_width.get();
+                        if width <= 0. {
+                            return;
+                        }
+                        let local =
+                            f32::from(event.position().x) - origin - trajectory_page::LABELS_WIDTH;
+                        let layout_view = this.trajectory_view();
+                        let layout = trajectory_page::TimelineLayout::new(&layout_view, width);
+                        if let Some(index) = layout.hit(local)
+                            && let Some(id) = layout_view.record(index).map(|record| record.id)
+                        {
+                            this.select_trajectory_record(id, cx);
+                        }
+                    })),
+            )
+            .into_any_element()
+    }
+
+    /// The Trajectory page: overview, ledger, and the selected record's detail.
+    ///
+    /// Everything here is derived from the same transcript the Chat page
+    /// renders, so the two pages can never disagree about what the run did.
+    fn render_trajectory_page(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let view = self.trajectory_view();
+        if view.is_empty() {
+            return v_flex()
+                .id("empty-trajectory")
+                .size_full()
+                .items_center()
+                .justify_center()
+                .p_8()
+                .child(
+                    v_flex()
+                        .w(px(520.))
+                        .max_w_full()
+                        .gap_2()
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().popover)
+                        .p_6()
+                        .child(
+                            div()
+                                .text_xl()
+                                .font_semibold()
+                                .child(self.text(TextKey::NoTrajectory)),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(self.text(TextKey::NoTrajectoryBody)),
+                        ),
+                )
+                .into_any_element();
+        }
+        let visible = self.trajectory_visible_indexes(&view);
+        self.sync_trajectory_scroller(cx);
+        let rows = self.trajectory_list_rows(&view);
+        self.trajectory_selected_index = rows
+            .iter()
+            .position(|row| Some(row.id) == self.trajectory_selected);
+        let visible_count = rows.len();
+        let list_state = self.trajectory_scroller.read(cx).list_state.clone();
+        let row_lookup = Rc::new(rows);
+        let weak = cx.weak_entity();
+        let language = self.snapshot.language;
+        let selected = self.trajectory_selected_index;
+        let palette = LedgerPalette::new(cx);
+        let list = list(list_state.clone(), move |index, _, _| {
+            let Some(row) = row_lookup.get(index) else {
+                return div().into_any_element();
+            };
+            ledger_row_element(
+                row,
+                selected == Some(index),
+                weak.clone(),
+                palette,
+                language,
+            )
+        })
+        .size_full()
+        .min_h_0();
+        let summary = self.render_trajectory_summary(&view, cx);
+        let overview = self.render_trajectory_overview(&view, visible.as_deref(), cx);
+        let trajectory_detail = self.render_trajectory_detail(&view, cx);
+        let subtitle = if self.trajectory_query.trim().is_empty() {
+            None
+        } else if visible_count == 0 {
+            Some(self.text(TextKey::NoMatchingRecords).to_string())
+        } else {
+            Some(format!("{visible_count} / {}", view.len()))
+        };
+        v_flex()
+            .id("trajectory-page")
+            .debug_selector(|| "trajectory-page".into())
+            .size_full()
+            .min_h_0()
+            .gap(px(10.))
+            .px(px(20.))
+            .pt(px(14.))
+            .pb(px(10.))
+            .child(h_flex().w_full().items_center().gap(px(12.)).child(summary))
+            .child(overview)
+            .when_some(subtitle, |page, subtitle| {
+                page.child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(cx.theme().muted_foreground)
+                        .child(subtitle),
+                )
+            })
+            .child(
+                h_flex()
+                    .id("trajectory-body")
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .items_stretch()
+                    .gap(px(12.))
+                    .child(
+                        v_flex()
+                            .id("trajectory-ledger")
+                            .debug_selector(|| "trajectory-ledger".into())
+                            .role(Role::Log)
+                            .aria_label(self.text(TextKey::TrajectoryTab))
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0()
+                            .h_full()
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().background)
+                            .child(
+                                div()
+                                    .relative()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .child(list)
+                                    .vertical_scrollbar(&list_state),
+                            ),
+                    )
+                    .when_some(trajectory_detail, |body, detail| body.child(detail)),
+            )
+            .child(self.render_trajectory_stats(&view, cx))
+            .into_any_element()
+    }
+
+    /// The page footer: session totals the reference shows under the ledger.
+    ///
+    /// Each figure is dropped when its producer reported nothing to base it
+    /// on, so the bar never shows a zero it cannot back.
+    fn render_trajectory_stats(&self, view: &TrajectoryView, cx: &mut Context<Self>) -> AnyElement {
+        let line = trajectory_page::StatsLine::new(
+            view.summary(),
+            trajectory_page::StatsLabels {
+                turns: self.text(TextKey::TurnsUnit),
+                steps: self.text(TextKey::Steps),
+                tokens: self.text(TextKey::Tokens),
+                cache_hit: self.text(TextKey::CacheHit),
+            },
+        );
+        let muted = cx.theme().muted_foreground;
+        // Collect the figures that exist, then join them with the separator so
+        // a dropped figure never leaves a dangling `·`.
+        let mut figures: Vec<String> = Vec::new();
+        if let Some(turns) = line.turns {
+            figures.push(turns);
+        }
+        if let Some(rate) = line.rate {
+            figures.push(rate);
+        }
+        if let Some(tokens) = line.tokens {
+            figures.push(tokens);
+        }
+        if let Some(cache) = line.cache {
+            figures.push(cache);
+        }
+        if let Some(context) = line.context {
+            figures.push(format!("{} {context}", self.text(TextKey::ContextMeter)));
+        }
+        let mut children: Vec<AnyElement> = Vec::new();
+        for (position, figure) in figures.into_iter().enumerate() {
+            if position > 0 {
+                children.push(
+                    div()
+                        .flex_none()
+                        .text_size(px(11.))
+                        .text_color(muted)
+                        .child("·")
+                        .into_any_element(),
+                );
+            }
+            children.push(
+                div()
+                    .flex_none()
+                    .text_size(px(11.))
+                    .font_family("Lilex")
+                    .text_color(muted)
+                    .child(figure)
+                    .into_any_element(),
+            );
+        }
+        h_flex()
+            .id("trajectory-stats")
+            .debug_selector(|| "trajectory-stats".into())
+            .w_full()
+            .flex_none()
+            .items_center()
+            .gap(px(8.))
+            .pt(px(2.))
+            .children(children)
+            .into_any_element()
+    }
+
+    /// The selected record's detail panel.
+    ///
+    /// Collapsed until a record is selected, so the ledger keeps the full
+    /// width while the reader is scanning rather than inspecting. Once open it
+    /// is tabbed: each tab answers one question about the record instead of
+    /// stacking every body into a single column.
+    fn render_trajectory_detail(
+        &self,
+        view: &TrajectoryView,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let record = self.trajectory_selected_record(view)?;
+        let row_id = record.row;
+        let language = self.snapshot.language;
+
+        // A labelled value row: `label        value` on one line, the way the
+        // reference panel reads.
+        let attribute = |label: &'static str, value: Option<String>, cx: &mut Context<Self>| {
+            h_flex()
+                .w_full()
+                .items_start()
+                .gap(px(10.))
+                .child(
+                    div()
+                        .w(px(88.))
+                        .flex_none()
+                        .text_size(px(11.))
+                        .text_color(cx.theme().muted_foreground)
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(px(11.))
+                        .font_family("Lilex")
+                        .child(
+                            value.unwrap_or_else(|| self.text(TextKey::DetailNoValue).to_string()),
+                        ),
+                )
+        };
+        // A monospace body block: payloads, results, schema.
+        let block = |id: &'static str, body: Option<String>, cx: &mut Context<Self>| {
+            div()
+                .id(id)
+                .debug_selector(move || id.into())
+                .w_full()
+                .rounded(px(6.))
+                .border_1()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().group_box)
+                .p(px(8.))
+                .text_size(px(11.))
+                .font_family("Lilex")
+                .child(body.unwrap_or_else(|| self.text(TextKey::DetailNoValue).to_string()))
+        };
+
+        let timing = record.duration_ms.map(trajectory_page::format_duration);
+        let header = h_flex()
+            .w_full()
+            .items_center()
+            .gap(px(8.))
+            .child(
+                div()
+                    .rounded(px(4.))
+                    .bg(cx.theme().accent)
+                    .px(px(6.))
+                    .py(px(1.))
+                    .text_size(px(9.5))
+                    .font_semibold()
+                    .font_family("Lilex")
+                    .text_color(cx.theme().link)
+                    .child(record.kind.label()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(px(10.))
+                    .font_family("Lilex")
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!(
+                        "{} {} · {} {}",
+                        self.text(TextKey::TurnPrefix),
+                        record.turn,
+                        i18n::text(language, TextKey::Steps),
+                        record.step
+                    )),
+            )
+            .child(
+                div()
+                    .id("trajectory-detail-close")
+                    .debug_selector(|| "trajectory-detail-close".into())
+                    .role(Role::Button)
+                    .focusable()
+                    .tab_stop(true)
+                    .aria_label(self.text(TextKey::DetailClose))
+                    .cursor_pointer()
+                    .rounded(px(4.))
+                    .px(px(6.))
+                    .py(px(2.))
+                    .text_size(px(12.))
+                    .text_color(cx.theme().muted_foreground)
+                    .hover(|style| style.bg(cx.theme().muted))
+                    .child("×")
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.trajectory_selected = None;
+                        this.trajectory_selected_index = None;
+                        cx.notify();
+                    })),
+            );
+
+        let active = self.trajectory_tab;
+        let tabs = h_flex()
+            .id("trajectory-detail-tabs")
+            .debug_selector(|| "trajectory-detail-tabs".into())
+            .role(Role::TabList)
+            .w_full()
+            .gap(px(2.))
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .children(TrajectoryDetailTab::ALL.into_iter().map(|tab| {
+                let selected = tab == active;
+                div()
+                    .id(SharedString::from(tab.selector()))
+                    .debug_selector(move || tab.selector().to_string())
+                    .role(Role::Tab)
+                    .focusable()
+                    .tab_stop(true)
+                    .aria_label(self.text(tab.label_key()))
+                    .cursor_pointer()
+                    .border_b_2()
+                    .when(selected, |tab| tab.border_color(cx.theme().link))
+                    .when(!selected, |tab| tab.border_color(gpui::transparent_black()))
+                    .px(px(7.))
+                    .pb(px(4.))
+                    .text_size(px(11.))
+                    .when(selected, |tab| tab.text_color(cx.theme().link))
+                    .when(!selected, |tab| tab.text_color(cx.theme().muted_foreground))
+                    .hover(|style| style.text_color(cx.theme().foreground))
+                    .child(self.text(tab.label_key()))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.trajectory_tab = tab;
+                        cx.notify();
+                    }))
+            }));
+
+        let body: AnyElement = match active {
+            TrajectoryDetailTab::Summary => v_flex()
+                .id("trajectory-tab-body-summary")
+                .debug_selector(|| "trajectory-tab-body-summary".into())
+                .w_full()
+                .gap(px(7.))
+                .child(attribute(
+                    self.text(TextKey::DetailHierarchy),
+                    Some(format!(
+                        "{} {} · {} {}",
+                        self.text(TextKey::TurnPrefix),
+                        record.turn,
+                        self.text(TextKey::RecordPrefix),
+                        record.index
+                    )),
+                    cx,
+                ))
+                .child(attribute(
+                    self.text(TextKey::RecordStatus),
+                    Some(record.status_label().to_string()),
+                    cx,
+                ))
+                .child(attribute(
+                    self.text(TextKey::DetailStarted),
+                    record.at.as_ref().map(|at| at.to_string()),
+                    cx,
+                ))
+                .child(attribute(
+                    self.text(TextKey::DetailDuration),
+                    timing.clone(),
+                    cx,
+                ))
+                .into_any_element(),
+            TrajectoryDetailTab::Payload => v_flex()
+                .id("trajectory-tab-body-payload")
+                .debug_selector(|| "trajectory-tab-body-payload".into())
+                .w_full()
+                .gap(px(7.))
+                .child(block(
+                    "trajectory-field-Payload",
+                    record.input.as_ref().map(|body| body.to_string()),
+                    cx,
+                ))
+                .into_any_element(),
+            TrajectoryDetailTab::Result => v_flex()
+                .id("trajectory-tab-body-result")
+                .debug_selector(|| "trajectory-tab-body-result".into())
+                .w_full()
+                .gap(px(7.))
+                .child(block(
+                    "trajectory-field-Result",
+                    record.output.as_ref().map(|body| body.to_string()),
+                    cx,
+                ))
+                .into_any_element(),
+            TrajectoryDetailTab::Schema => v_flex()
+                .id("trajectory-tab-body-schema")
+                .debug_selector(|| "trajectory-tab-body-schema".into())
+                .w_full()
+                .gap(px(7.))
+                .child(attribute(
+                    self.text(TextKey::DetailSchema),
+                    record.tool_name.as_ref().map(|name| name.to_string()),
+                    cx,
+                ))
+                .when_some(
+                    record.tool_id.as_ref().map(|id| id.to_string()),
+                    |body, id| body.child(attribute("ID", Some(id), cx)),
+                )
+                .into_any_element(),
+            TrajectoryDetailTab::Timing => v_flex()
+                .id("trajectory-tab-body-timing")
+                .debug_selector(|| "trajectory-tab-body-timing".into())
+                .w_full()
+                .gap(px(7.))
+                .child(attribute(
+                    self.text(TextKey::DetailDuration),
+                    Some(match timing {
+                        Some(timing) => {
+                            format!("{} · {}", timing, self.text(TextKey::Measured))
+                        }
+                        None => self.text(TextKey::NoRecordedDuration).to_string(),
+                    }),
+                    cx,
+                ))
+                .into_any_element(),
+        };
+
+        v_flex()
+            .id("trajectory-detail")
+            .debug_selector(|| "trajectory-detail".into())
+            .role(Role::Complementary)
+            .aria_label(self.text(TextKey::RecordDetail))
+            .w(px(320.))
+            .flex_none()
+            .h_full()
+            .min_h_0()
+            .gap(px(10.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().popover)
+            .p(px(14.))
+            .child(header)
+            .child(tabs)
+            .child(
+                v_flex()
+                    .id("trajectory-detail-body")
+                    .debug_selector(|| "trajectory-detail-body".into())
+                    .flex_1()
+                    .min_h_0()
+                    // A tool result can run to hundreds of lines. Without a
+                    // scroll owner the body lets that content set its height,
+                    // and the text paints straight past the column over the
+                    // ledger. Tracking the scroll bounds it to the column.
+                    .overflow_y_scroll()
+                    .track_scroll(&self.trajectory_detail_scroll)
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .w_full()
+                            .text_size(px(12.))
+                            .font_semibold()
+                            .child(record.text.to_string()),
+                    )
+                    .child(body),
+            )
+            .child(
+                div()
+                    .id("trajectory-detail-open")
+                    .debug_selector(|| "trajectory-detail-open".into())
+                    .role(Role::Button)
+                    .focusable()
+                    .tab_stop(true)
+                    .aria_label(self.text(TextKey::OpenReader))
+                    .cursor_pointer()
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .px(px(8.))
+                    .py(px(4.))
+                    .text_size(px(11.))
+                    .text_color(cx.theme().link)
+                    .hover(|style| style.bg(cx.theme().muted))
+                    .child(self.text(TextKey::OpenInChat))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.open_transcript_row_reader(row_id, cx);
+                    })),
+            )
+            .into_any_element()
+            .into()
+    }
+
     fn render_transcript(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let snapshot = self.snapshot.clone();
         let transcript = snapshot.transcript.clone();
@@ -6372,32 +7409,72 @@ impl DesktopRoot {
         } else {
             all_tasks.iter().collect()
         };
-        let rows = tasks
-            .into_iter()
-            .enumerate()
-            .map(|(index, task)| {
-                let marker = match task.status {
-                    tact_desktop_core::TaskStatusSnapshot::Pending => div()
-                        .flex_none()
-                        .size(px(12.))
-                        .rounded_full()
-                        .border_1()
-                        .border_color(cx.theme().muted_foreground)
+        // One header per status change, then that group's rows. The number
+        // counts painted rows, so a grouped strip still reads `01 … 27` top to
+        // bottom instead of jumping to the original order.
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        let groups = crate::ui::sticky::group_tasks(&tasks, now_ms);
+        let (window, more) = crate::ui::sticky::window_rows(&groups, self.sticky_tasks_scroll);
+        // A group's count covers the whole list, not the painted window:
+        // scrolling must not change a header's number. `groups` is already in
+        // `GROUPS` order and has at most a couple of entries, so a match on
+        // status reads better than a map keyed by it.
+        let count_of = |status: tact_desktop_core::TaskStatusSnapshot| {
+            groups
+                .iter()
+                .find(|group| group.status == status)
+                .map_or(0, |group| group.tasks.len())
+        };
+        let mut grouped: Vec<AnyElement> = Vec::new();
+        let mut heading: Option<tact_desktop_core::TaskStatusSnapshot> = None;
+        let mut painted = 0usize;
+        for (status, task) in window {
+            // The window can start mid-group, so the header is emitted on the
+            // first row of each status actually painted. A group with no rows
+            // in the window gets no header, and the previous heading carries
+            // across the boundary either way.
+            if heading != Some(status) {
+                if !grouped.is_empty() {
+                    grouped.push(div().h(px(2.)).w_full().into_any_element());
+                }
+                let count = count_of(status);
+                grouped.push(
+                    h_flex()
+                        .id(SharedString::from(format!("sticky-task-group-{status:?}")))
+                        .debug_selector({
+                            let selector = format!("sticky-task-group-{status:?}");
+                            move || selector.clone()
+                        })
+                        .role(Role::Status)
+                        .w_full()
+                        .min_w_0()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_xs()
+                                .font_semibold()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(self.text(Self::sticky_status_key(status))),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_xs()
+                                .font_family("Lilex")
+                                .text_color(cx.theme().muted_foreground)
+                                .child(count.to_string()),
+                        )
                         .into_any_element(),
-                    tact_desktop_core::TaskStatusSnapshot::InProgress => {
-                        Icon::new(IconName::LoaderCircle)
-                            .size(px(13.))
-                            .text_color(cx.theme().info)
-                            .into_any_element()
-                    }
-                    tact_desktop_core::TaskStatusSnapshot::Completed => {
-                        Icon::new(IconName::CircleCheck)
-                            .size(px(13.))
-                            .text_color(cx.theme().success)
-                            .into_any_element()
-                    }
-                };
-                let muted = task.status == tact_desktop_core::TaskStatusSnapshot::Completed;
+                );
+                heading = Some(status);
+            }
+            painted += 1;
+            grouped.push(
                 h_flex()
                     .id(SharedString::from(format!("sticky-task-{}", task.id)))
                     .debug_selector({
@@ -6410,27 +7487,46 @@ impl DesktopRoot {
                     .min_w_0()
                     .items_center()
                     .gap_2()
-                    .child(marker)
+                    .child(Self::marker_for(task.status, cx))
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .truncate()
                             .text_sm()
-                            .when(muted, |text| text.text_color(cx.theme().muted_foreground))
                             .child(task.subject.to_string()),
                     )
+                    // The row's metadata, in the kit's order: owner, what it is
+                    // waiting on, then how long it has been going. Each piece
+                    // is dropped when the producer never recorded it, rather
+                    // than printed as a zero.
+                    .child(Self::task_meta(task, now_ms, cx))
                     .child(
                         div()
                             .flex_none()
                             .text_xs()
                             .font_family("Lilex")
                             .text_color(cx.theme().muted_foreground)
-                            .child(format!("{:02}", index + 1)),
+                            .child(format!("{painted:02}")),
                     )
-                    .into_any_element()
-            })
-            .collect::<Vec<_>>();
+                    .into_any_element(),
+            );
+        }
+        // What the window cut off, reported in the row it displaced rather than
+        // as an extra row — the kit's `scroll_window` does the same.
+        if let Some(more) = more {
+            grouped.push(
+                div()
+                    .id("sticky-tasks-more")
+                    .debug_selector(|| "sticky-tasks-more".into())
+                    .role(Role::Status)
+                    .w_full()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(more)
+                    .into_any_element(),
+            );
+        }
         let progress = if task_total == 0 {
             0.0
         } else {
@@ -6549,6 +7645,11 @@ impl DesktopRoot {
                                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                             this.sticky_tasks_collapsed =
                                                 !this.sticky_tasks_collapsed;
+                                            // A collapsed strip shows one row, so
+                                            // a remembered offset would reopen
+                                            // mid-list with no way to see the
+                                            // rows above.
+                                            this.sticky_tasks_scroll = 0;
                                             cx.notify();
                                         })),
                                 ),
@@ -6572,11 +7673,99 @@ impl DesktopRoot {
                                 ),
                         )
                         .when(!self.sticky_tasks_collapsed || task_total == 1, |card| {
-                            card.child(v_flex().w_full().min_w_0().gap_1().children(rows))
+                            card.child(
+                                v_flex()
+                                    .w_full()
+                                    .min_w_0()
+                                    .gap_1()
+                                    .children(grouped)
+                                    // The strip is a summary, so its overflow
+                                    // scrolls inside it rather than growing the
+                                    // card over the transcript above.
+                                    .on_scroll_wheel(cx.listener(
+                                        |this, event: &gpui::ScrollWheelEvent, _, cx| {
+                                            let delta =
+                                                f32::from(event.delta.pixel_delta(px(20.)).y);
+                                            if delta == 0. {
+                                                return;
+                                            }
+                                            let step = delta.signum() as i64;
+                                            let next = (this.sticky_tasks_scroll as i64 - step)
+                                                .max(0)
+                                                as usize;
+                                            if next != this.sticky_tasks_scroll {
+                                                this.sticky_tasks_scroll = next;
+                                                cx.notify();
+                                            }
+                                        },
+                                    )),
+                            )
                         }),
                 )
             })
             .into_any_element()
+    }
+
+    /// The marker a task row carries for its status.
+    fn marker_for(status: tact_desktop_core::TaskStatusSnapshot, cx: &Context<Self>) -> AnyElement {
+        match status {
+            tact_desktop_core::TaskStatusSnapshot::Pending => div()
+                .flex_none()
+                .size(px(12.))
+                .rounded_full()
+                .border_1()
+                .border_color(cx.theme().muted_foreground)
+                .into_any_element(),
+            tact_desktop_core::TaskStatusSnapshot::InProgress => Icon::new(IconName::LoaderCircle)
+                .size(px(13.))
+                .text_color(cx.theme().info)
+                .into_any_element(),
+            tact_desktop_core::TaskStatusSnapshot::Completed => Icon::new(IconName::CircleCheck)
+                .size(px(13.))
+                .text_color(cx.theme().success)
+                .into_any_element(),
+        }
+    }
+
+    /// A task row's metadata: owner, blocking dependency, elapsed time.
+    ///
+    /// Mirrors `agent_tui_kit::state::task_panel`'s row: the same three facts in
+    /// the same order, each omitted when unreported so the row never claims a
+    /// zero it has no evidence for.
+    fn task_meta(
+        task: &tact_desktop_core::TaskView,
+        now_ms: i64,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let mut parts: Vec<String> = Vec::new();
+        if !task.owner.is_empty() {
+            parts.push(task.owner.to_string());
+        }
+        if !task.blocked_by.is_empty() {
+            let ids: Vec<String> = task.blocked_by.iter().map(|id| format!("#{id}")).collect();
+            parts.push(format!("⏳ {}", ids.join(", ")));
+        }
+        if let Some(elapsed) =
+            crate::ui::sticky::elapsed_label(task.started_at, task.completed_at, now_ms)
+        {
+            parts.push(format!("⏱ {elapsed}"));
+        }
+        div()
+            .flex_none()
+            .text_xs()
+            .font_family("Lilex")
+            .text_color(cx.theme().muted_foreground)
+            .child(parts.join("  "))
+            .into_any_element()
+    }
+
+    /// The heading the strip paints above a status group.
+    fn sticky_status_key(status: tact_desktop_core::TaskStatusSnapshot) -> TextKey {
+        match status {
+            tact_desktop_core::TaskStatusSnapshot::InProgress => TextKey::InProgress,
+            tact_desktop_core::TaskStatusSnapshot::Pending => TextKey::Pending,
+            tact_desktop_core::TaskStatusSnapshot::Completed => TextKey::Completed,
+        }
     }
 
     fn render_failure(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -10462,30 +11651,48 @@ impl Render for DesktopRoot {
                     .min_h_0()
                     .when_some(inline_left, |row, left| row.child(left))
                     .child(
-                        v_flex().id("run-room").flex_1().min_w_0().h_full().child(
-                            h_flex()
-                                .flex_1()
-                                .min_h_0()
-                                .child(
-                                    v_flex()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .h_full()
-                                        .child(
-                                            div()
-                                                .flex_1()
-                                                .min_h_0()
-                                                .relative()
-                                                .child(self.render_transcript(window, cx)),
-                                        )
-                                        .when(self.snapshot.failure.is_some(), |column| {
-                                            column.child(self.render_failure(cx))
-                                        })
-                                        .child(self.render_sticky(cx))
-                                        .child(self.render_composer(window, cx)),
-                                )
-                                .when_some(inline_right, |row, right| row.child(right)),
-                        ),
+                        v_flex()
+                            .id("run-room")
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .child(self.render_run_tabs(cx))
+                            .child(
+                                h_flex()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .child(
+                                        v_flex()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .h_full()
+                                            .child(div().flex_1().min_h_0().relative().child(
+                                                match self.run_tab {
+                                                    RunTab::Chat => {
+                                                        self.render_transcript(window, cx)
+                                                    }
+                                                    RunTab::Trajectory => {
+                                                        self.render_trajectory_page(cx)
+                                                    }
+                                                },
+                                            ))
+                                            .when(
+                                                self.snapshot.failure.is_some()
+                                                    && self.run_tab == RunTab::Chat,
+                                                |column| column.child(self.render_failure(cx)),
+                                            )
+                                            // The ledger is evidence, not a place to
+                                            // continue the conversation: the sticky
+                                            // task panel and composer belong to the
+                                            // Chat page only.
+                                            .when(self.run_tab == RunTab::Chat, |column| {
+                                                column
+                                                    .child(self.render_sticky(cx))
+                                                    .child(self.render_composer(window, cx))
+                                            }),
+                                    )
+                                    .when_some(inline_right, |row, right| row.child(right)),
+                            ),
                     )
                     .when_some(scrim_right, |row, right| {
                         row.child(
@@ -11557,12 +12764,342 @@ fn mcp_status_label(
     }
 }
 
+/// Colours the Trajectory overview needs and the theme does not name.
+///
+/// The lanes borrow the shell's state colours instead of introducing a second
+/// palette, so a tool block reads as the same "activity" colour as a running
+/// tool card.
+struct TrajectoryPalette {
+    lanes: [gpui::Hsla; 3],
+    rule: gpui::Hsla,
+    selection: gpui::Hsla,
+    accent: gpui::Hsla,
+    error: gpui::Hsla,
+}
+
+impl TrajectoryPalette {
+    fn new(cx: &Context<DesktopRoot>) -> Self {
+        let theme = cx.theme();
+        let dark = theme.is_dark();
+        let input = if dark {
+            gpui::rgba(0x30d158b0).into()
+        } else {
+            gpui::rgba(0x34c759c0).into()
+        };
+        let model = if dark {
+            gpui::rgba(0xbf8bffc4).into()
+        } else {
+            gpui::rgba(0xa06be0c8).into()
+        };
+        let tools = if dark {
+            gpui::rgba(0xff9f0ae0).into()
+        } else {
+            gpui::rgba(0xf08a1ed8).into()
+        };
+        Self {
+            lanes: [input, model, tools],
+            rule: theme.border,
+            selection: gpui::rgba(0x0a84ff1f).into(),
+            accent: theme.primary,
+            error: theme.danger,
+        }
+    }
+
+    /// Fade a block that the live search filtered out.
+    fn dim(&self, color: gpui::Hsla) -> gpui::Hsla {
+        let mut faded = color;
+        faded.a *= 0.22;
+        faded
+    }
+}
+
+/// Paints one rectangle, optionally with a border.
+fn paint_rect(
+    left: gpui::Pixels,
+    top: gpui::Pixels,
+    width: gpui::Pixels,
+    height: gpui::Pixels,
+    background: gpui::Hsla,
+    radius: gpui::Pixels,
+    border: Option<gpui::Hsla>,
+) -> gpui::PaintQuad {
+    gpui::quad(
+        gpui::Bounds {
+            origin: gpui::point(left, top),
+            size: gpui::size(width, height),
+        },
+        radius,
+        background,
+        if border.is_some() { radius } else { px(0.) },
+        border.unwrap_or_else(gpui::transparent_black),
+        gpui::BorderStyle::Solid,
+    )
+}
+
 fn section_label(label: &'static str, cx: &mut Context<DesktopRoot>) -> impl IntoElement {
     div()
         .text_xs()
         .font_semibold()
         .text_color(cx.theme().muted_foreground)
         .child(label)
+}
+
+/// One Trajectory ledger item: a turn header plus the record beside it.
+///
+/// The row is deliberately monospaced and label-first — the ledger is evidence,
+/// not prose — and every row activates the same selection the overview's block
+/// does, so the two views drive one selection.
+fn ledger_row_element(
+    row: &trajectory_page::LedgerRow,
+    selected: bool,
+    weak: WeakEntity<DesktopRoot>,
+    palette: LedgerPalette,
+    language: tact_catalog::CatalogLocale,
+) -> AnyElement {
+    let id = row.index;
+    let record_id = row.id;
+    let kind = row.kind_label;
+    let (kind_bg, kind_fg) = palette.kind(kind);
+    let click_weak = weak.clone();
+    let text = row.text.clone();
+    let duration = row.duration.clone();
+    let status = row.status;
+    let failed = row.failed;
+    let starts_turn = row.starts_turn;
+    let turn = row.turn;
+    v_flex()
+        .id(SharedString::from(format!("trajectory-row-{id}")))
+        .debug_selector(move || format!("trajectory-row-{id}"))
+        .role(Role::ListItem)
+        .aria_selected(selected)
+        .aria_label(format!("#{id} {kind} {text}"))
+        .w_full()
+        .min_w_0()
+        .when(starts_turn, |item| {
+            item.child(
+                h_flex()
+                    .id(SharedString::from(format!("trajectory-turn-{id}")))
+                    .debug_selector(move || format!("trajectory-turn-{id}"))
+                    .w_full()
+                    .items_center()
+                    .gap(px(8.))
+                    .px(px(10.))
+                    .pt(px(12.))
+                    .pb(px(5.))
+                    .child(
+                        div()
+                            .text_size(px(10.))
+                            .font_semibold()
+                            .font_family("Lilex")
+                            .text_color(palette.muted)
+                            .child(format!(
+                                "{} {}",
+                                i18n::text(language, TextKey::TurnPrefix),
+                                turn
+                            )),
+                    )
+                    .child(div().flex_1().h(px(1.)).bg(palette.rule)),
+            )
+        })
+        .child(
+            h_flex()
+                .id(SharedString::from(format!("trajectory-record-{id}")))
+                .debug_selector(move || format!("trajectory-record-{id}"))
+                .role(Role::Button)
+                .focusable()
+                .tab_stop(true)
+                .focus_visible(|style| style.bg(palette.selected_row))
+                .aria_label(format!("#{id} {kind}"))
+                .cursor_pointer()
+                .w_full()
+                .min_w_0()
+                .items_center()
+                .gap(px(9.))
+                .px(px(10.))
+                .py(px(6.))
+                .when(selected, |line| line.bg(palette.selected_row))
+                .hover(|style| style.bg(palette.hover_row))
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(30.))
+                        .text_size(px(10.))
+                        .font_family("Lilex")
+                        .text_color(palette.muted)
+                        .child(format!("{id}")),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(74.))
+                        .rounded(px(4.))
+                        .bg(kind_bg)
+                        .py(px(1.))
+                        .text_size(px(9.5))
+                        .font_semibold()
+                        .font_family("Lilex")
+                        .text_color(kind_fg)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(kind),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(12.))
+                        .text_color(if failed { palette.danger } else { palette.ink })
+                        .child(text),
+                )
+                .when_some(duration, |line, duration| {
+                    line.child(
+                        div()
+                            .flex_none()
+                            .text_size(px(10.))
+                            .font_family("Lilex")
+                            .text_color(palette.muted)
+                            .child(duration),
+                    )
+                })
+                .when(failed, |line| {
+                    line.child(
+                        div()
+                            .flex_none()
+                            .rounded(px(3.))
+                            .bg(palette.danger_chip)
+                            .px(px(4.))
+                            .py(px(1.))
+                            .text_size(px(9.5))
+                            .font_family("Lilex")
+                            .text_color(palette.danger)
+                            .child(status),
+                    )
+                })
+                .on_click(move |_, _, cx: &mut gpui::App| {
+                    let _ = click_weak.update(cx, |root, cx| {
+                        root.select_trajectory_record(record_id, cx);
+                    });
+                }),
+        )
+        .into_any_element()
+}
+
+/// The ledger's colours, resolved from the theme once per frame.
+///
+/// `gpui::rgba` is RRGGBBAA, so every alpha here is written as a trailing
+/// byte rather than OR-ed on: a mistaken `.into()` on `0xrrggbb22` would paint
+/// a fully transparent tint and the chip would read as an empty box.
+#[derive(Clone, Copy)]
+struct LedgerPalette {
+    ink: gpui::Hsla,
+    muted: gpui::Hsla,
+    danger: gpui::Hsla,
+    user: (gpui::Hsla, gpui::Hsla),
+    context: (gpui::Hsla, gpui::Hsla),
+    assistant: (gpui::Hsla, gpui::Hsla),
+    tool: (gpui::Hsla, gpui::Hsla),
+    gate: (gpui::Hsla, gpui::Hsla),
+    error: (gpui::Hsla, gpui::Hsla),
+    other: (gpui::Hsla, gpui::Hsla),
+    rule: gpui::Hsla,
+    selected_row: gpui::Hsla,
+    hover_row: gpui::Hsla,
+    danger_chip: gpui::Hsla,
+}
+
+impl LedgerPalette {
+    fn new(cx: &Context<DesktopRoot>) -> Self {
+        let theme = cx.theme();
+        let dark = theme.is_dark();
+        let ink = theme.foreground;
+        let muted = theme.muted_foreground;
+        // Tints are the state colours at ~13% and the label colours are the
+        // same hue at full strength, so a chip stays legible in both themes.
+        let chip = |tint: u32, label: u32, tint_alpha: u8| {
+            (
+                gpui::Hsla::from(gpui::rgba((tint << 8) | tint_alpha as u32)),
+                gpui::Hsla::from(gpui::rgba((label << 8) | 0xff)),
+            )
+        };
+        let (user, user_label) = if dark {
+            chip(0x0a84ff, 0x64b5ff, 0x38)
+        } else {
+            chip(0x0a84ff, 0x0a5ec7, 0x22)
+        };
+        let (context, context_label) = if dark {
+            chip(0x30d158, 0x63e07f, 0x38)
+        } else {
+            chip(0x30d158, 0x1f7a3a, 0x22)
+        };
+        let (assistant, assistant_label) = if dark {
+            chip(0xbf8bff, 0xd0aaff, 0x38)
+        } else {
+            chip(0xa06be0, 0x6b41a8, 0x22)
+        };
+        let (tool, tool_label) = if dark {
+            chip(0xff9f0a, 0xffc061, 0x38)
+        } else {
+            chip(0xf08a1e, 0xa45c06, 0x22)
+        };
+        let (gate, gate_label) = if dark {
+            chip(0xff9f0a, 0xffd08a, 0x38)
+        } else {
+            chip(0xff9f0a, 0xa45c06, 0x26)
+        };
+        let (error, error_label) = if dark {
+            chip(0xff453a, 0xff8a80, 0x38)
+        } else {
+            chip(0xff453a, 0xd70015, 0x22)
+        };
+        let (other, other_label) = if dark {
+            chip(0x98989d, 0xd8d8dc, 0x30)
+        } else {
+            chip(0x8e8e93, 0x545458, 0x22)
+        };
+        Self {
+            ink,
+            muted,
+            danger: theme.danger,
+            user: (user, user_label),
+            context: (context, context_label),
+            assistant: (assistant, assistant_label),
+            tool: (tool, tool_label),
+            gate: (gate, gate_label),
+            error: (error, error_label),
+            other: (other, other_label),
+            rule: theme.border,
+            selected_row: if dark {
+                gpui::rgba(0x0a84ff33).into()
+            } else {
+                gpui::rgba(0x0a84ff1a).into()
+            },
+            hover_row: if dark {
+                gpui::rgba(0xffffff0f).into()
+            } else {
+                gpui::rgba(0x0000000a).into()
+            },
+            danger_chip: if dark {
+                gpui::rgba(0xff453a38).into()
+            } else {
+                gpui::rgba(0xff453a1f).into()
+            },
+        }
+    }
+
+    /// The kind chip's tint and label colours.
+    fn kind(&self, kind: &str) -> (gpui::Hsla, gpui::Hsla) {
+        match kind {
+            "USER" => self.user,
+            "CONTEXT" => self.context,
+            "ASSISTANT" => self.assistant,
+            "TOOL" => self.tool,
+            "GATE" => self.gate,
+            "ERROR" => self.error,
+            _ => self.other,
+        }
+    }
 }
 
 fn transcript_row_element(
@@ -14383,6 +15920,460 @@ mod tests {
             setting_value(SettingId::Notifications, "false"),
             FormValue::Setting(SettingId::Notifications, SettingValue::Bool(false))
         ));
+    }
+
+    #[gpui::test]
+    fn trajectory_page_lays_out_every_record(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        let mut snapshot = window.update(|_, cx| (*root.read(cx).snapshot).clone());
+        snapshot.transcript = tact_desktop_core::fixtures::demo_transcript();
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.set_snapshot_for_capture(std::sync::Arc::new(snapshot), cx);
+                this.capture_set_run_tab(RunTab::Trajectory, cx);
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        let rows = window.update(|_, cx| {
+            let view = root.read(cx).trajectory_view();
+            root.read(cx).trajectory_list_rows(&view).len()
+        });
+        assert!(rows > 0);
+        let first = window
+            .debug_bounds("trajectory-row-1")
+            .expect("a ledger row");
+        let record = window
+            .debug_bounds("trajectory-record-1")
+            .expect("a ledger record");
+        assert!(first.size.height >= px(20.), "the row has body height");
+        assert!(
+            record.origin.x >= first.origin.x && record.origin.y >= first.origin.y,
+            "the record sits inside its row"
+        );
+        assert!(
+            record.origin.y + record.size.height <= first.origin.y + first.size.height,
+            "the record fits inside its row"
+        );
+        assert!(window.debug_bounds("trajectory-overview").is_some());
+        // The detail column is collapsed until something is selected, so the
+        // ledger keeps the full width while the reader scans.
+        assert!(window.debug_bounds("trajectory-detail").is_none());
+
+        // Selecting a record opens the detail panel with that record's own
+        // input, output and timing — never another record's.
+        let (id, input) = window.update(|_, cx| {
+            let view = root.read(cx).trajectory_view();
+            let record = view
+                .records()
+                .iter()
+                .find(|record| record.input.is_some())
+                .expect("a record with an input body")
+                .clone();
+            (
+                record.id,
+                record.input.as_deref().unwrap_or_default().to_string(),
+            )
+        });
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| this.capture_select_trajectory_record(id, cx));
+            window.draw(cx).clear(cx);
+        });
+        assert!(window.debug_bounds("trajectory-detail").is_some());
+        let shown = window.update(|_, cx| {
+            let view = root.read(cx).trajectory_view();
+            let record = root.read(cx).trajectory_selected_record(&view);
+            record.and_then(|record| record.input.as_deref().map(str::to_string))
+        });
+        assert_eq!(shown.as_deref(), Some(input.as_str()));
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn the_detail_tabs_switch_between_one_records_facets(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_trajectory(cx);
+        // Select a tool record: it has a name, an input, an output and a slot.
+        let id = window.update(|_, cx| {
+            let view = root.read(cx).trajectory_view();
+            view.records()
+                .iter()
+                .find(|record| {
+                    record.tool_name.is_some() && record.input.is_some() && record.output.is_some()
+                })
+                .expect("a tool record with every facet")
+                .id
+        });
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| this.capture_select_trajectory_record(id, cx));
+            window.draw(cx).clear(cx);
+        });
+
+        // Every tab is mounted and named, so the reader can find them.
+        for tab in TrajectoryDetailTab::ALL {
+            assert!(
+                window.debug_bounds(tab.selector()).is_some(),
+                "the {} tab is mounted",
+                tab.selector()
+            );
+        }
+
+        // The panel opens on Summary; the other bodies are not painted yet.
+        assert!(window.debug_bounds("trajectory-tab-body-summary").is_some());
+        assert!(window.debug_bounds("trajectory-tab-body-payload").is_none());
+        assert!(window.debug_bounds("trajectory-tab-body-result").is_none());
+
+        // Switching to Payload mounts that body and unmounts Summary.
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.capture_set_trajectory_tab(TrajectoryDetailTab::Payload, cx)
+            });
+            window.draw(cx).clear(cx);
+        });
+        assert!(window.debug_bounds("trajectory-tab-body-payload").is_some());
+        assert!(window.debug_bounds("trajectory-tab-body-summary").is_none());
+
+        for tab in [
+            TrajectoryDetailTab::Result,
+            TrajectoryDetailTab::Schema,
+            TrajectoryDetailTab::Timing,
+        ] {
+            window.update(|window, cx| {
+                root.update(cx, |this, cx| this.capture_set_trajectory_tab(tab, cx));
+                window.draw(cx).clear(cx);
+            });
+            let selector = match tab {
+                TrajectoryDetailTab::Result => "trajectory-tab-body-result",
+                TrajectoryDetailTab::Schema => "trajectory-tab-body-schema",
+                TrajectoryDetailTab::Timing => "trajectory-tab-body-timing",
+                _ => unreachable!(),
+            };
+            assert!(
+                window.debug_bounds(selector).is_some(),
+                "{selector} is mounted"
+            );
+        }
+
+        // Closing collapses the whole panel.
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.trajectory_selected = None;
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        assert!(window.debug_bounds("trajectory-detail").is_none());
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn the_stats_bar_shows_only_figures_the_transcript_can_back(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_trajectory(cx);
+        // The demo transcript reports no token usage, so the bar must show the
+        // turns/steps count it can back and nothing else — no `0 tok/s`, no
+        // `Cache hit 0%`, no `0%` context meter.
+        assert!(window.debug_bounds("trajectory-stats").is_some());
+        // The bar is built from the catalog, so the counted-noun label must be
+        // the lower-case `turns` the reference uses, not the summary bar's
+        // capitalised column heading.
+        let labels = crate::ui::trajectory::StatsLabels {
+            turns: i18n::text(tact_catalog::CatalogLocale::En, TextKey::TurnsUnit),
+            steps: i18n::text(tact_catalog::CatalogLocale::En, TextKey::Steps),
+            tokens: i18n::text(tact_catalog::CatalogLocale::En, TextKey::Tokens),
+            cache_hit: i18n::text(tact_catalog::CatalogLocale::En, TextKey::CacheHit),
+        };
+        assert_eq!(
+            labels.turns, "turns",
+            "the footer counts, it does not label"
+        );
+        let (summary, line) = window.update(|_, cx| {
+            let view = root.read(cx).trajectory_view();
+            let summary = view.summary();
+            let line = crate::ui::trajectory::StatsLine::new(summary, labels);
+            (summary, line)
+        });
+        assert!(summary.turns > 0, "the fixture has turns");
+        assert_eq!(summary.input_tokens, 0, "the fixture reports no usage");
+        assert!(line.turns.is_some(), "turns are shown");
+        assert_eq!(line.rate, None, "no duration basis, so no rate");
+        assert_eq!(line.tokens, None, "no usage, so no token total");
+        assert_eq!(line.cache, None, "no cache counters, so no cache share");
+        assert_eq!(line.context, None, "no window, so no context meter");
+
+        // With usage reported, every figure appears — so the omissions above
+        // are about the missing evidence, not a bar that renders nothing.
+        let full = crate::ui::trajectory::StatsLine::new(
+            tact_desktop_core::TrajectorySummary {
+                turns: 21,
+                records: 1_082,
+                measured: 1,
+                measured_ms: 50_111,
+                input_tokens: 338_000_000,
+                cache_hit_tokens: 99,
+                cache_miss_tokens: 1,
+                context_window: Some(200_000),
+                context_used: 100_000,
+                ..tact_desktop_core::TrajectorySummary::default()
+            },
+            crate::ui::trajectory::StatsLabels {
+                turns: "turns",
+                steps: "steps",
+                tokens: "tok",
+                cache_hit: "Cache hit",
+            },
+        );
+        assert_eq!(full.turns.as_deref(), Some("21 turns 1082 steps"));
+        assert_eq!(full.tokens.as_deref(), Some("338M tok"));
+        assert_eq!(full.cache.as_deref(), Some("Cache hit 99%"));
+        assert_eq!(full.context.as_deref(), Some("50%"));
+        assert!(full.rate.is_some(), "a measured duration gives a rate");
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// A tool result long enough to overflow the detail column several times
+    /// over: 300 numbered lines.
+    fn long_output_transcript() -> TranscriptView {
+        let mut long = String::new();
+        for line in 1..=300 {
+            long.push_str(&format!("line {line}: the tool wrote one more line\n"));
+        }
+        let long: std::sync::Arc<str> = long.into();
+        let rows = tact_desktop_core::fixtures::demo_transcript()
+            .iter()
+            .map(|row| {
+                let mut row = (**row).clone();
+                if let RowBody::ToolGroup(group) = &mut row.body {
+                    let items = group
+                        .items
+                        .iter()
+                        .map(|item| match item {
+                            ToolGroupItem::Tool(tool) if group.items.first() == Some(item) => {
+                                let mut tool = tool.clone();
+                                tool.output.detail = Some(long.clone());
+                                ToolGroupItem::Tool(tool)
+                            }
+                            other => other.clone(),
+                        })
+                        .collect::<Vec<_>>();
+                    group.items = items.into();
+                }
+                std::sync::Arc::new(row)
+            })
+            .collect::<Vec<_>>();
+        TranscriptView::from_rows(rows)
+    }
+
+    #[gpui::test]
+    fn a_long_tool_result_scrolls_inside_the_detail_column(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        let mut snapshot = window.update(|_, cx| (*root.read(cx).snapshot).clone());
+        snapshot.transcript = long_output_transcript();
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.set_snapshot_for_capture(std::sync::Arc::new(snapshot), cx);
+                this.capture_set_run_tab(RunTab::Trajectory, cx);
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        // Select the tool record carrying the very long output.
+        let id = window.update(|_, cx| {
+            let view = root.read(cx).trajectory_view();
+            view.records()
+                .iter()
+                .find(|record| {
+                    record
+                        .output
+                        .as_deref()
+                        .is_some_and(|output| output.starts_with("line 1:"))
+                })
+                .expect("the record with the long output")
+                .id
+        });
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.capture_select_trajectory_record(id, cx);
+                // The result lives behind the Result tab.
+                this.capture_set_trajectory_tab(TrajectoryDetailTab::Result, cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        let detail = window
+            .debug_bounds("trajectory-detail")
+            .expect("the detail panel");
+        let body = window
+            .debug_bounds("trajectory-detail-body")
+            .expect("the detail body");
+        let output = window
+            .debug_bounds("trajectory-field-Result")
+            .expect("the result field");
+        assert_eq!(
+            detail.size.height,
+            window
+                .debug_bounds("trajectory-ledger")
+                .expect("the ledger column")
+                .size
+                .height,
+            "both columns share the body's height"
+        );
+        // The fixture really is far longer than the column.
+        assert!(
+            output.size.height > body.size.height,
+            "the output is taller than the column: {} vs {}",
+            f32::from(output.size.height),
+            f32::from(body.size.height)
+        );
+        // ...and that content must not paint past the column. This is the
+        // regression that matters: an unbounded body let the text draw over
+        // the ledger all the way to the window's bottom edge.
+        assert!(
+            body.size.height <= detail.size.height,
+            "the body stays inside the panel: {} vs {}",
+            f32::from(body.size.height),
+            f32::from(detail.size.height)
+        );
+
+        // And the overflow is reachable rather than clipped: the body reports
+        // a real scroll range, and setting an offset moves it.
+        let max =
+            window.update(|_, cx| f32::from(root.read(cx).trajectory_detail_scroll.max_offset().y));
+        assert!(
+            max > 0.,
+            "the overflowing result has somewhere to scroll: {max}"
+        );
+        window.update(|_, cx| {
+            root.read(cx)
+                .trajectory_detail_scroll
+                .set_offset(gpui::point(px(0.), px(max)));
+        });
+        let offset =
+            window.update(|_, cx| f32::from(root.read(cx).trajectory_detail_scroll.offset().y));
+        assert_eq!(
+            offset, max,
+            "the body scrolls the whole way to the last line"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// Boot the shell on the fixed demo transcript with the ledger open.
+    fn probe_trajectory(
+        cx: &mut TestAppContext,
+    ) -> (
+        Entity<DesktopRoot>,
+        &mut VisualTestContext,
+        DesktopController,
+        PathBuf,
+    ) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        let mut snapshot = window.update(|_, cx| (*root.read(cx).snapshot).clone());
+        snapshot.transcript = tact_desktop_core::fixtures::demo_transcript();
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.set_snapshot_for_capture(std::sync::Arc::new(snapshot), cx);
+                this.capture_set_run_tab(RunTab::Trajectory, cx);
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        (root, window, shutdown, data_dir)
+    }
+
+    #[gpui::test]
+    fn clicking_an_overview_block_selects_the_record_under_it(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_trajectory(cx);
+        let bounds = window
+            .debug_bounds("trajectory-overview-plot")
+            .expect("the overview plot");
+        let (origin, width, count) = window.update(|_, cx| {
+            let (origin, width) = root.read(cx).trajectory_track.get();
+            (origin, width, root.read(cx).trajectory_view().len())
+        });
+        assert!(width > 0. && count > 0);
+        // Click the middle of the fifth column: the overview's own projection
+        // decides which record that is, and the page must select exactly it.
+        let slot = width / count as f32;
+        let x = px(origin + crate::ui::trajectory::LABELS_WIDTH + slot * 4. + slot / 2.);
+        let y = px(f32::from(bounds.origin.y) + 4.);
+        window.simulate_click(gpui::point(x, y), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        let expected = window.update(|_, cx| {
+            let view = root.read(cx).trajectory_view();
+            view.record(4).map(|record| record.id)
+        });
+        let selected = window.update(|_, cx| root.read(cx).trajectory_selected);
+        assert_eq!(
+            selected, expected,
+            "the clicked block is the selected record"
+        );
+        assert!(window.debug_bounds("trajectory-detail").is_some());
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn the_ledger_search_filters_records_and_the_overview(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_trajectory(cx);
+        let all = window.update(|_, cx| {
+            let view = root.read(cx).trajectory_view();
+            root.read(cx).trajectory_list_rows(&view).len()
+        });
+        assert!(all > 1);
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.capture_set_trajectory_query("cargo fmt", window, cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+        let (filtered, view_len) = window.update(|_, cx| {
+            let view = root.read(cx).trajectory_view();
+            (root.read(cx).trajectory_list_rows(&view).len(), view.len())
+        });
+        assert!(
+            filtered > 0 && filtered < all,
+            "the query narrows the ledger"
+        );
+        // The overview dims rather than drops the records the query excluded,
+        // so the run's shape is still visible while searching.
+        assert_eq!(
+            window.update(|_, cx| root.read(cx).trajectory_view().len()),
+            view_len
+        );
+        // A query with no matches says so instead of showing an empty ledger.
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.capture_set_trajectory_query("zzzz-nothing", window, cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+        assert_eq!(
+            window.update(|_, cx| {
+                let view = root.read(cx).trajectory_view();
+                root.read(cx).trajectory_list_rows(&view).len()
+            }),
+            0
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn the_run_tabs_switch_back_to_the_chat_page(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_trajectory(cx);
+        assert!(window.debug_bounds("trajectory-page").is_some());
+        assert!(window.debug_bounds("desktop-transcript").is_none());
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| this.capture_set_run_tab(RunTab::Chat, cx));
+            window.draw(cx).clear(cx);
+        });
+        assert!(window.debug_bounds("trajectory-page").is_none());
+        assert!(window.debug_bounds("desktop-transcript").is_some());
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
     }
 
     #[gpui::test]
@@ -17305,8 +19296,72 @@ mod tests {
         let _ = std::fs::remove_dir_all(data_dir);
     }
 
+    /// A long plan stays inside the strip: the window paints at most
+    /// `sticky::MAX_VISIBLE_ROWS` rows and reports the rest in one marker row,
+    /// the way the TUI sticky host does.
     #[gpui::test]
-    fn sticky_tasks_expand_to_show_every_step(cx: &mut TestAppContext) {
+    fn a_long_task_list_scrolls_inside_the_strip(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                let mut inspector = tact_desktop_core::fixtures::demo_inspector();
+                inspector.tasks = std::sync::Arc::from(
+                    (1..=14u64)
+                        .map(|id| tact_desktop_core::TaskView {
+                            id,
+                            subject: format!("step {id}").into(),
+                            status: tact_desktop_core::TaskStatusSnapshot::Pending,
+                            created_at: Some(id as i64),
+                            ..tact_desktop_core::TaskView::default()
+                        })
+                        .collect::<Vec<_>>(),
+                );
+                snapshot.inspector = inspector;
+                this.snapshot = std::sync::Arc::new(snapshot);
+                this.sticky_tasks_collapsed = false;
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        // Pending sorts newest first, so the window opens on 14 and stops at 5.
+        assert!(
+            window.debug_bounds("sticky-task-row-14").is_some(),
+            "the newest task is in the window"
+        );
+        assert!(
+            window.debug_bounds("sticky-task-row-1").is_none(),
+            "the oldest task is past the window, not painted over the transcript"
+        );
+        assert!(
+            window.debug_bounds("sticky-tasks-more").is_some(),
+            "the marker row reports the remainder"
+        );
+
+        // Scrolling swaps which rows are painted and flips the marker, rather
+        // than growing the strip.
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.sticky_tasks_scroll = 4;
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        assert!(
+            window.debug_bounds("sticky-task-row-1").is_some(),
+            "the oldest task is reachable"
+        );
+        assert!(
+            window.debug_bounds("sticky-task-row-14").is_none(),
+            "the newest scrolled out of the window"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn sticky_tasks_expand_grouped_with_open_work_first(cx: &mut TestAppContext) {
         let (root, window, shutdown, data_dir) = probe_root(cx);
         window.update(|window, cx| {
             root.update(cx, |this, cx| {
@@ -17318,7 +19373,7 @@ mod tests {
             window.draw(cx).clear(cx);
         });
         assert!(
-            window.debug_bounds("sticky-task-row-1").is_none(),
+            window.debug_bounds("sticky-task-row-2").is_none(),
             "the collapsed strip shows the current task in its header only"
         );
         let toggle = window
@@ -17327,9 +19382,35 @@ mod tests {
         window.simulate_click(toggle.center(), gpui::Modifiers::default());
         window.update(|window, cx| window.draw(cx).clear(cx));
         assert!(
-            window.debug_bounds("sticky-task-row-1").is_some(),
-            "expanding the strip renders every task row"
+            window.debug_bounds("sticky-task-row-2").is_some(),
+            "expanding the strip renders the task rows"
         );
+
+        // The demo inspector is one task per status: 1 done, 2 in progress,
+        // 3 pending. In progress paints above pending, and the completed task
+        // is hidden the same way the TUI sticky hides it.
+        // `debug_bounds` takes a `&'static str`, so the probes are spelled out
+        // rather than built from a loop.
+        let doing = window
+            .debug_bounds("sticky-task-row-2")
+            .expect("in progress");
+        let todo = window.debug_bounds("sticky-task-row-3").expect("pending");
+        assert!(
+            doing.origin.y < todo.origin.y,
+            "in progress paints above pending: {doing:?} {todo:?}"
+        );
+        assert!(
+            window.debug_bounds("sticky-task-row-1").is_none(),
+            "completed work stays out of the strip; the n/m counter reports it"
+        );
+        // Both painted groups are labelled, so the split is readable rather
+        // than two unannounced blocks.
+        for selector in ["sticky-task-group-InProgress", "sticky-task-group-Pending"] {
+            assert!(
+                window.debug_bounds(selector).is_some(),
+                "{selector} header is painted"
+            );
+        }
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
     }

@@ -325,6 +325,12 @@ pub struct TaskView {
     pub owner: Arc<str>,
     pub blocks: Arc<[u64]>,
     pub blocked_by: Arc<[u64]>,
+    /// Millisecond timestamps, carried so the panel can sort by recency and
+    /// show how long a running task has been going. `None` means the producer
+    /// never recorded it — not zero.
+    pub created_at: Option<i64>,
+    pub started_at: Option<i64>,
+    pub completed_at: Option<i64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

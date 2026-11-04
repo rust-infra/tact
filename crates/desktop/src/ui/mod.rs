@@ -31,6 +31,7 @@ pub mod subagents;
 pub mod system_prompt;
 pub mod task_dag;
 pub mod title_bar;
+pub mod trajectory;
 pub mod transcript;
 pub mod transcript_row;
 pub mod web_search;

@@ -22,6 +22,7 @@ use tact_desktop_core::{
 };
 
 use crate::root::{DesktopRoot, ReaderKind};
+use crate::ui::shell::RunTab;
 
 const WINDOW_WIDTH: f32 = 1280.0;
 const WINDOW_HEIGHT: f32 = 840.0;
@@ -494,6 +495,10 @@ pub fn capture_all(out: &Path) -> Result<Vec<PathBuf>> {
     let last_row = harness.snapshot().transcript.len().saturating_sub(1);
     harness.with_root(|root, _, cx| root.capture_scroll_to(last_row, cx));
     shoot(&mut harness, "26b-transcript-bottom")?;
+    // The expanded strip, grouped in progress -> pending -> completed.
+    harness.with_root(|root, _, cx| root.capture_set_sticky_tasks_collapsed(false, cx));
+    shoot(&mut harness, "26b-sticky-tasks-grouped")?;
+    harness.with_root(|root, _, cx| root.capture_set_sticky_tasks_collapsed(true, cx));
     harness.with_root(|root, _, cx| root.capture_scroll_to(4, cx));
     shoot(&mut harness, "26c-transcript-tools")?;
     harness.with_root(|root, _, cx| root.capture_scroll_to(3, cx));
@@ -547,6 +552,46 @@ pub fn capture_all(out: &Path) -> Result<Vec<PathBuf>> {
     harness.with_root(|root, _, cx| root.capture_scroll_to(0, cx));
     shoot(&mut harness, "27-transcript-dark")?;
     harness.set_appearance(Appearance::Light);
+
+    // Trajectory: the same rows as the transcript, organized by turn and
+    // projected onto the overview's three lanes.
+    harness.with_root(|root, _, cx| root.capture_set_run_tab(RunTab::Trajectory, cx));
+    shoot(&mut harness, "47-trajectory")?;
+    let trajectory = harness.with_root(|root, _, cx| {
+        let view = tact_desktop_core::TrajectoryView::from_transcript(&root.snapshot().transcript);
+        let index = view
+            .records()
+            .iter()
+            .position(|record| record.kind == tact_desktop_core::TrajectoryKind::Tool)
+            .unwrap_or(0);
+        root.capture_select_trajectory_record(view.records()[index].id, cx);
+        view.records().len()
+    });
+    assert!(trajectory > 0);
+    shoot(&mut harness, "48-trajectory-selected")?;
+    // The detail panel's Payload tab, so the capture shows the tabbed facets
+    // rather than only the landing tab.
+    harness.with_root(|root, _, cx| {
+        root.capture_set_trajectory_tab(crate::ui::shell::TrajectoryDetailTab::Payload, cx)
+    });
+    shoot(&mut harness, "48b-trajectory-payload")?;
+    harness.with_root(|root, _, cx| {
+        root.capture_set_trajectory_tab(crate::ui::shell::TrajectoryDetailTab::Summary, cx)
+    });
+    // A query with several hits, so the capture shows the ledger narrowing to
+    // the matching records, the turn header surviving the filter, and the
+    // overview dimming every span it dropped.
+    harness.with_root(|root, window, cx| {
+        root.capture_set_trajectory_query("cargo", window, cx);
+    });
+    shoot(&mut harness, "49-trajectory-search")?;
+    harness.with_root(|root, window, cx| {
+        root.capture_set_trajectory_query("", window, cx);
+    });
+    harness.set_appearance(Appearance::Dark);
+    shoot(&mut harness, "50-trajectory-dark")?;
+    harness.set_appearance(Appearance::Light);
+    harness.with_root(|root, _, cx| root.capture_set_run_tab(RunTab::Chat, cx));
 
     for (name, tab) in [
         ("28-inspector-run-populated", InspectorTab::Run),
