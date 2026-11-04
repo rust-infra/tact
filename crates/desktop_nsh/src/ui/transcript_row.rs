@@ -1,0 +1,69 @@
+use nsh_core::element::AccessibilityRole;
+use tact_desktop_core::{CatalogLocale, RowBody, TranscriptRow};
+
+use crate::i18n::{self, TextKey};
+use crate::ui::shell::TranscriptRowKind;
+
+pub fn accessibility_role(row: &TranscriptRow) -> AccessibilityRole {
+    accessibility_role_for_kind(kind(row))
+}
+
+pub fn accessibility_label(row: &TranscriptRow, locale: CatalogLocale) -> &'static str {
+    accessibility_label_for_kind(kind(row), locale)
+}
+
+fn kind(row: &TranscriptRow) -> TranscriptRowKind {
+    match row.body {
+        RowBody::User(_) => TranscriptRowKind::User,
+        RowBody::Assistant(_) => TranscriptRowKind::Assistant,
+        RowBody::Thinking(_) => TranscriptRowKind::Thinking,
+        RowBody::Plan(_) => TranscriptRowKind::Plan,
+        RowBody::ToolGroup(_) => TranscriptRowKind::ToolGroup,
+        RowBody::Diff(_) => TranscriptRowKind::Diff,
+        RowBody::Gate(_) => TranscriptRowKind::Gate,
+        RowBody::Notice(_) => TranscriptRowKind::Notice,
+        RowBody::HookContext(_) => TranscriptRowKind::HookContext,
+        RowBody::HookStatus(_) => TranscriptRowKind::HookStatus,
+        RowBody::Error(_) => TranscriptRowKind::Error,
+    }
+}
+
+pub const fn accessibility_role_for_kind(kind: TranscriptRowKind) -> AccessibilityRole {
+    match kind {
+        TranscriptRowKind::User | TranscriptRowKind::Assistant => AccessibilityRole::Text,
+        TranscriptRowKind::Gate | TranscriptRowKind::Error => AccessibilityRole::Alert,
+        TranscriptRowKind::Notice | TranscriptRowKind::HookStatus => AccessibilityRole::Text,
+        _ => AccessibilityRole::None,
+    }
+}
+
+pub fn accessibility_label_for_kind(
+    kind: TranscriptRowKind,
+    locale: CatalogLocale,
+) -> &'static str {
+    match kind {
+        TranscriptRowKind::User => i18n::text(locale, TextKey::UserMessage),
+        TranscriptRowKind::Assistant => i18n::text(locale, TextKey::AssistantResponse),
+        TranscriptRowKind::Thinking => i18n::text(locale, TextKey::Thinking),
+        TranscriptRowKind::Plan => match locale {
+            CatalogLocale::En => "Plan",
+            CatalogLocale::Zh => "计划",
+        },
+        TranscriptRowKind::ToolGroup => i18n::text(locale, TextKey::ToolGroup),
+        TranscriptRowKind::Diff => i18n::text(locale, TextKey::Diff),
+        TranscriptRowKind::Gate => i18n::text(locale, TextKey::PermissionOrQuestionGate),
+        TranscriptRowKind::Notice => i18n::text(locale, TextKey::Notice),
+        TranscriptRowKind::HookContext => i18n::text(locale, TextKey::HookContext),
+        TranscriptRowKind::HookStatus => i18n::text(locale, TextKey::HookStatus),
+        TranscriptRowKind::Error => i18n::text(locale, TextKey::Error),
+    }
+}
+
+pub fn evidence_language(language: &str) -> &str {
+    match language.to_ascii_lowercase().as_str() {
+        "mermaid" | "ansi" => "text",
+        _ => language,
+    }
+}
+
+

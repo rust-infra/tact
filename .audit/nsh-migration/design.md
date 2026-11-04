@@ -1,0 +1,62 @@
+# Tact Desktop on Native Shell
+
+## Goal
+
+Replace the GPUI desktop (`crates/desktop`, ~17k production lines) with a Native Shell app on the same `tact_desktop_core`, and delete GPUI from the workspace.
+
+## Definition of done
+
+- `cargo run -p tact_desktop_nsh` opens the Tact window on macOS, Windows and Linux.
+- Every surface of the current desktop is reachable and behaves the same: title bar, session rail, run room (chat + trajectory), composer, inspector (Run/Goals/Subagents/Background/Context), command center, slash overlay, settings, session manager, extensions, readers, goals, subagents, background tab, task DAG, diff review, mermaid, ANSI, web search.
+- `tact_desktop_core` is unchanged.
+- Headless NSH tests cover the shell and the surfaces the GPUI tests covered.
+- `crates/desktop` and every GPUI dependency are gone.
+- `nsh package` produces the macOS, Windows and Linux apps.
+
+## Architecture
+
+- `crates/desktop_nsh` is the NSH app: `nsh.json`, `theme.json`, `assets/`, `src/main.rs` (`platform::run_app`), `src/lib.rs` (root `App`), `src/shell.rs` (window shell), `src/ui/` (surfaces and pure decision modules).
+- `DesktopController` starts before the window and is stored in a process-wide `OnceLock`.
+- One `Signal<SnapshotRef>` carries the latest `DesktopSnapshot`; a task reads `DesktopEvents` and sets it on every commit. `SnapshotRef` compares by `Arc` identity so a commit never deep-compares two view models.
+- `AppState { controller, snapshot }` is provided as context at the root; components read it with `use_app()`.
+- Pure decision modules from the old `ui/` are copied verbatim; rendering modules are rewritten with NSH elements.
+- Theme tokens map 1:1 to `theme.json`; custom tokens (`sidebar`, `title-bar`, `link`, `success`, `warning`, `danger`, `selection`, …) are read with `theme().color("…")`.
+- Fonts ship as assets: IBM Plex Sans and Lilex.
+
+## Migration order
+
+1. Foundation: bootstrap, controller bridge, theme, fonts, empty shell. Done.
+2. Pure modules: i18n, layout, shell enums, rail/transcript/inspector decisions. Done.
+3. Shell chrome: custom title bar, responsive three-column layout.
+4. Session rail: projects, sessions, filters, search, new session.
+5. Run room: transcript rows (user, assistant, thinking, plan, tool group, diff, gate, notice, hook, error), markdown, ANSI, mermaid, task DAG.
+6. Composer: multiline input, model picker, send/stop, queue, voice.
+7. Inspector: Run/Goals/Subagents/Background/Context, trajectory tabs.
+8. Overlays: command center, slash overlay, forms, settings, session manager, extensions, readers.
+9. Tests: headless NSH tests, parity checks.
+10. Packaging: `nsh package` for the three desktops; remove `crates/desktop`.
+
+## Status
+
+- 2026-11-04: `nsh-cli 0.3.0` installed; a scaffold app builds and runs; `tact_desktop_nsh` opens a window with the real controller and theme; fonts registered through `AssetBase::Directory`.
+- 2026-11-04: the shell renders the real snapshot: title bar, session rail (filters, search, session selection, new session), run room (Chat/Trajectory tabs, transcript rows, markdown via `TextView`, gate buttons), composer (send/stop, queue count) and inspector (Run/Goals/Subagents/Background/Context).
+- Verified: `cargo test -p tact_desktop_nsh --test shell` passes headless; the app launches and stays up with no runtime errors.
+- Copied pure modules keep their tests in the old crate until the old crate is deleted; the new crate's tests are rebuilt with `nsh-testing`.
+
+- 2026-11-04: overlays render over the shell: command center (live command search and invoke), settings (read-only rows), session manager (open and archive), extensions (skills, plugins, marketplaces), model picker. Shortcuts: `mod+k`, `mod+,`, `escape`.
+- 2026-11-04: the Trajectory page lists the ledger with Summary/Payload/Result/Schema/Timing detail tabs; diff rows use `nsh_base::DiffView`; tool groups show ANSI output through the ported parser; assistant rows render mermaid flowcharts under the Markdown; the composer has model and permission controls.
+- Verified: 15 unit tests (ANSI and mermaid parsers) and 3 headless shell tests pass; the app launches and stays up.
+
+- 2026-11-04: the reader overlay handles `DesktopEffect::OpenReader` (the `help` command, and the Open buttons on tools, thinking and diffs). Clipboard, external links, file opens and window close are handled from `DesktopEffect`.
+- 2026-11-04: typed surfaces render in their own overlay: system prompt, statistics, history, MCP servers and prompts, hooks. They close per revision without a controller intent.
+- Verified: 15 unit tests and 5 headless shell tests pass; the app launches with no warnings.
+
+## Left
+
+- Settings editing (forms), slash overlay and command forms, gate multi-select, attachments and voice.
+- Application menu: NSH 0.3.0 exposes it only to TSX (`nsh/desktop`); Rust has `set_title_bar`, `title_bar`, `close_window`, `window_drag`. This is the largest parity blocker.
+- Virtualized transcript list (`virtual_list`) instead of `each` in a scroll, once row heights are measured.
+- Port the remaining behavior tests to `nsh-testing`; add fixtures for transcript rows.
+- `nsh package` for the three desktops, then delete `crates/desktop` and every GPUI dependency.
+
+The API cheat sheet from the porting agent is at `.audit/nsh-migration/api-notes.md`.

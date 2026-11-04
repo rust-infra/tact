@@ -1,0 +1,9 @@
+{
+  "name": "Tact Desktop",
+  "id": "com.tact.desktop",
+  "version": "2.0.4",
+  "build": 1,
+  "rust": ".",
+  "root": "App",
+  "theme": "theme.json"
+}

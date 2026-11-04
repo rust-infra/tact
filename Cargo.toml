@@ -14,6 +14,7 @@ members = [
     "crates/catalog",
     "crates/desktop_core",
     "crates/desktop",
+    "crates/desktop_nsh",
     "crates/tool_refactor_macros",
 ]
 resolver = "2"
