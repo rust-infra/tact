@@ -47,12 +47,13 @@ use crate::ui::diff_table::{
     DiffTable, DiffTableEvent, DiffTableLabels,
 };
 use crate::ui::filter_table::{
-    FilterCell, FilterColumn, FilterDefinition, FilterRow, FilterTable, FilterTableEvent,
+    ActivationSource, FilterCell, FilterColumn, FilterDefinition, FilterRow, FilterTable,
+    FilterTableEvent,
 };
 use crate::ui::leaf::{
     AttachmentItem, AttachmentStrip, ContextCard, ContextCardEvent, ContextMeter, ContextUsage,
     LoadingState, Orbs, Suggestion, Suggestions, SuggestionsEvent, Toggle, ToggleEvent,
-    ToggleShape, ToolChip, ToolStatus,
+    ToggleShape, ToolChip, ToolStatus, is_image_path,
 };
 use crate::ui::plan_card::{PlanCard, PlanCardLabels, PlanState, PlanStep, PlanStepStatus};
 use crate::ui::prompt_bar::{
@@ -1055,7 +1056,7 @@ impl DesktopRoot {
                 }
                 gpui_component::input::InputEvent::Focus
                 | gpui_component::input::InputEvent::Blur => cx.notify(),
-                _ => {}
+                gpui_component::input::InputEvent::PressEnter { .. } => {}
             },
         );
         let editor_subscription = cx.subscribe_in(
@@ -1159,7 +1160,7 @@ impl DesktopRoot {
                 }
                 gpui_component::input::InputEvent::Focus
                 | gpui_component::input::InputEvent::Blur => cx.notify(),
-                _ => {}
+                gpui_component::input::InputEvent::PressEnter { .. } => {}
             },
         );
         let extensions_table_subscription = cx.subscribe_in(
@@ -1197,7 +1198,7 @@ impl DesktopRoot {
                         table.set_selected_row(row_id.clone(), window, cx);
                     });
                 }
-                FilterTableEvent::ActivationRequested { row_id, .. } => {
+                FilterTableEvent::ActivationRequested { row_id, source, .. } => {
                     let mut parts = row_id.splitn(3, '|');
                     let kind = parts.next().unwrap_or_default();
                     let action = parts.next().unwrap_or_default();
@@ -1215,16 +1216,20 @@ impl DesktopRoot {
                             });
                         }
                         ("skill", "toggle") => {
-                            this.dispatch(DesktopIntent::SetSkillEnabled {
-                                name: target.to_string(),
-                                enabled: !this
-                                    .snapshot
-                                    .extensions
-                                    .snapshot
-                                    .skills
-                                    .iter()
-                                    .any(|skill| skill.name == target && skill.enabled),
-                            });
+                            if matches!(source, ActivationSource::Space) {
+                                this.dispatch(DesktopIntent::SetSkillEnabled {
+                                    name: target.to_string(),
+                                    enabled: !this
+                                        .snapshot
+                                        .extensions
+                                        .snapshot
+                                        .skills
+                                        .iter()
+                                        .any(|skill| skill.name == target && skill.enabled),
+                                });
+                            } else {
+                                this.insert_skill(target, window, cx);
+                            }
                         }
                         ("plugin", "update") => {
                             this.dispatch(DesktopIntent::InvokeCommand {
@@ -1258,20 +1263,22 @@ impl DesktopRoot {
                 }
                 gpui_component::input::InputEvent::Focus
                 | gpui_component::input::InputEvent::Blur => cx.notify(),
-                _ => {}
+                gpui_component::input::InputEvent::PressEnter { .. } => {}
             },
         );
         let extension_search_subscription = cx.subscribe_in(
             &extension_search,
             window,
-            |this, _, event: &gpui_component::input::InputEvent, _, cx| match event {
+            |this, _, event: &gpui_component::input::InputEvent, window, cx| match event {
                 gpui_component::input::InputEvent::Change => {
                     this.extension_query = this.extension_search.read(cx).value().to_string();
                     cx.notify();
                 }
+                gpui_component::input::InputEvent::PressEnter { .. } => {
+                    this.activate_extension_search_result(window, cx);
+                }
                 gpui_component::input::InputEvent::Focus
                 | gpui_component::input::InputEvent::Blur => cx.notify(),
-                _ => {}
             },
         );
         let model_search_subscription = cx.subscribe_in(
@@ -1690,6 +1697,49 @@ impl DesktopRoot {
         });
     }
 
+    fn activate_extension_search_result(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(
+            self.overlay.as_ref(),
+            Some(Overlay::Extensions(ExtensionsTab::Skills))
+        ) {
+            self.insert_first_matching_skill(window, cx);
+        }
+    }
+
+    fn insert_first_matching_skill(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let query = self.extension_query.trim().to_string();
+        let mut matched = self
+            .snapshot
+            .extensions
+            .snapshot
+            .skills
+            .iter()
+            .filter(|skill| {
+                query.is_empty()
+                    || crate::ui::extensions::matches_extension(&query, &skill.name)
+                    || crate::ui::extensions::matches_extension(&query, &skill.description)
+            })
+            .collect::<Vec<_>>();
+        matched.sort_by_key(|skill| {
+            -crate::ui::extensions::score_extension(&query, &[&skill.name, &skill.description])
+        });
+        if let Some(name) = matched.first().map(|skill| skill.name.clone()) {
+            self.insert_skill(&name, window, cx);
+        }
+    }
+
+    fn insert_skill(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.overlay = None;
+        self.overlay_stack.clear();
+        self.prompt.update(cx, |prompt, cx| {
+            prompt.set_draft_at_end(format!("/skill {name} "), window, cx);
+            prompt.focus(window, cx);
+        });
+        self.slash_overlay = None;
+        self.slash_dismissed_for = None;
+        cx.notify();
+    }
+
     fn sync_extensions_table(
         &self,
         tab: ExtensionsTab,
@@ -1814,7 +1864,14 @@ impl DesktopRoot {
             tact_catalog::CatalogLocale::En => ("Name", "Detail", "Status"),
             tact_catalog::CatalogLocale::Zh => ("名称", "详情", "状态"),
         };
-        let open_label = self.text(TextKey::Open);
+        let open_label = if tab == ExtensionsTab::Skills {
+            match self.snapshot.language {
+                tact_catalog::CatalogLocale::En => "Insert",
+                tact_catalog::CatalogLocale::Zh => "插入",
+            }
+        } else {
+            self.text(TextKey::Open)
+        };
         let filters_label = match self.snapshot.language {
             tact_catalog::CatalogLocale::En => {
                 format!("Filters for {}", self.text(TextKey::Extensions))
@@ -2328,6 +2385,18 @@ impl DesktopRoot {
     }
 
     #[cfg(feature = "ui-capture")]
+    pub(crate) fn capture_attach_image(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.attachments.push(path);
+        self.sync_prompt_attachments(cx);
+    }
+
+    #[cfg(feature = "ui-capture")]
+    pub(crate) fn capture_clear_attachments(&mut self, cx: &mut Context<Self>) {
+        self.attachments.clear();
+        self.sync_prompt_attachments(cx);
+    }
+
+    #[cfg(feature = "ui-capture")]
     pub(crate) fn capture_set_inspector(&mut self, tab: InspectorTab, cx: &mut Context<Self>) {
         let mut snapshot = (*self.snapshot).clone();
         snapshot.inspector.tab = tab;
@@ -2770,7 +2839,7 @@ impl DesktopRoot {
             return;
         };
         self.prompt.update(cx, |prompt, cx| {
-            prompt.set_draft(suggestion.insertion.clone(), window, cx);
+            prompt.set_draft_at_end(suggestion.insertion.clone(), window, cx);
             prompt.focus(window, cx);
         });
         self.refresh_slash_overlay(&suggestion.insertion, cx);
@@ -4110,13 +4179,16 @@ impl DesktopRoot {
             .attachments
             .iter()
             .map(|path| {
-                AttachmentItem::new(
+                let mut item = AttachmentItem::new(
                     path.display().to_string(),
                     path.file_name()
                         .and_then(|name| name.to_str())
                         .unwrap_or(self.text(TextKey::Attachment)),
-                )
-                .size_bytes(std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0))
+                );
+                if is_image_path(path) {
+                    item = item.image(path.clone());
+                }
+                item.size_bytes(std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0))
             })
             .collect::<Vec<_>>();
         self.prompt.update(cx, |prompt, cx| {
@@ -5565,7 +5637,12 @@ impl DesktopRoot {
         let line = trajectory_page::StatsLine::new(
             view.summary(),
             trajectory_page::StatsLabels {
+                turn: self.text(TextKey::TurnLabel),
                 turns: self.text(TextKey::TurnsUnit),
+                step: match self.snapshot.language {
+                    tact_catalog::CatalogLocale::En => "step",
+                    tact_catalog::CatalogLocale::Zh => self.text(TextKey::Steps),
+                },
                 steps: self.text(TextKey::Steps),
                 tokens: self.text(TextKey::Tokens),
                 cache_hit: self.text(TextKey::CacheHit),
@@ -8775,6 +8852,10 @@ impl DesktopRoot {
                 let can_submit =
                     form.choice.is_none() && (!form.required || !entered.trim().is_empty());
                 let input_label = form.field.clone().unwrap_or_else(|| form.title.to_string());
+                let show_field = form
+                    .field
+                    .as_deref()
+                    .is_some_and(|field| field != form.title.as_ref());
                 Some(
                     v_flex()
                         .id("command-form-overlay")
@@ -8789,13 +8870,18 @@ impl DesktopRoot {
                         .border_color(cx.theme().border)
                         .bg(cx.theme().popover)
                         .shadow_lg()
-                        .child(div().font_semibold().child(form.title.clone()))
-                        .when_some(form.field.clone(), |panel, field| {
+                        .child(
+                            div()
+                                .text_size(px(16.))
+                                .font_semibold()
+                                .child(form.title.clone()),
+                        )
+                        .when(show_field, |panel| {
                             panel.child(
                                 div()
                                     .text_sm()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child(field),
+                                    .child(form.field.clone().unwrap_or_default()),
                             )
                         })
                         .when(form.choice.is_none(), |panel| {
@@ -8864,7 +8950,11 @@ impl DesktopRoot {
                                         .px_2()
                                         .py_1()
                                         .child(self.text(TextKey::Confirm))
-                                        .when(!can_submit, |button| button.opacity(0.45))
+                                        .when(!can_submit, |button| {
+                                            button
+                                                .bg(cx.theme().muted)
+                                                .text_color(cx.theme().muted_foreground)
+                                        })
                                         .when(can_submit, |button| {
                                             button.on_click(cx.listener(
                                                 |this, _: &ClickEvent, window, cx| {
@@ -8914,14 +9004,37 @@ impl DesktopRoot {
             stored.diff_applied = reader.diff_applied;
         }
         let title = reader.title.clone();
+        let help = matches!(title.as_ref(), "Keyboard Shortcuts" | "键盘快捷键");
+        let balance = reader.typed == Some(ReaderKind::Balance);
+        let contents = reader.markdown.lines().count().max(1) as f32;
+        let content_height = (180.0 + contents * 22.0).clamp(340.0, 640.0);
+        let balance_height = (180.0 + contents * 22.0).clamp(300.0, 480.0);
         Some(
             v_flex()
                 .id("reader-overlay")
                 .debug_selector(|| "reader-overlay".into())
                 .role(Role::Dialog)
                 .aria_label(title.clone())
-                .w(overlay_width(window, 760.))
-                .h(overlay_height(window, 640.))
+                .w(overlay_width(
+                    window,
+                    if help {
+                        560.
+                    } else if balance {
+                        520.
+                    } else {
+                        760.
+                    },
+                ))
+                .h(overlay_height(
+                    window,
+                    if help {
+                        520.
+                    } else if balance {
+                        balance_height
+                    } else {
+                        content_height
+                    },
+                ))
                 .p_4()
                 .gap_3()
                 .overflow_hidden()
@@ -8978,7 +9091,7 @@ impl DesktopRoot {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if reader.typed == Some(ReaderKind::Balance) {
-            return InsightCard::new("balance-reader-card", reader.title.to_string())
+            return InsightCard::untitled("balance-reader-card")
                 .body(reader.markdown.to_string())
                 .into_any_element();
         }
@@ -9296,7 +9409,27 @@ impl DesktopRoot {
                 .py_0()
                 .bg(surface::selection_fill(chosen, active, false, cx))
                 .hover(|style| style.bg(surface::selection_hover_fill(chosen, false, cx)))
-                .child(div().w_full().min_w_0().truncate().child(value.clone()))
+                .child(
+                    h_flex()
+                        .w_full()
+                        .min_w_0()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_none()
+                                .size(px(14.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .when(chosen, |slot| {
+                                    slot.child(
+                                        div().size(px(5.)).rounded_full().bg(cx.theme().primary),
+                                    )
+                                }),
+                        )
+                        .child(div().min_w_0().flex_1().truncate().child(value.clone())),
+                )
                 .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                     this.model_picker_cursor = index;
                     this.activate_model_picker(window, cx);
@@ -9323,7 +9456,7 @@ impl DesktopRoot {
             .child(
                 h_flex()
                     .justify_between()
-                    .child(div().font_semibold().child(title))
+                    .child(div().text_size(px(18.)).font_semibold().child(title))
                     .child(
                         div()
                             .id("close-model-picker")
@@ -9432,14 +9565,8 @@ impl DesktopRoot {
                     })
                     .collect::<Vec<_>>()
             })
-            .unwrap_or_else(|| {
-                vec![
-                    div()
-                        .text_sm()
-                        .child(self.text(TextKey::NoLiveTranscript))
-                        .into_any_element(),
-                ]
-            });
+            .unwrap_or_default();
+        let empty = transcript.is_none();
         let phase = run_phase_label(self.snapshot.runtime.current_phase, self.snapshot.language);
         v_flex()
             .id("subagent-overlay")
@@ -9548,7 +9675,22 @@ impl DesktopRoot {
                             ),
                     ),
             )
-            .child(
+            .child(if empty {
+                v_flex()
+                    .id("subagent-transcript")
+                    .flex_1()
+                    .min_h_0()
+                    .items_center()
+                    .justify_center()
+                    .p(px(20.))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(self.text(TextKey::NoLiveTranscript)),
+                    )
+                    .into_any_element()
+            } else {
                 v_flex()
                     .id("subagent-transcript")
                     .flex_1()
@@ -9556,8 +9698,9 @@ impl DesktopRoot {
                     .gap_2()
                     .p(px(20.))
                     .overflow_y_scroll()
-                    .children(rows),
-            )
+                    .children(rows)
+                    .into_any_element()
+            })
             .into_any_element()
     }
 
@@ -9585,13 +9728,15 @@ impl DesktopRoot {
                     .cursor_pointer()
                     .rounded_md()
                     .px_2()
-                    .py_2()
+                    .py(px(6.))
                     .hover(|style| style.bg(cx.theme().muted))
                     .child(
                         h_flex()
                             .justify_between()
                             .child(
                                 v_flex()
+                                    .min_w_0()
+                                    .flex_1()
                                     .gap_0p5()
                                     .child(div().text_sm().child(label))
                                     .child(
@@ -9602,18 +9747,21 @@ impl DesktopRoot {
                                     ),
                             )
                             .child(
-                                v_flex()
-                                    .items_end()
-                                    .gap_0p5()
+                                h_flex()
+                                    .flex_none()
+                                    .items_center()
+                                    .gap(px(8.))
                                     .child(
                                         div()
+                                            .max_w(px(140.))
+                                            .truncate()
                                             .text_xs()
                                             .font_semibold()
                                             .child(setting_display_value(setting, &self.snapshot)),
                                     )
                                     .child(
                                         div()
-                                            .text_xs()
+                                            .text_size(px(10.))
                                             .text_color(cx.theme().muted_foreground)
                                             .child(setting_mode_label(
                                                 setting,
@@ -9638,9 +9786,9 @@ impl DesktopRoot {
             .role(Role::Dialog)
             .aria_label(self.text(TextKey::Settings))
             .w(overlay_width(window, 680.))
-            .max_h(px(680.))
+            .max_h(px(620.))
             .p_4()
-            .gap_3()
+            .gap_2()
             .rounded_lg()
             .border_1()
             .border_color(cx.theme().border)
@@ -9649,7 +9797,12 @@ impl DesktopRoot {
             .child(
                 h_flex()
                     .justify_between()
-                    .child(div().font_semibold().child(self.text(TextKey::Settings)))
+                    .child(
+                        div()
+                            .text_size(px(20.))
+                            .font_semibold()
+                            .child(self.text(TextKey::Settings)),
+                    )
                     .child(
                         div()
                             .id("close-settings")
@@ -9693,7 +9846,7 @@ impl DesktopRoot {
         };
         let sources = group_hook_sources(&trusted, &pending);
         let pending_sources = sources.iter().filter(|(_, _, trusted)| !trusted).count();
-        let height = (f32::from(window.viewport_size().height) - 100.0).clamp(320.0, 620.0);
+        let height = (210.0 + sources.len() as f32 * 66.0).clamp(360.0, 620.0);
         let rows = sources
             .iter()
             .map(|(source, items, trusted)| {
@@ -10718,7 +10871,12 @@ impl DesktopRoot {
             }
         }
 
-        let manager_height = (f32::from(window.viewport_size().height) - 100.0).clamp(320.0, 620.0);
+        let visible_rows = if manage {
+            self.extensions_table.read(cx).row_count()
+        } else {
+            0
+        };
+        let manager_height = (210.0 + visible_rows as f32 * 40.0).clamp(360.0, 620.0);
         v_flex()
             .id("extensions-overlay")
             .debug_selector(|| "extensions-overlay".into())
@@ -10889,7 +11047,19 @@ impl DesktopRoot {
                             .font_family("Lilex")
                             .text_color(cx.theme().muted_foreground)
                             .child(if manage {
-                                self.text(TextKey::ChangesApply).to_string()
+                                if tab == ExtensionsTab::Skills {
+                                    match self.snapshot.language {
+                                        tact_catalog::CatalogLocale::En => {
+                                            "Enter inserts · Space toggles"
+                                        }
+                                        tact_catalog::CatalogLocale::Zh => {
+                                            "Enter 插入 · Space 开关"
+                                        }
+                                    }
+                                    .to_string()
+                                } else {
+                                    self.text(TextKey::ChangesApply).to_string()
+                                }
                             } else {
                                 format!(
                                     "{enabled_count} {}",
@@ -11972,8 +12142,6 @@ impl Render for DesktopRoot {
         ) && f32::from(window.viewport_size().height) >= 500.;
         let popover_overlay =
             matches!(self.overlay, Some(Overlay::Extensions(_))) && !self.extension_manage;
-        let rail_edge = f32::from(crate::ui::shell::geometry(self.snapshot.appearance).rail_width)
-            * self.snapshot.text_scale;
         // Overlays arrive with one restrained fade and rise rather than
         // appearing between two frames. Reduced motion resolves to the settled
         // frame, as every other transition here does.
@@ -12340,11 +12508,7 @@ impl Render for DesktopRoot {
                         .inset_0()
                         .when(drawer_overlay, |scrim| scrim.items_end().justify_end())
                         .when(popover_overlay, |scrim| {
-                            scrim
-                                .items_start()
-                                .justify_end()
-                                .pl(px(rail_edge))
-                                .pb(px(12.))
+                            scrim.items_center().justify_center()
                         })
                         .when(
                             !drawer_overlay && !popover_overlay && top_biased_overlay,
@@ -13678,13 +13842,16 @@ fn transcript_row_element(
                             AttachmentStrip::new(format!("user-attachments-{id}"))
                                 .label(i18n::text(snapshot.language, TextKey::Attachment))
                                 .items(user.attachments.iter().map(|path| {
-                                    AttachmentItem::new(
+                                    let mut item = AttachmentItem::new(
                                         path.display().to_string(),
                                         path.file_name().and_then(|name| name.to_str()).unwrap_or(
                                             i18n::text(snapshot.language, TextKey::Attachment),
                                         ),
-                                    )
-                                    .size_bytes(
+                                    );
+                                    if is_image_path(path) {
+                                        item = item.image(path.clone());
+                                    }
+                                    item.size_bytes(
                                         std::fs::metadata(path)
                                             .map(|metadata| metadata.len())
                                             .unwrap_or(0),
@@ -15727,6 +15894,8 @@ fn build_process_layout(
     rows: &[Entity<TranscriptRowView>],
     cx: &gpui::App,
 ) -> (Vec<ProcessRowRole>, Vec<ProcessGroup>) {
+    let transcript =
+        TranscriptView::from_rows(rows.iter().map(|row| row.read(cx).row.clone()).collect());
     let mut roles = vec![ProcessRowRole::Normal; rows.len()];
     let mut groups = Vec::new();
     let mut index = 0;
@@ -15746,6 +15915,10 @@ fn build_process_layout(
         while index < rows.len() {
             let row = &rows[index].read(cx).row;
             if !process_row_foldable(&row.body) {
+                if process_row_transparent(row, &transcript) {
+                    index += 1;
+                    continue;
+                }
                 break;
             }
             match &row.body {
@@ -15795,6 +15968,15 @@ fn build_process_layout(
         }
     }
     (roles, groups)
+}
+
+/// Rows the renderer already drops must not split an activity group.
+///
+/// The runtime emits a tool-only plan row for every concrete step. The plan
+/// card yields to its tool group, so treating it as a boundary would turn one
+/// reasoning region into one summary per tool call.
+fn process_row_transparent(row: &TranscriptRow, transcript: &TranscriptView) -> bool {
+    matches!(&row.body, RowBody::Plan(plan) if plan_is_tool_execution(row, plan, transcript))
 }
 
 fn process_summary_text(group: &ProcessGroup, language: tact_catalog::CatalogLocale) -> String {
@@ -16635,6 +16817,33 @@ mod tests {
         let _ = std::fs::remove_dir_all(data_dir);
     }
 
+    #[gpui::test]
+    fn accepting_a_slash_command_leaves_the_caret_at_the_end(cx: &mut TestAppContext) {
+        let (root, window, _shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                root.prompt
+                    .update(cx, |prompt, cx| prompt.set_draft("/the", window, cx));
+                root.refresh_slash_overlay("/the", cx);
+                let active = root
+                    .slash_overlay
+                    .as_ref()
+                    .expect("the /theme command is a candidate")
+                    .suggestions
+                    .iter()
+                    .position(|suggestion| suggestion.insertion == "/theme")
+                    .expect("theme is in the catalog");
+                root.slash_overlay.as_mut().expect("overlay").active = active;
+
+                root.accept_slash_suggestion(false, window, cx);
+
+                assert_eq!(root.prompt.read(cx).draft(cx).as_ref(), "/theme");
+                assert_eq!(root.prompt.read(cx).cursor(cx), "/theme".len());
+            });
+        });
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
     #[test]
     fn cjk_titles_use_the_compact_display_scale() {
         use tact_catalog::CatalogLocale;
@@ -16856,7 +17065,9 @@ mod tests {
         // the lower-case `turns` the reference uses, not the summary bar's
         // capitalised column heading.
         let labels = crate::ui::trajectory::StatsLabels {
+            turn: "turn",
             turns: i18n::text(tact_catalog::CatalogLocale::En, TextKey::TurnsUnit),
+            step: "step",
             steps: i18n::text(tact_catalog::CatalogLocale::En, TextKey::Steps),
             tokens: i18n::text(tact_catalog::CatalogLocale::En, TextKey::Tokens),
             cache_hit: i18n::text(tact_catalog::CatalogLocale::En, TextKey::CacheHit),
@@ -16895,7 +17106,9 @@ mod tests {
                 ..tact_desktop_core::TrajectorySummary::default()
             },
             crate::ui::trajectory::StatsLabels {
+                turn: "turn",
                 turns: "turns",
+                step: "step",
                 steps: "steps",
                 tokens: "tok",
                 cache_hit: "Cache hit",
@@ -19702,7 +19915,112 @@ mod tests {
             .debug_bounds("extensions-overlay")
             .expect("extensions manager");
         assert_eq!(manager.size.width, px(780.), "manager width");
-        assert_eq!(manager.size.height, px(620.), "manager height");
+        assert!(
+            (px(320.)..=px(620.)).contains(&manager.size.height),
+            "manager height {:?}",
+            manager.size.height
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn extensions_popover_is_centered_in_the_window(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|_, cx| cx.set_reduce_motion(true));
+        window.simulate_resize(size(px(1280.), px(840.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, _cx| {
+                this.open_overlay(Overlay::Extensions(ExtensionsTab::Skills));
+                this.extension_manage = false;
+            });
+            window.draw(cx).clear(cx);
+        });
+        let popover = window
+            .debug_bounds("extensions-overlay")
+            .expect("extensions popover");
+        let viewport = window.update(|window, _| window.viewport_size());
+        let expected_x = (f32::from(viewport.width) - f32::from(popover.size.width)) / 2.0;
+        let expected_y = (f32::from(viewport.height) - f32::from(popover.size.height)) / 2.0;
+        assert!(
+            (f32::from(popover.origin.x) - expected_x).abs() <= 1.0,
+            "popover x {} must center at {expected_x}",
+            f32::from(popover.origin.x)
+        );
+        assert!(
+            (f32::from(popover.origin.y) - expected_y).abs() <= 1.0,
+            "popover y {} must center at {expected_y}",
+            f32::from(popover.origin.y)
+        );
+
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.extension_manage = true;
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        let manager = window
+            .debug_bounds("extensions-overlay")
+            .expect("extensions manager");
+        let expected_x = (f32::from(viewport.width) - f32::from(manager.size.width)) / 2.0;
+        let expected_y = (f32::from(viewport.height) - f32::from(manager.size.height)) / 2.0;
+        assert!(
+            (f32::from(manager.origin.x) - expected_x).abs() <= 1.0,
+            "manager x {} must center at {expected_x}",
+            f32::from(manager.origin.x)
+        );
+        assert!(
+            (f32::from(manager.origin.y) - expected_y).abs() <= 1.0,
+            "manager y {} must center at {expected_y}",
+            f32::from(manager.origin.y)
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn pressing_enter_on_a_searched_skill_inserts_it_into_the_composer(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                let mut snapshot = (*root.snapshot).clone();
+                snapshot.extensions.snapshot.skills = vec![tact_host::SkillSnapshot {
+                    name: "rust-skills".into(),
+                    description: "Comprehensive Rust coding guidelines".into(),
+                    enabled: true,
+                    path: "/skills/rust-skills/SKILL.md".into(),
+                }];
+                root.snapshot = Arc::new(snapshot);
+                root.open_overlay(Overlay::Extensions(ExtensionsTab::Skills));
+                root.extension_manage = false;
+                root.extension_query = "rust".into();
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                root.extension_search.update(cx, |input, cx| {
+                    input.set_value("rust", window, cx);
+                    input.focus(window, cx);
+                });
+            });
+        });
+
+        window.simulate_keystrokes("enter");
+
+        let (draft, overlay) = window.update(|_, cx| {
+            let root = root.read(cx);
+            (
+                root.prompt.read(cx).draft(cx).to_string(),
+                root.overlay.is_some(),
+            )
+        });
+        assert_eq!(draft, "/skill rust-skills ");
+        assert!(!overlay, "inserting a skill closes the extensions popover");
 
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
@@ -19886,7 +20204,11 @@ mod tests {
         });
         let hooks = window.debug_bounds("hooks-overlay").expect("hooks sheet");
         assert_eq!(hooks.size.width, px(780.), "hooks sheet width");
-        assert_eq!(hooks.size.height, px(620.), "hooks sheet height");
+        assert!(
+            (px(320.)..=px(620.)).contains(&hooks.size.height),
+            "hooks height {:?}",
+            hooks.size.height
+        );
 
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
@@ -20404,6 +20726,128 @@ mod tests {
             process_summary_text(&without_thoughts, tact_catalog::CatalogLocale::Zh),
             "运行了 25 条命令，读取了 12 个文件，运行了 1 个 skill"
         );
+    }
+
+    #[gpui::test]
+    fn hidden_tool_plans_do_not_split_the_activity_group(cx: &mut TestAppContext) {
+        use tact_desktop_core::{
+            PlanRow, PlanStep, ToolBody, ToolGroupItem, ToolGroupRow, ToolMetaView, ToolOutputView,
+            ToolRow,
+            transcript::{AssistantRow, ThinkingRow},
+        };
+
+        fn row(
+            id: u64,
+            loop_id: Option<tact_desktop_core::LoopId>,
+            body: RowBody,
+        ) -> Arc<TranscriptRow> {
+            Arc::new(TranscriptRow {
+                id: RowId::new(id),
+                ordinal: id,
+                loop_id,
+                time: None,
+                body,
+            })
+        }
+
+        fn thinking() -> RowBody {
+            RowBody::Thinking(ThinkingRow {
+                markdown: Arc::from("thinking"),
+                status: RowStatus::Success,
+                duration_ms: None,
+            })
+        }
+
+        fn tool_plan(tool_id: &str) -> RowBody {
+            RowBody::Plan(PlanRow {
+                title: Arc::from("plan"),
+                steps: Arc::from([PlanStep {
+                    tool_id: Some(Arc::from(tool_id)),
+                    label: Arc::from("run"),
+                    status: RowStatus::Success,
+                    detail: None,
+                }]),
+            })
+        }
+
+        fn tool_group(loop_id: tact_desktop_core::LoopId, id: u64, tool_id: &str) -> RowBody {
+            RowBody::ToolGroup(ToolGroupRow {
+                loop_id,
+                items: Arc::from([ToolGroupItem::Tool(ToolRow {
+                    id: RowId::new(id + 100),
+                    tool_id: Arc::from(tool_id),
+                    name: Arc::from("bash"),
+                    arg_summary: Arc::from("echo hi"),
+                    arg_full: None,
+                    status: RowStatus::Success,
+                    body: ToolBody::None,
+                    output: ToolOutputView::default(),
+                    meta: ToolMetaView::default(),
+                    subagent: None,
+                    expanded: false,
+                    keep_live: false,
+                    destructive: false,
+                    duration_ms: None,
+                })]),
+                summary: Arc::from("bash"),
+                collapsed: true,
+                collapse_override: None,
+            })
+        }
+
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(1200.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let demo = tact_desktop_core::fixtures::demo_transcript();
+                let loop_id = demo
+                    .iter()
+                    .find_map(|row| match &row.body {
+                        RowBody::ToolGroup(group) => Some(group.loop_id),
+                        _ => None,
+                    })
+                    .expect("demo tool group");
+                let rows = vec![
+                    row(0, Some(loop_id), thinking()),
+                    row(1, Some(loop_id), tool_plan("tool-1")),
+                    row(2, Some(loop_id), tool_group(loop_id, 2, "tool-1")),
+                    row(3, Some(loop_id), thinking()),
+                    row(4, Some(loop_id), tool_plan("tool-2")),
+                    row(5, Some(loop_id), tool_group(loop_id, 5, "tool-2")),
+                    row(
+                        6,
+                        Some(loop_id),
+                        RowBody::Assistant(AssistantRow {
+                            markdown: Arc::from("answer"),
+                            status: RowStatus::Success,
+                            suggestions: Arc::from(Vec::<Arc<str>>::new()),
+                        }),
+                    ),
+                ];
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = TranscriptView::from_rows(rows);
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        let groups = window.update(|_, cx| {
+            root.read(cx)
+                .transcript_scroller
+                .read(cx)
+                .process_groups
+                .clone()
+        });
+        assert_eq!(
+            groups.len(),
+            1,
+            "hidden tool plans must not split the activity group"
+        );
+        assert_eq!(groups[0].thoughts, 2);
+        assert_eq!(groups[0].commands, 2);
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
     }
 
     #[gpui::test]

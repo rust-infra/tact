@@ -8,8 +8,8 @@ use std::{rc::Rc, time::Duration};
 
 use gpui::{
     Animation, AnimationExt as _, App, ClickEvent, ElementId, InteractiveElement as _, IntoElement,
-    ParentElement as _, RenderOnce, Role, SharedString, StatefulInteractiveElement as _, Styled,
-    Window, div, prelude::FluentBuilder as _, px,
+    ObjectFit, ParentElement as _, RenderOnce, Role, SharedString, StatefulInteractiveElement as _,
+    Styled, StyledImage as _, Window, div, img, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, progress::ProgressCircle,
@@ -765,6 +765,7 @@ impl RenderOnce for Toggle {
 pub struct AttachmentItem {
     id: SharedString,
     name: SharedString,
+    image: Option<std::path::PathBuf>,
     size_bytes: Option<u64>,
 }
 
@@ -773,12 +774,19 @@ impl AttachmentItem {
         Self {
             id: id.into(),
             name: name.into(),
+            image: None,
             size_bytes: None,
         }
     }
 
     pub fn size_bytes(mut self, size_bytes: u64) -> Self {
         self.size_bytes = Some(size_bytes);
+        self
+    }
+
+    /// The source used to render an image thumbnail instead of the file name.
+    pub fn image(mut self, source: impl Into<std::path::PathBuf>) -> Self {
+        self.image = Some(source.into());
         self
     }
 
@@ -789,6 +797,20 @@ impl AttachmentItem {
     pub fn name(&self) -> &SharedString {
         &self.name
     }
+
+    pub fn image_source(&self) -> Option<&std::path::PathBuf> {
+        self.image.as_ref()
+    }
+}
+
+pub fn is_image_path(path: &std::path::Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| extension.to_ascii_lowercase())
+            .as_deref(),
+        Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tif" | "tiff" | "heic")
+    )
 }
 
 /// An interaction emitted by [`AttachmentStrip`].
@@ -854,6 +876,7 @@ impl RenderOnce for AttachmentStrip {
             .gap_1();
         for item in self.items {
             let id = item.id.clone();
+            let image = item.image.clone();
             let event = if self.removable {
                 AttachmentEvent::Removed { id: id.clone() }
             } else {
@@ -871,23 +894,34 @@ impl RenderOnce for AttachmentStrip {
                 .border_1()
                 .border_color(cx.theme().border)
                 .bg(cx.theme().popover)
-                .px_2()
-                .py(px(2.))
-                .child(
+                .when(image.is_some(), |chip| chip.p(px(2.)))
+                .when(image.is_none(), |chip| chip.px_2().py(px(2.)));
+            chip = if let Some(source) = image {
+                chip.child(
+                    div()
+                        .flex_none()
+                        .size(px(32.))
+                        .overflow_hidden()
+                        .rounded(px(4.))
+                        .child(img(source).size_full().object_fit(ObjectFit::Cover)),
+                )
+            } else {
+                chip.child(
                     Icon::new(IconName::File)
                         .xsmall()
                         .text_color(cx.theme().muted_foreground),
                 )
                 .child(div().text_xs().child(item.name.clone()))
-                .when_some(item.size_bytes, |chip, size| {
-                    chip.child(
-                        div()
-                            .font_family(cx.theme().mono_font_family.clone())
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format_bytes(size)),
-                    )
-                });
+            };
+            chip = chip.when_some(item.size_bytes, |chip, size| {
+                chip.child(
+                    div()
+                        .font_family(cx.theme().mono_font_family.clone())
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(format_bytes(size)),
+                )
+            });
             if let Some(handler) = handler {
                 chip = chip
                     .cursor_pointer()
@@ -964,5 +998,21 @@ fn format_bytes(bytes: u64) -> String {
         format!("{:.0} KB", bytes / KIB)
     } else {
         format!("{bytes:.0} B")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::is_image_path;
+
+    #[test]
+    fn image_attachments_are_detected_by_extension() {
+        assert!(is_image_path(Path::new("shot.PNG")));
+        assert!(is_image_path(Path::new("a/b/photo.jpeg")));
+        assert!(is_image_path(Path::new("anim.webp")));
+        assert!(!is_image_path(Path::new("notes.md")));
+        assert!(!is_image_path(Path::new("Makefile")));
     }
 }

@@ -150,6 +150,15 @@ impl FilterDefinition {
     }
 }
 
+/// How a filter-table row was activated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActivationSource {
+    Enter,
+    Space,
+    Click,
+    Open,
+}
+
 /// An interaction emitted by [`FilterTable`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[allow(clippy::enum_variant_names)]
@@ -165,6 +174,7 @@ pub enum FilterTableEvent {
     ActivationRequested {
         id: SharedString,
         row_id: SharedString,
+        source: ActivationSource,
     },
     SortRequested {
         id: SharedString,
@@ -281,6 +291,10 @@ impl FilterTable {
             self.selected_row = None;
         }
         cx.notify();
+    }
+
+    pub fn row_count(&self) -> usize {
+        self.rows.len()
     }
 
     pub fn set_selected_row(
@@ -534,6 +548,7 @@ impl Render for FilterTable {
                             cx.emit(FilterTableEvent::ActivationRequested {
                                 id: open_id.clone(),
                                 row_id: open_row.clone(),
+                                source: ActivationSource::Open,
                             });
                             cx.stop_propagation();
                             cx.notify();
@@ -549,12 +564,18 @@ impl Render for FilterTable {
                         cx.emit(FilterTableEvent::ActivationRequested {
                             id: activate_id.clone(),
                             row_id: activate_row.clone(),
+                            source: ActivationSource::Click,
                         });
                     }
                     cx.notify();
                 }))
                 .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
                     if event.keystroke.key == "enter" || event.keystroke.key == "space" {
+                        let source = if event.keystroke.key == "enter" {
+                            ActivationSource::Enter
+                        } else {
+                            ActivationSource::Space
+                        };
                         this.selected_row = Some(key_row.clone());
                         cx.emit(FilterTableEvent::SelectionRequested {
                             id: key_id.clone(),
@@ -563,6 +584,7 @@ impl Render for FilterTable {
                         cx.emit(FilterTableEvent::ActivationRequested {
                             id: key_activate_id.clone(),
                             row_id: key_activate_row.clone(),
+                            source,
                         });
                         cx.stop_propagation();
                         cx.notify();

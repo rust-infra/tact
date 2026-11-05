@@ -10,10 +10,7 @@ pub fn balance_markdown(
 ) -> String {
     match account {
         Some(AccountView::Balance { currency, total }) => {
-            format!(
-                "# {}\n\n**{total} {currency}**",
-                i18n::text(locale, TextKey::Balance)
-            )
+            format!("**{total} {currency}**")
         }
         Some(AccountView::UsageQuota {
             plan,
@@ -21,8 +18,7 @@ pub fn balance_markdown(
             limit,
             resets_at,
         }) => format!(
-            "# {}\n\n- {}: {}\n- {}: {}\n- {}: {}\n- {}: {}",
-            i18n::text(locale, TextKey::Balance),
+            "- {}: {}\n- {}: {}\n- {}: {}\n- {}: {}",
             i18n::text(locale, TextKey::Plan),
             plan.as_deref().unwrap_or("—"),
             i18n::text(locale, TextKey::Used),
@@ -35,15 +31,8 @@ pub fn balance_markdown(
             i18n::text(locale, TextKey::Resets),
             resets_at.as_deref().unwrap_or("—")
         ),
-        Some(AccountView::Error(error)) => format!(
-            "# {}\n\n{error}",
-            i18n::text(locale, TextKey::BalanceUnavailable)
-        ),
-        None => format!(
-            "# {}\n\n{}",
-            i18n::text(locale, TextKey::Balance),
-            i18n::text(locale, TextKey::QueryingAccount)
-        ),
+        Some(AccountView::Error(error)) => format!("{error}"),
+        None => i18n::text(locale, TextKey::QueryingAccount).to_string(),
     }
 }
 

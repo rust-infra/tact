@@ -704,6 +704,11 @@ pub fn capture_all(out: &Path) -> Result<Vec<PathBuf>> {
     shoot(&mut harness, "40-help")?;
     harness.with_root(|root, _, cx| root.capture_close_overlay(cx));
 
+    let icon = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/app-icon.png");
+    harness.with_root(|root, _, cx| root.capture_attach_image(icon, cx));
+    shoot(&mut harness, "39b-attachment-thumbnail")?;
+    harness.with_root(|root, _, cx| root.capture_clear_attachments(cx));
+
     harness.simulate_keystrokes("tab");
     shoot(&mut harness, "39-focus-visible")?;
 

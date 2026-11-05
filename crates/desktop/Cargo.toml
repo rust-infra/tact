@@ -65,4 +65,5 @@ embed-resource = "3"
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
 tact_desktop_core = { version = "2.0.0", path = "../desktop_core", features = ["ui-capture"] }
+tact_host = { version = "2.0.0", path = "../tact_host" }
 tact_protocol = { version = "2.0.0", path = "../protocol" }

@@ -238,13 +238,19 @@ impl StatsLine {
     /// used count and a window size. Each is omitted rather than fabricated.
     pub fn new(summary: TrajectorySummary, labels: StatsLabels) -> Self {
         let steps: usize = summary.records;
+        let turn_label = if summary.turns == 1 {
+            labels.turn
+        } else {
+            labels.turns
+        };
+        let step_label = if steps == 1 {
+            labels.step
+        } else {
+            labels.steps
+        };
         Self {
-            turns: (summary.turns > 0 || steps > 0).then(|| {
-                format!(
-                    "{} {} {steps} {}",
-                    summary.turns, labels.turns, labels.steps
-                )
-            }),
+            turns: (summary.turns > 0 || steps > 0)
+                .then(|| format!("{} {} {steps} {}", summary.turns, turn_label, step_label)),
             rate: throughput(
                 summary.input_tokens + summary.output_tokens,
                 summary.measured_ms,
@@ -281,7 +287,9 @@ impl StatsLine {
 /// The localized words the footer needs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StatsLabels {
+    pub turn: &'static str,
     pub turns: &'static str,
+    pub step: &'static str,
     pub steps: &'static str,
     pub tokens: &'static str,
     pub cache_hit: &'static str,
@@ -478,7 +486,9 @@ mod tests {
     }
 
     const LABELS: StatsLabels = StatsLabels {
+        turn: "turn",
         turns: "turns",
+        step: "step",
         steps: "steps",
         tokens: "tok",
         cache_hit: "Cache hit",
@@ -493,6 +503,19 @@ mod tests {
         assert_eq!(line.tokens, None);
         assert_eq!(line.cache, None);
         assert_eq!(line.context, None);
+    }
+
+    #[test]
+    fn one_turn_and_one_step_use_singular_labels() {
+        let line = StatsLine::new(
+            TrajectorySummary {
+                turns: 1,
+                records: 1,
+                ..TrajectorySummary::default()
+            },
+            LABELS,
+        );
+        assert_eq!(line.turns.as_deref(), Some("1 turn 1 step"));
     }
 
     #[test]

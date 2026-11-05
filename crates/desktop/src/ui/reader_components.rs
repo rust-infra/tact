@@ -602,7 +602,7 @@ impl RenderOnce for ArtifactPanel {
 #[derive(IntoElement)]
 pub struct InsightCard {
     id: SharedString,
-    title: SharedString,
+    title: Option<SharedString>,
     body: Option<SharedString>,
 }
 
@@ -610,7 +610,15 @@ impl InsightCard {
     pub fn new(id: impl Into<SharedString>, title: impl Into<SharedString>) -> Self {
         Self {
             id: id.into(),
-            title: title.into(),
+            title: Some(title.into()),
+            body: None,
+        }
+    }
+
+    pub fn untitled(id: impl Into<SharedString>) -> Self {
+        Self {
+            id: id.into(),
+            title: None,
             body: None,
         }
     }
@@ -636,7 +644,9 @@ impl RenderOnce for InsightCard {
             .border_color(cx.theme().border)
             .bg(cx.theme().popover)
             .p_3()
-            .child(div().text_sm().font_semibold().child(self.title))
+            .when_some(self.title, |card, title| {
+                card.child(div().text_sm().font_semibold().child(title))
+            })
             .when_some(self.body, |card, body| {
                 card.child(
                     TextView::markdown(ElementId::Name(format!("{}-body", self.id).into()), body)

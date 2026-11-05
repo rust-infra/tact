@@ -9077,6 +9077,7 @@ dependencies = [
  "serde_json",
  "tact_catalog",
  "tact_desktop_core",
+ "tact_host",
  "tact_protocol",
  "unicode-width",
  "windows 0.61.3",

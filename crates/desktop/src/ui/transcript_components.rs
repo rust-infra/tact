@@ -18,6 +18,9 @@ use tact_desktop_core::RowStatus;
 
 type EventHandler<E> = Rc<dyn Fn(&E, &mut Window, &mut App)>;
 
+/// Inline tool bodies are previews. The reader owns the full output.
+const TOOL_BODY_MAX_HEIGHT: f32 = 300.;
+
 /// The lifecycle of streamed content.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StreamState {
@@ -556,7 +559,18 @@ impl RenderOnce for ToolCall {
             .min_w_0()
             .child(header)
             .when(self.open, |column| {
-                let mut body = v_flex().w_full().min_w_0().gap_1().px_2().pb_2();
+                let mut body = v_flex()
+                    .debug_selector({
+                        let id = self.id.clone();
+                        move || format!("tool-call-body-{id}")
+                    })
+                    .w_full()
+                    .min_w_0()
+                    .max_h(px(TOOL_BODY_MAX_HEIGHT))
+                    .overflow_hidden()
+                    .gap_1()
+                    .px_2()
+                    .pb_2();
                 if let Some(input) = self.input {
                     body = body.child(
                         v_flex()
@@ -802,6 +816,23 @@ mod tests {
         }
     }
 
+    struct LongToolProbe;
+
+    impl Render for LongToolProbe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let long = (0..120)
+                .map(|line| format!("line {line}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            div().w(px(800.)).child(
+                ToolCall::new("long-tool", "bash")
+                    .input(long.clone())
+                    .output(long)
+                    .open(true),
+            )
+        }
+    }
+
     #[gpui::test]
     fn one_tool_group_hides_the_redundant_count(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
@@ -815,6 +846,22 @@ mod tests {
         assert!(
             window.debug_bounds("tool-group-count-multi").is_some(),
             "multi-tool groups keep their count"
+        );
+    }
+
+    #[gpui::test]
+    fn an_expanded_tool_body_is_a_bounded_preview(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (_probe, window) = cx.add_window_view(|_, _| LongToolProbe);
+        window.simulate_resize(size(px(800.), px(1200.)));
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        let body = window
+            .debug_bounds("tool-call-body-long-tool")
+            .expect("long tool body");
+        assert!(
+            body.size.height <= px(TOOL_BODY_MAX_HEIGHT),
+            "tool body {:?} must stay a preview",
+            body.size.height
         );
     }
 

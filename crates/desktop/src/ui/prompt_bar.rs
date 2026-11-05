@@ -4,13 +4,13 @@ use std::rc::Rc;
 
 use gpui::{
     Anchor, AnyElement, App, AppContext as _, ClickEvent, Context, ElementId, Entity, EventEmitter,
-    FocusHandle, Focusable as _, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    Role, SharedString, StatefulInteractiveElement as _, Styled, Subscription, Window, div,
-    prelude::FluentBuilder as _, px,
+    FocusHandle, Focusable as _, InteractiveElement as _, IntoElement, ObjectFit,
+    ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _, Styled,
+    StyledImage as _, Subscription, Window, div, img, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, h_flex,
-    input::{InputEvent, InputState, Textarea, TextareaState},
+    input::{InputEvent, InputState, Position, Textarea, TextareaState},
     popover::Popover,
     v_flex,
 };
@@ -401,9 +401,7 @@ impl PromptBar {
         };
         let start = draft.len() - token.len() - 1;
         let next = format!("{}@{} ", &draft[..start], mention.label());
-        self.editor
-            .update(cx, |editor, cx| editor.set_value(next, window, cx));
-        self.last_draft = self.editor.read(cx).value();
+        self.set_draft_at_end(next, window, cx);
         cx.emit(PromptBarEvent::MentionSelected {
             id: self.id.clone(),
             mention_id: mention.id().clone(),
@@ -546,8 +544,31 @@ impl PromptBar {
         cx.notify();
     }
 
+    /// Replace the draft and leave the caret after the inserted text.
+    ///
+    /// `TextareaState::set_value` clears the selection for multi-line inputs
+    /// without moving the caret, so a slash suggestion inserted over `/`
+    /// would leave the caret between `/` and the command name.
+    pub fn set_draft_at_end(
+        &mut self,
+        draft: impl Into<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_draft(draft, window, cx);
+        self.editor.update(cx, |editor, cx| {
+            let end = end_position(editor.value().as_ref());
+            editor.set_cursor_position(end, window, cx);
+        });
+    }
+
     pub fn draft(&self, cx: &App) -> SharedString {
         self.editor.read(cx).value()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cursor(&self, cx: &App) -> usize {
+        self.editor.read(cx).cursor()
     }
 
     pub fn focus(&self, window: &mut Window, cx: &mut App) {
@@ -581,6 +602,20 @@ fn mention_token(draft: &str) -> Option<&str> {
     let at = draft.rfind('@')?;
     let token = &draft[at + 1..];
     (!token.chars().any(char::is_whitespace)).then_some(token)
+}
+
+fn end_position(text: &str) -> Position {
+    let mut line = 0;
+    let mut column = 0;
+    for character in text.chars() {
+        if character == '\n' {
+            line += 1;
+            column = 0;
+        } else {
+            column += 1;
+        }
+    }
+    Position::new(line, column)
 }
 
 impl Render for PromptBar {
@@ -874,36 +909,61 @@ impl Render for PromptBar {
         let mut attachments = h_flex().flex_wrap().gap_1();
         for attachment in &self.attachments {
             let id = attachment.id().clone();
-            attachments = attachments.child(
-                h_flex()
-                    .id(ElementId::Name(format!("prompt-attachment-{id}").into()))
+            let image = attachment.image_source().cloned();
+            let mut chip = h_flex()
+                .id(ElementId::Name(format!("prompt-attachment-{id}").into()))
+                .role(Role::Group)
+                .aria_label(attachment.name().clone())
+                .items_center()
+                .gap_1()
+                .rounded(px(6.))
+                .border_1()
+                .border_color(cx.theme().border)
+                .text_xs()
+                .when(image.is_some(), |chip| chip.p(px(2.)))
+                .when(image.is_none(), |chip| chip.px_2().py(px(2.)));
+            if let Some(source) = image {
+                let thumb_id = id.clone();
+                chip = chip.child(
+                    div()
+                        .id(ElementId::Name(
+                            format!("prompt-attachment-thumb-{id}").into(),
+                        ))
+                        .debug_selector(move || format!("prompt-attachment-thumb-{thumb_id}"))
+                        .flex_none()
+                        .size(px(32.))
+                        .overflow_hidden()
+                        .rounded(px(4.))
+                        .bg(cx.theme().muted)
+                        .child(img(source).size_full().object_fit(ObjectFit::Cover)),
+                );
+            } else {
+                chip = chip.child(attachment.name().clone());
+            }
+            chip = chip.child(
+                div()
+                    .id(ElementId::Name(
+                        format!("prompt-attachment-remove-{id}").into(),
+                    ))
+                    .cursor_pointer()
+                    .flex()
                     .items_center()
-                    .gap_1()
-                    .rounded(px(5.))
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .px_2()
-                    .py(px(2.))
-                    .text_xs()
-                    .child(attachment.name().clone())
-                    .child(
-                        div()
-                            .id(ElementId::Name(
-                                format!("prompt-attachment-remove-{id}").into(),
-                            ))
-                            .cursor_pointer()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("×")
-                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                this.attachments.retain(|item| item.id() != &id);
-                                cx.emit(PromptBarEvent::AttachmentRemoved {
-                                    id: this.id.clone(),
-                                    attachment_id: id.clone(),
-                                });
-                                cx.notify();
-                            })),
-                    ),
+                    .justify_center()
+                    .size(px(18.))
+                    .rounded_full()
+                    .hover(|style| style.bg(cx.theme().muted))
+                    .text_color(cx.theme().muted_foreground)
+                    .child("×")
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.attachments.retain(|item| item.id() != &id);
+                        cx.emit(PromptBarEvent::AttachmentRemoved {
+                            id: this.id.clone(),
+                            attachment_id: id.clone(),
+                        });
+                        cx.notify();
+                    })),
             );
+            attachments = attachments.child(chip);
         }
         v_flex()
             .id(ElementId::Name(self.id.clone()))
@@ -1003,5 +1063,59 @@ impl Render for PromptBar {
                     ),
             )
             .child(footer)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::TestAppContext;
+
+    #[gpui::test]
+    fn set_draft_at_end_moves_the_caret_past_the_insertion(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (prompt, window) =
+            cx.add_window_view(|window, cx| PromptBar::new("prompt", window, cx));
+        window.update(|window, cx| window.draw(cx).clear(cx));
+
+        window.update(|window, cx| {
+            prompt.update(cx, |prompt, cx| {
+                prompt.editor.update(cx, |editor, cx| {
+                    editor.set_value("/", window, cx);
+                    editor.set_cursor_position(Position::new(0, 1), window, cx);
+                });
+
+                prompt.set_draft_at_end("/skill ", window, cx);
+
+                assert_eq!(prompt.draft(cx).as_ref(), "/skill ");
+                assert_eq!(prompt.cursor(cx), "/skill ".len());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn image_attachments_render_as_thumbnails(cx: &mut TestAppContext) {
+        use std::path::PathBuf;
+
+        cx.update(gpui_component::init);
+        let icon = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/app-icon.png");
+        let (prompt, window) =
+            cx.add_window_view(|window, cx| PromptBar::new("prompt", window, cx));
+        window.update(|window, cx| {
+            prompt.update(cx, |prompt, cx| {
+                prompt.set_attachments(
+                    vec![AttachmentItem::new("image-test", "app-icon.png").image(icon)],
+                    cx,
+                );
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        assert!(
+            window
+                .debug_bounds("prompt-attachment-thumb-image-test")
+                .is_some(),
+            "an image attachment must render a thumbnail"
+        );
     }
 }
