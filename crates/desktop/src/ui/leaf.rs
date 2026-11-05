@@ -781,6 +781,14 @@ impl AttachmentItem {
         self.size_bytes = Some(size_bytes);
         self
     }
+
+    pub fn id(&self) -> &SharedString {
+        &self.id
+    }
+
+    pub fn name(&self) -> &SharedString {
+        &self.name
+    }
 }
 
 /// An interaction emitted by [`AttachmentStrip`].

@@ -1,5 +1,9 @@
 # Tact Desktop Architecture
 
+> Historical: the `gpui-ai` dependency was removed on 2026-11-05. The
+> component surfaces are now Tact-owned `gpui-component` implementations; see
+> `docs/design/tact-desktop/component-coverage-matrix.md` and `book/26` §37.
+
 > Date: 2026-10-30
 > Status: implemented; verification is tracked by the implementation plan and
 > the repository Rust/book gates.
@@ -56,7 +60,7 @@ the live tail.
 | D7 | Make the mixed transcript a Tact-owned virtualized row model; use real `gpui-ai` components for leaf AI surfaces. |
 | D8 | Group tools by a kernel-provided run/message identity, never by adjacency or wall-clock time. |
 | D9 | Reconcile gates from `UiResponder::snapshot()`, not from one-shot `RequestSelect` events. |
-| D10 | Keep one visible `HostSession` per desktop controller; a session whose run is in flight is parked with its own state and keeps running when another session takes the window, while an idle session is closed. A project switch is a serialized close-then-open transition that closes parked hosts too. |
+| D10 | Keep one visible `HostSession` per desktop controller. Every session left behind is parked with its own state under `(ProjectId, SessionId)`; running hosts keep streaming, and up to six idle hosts form an LRU warm pool whose overflow closes off the switch path. Project switches adopt an already-warm target without closing or scanning first; `CloseProject` and shutdown close the parked pool. |
 | D11 | Treat Tact configuration as process-global for v1. Desktop loads it once; project switching does not reinstall provider settings. Permission mode is always re-applied per session because it is a safety control, not a provider preference. |
 | D12 | Use Light and Dark desktop appearances with shared component geometry and a reduced-motion policy on macOS, Windows, and Linux. |
 | D13 | Split settings into startup-global settings (require a restart) and live session settings (routed through `UserCommand`). A settings surface must show which kind it is. |
@@ -1656,9 +1660,10 @@ Rules:
   with a live request in the new session; the epoch is the discriminator.
 - A switch to a different session clears `pending_gates` and marks every old
   card `Withdrawn` before the new epoch is published; late clicks then fail
-  the epoch check. Returning to a parked session also moves the epoch so the
-  shell rebuilds its row map, but keeps that session's live gate cards: each
-  carries the epoch it was rendered under, and a click on it still matches.
+  the epoch check. Returning to a parked session also moves the epoch; cached
+  row views receive the new snapshot without rebuilding unchanged rows, while
+  gates in that session keep their live state and their next click carries the
+  adopted epoch.
 - A resolved gate keeps its row and collapses its prompt/options to a compact
   summary line.
 - `UiRequestOrigin` supplies the main/subagent and tool attribution. Prompt
@@ -2162,10 +2167,12 @@ The shell is a controlled renderer:
   session rail and inspector become dismissible overlays with a scrim. Text
   scale 125%/150% is a layout test, not an open question.
 
-The transcript view is a virtualized list keyed by `RowId`. It keeps
-`HashMap<RowId, Entity<TranscriptRowView>>` and updates only rows named in
-`StateCommit.dirty_rows`. A session switch replaces the row map only after
-`SessionOpened`; it does not rebuild the transcript for each stream chunk.
+The transcript view is a virtualized list keyed by `(SessionId, RowId)`. It
+keeps at most six sessions of row views, assistant selection surfaces, and
+inline thinking-expansion state; returning to a cached session reuses those
+entities and updates only rows whose `Arc` changed. A session switch no longer
+marks every row dirty, and it does not rebuild the transcript for each stream
+chunk.
 
 ### Keyboard and focus
 
@@ -2309,13 +2316,16 @@ does not reinstall provider settings.
 
 Consequences:
 
-- One visible `HostSession` per controller. Switching sessions parks a run
-  in flight — host, transcript state, queue, and gates — so it keeps going
-  and comes back in place; switching away from an idle session closes it.
-  Parked hosts are drained on the actor's tick with no commit reaching the
-  shell.
-- Project switching is close-then-open; two projects never own live Agents at
-  the same time, and the project being left closes its parked hosts.
+- One visible `HostSession` per controller. Leaving any session parks its
+  host, transcript state, queue, and gates. A running host keeps consuming
+  its events; idle hosts enter an LRU warm pool capped at six, and overflow
+  closes in a background task instead of blocking the switch. Parked hosts
+  are drained on the actor's tick with no commit reaching the shell.
+- Project switching parks the visible host and then either adopts a warm
+  `(project, session)` host or starts the target host. It is no longer a
+  serialized close-then-open, so both the source and target project can keep
+  parked hosts; only `CloseProject`, project removal, and shutdown tear a
+  project's hosts down.
 - Project-local `config.toml` is not hot-reloaded during the app lifetime. The
   app-level config path and overrides are the source for the session.
 - A future per-session configuration refactor is required before project-local
@@ -2383,8 +2393,9 @@ Candidate 1's stronger transcript identity contract.
 - We accept title derivation as a first-user-prompt heuristic; manual rename
   remains authoritative.
 - We accept one *visible* session per controller in exchange for a simple,
-  auditable lock and teardown lifecycle; keeping a run alive across a switch
-  costs one extra parked `HostSession` per session left mid-run.
+  auditable lock and teardown lifecycle. Running hosts stay parked for as long
+  as they run; at most six idle hosts stay warm, and older idle hosts close in
+  the background.
 - We accept process-global Tact configuration for v1 and document the
   project-local config limitation.
 

@@ -40,7 +40,6 @@ tact_catalog = { version = "2.0.0", path = "../catalog" }
 tact_desktop_core = { version = "2.0.0", path = "../desktop_core" }
 unicode-width = { workspace = true }
 gpui = { workspace = true }
-gpui-ai = { workspace = true }
 gpui_base = { workspace = true }
 gpui_component = { workspace = true }
 gpui_component_assets = { workspace = true }

@@ -1,11 +1,12 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     sync::{Arc, RwLock},
     time::{Duration, Instant},
 };
 
 use chrono::Utc;
+use tact_agent_api::AgentMessage;
 use tact_catalog::{CommandArguments, CommandId, SettingId};
 use tact_host::{HostCloseError, HostEvent, TryHostEvent};
 use tact_protocol::{PermissionMode, UserCommand};
@@ -14,8 +15,9 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     AccountView, Appearance, CatalogLocale, DesktopConfig, DesktopEffect, DesktopEvent,
-    DesktopSnapshot, InitialSession, PermissionModeView, ProjectRecord, ProjectRegistry, RequestId,
-    RunPhase, SectionMask, SessionCatalog, SessionId, SessionPhase, StateCommit,
+    DesktopSnapshot, InitialSession, PermissionModeView, ProjectId, ProjectRecord, ProjectRegistry,
+    RequestId, RunPhase, SectionMask, SessionCatalog, SessionId, SessionPhase, SessionSummaryView,
+    StateCommit,
     commands::{CommandRoute, route_command, route_setting},
     error::{DesktopClosed, DesktopShutdownError, DesktopStartError, FailureKind, FailureView},
     intent::{DesktopIntent, GateResponse, ReaderRef, ReaderRequest, SettingValue, Submission},
@@ -25,6 +27,39 @@ use crate::{
 };
 
 const MAX_HOST_EVENTS_PER_DRAIN: usize = 256;
+const SESSION_PRELOAD_PER_PROJECT: usize = 8;
+const SESSION_PRELOAD_MAX: usize = 32;
+const SESSION_WARM_MAX: usize = 6;
+
+type ParkedKey = (ProjectId, String);
+
+fn prefetch_candidates(
+    items: &[SessionSummaryView],
+    current: Option<&str>,
+    parked: &HashSet<String>,
+) -> Vec<(ProjectId, String)> {
+    let mut per_project: HashMap<ProjectId, usize> = HashMap::new();
+    let mut candidates = Vec::new();
+    for session in items {
+        if session.locked
+            || session.message_count <= 0
+            || current == Some(session.id.as_str())
+            || parked.contains(&session.id)
+        {
+            continue;
+        }
+        let count = per_project.entry(session.project_id.clone()).or_default();
+        if *count >= SESSION_PRELOAD_PER_PROJECT {
+            continue;
+        }
+        *count += 1;
+        candidates.push((session.project_id.clone(), session.id.clone()));
+        if candidates.len() >= SESSION_PRELOAD_MAX {
+            break;
+        }
+    }
+    candidates
+}
 
 fn localized(locale: CatalogLocale, en: &'static str, zh: &'static str) -> &'static str {
     match locale {
@@ -220,6 +255,12 @@ enum ControllerMessage {
         main: Vec<String>,
         subagent: Vec<String>,
     },
+    SessionPrefetched {
+        project_id: ProjectId,
+        session_id: String,
+        messages: Result<Vec<AgentMessage>, String>,
+        history: Result<Vec<String>, String>,
+    },
 }
 
 impl DesktopController {
@@ -377,7 +418,10 @@ struct DesktopActor {
     state: DesktopState,
     registry: ProjectRegistry,
     project: Option<ProjectRecord>,
-    catalog: Option<SessionCatalog>,
+    catalog: Option<Arc<SessionCatalog>>,
+    /// One lazily opened catalog per registered project, so the session list
+    /// can group sessions across projects without reopening every database.
+    catalogs: HashMap<ProjectId, Arc<SessionCatalog>>,
     host: Option<Box<dyn HostBackend>>,
     /// The event that woke the actor's select, consumed by the next drain.
     pending_host_event: Option<HostEvent>,
@@ -393,22 +437,54 @@ struct DesktopActor {
     /// Sessions whose run was still alive when another session took the
     /// window. Their hosts keep running and their events keep landing in
     /// their own parked state.
-    parked: HashMap<String, ParkedSession>,
+    parked: HashMap<ParkedKey, ParkedSession>,
     /// True while a parked host's events are being drained into its state.
     /// The shell is showing another session, so nothing may be published.
     parked_drain: bool,
+    /// Store reads for visible idle sessions, keyed by project and session.
+    prefetched: HashMap<(ProjectId, String), PrefetchedSession>,
+    prefetching: HashSet<(ProjectId, String)>,
+    closing: Vec<ClosingHost>,
     /// Cancels in-flight store reads when the shell asks the controller to stop.
     shutdown: tokio_util::sync::CancellationToken,
 }
 
 /// A running session parked behind the visible one.
 struct ParkedSession {
+    project_id: ProjectId,
     host: Box<dyn HostBackend>,
     ui: SessionUiState,
     queue: VecDeque<Submission>,
     restore_failure: Option<FailureView>,
     pending_host_event: Option<HostEvent>,
     host_events_closed: bool,
+    parked_at: Instant,
+}
+
+struct ClosingHost {
+    project_id: ProjectId,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl ParkedSession {
+    fn is_idle(&self) -> bool {
+        self.queue.is_empty()
+            && self.ui.reducer.pending_gates().is_empty()
+            && self.pending_host_event.is_none()
+            && self.ui.runtime.current_phase == RunPhase::Idle
+            && !matches!(
+                self.ui.session.phase,
+                SessionPhase::Running
+                    | SessionPhase::Starting
+                    | SessionPhase::Opening
+                    | SessionPhase::Switching
+            )
+    }
+}
+
+struct PrefetchedSession {
+    messages: Vec<AgentMessage>,
+    history: Option<Vec<String>>,
 }
 
 /// The keyboard-shortcut reader shown by `/help`.
@@ -464,6 +540,7 @@ impl DesktopActor {
             registry,
             project: None,
             catalog: None,
+            catalogs: HashMap::new(),
             host: None,
             pending_host_event: None,
             host_events_closed: false,
@@ -474,6 +551,9 @@ impl DesktopActor {
             voice: None,
             parked: HashMap::new(),
             parked_drain: false,
+            prefetched: HashMap::new(),
+            prefetching: HashSet::new(),
+            closing: Vec::new(),
             shutdown,
         };
         if let Some(settings) = tact::config::try_settings()
@@ -568,6 +648,7 @@ impl DesktopActor {
         loop {
             self.drain_host_events().await;
             self.drain_parked_events().await;
+            self.reap_closing_hosts();
             let host_open = self.host.is_some() && !self.host_events_closed;
             let wake = {
                 let intents = &mut self.intents;
@@ -629,6 +710,15 @@ impl DesktopActor {
                 }
                 false
             }
+            ControllerMessage::SessionPrefetched {
+                project_id,
+                session_id,
+                messages,
+                history,
+            } => {
+                self.accept_prefetched(project_id, session_id, messages, history);
+                false
+            }
             ControllerMessage::WaitIdle(ack) => {
                 self.drain_host_events().await;
                 self.drain_parked_events().await;
@@ -653,13 +743,16 @@ impl DesktopActor {
                     .map_err(|error| format!("{error:?}"))?;
             }
             DesktopIntent::CloseProject { project_id } => {
-                if self.project.as_ref().map(|project| &project.id) == Some(&project_id)
-                    && self.close_host().await.is_ok()
-                {
+                if self.project.as_ref().map(|project| &project.id) == Some(&project_id) {
+                    if self.close_host().await.is_err() {
+                        return Ok(());
+                    }
                     self.close_parked_hosts().await;
                     let epoch = self.state.begin_session_switch();
                     self.project = None;
                     self.catalog = None;
+                    self.prefetched.clear();
+                    self.prefetching.clear();
                     self.state.set_project(None);
                     self.state.sessions.items.clear();
                     self.state.sessions.selected = None;
@@ -668,6 +761,70 @@ impl DesktopActor {
                         phase: SessionPhase::Empty,
                         ..crate::SessionView::default()
                     };
+                    self.publish(true);
+                } else {
+                    self.close_project_parked_hosts(&project_id).await;
+                    self.catalogs.remove(&project_id);
+                    self.prefetched
+                        .retain(|(cached_project, _), _| cached_project != &project_id);
+                    self.prefetching
+                        .retain(|(cached_project, _)| cached_project != &project_id);
+                    self.state
+                        .sessions
+                        .items
+                        .retain(|session| session.project_id != project_id);
+                    self.publish(true);
+                }
+            }
+            DesktopIntent::RemoveProject { project_id } => {
+                let active = self.project.as_ref().map(|project| &project.id) == Some(&project_id);
+                if active && self.close_host().await.is_err() {
+                    return Ok(());
+                }
+                self.close_project_parked_hosts(&project_id).await;
+                if !self
+                    .registry
+                    .remove(&project_id)
+                    .map_err(|error| error.to_string())?
+                {
+                    return Ok(());
+                }
+                self.catalogs.remove(&project_id);
+                self.prefetched
+                    .retain(|(cached_project, _), _| cached_project != &project_id);
+                self.prefetching
+                    .retain(|(cached_project, _)| cached_project != &project_id);
+                self.state
+                    .sessions
+                    .items
+                    .retain(|session| session.project_id != project_id);
+                let remaining = self.registry.records().to_vec();
+                self.state.set_projects(&remaining);
+                if active {
+                    let epoch = self.state.begin_session_switch();
+                    self.project = None;
+                    self.catalog = None;
+                    self.state.sessions.selected = None;
+                    self.state.set_project(None);
+                    self.state.session = crate::SessionView {
+                        epoch,
+                        phase: SessionPhase::Empty,
+                        ..crate::SessionView::default()
+                    };
+                    if let Some(next) = remaining.first().cloned() {
+                        let initial = self
+                            .parked
+                            .keys()
+                            .find(|(candidate, _)| candidate == &next.id)
+                            .map(|(_, session)| InitialSession::Resume(session.clone()))
+                            .unwrap_or(InitialSession::ResumeLast);
+                        self.open_project(next.root, initial)
+                            .await
+                            .map_err(|error| format!("{error:?}"))?;
+                    } else {
+                        self.publish(true);
+                    }
+                } else {
                     self.publish(true);
                 }
             }
@@ -704,6 +861,21 @@ impl DesktopActor {
                 // starting, which is how a few fast clicks turned into a
                 // minute of "Closing".
                 if self.session_switch_in_flight() {
+                    return Ok(());
+                }
+                let target = self
+                    .state
+                    .sessions
+                    .items
+                    .iter()
+                    .find(|session| session.id == session_id.0)
+                    .map(|session| (session.project_id.clone(), session.root_dir.clone()));
+                if let Some((project_id, root)) = target
+                    && self.project.as_ref().map(|project| &project.id) != Some(&project_id)
+                {
+                    self.open_project(root, InitialSession::Resume(session_id.0))
+                        .await
+                        .map_err(|error| format!("{error:?}"))?;
                     return Ok(());
                 }
                 // Move the rail's highlight as soon as the click lands. The
@@ -845,8 +1017,7 @@ impl DesktopActor {
             }
             DesktopIntent::RenameSession { session_id, title } => {
                 let catalog = self
-                    .catalog
-                    .as_ref()
+                    .catalog_for_session(&session_id.0)
                     .ok_or_else(|| "no project open".to_string())?;
                 catalog
                     .rename(&session_id.0, &title)
@@ -860,15 +1031,14 @@ impl DesktopActor {
             }
             DesktopIntent::SetSessionQuery(query) => {
                 self.state.set_query(query);
-                self.refresh_sessions().await?;
+                self.publish_rows(Vec::new(), SectionMask::SESSION);
             }
             DesktopIntent::SetSessionArchived {
                 session_id,
                 archived,
             } => {
                 let catalog = self
-                    .catalog
-                    .as_ref()
+                    .catalog_for_session(&session_id.0)
                     .ok_or_else(|| "no project open".to_string())?;
                 catalog
                     .set_archived(&session_id.0, archived)
@@ -957,31 +1127,29 @@ impl DesktopActor {
         root: PathBuf,
         initial: InitialSession,
     ) -> Result<(), DesktopStartError> {
-        if self.host.is_some()
-            && let Err(error) = self.close_host().await
-        {
-            return Err(DesktopStartError::Runtime(format!(
-                "active session did not close: {error}"
-            )));
-        }
-        // Parked hosts belong to the project that is being left; a session id
-        // from another project cannot be resumed here.
-        self.close_parked_hosts().await;
         let project = self
             .registry
             .register(root)
             .map_err(|error| DesktopStartError::Config(error.to_string()))?;
+        let target = match &initial {
+            InitialSession::Resume(session_id) => Some((project.id.clone(), session_id.clone())),
+            _ => None,
+        };
+        self.leave_current_session()
+            .await
+            .map_err(|error| DesktopStartError::Runtime(error.to_string()))?;
         self.state.set_projects(self.registry.records());
         self.state.begin_session_switch();
-        // A project switch replaces the catalog: none of the previous
-        // project's rows may stay on screen while the new list loads.
-        self.state.sessions.items.clear();
         self.state.sessions.selected = None;
         self.clear_queue();
         self.state.set_project(Some(&project));
-        self.catalog = Some(SessionCatalog::new(project.clone()));
+        let catalog = self
+            .catalogs
+            .entry(project.id.clone())
+            .or_insert_with(|| Arc::new(SessionCatalog::new(project.clone())))
+            .clone();
+        self.catalog = Some(catalog);
         self.project = Some(project.clone());
-        self.refresh_sessions_inner().await?;
         if !project.available {
             self.state.session.phase = SessionPhase::Failed {
                 reason: Arc::from(localized(
@@ -1004,6 +1172,18 @@ impl DesktopActor {
             self.publish(true);
             return Ok(());
         }
+        if let Some(key) = target
+            && let Some(parked) = self.parked.remove(&key)
+        {
+            let session_id = key.1;
+            self.adopt_session(parked, session_id);
+            self.publish(true);
+            return Ok(());
+        }
+        // A cold start needs the project's catalog before the host can restore
+        // its transcript. Warm adoption above returns before this read, so a
+        // repeated cross-project switch never pays for the store scan.
+        self.refresh_sessions_inner().await?;
         self.start_host(&project, initial).await?;
         self.publish(true);
         Ok(())
@@ -1011,14 +1191,13 @@ impl DesktopActor {
 
     /// Whether a session start is still running.
     ///
-    /// A switch begins by closing the host that is already up, so one that
-    /// arrives while another is starting would close a session that is still
-    /// coming up — and each queued click adds another drain wait. The actor
-    /// drops those instead of queueing them; one deliberate switch is quick,
-    /// and a queue of them looks exactly like a freeze. A teardown that is
-    /// already underway is deliberately not covered: closing is retryable,
-    /// and another switch is the only way out of a close that is taking too
-    /// long.
+    /// A switch moves the visible host aside and then starts the target. One
+    /// that arrives while another target is still starting would park a
+    /// half-started session and stack more work behind it. The actor drops
+    /// those instead of queueing them; one deliberate switch is quick, and a
+    /// queue of them looks exactly like a freeze. A teardown that is already
+    /// underway is deliberately not covered: closing is retryable, and another
+    /// switch is the only way out of a close that is taking too long.
     fn session_switch_in_flight(&self) -> bool {
         matches!(
             self.state.session.phase,
@@ -1031,15 +1210,19 @@ impl DesktopActor {
             .project
             .clone()
             .ok_or_else(|| "no project open".to_string())?;
+        let parked_key = match &initial {
+            InitialSession::Resume(session_id) => Some((project.id.clone(), session_id.clone())),
+            _ => None,
+        };
         // Returning to a session that was left running restores it in place:
         // starting a second host for the same id would collide with the
         // session lock and lose the run.
-        if let InitialSession::Resume(session_id) = &initial
-            && self.parked.contains_key(session_id)
+        if let Some(parked_key) = parked_key
+            && self.parked.contains_key(&parked_key)
         {
             self.leave_current_session().await?;
-            if let Some(parked) = self.parked.remove(session_id) {
-                self.adopt_session(parked, session_id.clone());
+            if let Some(parked) = self.parked.remove(&parked_key) {
+                self.adopt_session(parked, parked_key.1.clone());
                 self.publish(true);
                 return Ok(());
             }
@@ -1056,53 +1239,84 @@ impl DesktopActor {
 
     /// Takes the visible session's host out of the window without ending it.
     ///
-    /// A run in flight is parked with its state and keeps consuming its own
-    /// events; an idle host is closed as before so no session keeps a process
-    /// alive for nothing.
+    /// Running and idle hosts enter the same project-keyed warm pool. Idle
+    /// hosts beyond the pool limit close in a detached task so the switch path
+    /// never waits for a host drain.
     async fn leave_current_session(&mut self) -> Result<(), String> {
         let Some(host) = self.host.take() else {
             return Ok(());
         };
+        let project_id = self
+            .project
+            .as_ref()
+            .map(|project| project.id.clone())
+            .ok_or_else(|| "no project open".to_string())?;
         let session_id = host.session_id().to_string();
-        let keep_running = matches!(
-            self.state.session.phase,
-            SessionPhase::Running
-                | SessionPhase::Starting
-                | SessionPhase::Opening
-                | SessionPhase::Switching
-        ) || self.state.runtime.current_phase != RunPhase::Idle
-            || !self.queue.is_empty();
-        if keep_running {
-            self.parked.insert(
-                session_id,
-                ParkedSession {
-                    host,
-                    ui: self.state.take_session_ui(),
-                    queue: std::mem::take(&mut self.queue),
-                    restore_failure: self.restore_failure.take(),
-                    pending_host_event: self.pending_host_event.take(),
-                    host_events_closed: self.host_events_closed,
-                },
-            );
-            self.host_events_closed = false;
-            return Ok(());
-        }
-        self.host = Some(host);
-        self.close_host()
-            .await
-            .map_err(|error| format!("active session did not close: {error}"))
+        self.parked.insert(
+            (project_id.clone(), session_id),
+            ParkedSession {
+                project_id,
+                host,
+                ui: self.state.take_session_ui(),
+                queue: std::mem::take(&mut self.queue),
+                restore_failure: self.restore_failure.take(),
+                pending_host_event: self.pending_host_event.take(),
+                host_events_closed: self.host_events_closed,
+                parked_at: Instant::now(),
+            },
+        );
+        self.host_events_closed = false;
+        // Eviction waits for the next parked drain. That drain folds events
+        // already queued on the host into its state first, so a just-arrived
+        // gate or stream event cannot be mistaken for an idle host and closed.
+        Ok(())
     }
 
-    /// Puts a parked session back in the window. Its epoch moves so the shell
-    /// rebuilds the row map even though the reducer already holds the rows.
+    fn evict_old_warm_sessions(&mut self) {
+        loop {
+            let idle_count = self
+                .parked
+                .values()
+                .filter(|parked| parked.is_idle())
+                .count();
+            if idle_count <= SESSION_WARM_MAX {
+                return;
+            }
+            let victim = self
+                .parked
+                .iter()
+                .filter(|(_, parked)| parked.is_idle())
+                .min_by_key(|(_, parked)| parked.parked_at)
+                .map(|(key, _)| key.clone());
+            let Some(key) = victim else {
+                return;
+            };
+            let Some(mut parked) = self.parked.remove(&key) else {
+                return;
+            };
+            let project_id = key.0.clone();
+            self.closing.push(ClosingHost {
+                project_id,
+                task: tokio::spawn(async move {
+                    let _ = parked.host.close().await;
+                }),
+            });
+        }
+    }
+
+    /// Puts a parked session back in the window. Its epoch moves so stale gate
+    /// responses and commits are rejected; the shell updates cached row views
+    /// in place because the reducer already holds the rows.
     fn adopt_session(&mut self, parked: ParkedSession, session_id: String) {
         let ParkedSession {
+            project_id: _,
             host,
             mut ui,
             queue,
             restore_failure,
             pending_host_event,
             host_events_closed,
+            parked_at: _,
         } = parked;
         ui.session.epoch = self.state.adopt_session_epoch();
         self.state.put_session_ui(ui);
@@ -1130,22 +1344,24 @@ impl DesktopActor {
         if self.parked.is_empty() {
             return;
         }
-        let ids: Vec<String> = self.parked.keys().cloned().collect();
-        for id in ids {
-            let Some(parked) = self.parked.remove(&id) else {
+        let keys: Vec<ParkedKey> = self.parked.keys().cloned().collect();
+        for key in keys {
+            let Some(parked) = self.parked.remove(&key) else {
                 continue;
             };
             if parked.host_events_closed {
-                self.parked.insert(id, parked);
+                self.parked.insert(key, parked);
                 continue;
             }
             let ParkedSession {
+                project_id,
                 host,
                 ui,
                 queue,
                 restore_failure,
                 pending_host_event,
                 host_events_closed,
+                parked_at,
             } = parked;
             let visible_ui = self.state.take_session_ui();
             let visible_host = self.host.take();
@@ -1180,18 +1396,23 @@ impl DesktopActor {
 
             if let Some(host) = host {
                 self.parked.insert(
-                    id,
+                    key,
                     ParkedSession {
+                        project_id,
                         host,
                         ui,
                         queue,
                         restore_failure,
                         pending_host_event,
                         host_events_closed,
+                        parked_at,
                     },
                 );
             }
         }
+        // A parked run can finish while the window is elsewhere. It becomes
+        // idle at that point, so the warm-pool cap must be enforced again.
+        self.evict_old_warm_sessions();
     }
 
     async fn start_host(
@@ -1215,64 +1436,23 @@ impl DesktopActor {
         self.pending_host_event = None;
         self.host_events_closed = false;
         self.restore_failure = None;
-        let Some(store) = self.catalog.as_ref().and_then(SessionCatalog::store_handle) else {
-            let failure = FailureView {
-                kind: FailureKind::Store,
-                message: Arc::from(localized(
-                    self.state.language,
-                    "Session store is unavailable; the transcript cannot be restored.",
-                    "会话存储不可用，无法恢复对话记录。",
-                )),
-                retryable: true,
-                retry_label: Some(Arc::from(localized(self.state.language, "Retry", "重试"))),
-            };
-            self.restore_failure = Some(failure.clone());
-            self.state.failure = Some(failure);
-            self.state.session.phase = SessionPhase::Failed {
-                reason: Arc::from(localized(
-                    self.state.language,
-                    "Session restore failed",
-                    "会话恢复失败",
-                )),
-            };
-            return Ok(());
-        };
-        let loaded = tokio::select! {
-            loaded = store.load_agent_session(&session_id) => loaded,
-            _ = self.shutdown.cancelled() => return Ok(()),
-        };
-        match loaded {
-            Ok(messages) => {
-                self.state.reducer.seed_persisted(
-                    &messages,
-                    &crate::ReduceContext {
-                        session_epoch: self.state.session.epoch,
-                        show_hook_output: self.state.show_hook_output,
-                    },
-                );
-                let history = tokio::select! {
-                    history = store.load_input_history(&session_id) => history,
-                    _ = self.shutdown.cancelled() => return Ok(()),
-                };
-                if let Ok(history) = history {
-                    self.state.composer.history = history
-                        .into_iter()
-                        .rev()
-                        .map(Arc::from)
-                        .collect::<Vec<_>>()
-                        .into();
-                }
-            }
-            Err(error) => {
+        let (messages, history) = if let Some(cached) = self
+            .prefetched
+            .remove(&(project.id.clone(), session_id.clone()))
+        {
+            (cached.messages, cached.history)
+        } else {
+            let Some(store) = self
+                .catalog
+                .as_ref()
+                .and_then(|catalog| catalog.store_handle())
+            else {
                 let failure = FailureView {
                     kind: FailureKind::Store,
-                    message: Arc::from(format!(
-                        "{}: {error}",
-                        localized(
-                            self.state.language,
-                            "Failed to restore the saved transcript",
-                            "恢复已保存的对话记录失败",
-                        )
+                    message: Arc::from(localized(
+                        self.state.language,
+                        "Session store is unavailable; the transcript cannot be restored.",
+                        "会话存储不可用，无法恢复对话记录。",
                     )),
                     retryable: true,
                     retry_label: Some(Arc::from(localized(self.state.language, "Retry", "重试"))),
@@ -1287,8 +1467,64 @@ impl DesktopActor {
                     )),
                 };
                 return Ok(());
+            };
+            let loaded = tokio::select! {
+                loaded = store.load_agent_session(&session_id) => loaded,
+                _ = self.shutdown.cancelled() => return Ok(()),
+            };
+            let messages = match loaded {
+                Ok(messages) => messages,
+                Err(error) => {
+                    let failure = FailureView {
+                        kind: FailureKind::Store,
+                        message: Arc::from(format!(
+                            "{}: {error}",
+                            localized(
+                                self.state.language,
+                                "Failed to restore the saved transcript",
+                                "恢复已保存的对话记录失败",
+                            )
+                        )),
+                        retryable: true,
+                        retry_label: Some(Arc::from(localized(
+                            self.state.language,
+                            "Retry",
+                            "重试",
+                        ))),
+                    };
+                    self.restore_failure = Some(failure.clone());
+                    self.state.failure = Some(failure);
+                    self.state.session.phase = SessionPhase::Failed {
+                        reason: Arc::from(localized(
+                            self.state.language,
+                            "Session restore failed",
+                            "会话恢复失败",
+                        )),
+                    };
+                    return Ok(());
+                }
+            };
+            let history = tokio::select! {
+                history = store.load_input_history(&session_id) => history,
+                _ = self.shutdown.cancelled() => return Ok(()),
             }
-        }
+            .ok();
+            (messages, history)
+        };
+        self.state.reducer.seed_persisted(
+            &messages,
+            &crate::ReduceContext {
+                session_epoch: self.state.session.epoch,
+                show_hook_output: self.state.show_hook_output,
+            },
+        );
+        self.state.composer.history = history
+            .unwrap_or_default()
+            .into_iter()
+            .rev()
+            .map(Arc::from)
+            .collect::<Vec<_>>()
+            .into();
         self.refresh_sessions_inner().await?;
         if !self
             .state
@@ -1321,53 +1557,190 @@ impl DesktopActor {
             .map_err(|error| format!("{error:?}"))
     }
 
+    fn catalog_for_session(&self, session_id: &str) -> Option<Arc<SessionCatalog>> {
+        let project_id = self
+            .state
+            .sessions
+            .items
+            .iter()
+            .find(|session| session.id == session_id)
+            .map(|session| session.project_id.clone())?;
+        self.catalogs.get(&project_id).cloned()
+    }
+
+    fn prune_prefetched(&mut self) {
+        let current = self.state.session.id.as_ref().map(|id| id.0.clone());
+        let parked: HashSet<String> = self
+            .parked
+            .keys()
+            .map(|(_, session_id)| session_id.clone())
+            .collect();
+        let visible: HashSet<(ProjectId, String)> =
+            prefetch_candidates(&self.state.sessions.items, current.as_deref(), &parked)
+                .into_iter()
+                .collect();
+        self.prefetched.retain(|key, _| visible.contains(key));
+    }
+
+    fn schedule_session_prefetch(&mut self) {
+        self.prune_prefetched();
+        let current = self.state.session.id.as_ref().map(|id| id.0.clone());
+        let parked: HashSet<String> = self
+            .parked
+            .keys()
+            .map(|(_, session_id)| session_id.clone())
+            .collect();
+        for (project_id, session_id) in
+            prefetch_candidates(&self.state.sessions.items, current.as_deref(), &parked)
+        {
+            let key = (project_id.clone(), session_id.clone());
+            if self.prefetched.contains_key(&key) || self.prefetching.contains(&key) {
+                continue;
+            }
+            let Some(store) = self
+                .catalogs
+                .get(&project_id)
+                .and_then(|catalog| catalog.store_handle())
+            else {
+                continue;
+            };
+            self.prefetching.insert(key);
+            let intents = self.intents_tx.clone();
+            let shutdown = self.shutdown.clone();
+            tokio::spawn(async move {
+                let keys = (project_id, session_id);
+                let loaded = async {
+                    let messages = store
+                        .load_agent_session(&keys.1)
+                        .await
+                        .map_err(|error| error.to_string());
+                    let history = store
+                        .load_input_history(&keys.1)
+                        .await
+                        .map_err(|error| error.to_string());
+                    (messages, history)
+                };
+                let result = tokio::select! {
+                    result = loaded => result,
+                    _ = shutdown.cancelled() => return,
+                };
+                let _ = intents.send(ControllerMessage::SessionPrefetched {
+                    project_id: keys.0,
+                    session_id: keys.1,
+                    messages: result.0,
+                    history: result.1,
+                });
+            });
+        }
+    }
+
+    fn accept_prefetched(
+        &mut self,
+        project_id: ProjectId,
+        session_id: String,
+        messages: Result<Vec<AgentMessage>, String>,
+        history: Result<Vec<String>, String>,
+    ) {
+        let key = (project_id.clone(), session_id.clone());
+        self.prefetching.remove(&key);
+        let current = self
+            .state
+            .session
+            .id
+            .as_ref()
+            .is_some_and(|id| id.0 == session_id);
+        let parked = self.parked.contains_key(&key);
+        let visible = self.state.sessions.items.iter().any(|session| {
+            session.project_id == project_id && session.id == session_id && !session.locked
+        });
+        if current || parked || !visible {
+            return;
+        }
+        let Ok(messages) = messages else {
+            return;
+        };
+        self.prefetched.insert(
+            key,
+            PrefetchedSession {
+                messages,
+                history: history.ok(),
+            },
+        );
+        self.prune_prefetched();
+    }
+
     async fn refresh_sessions_inner(&mut self) -> Result<(), DesktopStartError> {
-        if self.catalog.is_none() {
+        let projects = self.registry.records().to_vec();
+        if projects.is_empty() {
             self.state.sessions.items.clear();
+            self.state.sessions.loading = false;
+            self.state.sessions.error = None;
             return Ok(());
         }
         self.state.sessions.loading = true;
         self.publish(false);
         let filter = self.state.sessions.filter;
-        let query = self.state.sessions.query.clone();
-        let result = tokio::select! {
-            result = self
-                .catalog
-                .as_ref()
-                .expect("catalog checked above")
-                .list(filter, &query) => result,
-            _ = self.shutdown.cancelled() => return Ok(()),
-        };
-        match result {
-            Ok(items) => {
-                self.state.set_sessions(items);
-                // The store reports a lock for every session this process
-                // holds. A parked session is ours to reopen, so it must not
-                // read as "open in another window" and be disabled in the
-                // session rail; only locks held elsewhere stay flagged.
-                let owned: Vec<String> = self
-                    .parked
-                    .keys()
-                    .cloned()
-                    .chain(self.state.session.id.iter().map(|id| id.0.clone()))
-                    .collect();
-                for item in &mut self.state.sessions.items {
-                    if owned.contains(&item.id) {
-                        item.locked = false;
-                    }
-                }
+        let active_project = self.project.as_ref().map(|project| project.id.clone());
+        let mut items = Vec::new();
+        let mut active_error = None;
+        for project in &projects {
+            let active = active_project.as_ref() == Some(&project.id);
+            // A project that has never opened a session store has no sessions
+            // to list; do not create a database just to discover that.
+            if !active && !project.root.join(".tact/tact.db").is_file() {
+                continue;
             }
-            Err(error) => {
-                self.state.sessions.loading = false;
-                self.state.sessions.error = Some(FailureView {
-                    kind: FailureKind::Store,
-                    message: Arc::from(error.to_string()),
-                    retryable: true,
-                    retry_label: Some(Arc::from(localized(self.state.language, "Refresh", "刷新"))),
-                });
+            let catalog = self
+                .catalogs
+                .entry(project.id.clone())
+                .or_insert_with(|| Arc::new(SessionCatalog::new(project.clone())))
+                .clone();
+            let result = tokio::select! {
+                result = catalog.list(filter, "") => result,
+                _ = self.shutdown.cancelled() => return Ok(()),
+            };
+            match result {
+                Ok(project_items) => items.extend(project_items),
+                Err(error) if active => active_error = Some(error.to_string()),
+                Err(_) => {}
+            }
+        }
+        self.catalogs
+            .retain(|id, _| projects.iter().any(|project| &project.id == id));
+        if let Some(error) = active_error {
+            self.state.sessions.loading = false;
+            self.state.sessions.error = Some(FailureView {
+                kind: FailureKind::Store,
+                message: Arc::from(error),
+                retryable: true,
+                retry_label: Some(Arc::from(localized(self.state.language, "Refresh", "刷新"))),
+            });
+        } else {
+            items.sort_by(|left, right| {
+                right
+                    .search_score
+                    .cmp(&left.search_score)
+                    .then_with(|| right.updated_at.cmp(&left.updated_at))
+            });
+            self.state.set_sessions(items);
+            // The store reports a lock for every session this process holds.
+            // A parked session is ours to reopen, so it must not read as
+            // "open in another window" and be disabled in the session rail;
+            // only locks held elsewhere stay flagged.
+            let owned: Vec<String> = self
+                .parked
+                .keys()
+                .map(|(_, session_id)| session_id.clone())
+                .chain(self.state.session.id.iter().map(|id| id.0.clone()))
+                .collect();
+            for item in &mut self.state.sessions.items {
+                if owned.contains(&item.id) {
+                    item.locked = false;
+                }
             }
         }
         self.publish(false);
+        self.schedule_session_prefetch();
         Ok(())
     }
 
@@ -1419,7 +1792,10 @@ impl DesktopActor {
         self.send_command(UserCommand::SubmitTask(text.clone()))?;
         // Input history is per session and persisted by the same store as the
         // transcript. A failed write must not block the submitted turn.
-        if let Some(store) = self.catalog.as_ref().and_then(SessionCatalog::store_handle)
+        if let Some(store) = self
+            .catalog
+            .as_ref()
+            .and_then(|catalog| catalog.store_handle())
             && let Some(session_id) = self.state.session.id.as_ref().map(|id| id.0.clone())
         {
             let text_for_history = text.clone();
@@ -2547,6 +2923,36 @@ impl DesktopActor {
         for (_, mut session) in parked {
             let _ = session.host.close().await;
         }
+        for closing in std::mem::take(&mut self.closing) {
+            let _ = closing.task.await;
+        }
+    }
+
+    async fn close_project_parked_hosts(&mut self, project_id: &ProjectId) {
+        let keys: Vec<ParkedKey> = self
+            .parked
+            .keys()
+            .filter(|(parked_project, _)| parked_project == project_id)
+            .cloned()
+            .collect();
+        for key in keys {
+            if let Some(mut parked) = self.parked.remove(&key) {
+                let _ = parked.host.close().await;
+            }
+        }
+        let mut remaining = Vec::new();
+        for closing in std::mem::take(&mut self.closing) {
+            if &closing.project_id == project_id {
+                let _ = closing.task.await;
+            } else {
+                remaining.push(closing);
+            }
+        }
+        self.closing = remaining;
+    }
+
+    fn reap_closing_hosts(&mut self) {
+        self.closing.retain(|closing| !closing.task.is_finished());
     }
 
     fn send_command(&self, command: UserCommand) -> Result<(), String> {
@@ -2666,10 +3072,11 @@ impl DesktopActor {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
+    use std::{collections::HashSet, sync::Mutex};
 
     use async_trait::async_trait;
-    use tact::store::ArchiveFilter;
+    use tact::store::{ArchiveFilter, open_sqlite_session_store};
+    use tact_agent_api::{AgentMessage, AgentRole, MessageOrigin};
     use tact_catalog::SettingId;
     use tact_host::{
         HostCloseError, HostEvent, HostExit, HostExtensionService, HostSendError, HostStartError,
@@ -2690,6 +3097,44 @@ mod tests {
         let chinese = help_reader(CatalogLocale::Zh);
         assert_eq!(chinese.title.as_ref(), "键盘快捷键");
         assert!(chinese.markdown.contains("命令中心"));
+    }
+
+    #[test]
+    fn prefetch_candidates_skip_live_locked_and_empty_sessions() {
+        let session =
+            |project: &str, id: &str, locked: bool, message_count: i64| SessionSummaryView {
+                id: id.into(),
+                project_id: ProjectId(project.into()),
+                root_dir: format!("/tmp/{project}").into(),
+                title: id.into(),
+                updated_at: Utc::now(),
+                archived_at: None,
+                locked,
+                message_count,
+                search_score: 0,
+            };
+        let mut items = vec![
+            session("a", "a-current", false, 3),
+            session("a", "a-parked", false, 3),
+            session("a", "a-locked", true, 3),
+            session("a", "a-empty", false, 0),
+        ];
+        for project in ["a", "b", "c", "d", "e"] {
+            for index in 1..=10 {
+                items.push(session(project, &format!("{project}-{index:02}"), false, 3));
+            }
+        }
+        let parked = HashSet::from(["a-parked".to_string()]);
+        let candidates = prefetch_candidates(&items, Some("a-current"), &parked);
+        let ids: Vec<&str> = candidates.iter().map(|(_, id)| id.as_str()).collect();
+        assert_eq!(ids.len(), 32, "prefetching must stay bounded");
+        assert!(ids.contains(&"a-01") && ids.contains(&"a-08"));
+        assert!(!ids.contains(&"a-09"), "each project contributes at most 8");
+        assert!(ids.contains(&"b-08") && ids.contains(&"c-08") && ids.contains(&"d-08"));
+        assert!(
+            !candidates.iter().any(|(_, id)| id.starts_with("e-")),
+            "the global cap wins over later projects"
+        );
     }
 
     struct FakeFactory {
@@ -2839,12 +3284,15 @@ mod tests {
         async fn start(
             &self,
             project: &ProjectRecord,
-            _initial: &InitialSession,
+            initial: &InitialSession,
         ) -> Result<Box<dyn HostBackend>, HostStartError> {
             if let Some(error) = &self.start_failure {
                 return Err(error.clone());
             }
-            let id = format!("session-{}", self.log.lock().unwrap().len());
+            let id = match initial {
+                InitialSession::Resume(id) if !id.is_empty() => id.clone(),
+                _ => format!("session-{}", self.log.lock().unwrap().len()),
+            };
             self.log
                 .lock()
                 .unwrap()
@@ -2916,6 +3364,32 @@ mod tests {
         std::fs::create_dir_all(root.join("second/.tact")).unwrap();
     }
 
+    async fn seed_sessions(root: &std::path::Path, ids: &[&str]) {
+        let root = std::fs::canonicalize(root).unwrap();
+        let store = open_sqlite_session_store(&root.join(".tact/tact.db"))
+            .await
+            .unwrap();
+        for id in ids {
+            store
+                .ensure_session_row(id, &root.display().to_string(), "")
+                .await
+                .unwrap();
+            store.set_session_title(id, Some(id)).await.unwrap();
+            store
+                .append_agent_message(
+                    id,
+                    &AgentMessage::text(
+                        AgentRole::User,
+                        MessageOrigin::User,
+                        format!("prompt {id}"),
+                    ),
+                    1,
+                )
+                .await
+                .unwrap();
+        }
+    }
+
     fn pending_select(request_id: u64) -> tact::ui_responder::PendingUiRequest {
         tact::ui_responder::PendingUiRequest {
             request_id,
@@ -2940,7 +3414,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn project_switch_closes_before_opening() {
+    async fn project_switch_parks_before_opening_the_next_host() {
         let tmp = tempfile::tempdir().unwrap();
         make_project(tmp.path());
         let factory = FakeFactory::new();
@@ -2956,18 +3430,328 @@ mod tests {
         controller.when_idle().await.unwrap();
         wait_ready(&controller).await;
 
-        let log = factory.log.lock().unwrap();
-        let close = log
-            .iter()
-            .position(|entry| entry.starts_with("close:"))
+        let log = factory.log.lock().unwrap().clone();
+        assert!(
+            log.iter()
+                .any(|entry| entry.replace('\\', "/").contains("/second:")),
+            "the second project's host must open: {log:?}"
+        );
+        assert!(
+            !log.iter().any(|entry| entry.starts_with("close:")),
+            "a project switch must park the old idle host, not close it: {log:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_list_spans_registered_projects_and_resume_switches_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_project(tmp.path());
+        let first_root = tmp.path().join("project");
+        let second_root = tmp.path().join("second");
+        let first_root = std::fs::canonicalize(first_root).unwrap();
+        let second_root = std::fs::canonicalize(second_root).unwrap();
+        let app_data = tmp.path().join("app-data");
+        let mut registry = ProjectRegistry::open(&app_data).unwrap();
+        let first_project = registry.register(&first_root).unwrap();
+        let second_project = registry.register(&second_root).unwrap();
+        for (root, session_id, title) in [
+            (&first_root, "first-session", "First project"),
+            (&second_root, "second-session", "Second project"),
+        ] {
+            let store = open_sqlite_session_store(&root.join(".tact/tact.db"))
+                .await
+                .unwrap();
+            store
+                .ensure_session_row(session_id, &root.display().to_string(), "")
+                .await
+                .unwrap();
+            store
+                .set_session_title(session_id, Some(title))
+                .await
+                .unwrap();
+        }
+        let factory = FakeFactory::new();
+        let (controller, _events) =
+            DesktopController::start_with_factory(config(tmp.path()), factory.clone()).unwrap();
+        wait_ready(&controller).await;
+        let sessions = controller.snapshot().sessions.items.clone();
+        assert!(
+            sessions.iter().any(|session| session.id == "first-session"),
+            "the active project's sessions must be loaded"
+        );
+        assert!(
+            sessions
+                .iter()
+                .any(|session| session.id == "second-session"),
+            "other registered projects' sessions must be loaded for grouping"
+        );
+        controller
+            .dispatch(DesktopIntent::ResumeSession {
+                session_id: SessionId("second-session".into()),
+            })
             .unwrap();
-        // The fake host logs `open:{root}:{id}`, and a Windows root separates
-        // with `\`, so compare on a normalized separator.
-        let second_open = log
-            .iter()
-            .rposition(|entry| entry.replace('\\', "/").contains("/second:"))
+        controller.when_idle().await.unwrap();
+        wait_ready(&controller).await;
+        let snapshot = controller.snapshot();
+        assert_eq!(
+            snapshot.project.id.as_ref(),
+            Some(&second_project.id),
+            "resuming a session from another project must switch projects"
+        );
+        assert!(
+            factory
+                .log
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|entry| entry.replace('\\', "/").contains("/second:")),
+            "the second project's host must be opened"
+        );
+        assert_ne!(
+            first_project.id, second_project.id,
+            "the fixture must expose two distinct projects"
+        );
+    }
+
+    #[tokio::test]
+    async fn cross_project_top_two_sessions_adopt_their_warm_hosts() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_project(tmp.path());
+        let first_root = std::fs::canonicalize(tmp.path().join("project")).unwrap();
+        let second_root = std::fs::canonicalize(tmp.path().join("second")).unwrap();
+        seed_sessions(&first_root, &["a1", "a2"]).await;
+        seed_sessions(&second_root, &["b1", "b2"]).await;
+        let app_data = tmp.path().join("app-data");
+        let mut registry = ProjectRegistry::open(&app_data).unwrap();
+        let first_project = registry.register(&first_root).unwrap();
+        let second_project = registry.register(&second_root).unwrap();
+        let factory = FakeFactory::new();
+        let config = DesktopConfig::load(app_data)
+            .unwrap()
+            .with_initial_project(first_root)
+            .with_initial_session(InitialSession::Resume("a1".into()));
+        let (controller, _events) =
+            DesktopController::start_with_factory(config, factory.clone()).unwrap();
+        wait_ready(&controller).await;
+
+        for _ in 0..5 {
+            for (session_id, project_id, prompt) in [
+                ("b1", &second_project.id, "prompt b1"),
+                ("a1", &first_project.id, "prompt a1"),
+            ] {
+                controller
+                    .dispatch(DesktopIntent::ResumeSession {
+                        session_id: SessionId(session_id.into()),
+                    })
+                    .unwrap();
+                controller.when_idle().await.unwrap();
+                wait_ready(&controller).await;
+                let snapshot = controller.snapshot();
+                assert_eq!(snapshot.project.id.as_ref(), Some(project_id));
+                assert_eq!(
+                    snapshot.session.id.as_ref().map(|id| id.0.as_str()),
+                    Some(session_id)
+                );
+                assert!(
+                    snapshot.transcript.iter().any(|row| matches!(
+                        &row.body,
+                        crate::RowBody::User(user) if user.text.as_ref() == prompt
+                    )),
+                    "the adopted transcript belongs to another session: {}",
+                    session_id
+                );
+            }
+        }
+
+        let log = factory.log.lock().unwrap().clone();
+        for session in ["a1", "b1"] {
+            assert_eq!(
+                log.iter()
+                    .filter(|entry| {
+                        entry.starts_with("open:") && entry.ends_with(&format!(":{session}"))
+                    })
+                    .count(),
+                1,
+                "a warm cross-project session was restarted: {log:?}"
+            );
+        }
+        assert!(
+            !log.iter().any(|entry| entry.starts_with("close:")),
+            "cross-project switching must keep both hosts warm: {log:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn removing_a_non_active_project_unregisters_it_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_project(tmp.path());
+        let first_root = std::fs::canonicalize(tmp.path().join("project")).unwrap();
+        let second_root = std::fs::canonicalize(tmp.path().join("second")).unwrap();
+        seed_sessions(&first_root, &["a1"]).await;
+        seed_sessions(&second_root, &["b1"]).await;
+        let app_data = tmp.path().join("app-data");
+        let mut registry = ProjectRegistry::open(&app_data).unwrap();
+        let first_project = registry.register(&first_root).unwrap();
+        let second_project = registry.register(&second_root).unwrap();
+        let factory = FakeFactory::new();
+        let config = DesktopConfig::load(app_data)
+            .unwrap()
+            .with_initial_project(first_root)
+            .with_initial_session(InitialSession::Resume("a1".into()));
+        let (controller, _events) =
+            DesktopController::start_with_factory(config, factory.clone()).unwrap();
+        wait_ready(&controller).await;
+
+        controller
+            .dispatch(DesktopIntent::RemoveProject {
+                project_id: second_project.id.clone(),
+            })
             .unwrap();
-        assert!(close < second_open, "{log:?}");
+        controller.when_idle().await.unwrap();
+
+        let snapshot = controller.snapshot();
+        assert_eq!(snapshot.project.id.as_ref(), Some(&first_project.id));
+        assert!(
+            !snapshot
+                .projects
+                .iter()
+                .any(|project| project.id.as_ref() == Some(&second_project.id))
+        );
+        assert!(
+            !snapshot
+                .sessions
+                .items
+                .iter()
+                .any(|session| session.id == "b1")
+        );
+        assert_eq!(
+            snapshot.session.id.as_ref().map(|id| id.0.as_str()),
+            Some("a1")
+        );
+        assert!(
+            !factory
+                .log
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|entry| entry == "close:a1"),
+            "removing another project must not touch the active host"
+        );
+    }
+
+    #[tokio::test]
+    async fn removing_the_active_project_switches_to_a_remaining_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_project(tmp.path());
+        let first_root = std::fs::canonicalize(tmp.path().join("project")).unwrap();
+        let second_root = std::fs::canonicalize(tmp.path().join("second")).unwrap();
+        seed_sessions(&first_root, &["a1"]).await;
+        seed_sessions(&second_root, &["b1"]).await;
+        let app_data = tmp.path().join("app-data");
+        let mut registry = ProjectRegistry::open(&app_data).unwrap();
+        let first_project = registry.register(&first_root).unwrap();
+        let second_project = registry.register(&second_root).unwrap();
+        let factory = FakeFactory::new();
+        let config = DesktopConfig::load(app_data)
+            .unwrap()
+            .with_initial_project(first_root)
+            .with_initial_session(InitialSession::Resume("a1".into()));
+        let (controller, _events) =
+            DesktopController::start_with_factory(config, factory.clone()).unwrap();
+        wait_ready(&controller).await;
+
+        controller
+            .dispatch(DesktopIntent::RemoveProject {
+                project_id: first_project.id.clone(),
+            })
+            .unwrap();
+        controller.when_idle().await.unwrap();
+        wait_ready(&controller).await;
+
+        let snapshot = controller.snapshot();
+        assert_eq!(snapshot.project.id.as_ref(), Some(&second_project.id));
+        assert!(
+            !snapshot
+                .projects
+                .iter()
+                .any(|project| project.id.as_ref() == Some(&first_project.id))
+        );
+        let log = factory.log.lock().unwrap().clone();
+        assert!(
+            log.iter().any(|entry| entry == "close:a1"),
+            "removing the active project must close its host: {log:?}"
+        );
+        assert!(
+            log.iter()
+                .any(|entry| entry.replace('\\', "/").contains("/second:")),
+            "the next registered project must open: {log:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_archive_hides_and_restore_returns_the_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_project(tmp.path());
+        let root = std::fs::canonicalize(tmp.path().join("project")).unwrap();
+        seed_sessions(&root, &["s1", "s2"]).await;
+        let factory = FakeFactory::new();
+        let config = DesktopConfig::load(tmp.path().join("app-data"))
+            .unwrap()
+            .with_initial_project(root)
+            .with_initial_session(InitialSession::Resume("s1".into()));
+        let (controller, _events) = DesktopController::start_with_factory(config, factory).unwrap();
+        wait_ready(&controller).await;
+        let session_id = SessionId("s2".into());
+
+        controller
+            .dispatch(DesktopIntent::SetSessionArchived {
+                session_id: session_id.clone(),
+                archived: true,
+            })
+            .unwrap();
+        controller.when_idle().await.unwrap();
+        assert!(
+            !controller
+                .snapshot()
+                .sessions
+                .items
+                .iter()
+                .any(|session| session.id == "s2"),
+            "archived sessions leave the Active list"
+        );
+
+        controller
+            .dispatch(DesktopIntent::SetSessionFilter(ArchiveFilter::All))
+            .unwrap();
+        controller.when_idle().await.unwrap();
+        assert!(
+            controller
+                .snapshot()
+                .sessions
+                .items
+                .iter()
+                .find(|session| session.id == "s2")
+                .is_some_and(|session| session.archived_at.is_some()),
+            "the All list still exposes the archived session"
+        );
+
+        controller
+            .dispatch(DesktopIntent::SetSessionArchived {
+                session_id,
+                archived: false,
+            })
+            .unwrap();
+        controller.when_idle().await.unwrap();
+        assert!(
+            controller
+                .snapshot()
+                .sessions
+                .items
+                .iter()
+                .find(|session| session.id == "s2")
+                .is_some_and(|session| session.archived_at.is_none()),
+            "restore returns the session to the active catalog"
+        );
     }
 
     #[tokio::test]
@@ -3120,7 +3904,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn switching_away_from_an_idle_session_closes_it() {
+    async fn switching_away_from_an_idle_session_keeps_it_warm() {
         let tmp = tempfile::tempdir().unwrap();
         make_project(tmp.path());
         let factory = FakeFactory::new();
@@ -3139,12 +3923,301 @@ mod tests {
             })
             .unwrap();
         controller.when_idle().await.unwrap();
+        wait_ready(&controller).await;
+        controller
+            .dispatch(DesktopIntent::ResumeSession {
+                session_id: idle.clone(),
+            })
+            .unwrap();
+        controller.when_idle().await.unwrap();
         let log = factory.log.lock().unwrap().clone();
         assert!(
-            log.iter()
-                .any(|entry| entry == &format!("close:{}", idle.0)),
-            "an idle session must not stay parked: {log:?}"
+            !log.iter().any(|entry| entry.starts_with("close:")),
+            "an idle session outside the old top-four list must stay warm: {log:?}"
         );
+        assert_eq!(
+            log.iter()
+                .filter(|entry| entry.ends_with(&format!(":{}", idle.0)))
+                .count(),
+            1,
+            "switching back to an idle host must adopt it: {log:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn switching_among_recent_idle_sessions_reuses_warm_hosts() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_project(tmp.path());
+        let root = std::fs::canonicalize(tmp.path().join("project")).unwrap();
+        let store = open_sqlite_session_store(&root.join(".tact/tact.db"))
+            .await
+            .unwrap();
+        for id in ["s1", "s2"] {
+            store
+                .ensure_session_row(id, &root.display().to_string(), "")
+                .await
+                .unwrap();
+            store.set_session_title(id, Some(id)).await.unwrap();
+            store
+                .append_agent_message(
+                    id,
+                    &AgentMessage::text(AgentRole::User, MessageOrigin::User, id),
+                    1,
+                )
+                .await
+                .unwrap();
+        }
+        let factory = FakeFactory::new();
+        let config = DesktopConfig::load(tmp.path().join("app-data"))
+            .unwrap()
+            .with_initial_project(tmp.path().join("project"))
+            .with_initial_session(InitialSession::Resume("s1".into()));
+        let (controller, _events) =
+            DesktopController::start_with_factory(config, factory.clone()).unwrap();
+        wait_ready(&controller).await;
+        assert_eq!(
+            controller
+                .snapshot()
+                .session
+                .id
+                .as_ref()
+                .map(|id| id.0.as_str()),
+            Some("s1")
+        );
+        for _ in 0..5 {
+            for session in ["s2", "s1"] {
+                controller
+                    .dispatch(DesktopIntent::ResumeSession {
+                        session_id: SessionId(session.into()),
+                    })
+                    .unwrap();
+                controller.when_idle().await.unwrap();
+                wait_ready(&controller).await;
+            }
+        }
+        let log = factory.log.lock().unwrap().clone();
+        assert_eq!(
+            log.iter()
+                .filter(|entry| entry.starts_with("open:") && entry.ends_with(":s1"))
+                .count(),
+            1,
+            "repeated switching to a warm idle session must not start another host: {log:?}"
+        );
+        assert_eq!(
+            log.iter()
+                .filter(|entry| entry.starts_with("open:") && entry.ends_with(":s2"))
+                .count(),
+            1,
+            "the other top session must open once: {log:?}"
+        );
+        assert!(
+            !log.iter().any(|entry| entry.starts_with("close:")),
+            "both warm hosts must stay parked: {log:?}"
+        );
+        assert_eq!(
+            controller
+                .snapshot()
+                .session
+                .id
+                .as_ref()
+                .map(|id| id.0.as_str()),
+            Some("s1")
+        );
+    }
+
+    #[tokio::test]
+    async fn warm_pool_evicts_only_the_oldest_idle_host() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_project(tmp.path());
+        let root = std::fs::canonicalize(tmp.path().join("project")).unwrap();
+        let ids: Vec<String> = (0..9).map(|index| format!("s{index}")).collect();
+        let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        seed_sessions(&root, &refs).await;
+        let factory = FakeFactory::new();
+        let config = DesktopConfig::load(tmp.path().join("app-data"))
+            .unwrap()
+            .with_initial_project(root)
+            .with_initial_session(InitialSession::Resume("s0".into()));
+        let (controller, _events) =
+            DesktopController::start_with_factory(config, factory.clone()).unwrap();
+        wait_ready(&controller).await;
+
+        controller
+            .dispatch(DesktopIntent::Submit(Submission {
+                text: "keep this run alive".into(),
+                attachments: Vec::new(),
+                model: None,
+                permission_mode: None,
+            }))
+            .unwrap();
+        controller.when_idle().await.unwrap();
+        assert_eq!(controller.snapshot().session.phase, SessionPhase::Running);
+
+        for session in &ids[1..] {
+            controller
+                .dispatch(DesktopIntent::ResumeSession {
+                    session_id: SessionId(session.clone()),
+                })
+                .unwrap();
+            controller.when_idle().await.unwrap();
+            wait_ready(&controller).await;
+        }
+        for _ in 0..100 {
+            if factory
+                .log
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|entry| entry == "close:s1")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let log = factory.log.lock().unwrap().clone();
+        assert!(
+            log.iter().any(|entry| entry == "close:s1"),
+            "the oldest idle host must be evicted: {log:?}"
+        );
+        assert!(
+            !log.iter().any(|entry| entry == "close:s0"),
+            "a running host must never be evicted: {log:?}"
+        );
+        assert_eq!(
+            log.iter()
+                .filter(|entry| entry.starts_with("close:"))
+                .count(),
+            1,
+            "only the idle overflow host closes: {log:?}"
+        );
+
+        controller
+            .dispatch(DesktopIntent::ResumeSession {
+                session_id: SessionId("s0".into()),
+            })
+            .unwrap();
+        controller.when_idle().await.unwrap();
+        let log = factory.log.lock().unwrap().clone();
+        assert_eq!(
+            log.iter()
+                .filter(|entry| entry.starts_with("open:") && entry.ends_with(":s0"))
+                .count(),
+            1,
+            "the running host was restarted during an idle eviction: {log:?}"
+        );
+        assert_eq!(controller.snapshot().session.phase, SessionPhase::Running);
+    }
+
+    #[tokio::test]
+    async fn warm_pool_keeps_a_parked_session_with_a_pending_gate() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_project(tmp.path());
+        let root = std::fs::canonicalize(tmp.path().join("project")).unwrap();
+        let ids: Vec<String> = (0..9).map(|index| format!("s{index}")).collect();
+        let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        seed_sessions(&root, &refs).await;
+        let factory = FakeFactory::new();
+        let config = DesktopConfig::load(tmp.path().join("app-data"))
+            .unwrap()
+            .with_initial_project(root)
+            .with_initial_session(InitialSession::Resume("s0".into()));
+        let (controller, _events) =
+            DesktopController::start_with_factory(config, factory.clone()).unwrap();
+        wait_ready(&controller).await;
+        factory.pending.lock().unwrap().push(pending_select(1));
+        factory.emit(HostEvent::agent(AgentUpdate::RequestSelect {
+            request_id: 1,
+            prompt: "Allow?".into(),
+            options: vec!["Allow".into()],
+            log_confirm: false,
+            from_subagent: false,
+            purpose: tact_protocol::UiRequestPurpose::Permission,
+            origin: tact_protocol::UiRequestOrigin::main(),
+        }));
+        controller.when_idle().await.unwrap();
+        let snapshot = controller.snapshot();
+        assert_eq!(snapshot.session.phase, SessionPhase::Ready);
+        assert_eq!(snapshot.pending_gates.len(), 1);
+
+        for session in &ids[1..] {
+            controller
+                .dispatch(DesktopIntent::ResumeSession {
+                    session_id: SessionId(session.clone()),
+                })
+                .unwrap();
+            controller.when_idle().await.unwrap();
+            wait_ready(&controller).await;
+        }
+        for _ in 0..100 {
+            if factory
+                .log
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|entry| entry == "close:s1")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let log = factory.log.lock().unwrap().clone();
+        assert!(
+            !log.iter().any(|entry| entry == "close:s0"),
+            "a pending gate must keep its host warm: {log:?}"
+        );
+        assert!(
+            log.iter().any(|entry| entry == "close:s1"),
+            "the oldest gate-free idle host must be evicted instead: {log:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn close_project_waits_for_parked_and_background_close_tasks() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_project(tmp.path());
+        let root = std::fs::canonicalize(tmp.path().join("project")).unwrap();
+        let ids: Vec<String> = (0..8).map(|index| format!("s{index}")).collect();
+        let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        seed_sessions(&root, &refs).await;
+        let factory = FakeFactory::new();
+        let config = DesktopConfig::load(tmp.path().join("app-data"))
+            .unwrap()
+            .with_initial_project(root)
+            .with_initial_session(InitialSession::Resume("s0".into()));
+        let (controller, _events) =
+            DesktopController::start_with_factory(config, factory.clone()).unwrap();
+        wait_ready(&controller).await;
+        for session in &ids[1..] {
+            controller
+                .dispatch(DesktopIntent::ResumeSession {
+                    session_id: SessionId(session.clone()),
+                })
+                .unwrap();
+            controller.when_idle().await.unwrap();
+            wait_ready(&controller).await;
+        }
+        let project_id = controller
+            .snapshot()
+            .project
+            .id
+            .clone()
+            .expect("active project");
+        controller
+            .dispatch(DesktopIntent::CloseProject { project_id })
+            .unwrap();
+        controller.when_idle().await.unwrap();
+
+        let log = factory.log.lock().unwrap().clone();
+        for session in &ids {
+            assert_eq!(
+                log.iter()
+                    .filter(|entry| entry.as_str() == format!("close:{session}"))
+                    .count(),
+                1,
+                "CloseProject did not finish closing {session}: {log:?}"
+            );
+        }
+        assert!(controller.snapshot().project.id.is_none());
     }
 
     #[tokio::test]

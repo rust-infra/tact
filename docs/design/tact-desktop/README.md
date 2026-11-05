@@ -1,12 +1,16 @@
 # Tact Desktop Prototype
 
+> Historical: `gpui-ai` was removed from the desktop on 2026-11-05. The
+> prototype's `data-gpui-ai` labels name the original reference components, not
+> live dependencies.
+
 Open `prototype.html` directly in a browser. The prototype uses a native macOS
 visual language, local font fallbacks, and no build step.
 
 ## gpui-ai Contract
 
 The macOS window chrome, mixed transcript container, Goal panel, Subagent panel,
-project-scoped Session Manager, nested slash overlay, Mermaid/ANSI renderers and
+project-grouped Session Manager, nested slash overlay, Mermaid/ANSI renderers and
 session persistence are Tact-owned. AI-specific surfaces instantiate real
 `gpui-ai` components: `PlanCard`, `Thinking`, `ToolGroup`, `ApprovalCard`,
 `StreamingText`, `PromptBar`, `CommandSearch`, `ContextMeter`, `MessageQueue`,
@@ -67,11 +71,22 @@ set `CFBundleIconFile`, and ship the PNG in the archives.
   forms follow the `tact-ui` command tree.
 - Typing `@` opens the workspace mention popup with files and images.
 - The composer model and permission controls open native-style selection menus.
+- The quick model menu, full model picker and `@` mention list render fixed
+  row windows (eight rows). Wheel pixels accumulate into row steps, and model
+  lists longer than eight rows expose a search field inside the popup; mention
+  results are already filtered by the typed `@` token.
 - Composer attachments render as removable `AttachmentStrip` chips; the queue
   exposes send-now, remove and clear actions. The microphone appears only when
   the voice provider is configured and inserts the transcript on stop.
 - Consecutive tools from one loop render as one compact ToolGroup; expand the
   group for the tool list, then expand one row for terminal output or diff.
+  Consecutive Thinking/ToolGroup rows share one tight process rhythm (2px
+  instead of the normal 12px row gap) when expanded. A run of two or more
+  foldable process rows defaults to one summary line ("Ran 25 commands, read
+  12 files, ran 1 skill"); clicking expands the original rows. A completed,
+  collapsed one-tool group drops its card border/shadow and redundant `1`
+  count. Pending/submitting gates are never folded, and running, expanded,
+  multi-tool, approval and subagent groups keep the full card treatment.
 - ToolGroup membership is by agent-loop iteration, not tool kind: commands,
   edits, `ask_user` single/multi-select, approval and subagent from the same loop
   stay in the same group. Resolved decision/approval rows collapse into the same
@@ -84,9 +99,34 @@ set `CFBundleIconFile`, and ship the PNG in the archives.
   multi-select uses toggle rows, a selected count and a resolved summary.
 - After Confirm or Cancel, the question and option area auto-collapse, leaving
   only the resolved/cancelled status, title and answer summary.
-- Sessions are scoped by project. The rail shows a project switcher, a scrollable
-  recent list and a Manage entry; the full Session Manager supports project
-  filtering, fuzzy search, Active/Archived/All filters and archive/restore.
+- Sessions from every registered project are loaded and grouped by project in
+  the rail, with a scrollable list and a Manage entry. Project switching stays
+  in the title-bar workspace switcher; the rail and composer do not repeat the
+  project directory, and New Run is not a standalone rail or composer entry.
+  The full Session Manager supports the same grouping, project filtering, fuzzy
+  search, Active/Archived/All filters and archive/restore. Rail groups,
+  manager groups, and the manager's project directory share one project
+  identity and compact avatar/name/count header; a project's rows stay
+  contiguous after global search/recency ordering. Both lists are two-level
+  collapsible trees: the project node owns the disclosure arrow and count, and
+  its session children indent under a shared left guide line. Collapse state is
+  shared between the rail and the Session Manager.
+- Project removal is available from both project-directory surfaces (the rail
+  project node and the Session Manager project pane) and always opens a
+  confirmation. Removal only unregisters the project from the desktop registry;
+  files on disk stay intact. Removing a non-active project closes only that
+  project's parked hosts, while removing the active one switches to a remaining
+  registered project or returns to the empty state. Session archive/restore and
+  the Active/Archived/All filters remain in the Session Manager. Rail session
+  rows also expose Archive/Restore from a right-click context menu.
+- The first visible idle sessions are prefetched (up to eight per project, capped
+  at thirty-two total). Current, parked, locked, and empty sessions are skipped;
+  running sessions keep their live state instead of being re-read from disk.
+- Up to six idle sessions keep a warm parked host in an LRU pool. Returning to
+  one adopts that host without a close/start cycle; overflow closes in the
+  background. Running or queued sessions are always parked regardless of this
+  limit. A cross-project switch adopts a warm target the same way; a cold
+  target starts without closing the host being left.
 - Goals, Subagents and Background are not duplicated in the rail; their canonical
   shortcuts live in the sticky strip.
 - MCP, Skills and Plugins open one anchored Extensions popover with tab-specific
@@ -105,14 +145,17 @@ set `CFBundleIconFile`, and ship the PNG in the archives.
   `/skill list`, `/mcp prompts`, `/goal ...` and all other subcommands open
   their owning manager, value picker, form or result reader.
 - The transcript header keeps only run state. Model and permission mode live in
-  the composer; context usage lives in the Inspector.
+  the composer; context usage lives in the Inspector. The run header starts
+  24px below the Chat/Trajectory tabs so the title stays close to the page
+  switch instead of reserving a large empty band.
 - Pending permission is a persistent warning banner at the top of Sticky Tasks.
   Review expands and scrolls to the approval tool, then focuses Allow once
   without selecting it; Confirm remains disabled until the user explicitly
   chooses. Resolving the gate hides the banner.
-- When the transcript leaves the tail, a floating `New activity · Back to bottom`
-  pill appears above Sticky Tasks; clicking it smooth-scrolls to the bottom and
-  hides the pill.
+- When the transcript actually scrolls away from the last row, a floating
+  `New activity · Back to bottom` pill appears above Sticky Tasks; clicking it
+  smooth-scrolls to the bottom and hides the pill. A disabled tail-follow flag
+  alone never shows it while the reader is already at the bottom.
 - Subagent transcript reuses the main-agent row grammar: parent task, Thinking,
   ToolCard and Assistant Markdown. It is read-only and omits composer, Goals,
   queue, sticky tasks and other main-agent-only controls.
@@ -159,7 +202,7 @@ set `CFBundleIconFile`, and ship the PNG in the archives.
 - `previews/thinking-markdown.png` - Markdown rendered in a Thinking block.
 - `previews/assistant-markdown.png` - Markdown, code and table rendered by the
   assistant answer.
-- `previews/session-projects-rail.png` - project-scoped rail with recent sessions.
+- `previews/session-projects-rail.png` - project-grouped rail with recent sessions.
 - `previews/session-manager.png` - large session manager grouped by project.
 - `previews/subagent-consistent.png` - subagent transcript using the main-agent
   rendering grammar.

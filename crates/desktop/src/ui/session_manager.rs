@@ -17,22 +17,12 @@ impl Default for SessionManagerView {
     }
 }
 
-/// The session count for one project row.
-///
-/// Only the active project's sessions are loaded in the snapshot, so a count
-/// for any other registered project would read as a false zero. The pane
-/// shows a number for the loaded project and leaves the other rows bare.
-pub fn project_session_count(
-    project: &ProjectId,
-    active: Option<&ProjectId>,
-    sessions: &[SessionSummaryView],
-) -> Option<usize> {
-    (active == Some(project)).then(|| {
-        sessions
-            .iter()
-            .filter(|session| &session.project_id == project)
-            .count()
-    })
+/// The number of loaded sessions belonging to one project.
+pub fn project_session_count(project: &ProjectId, sessions: &[SessionSummaryView]) -> usize {
+    sessions
+        .iter()
+        .filter(|session| &session.project_id == project)
+        .count()
 }
 
 pub fn filter_sessions<'a>(
@@ -65,7 +55,24 @@ pub fn filter_sessions<'a>(
             .cmp(left_score)
             .then_with(|| right.updated_at.cmp(&left.updated_at))
     });
-    rows.into_iter().map(|(_, session)| session).collect()
+    // The manager paints a project heading on every project change. Keep a
+    // project's rows contiguous after the global score/recency sort so one
+    // project never produces two headings.
+    let mut grouped: Vec<(ProjectId, Vec<&SessionSummaryView>)> = Vec::new();
+    for (_, session) in rows {
+        if let Some((_, sessions)) = grouped
+            .iter_mut()
+            .find(|(project_id, _)| project_id == &session.project_id)
+        {
+            sessions.push(session);
+        } else {
+            grouped.push((session.project_id.clone(), vec![session]));
+        }
+    }
+    grouped
+        .into_iter()
+        .flat_map(|(_, sessions)| sessions)
+        .collect()
 }
 
 #[cfg(test)]
@@ -92,6 +99,13 @@ mod tests {
             message_count: 1,
             search_score: 0,
         }
+    }
+
+    fn session_at(project: &str, id: &str, title: &str, minutes_ago: i64) -> SessionSummaryView {
+        let mut session = session_in(project, id, title, false);
+        session.updated_at = Utc.with_ymd_and_hms(2026, 10, 30, 12, 0, 0).unwrap()
+            - chrono::Duration::minutes(minutes_ago);
+        session
     }
 
     #[gpui::test]
@@ -122,29 +136,32 @@ mod tests {
     }
 
     #[gpui::test]
-    fn project_counts_only_exist_for_the_loaded_project(_cx: &mut TestAppContext) {
-        // The count must be read off the row's own project id, not off a
-        // helper that hard-codes one project: a fixture where every row shares
-        // the active project cannot tell a correct filter from a broken one.
-        let active = ProjectId("a".into());
+    fn project_counts_include_every_loaded_project(_cx: &mut TestAppContext) {
         let rows = vec![
             session_in("a", "a1", "Loaded one", false),
             session_in("a", "a2", "Loaded two", false),
             session_in("b", "b1", "Other project", false),
         ];
-        assert_eq!(
-            project_session_count(&active, Some(&active), &rows),
-            Some(2)
-        );
-        assert_eq!(
-            project_session_count(&ProjectId("b".into()), Some(&active), &rows),
-            None,
-            "an unloaded project must not claim a zero count"
-        );
-        assert_eq!(
-            project_session_count(&active, None, &rows),
-            None,
-            "without an active project no row may show a count"
-        );
+        assert_eq!(project_session_count(&ProjectId("a".into()), &rows), 2);
+        assert_eq!(project_session_count(&ProjectId("b".into()), &rows), 1);
+        assert_eq!(project_session_count(&ProjectId("c".into()), &rows), 0);
+    }
+
+    #[gpui::test]
+    fn filtered_rows_keep_each_projects_group_contiguous(_cx: &mut TestAppContext) {
+        let rows = vec![
+            session_at("a", "a-new", "A new", 1),
+            session_at("b", "b-new", "B new", 2),
+            session_at("a", "a-old", "A old", 3),
+            session_at("b", "b-old", "B old", 4),
+        ];
+        let filtered = filter_sessions(&rows, &SessionManagerView::default());
+        let projects: Vec<&str> = filtered
+            .iter()
+            .map(|session| session.project_id.0.as_str())
+            .collect();
+        let ids: Vec<&str> = filtered.iter().map(|session| session.id.as_str()).collect();
+        assert_eq!(projects, ["a", "a", "b", "b"]);
+        assert_eq!(ids, ["a-new", "a-old", "b-new", "b-old"]);
     }
 }

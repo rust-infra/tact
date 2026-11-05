@@ -9,7 +9,7 @@ static HIGH_CONTRAST: OnceLock<bool> = OnceLock::new();
 
 /// Tact Desktop uses the macOS system palette from the design prototype rather
 /// than the neutral grayscale defaults of the component library. The shell and
-/// the embedded components share one palette so a Tact row and a `gpui-ai`
+/// the embedded components share one palette so a Tact row and a `gpui-component`
 /// surface cannot drift apart between Light and Dark.
 pub fn apply(appearance: Appearance, window: Option<&mut gpui::Window>, cx: &mut gpui::App) {
     Theme::change(

@@ -740,6 +740,10 @@
 <li class="toc-l2"><a href="#32-2026-11-04--desktop-%E4%BB%BB%E5%8A%A1%E5%85%A8%E9%83%A8%E5%AE%8C%E6%88%90%E5%90%8E%E9%9A%90%E8%97%8F%E4%BB%BB%E5%8A%A1%E5%8D%A1trajectory-%E6%90%9C%E7%B4%A2%E6%A1%86%E6%94%B9%E4%B8%BA%E5%8D%95%E5%B1%82" title="32. 2026-11-04 — Desktop：任务全部完成后隐藏任务卡；Trajectory 搜索框改为单层"><span class="toc-label">32. 2026-11-04 — Desktop：任务全部完成后隐藏任务卡；Trajectory 搜索框改为单层</span></a></li>
 <li class="toc-l2"><a href="#33-2026-11-04--desktop-%E4%BC%9A%E8%AF%9D%E5%88%87%E6%8D%A2%E4%B8%8D%E5%86%8D%E6%B8%85%E7%A9%BA%E4%BE%A7%E6%A0%8F" title="33. 2026-11-04 — Desktop：会话切换不再清空侧栏"><span class="toc-label">33. 2026-11-04 — Desktop：会话切换不再清空侧栏</span></a></li>
 <li class="toc-l2"><a href="#34-2026-11-04--desktop-%E5%8F%B6%E5%AD%90%E7%BB%84%E4%BB%B6%E5%BC%80%E5%A7%8B%E8%84%B1%E7%A6%BB-gpui-ai" title="34. 2026-11-04 — Desktop：叶子组件开始脱离 gpui-ai"><span class="toc-label">34. 2026-11-04 — Desktop：叶子组件开始脱离 gpui-ai</span></a></li>
+<li class="toc-l2"><a href="#35-2026-11-04--desktop-%E8%BD%AC%E5%BD%95%E4%B8%89%E4%BB%B6%E5%A5%97%E8%84%B1%E7%A6%BB-gpui-ai" title="35. 2026-11-04 — Desktop：转录三件套脱离 gpui-ai"><span class="toc-label">35. 2026-11-04 — Desktop：转录三件套脱离 gpui-ai</span></a></li>
+<li class="toc-l2"><a href="#36-2026-11-05--desktop-%E8%BE%93%E5%85%A5%E5%99%A8%E4%B8%8E%E4%BE%A7%E6%A0%8F%E8%84%B1%E7%A6%BB-gpui-ai" title="36. 2026-11-05 — Desktop：输入器与侧栏脱离 gpui-ai"><span class="toc-label">36. 2026-11-05 — Desktop：输入器与侧栏脱离 gpui-ai</span></a></li>
+<li class="toc-l2"><a href="#37-2026-11-05--desktop-%E5%BD%BB%E5%BA%95%E7%A7%BB%E9%99%A4-gpui-ai" title="37. 2026-11-05 — Desktop：彻底移除 gpui-ai"><span class="toc-label">37. 2026-11-05 — Desktop：彻底移除 gpui-ai</span></a></li>
+<li class="toc-l2"><a href="#38-2026-11-05--desktop-%E4%BC%9A%E8%AF%9D%E5%88%97%E8%A1%A8%E6%8C%89%E9%A1%B9%E7%9B%AE%E5%88%86%E7%BB%84" title="38. 2026-11-05 — Desktop：会话列表按项目分组"><span class="toc-label">38. 2026-11-05 — Desktop：会话列表按项目分组</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -22027,6 +22031,183 @@ Desktop：叶子组件开始脱离 gpui-ai</h2>
 <code>crates/desktop/src/ui/reader_components.rs</code>、
 <code>crates/desktop/src/root.rs</code>、
 <code>docs/design/tact-desktop/component-coverage-matrix.md</code>。</p>
+<h2 id="35-2026-11-04--desktop-转录三件套脱离-gpui-ai">35. 2026-11-04 —
+Desktop：转录三件套脱离 gpui-ai</h2>
+<p><strong>目标：</strong> 继续第 3 步，把 transcript 里最常更新的
+<code>StreamingText</code>、<code>Thinking</code>、<code>ToolCall</code> 与
+<code>ToolGroup</code> 从 <code>gpui-ai</code> 移到 Tact 自己维护的组件。</p>
+<p><strong>改后行为：</strong> 四个组件和 <code>StreamedContent</code>
+落在 <code>crates/desktop/src/ui/transcript_components.rs</code>；
+<code>ThinkingEvent</code>、<code>ToolCallEvent</code>、
+<code>ToolGroupEvent</code> 及 <code>thinking-toggle-*</code>、
+<code>tool-call-toggle-*</code>、<code>tool-group-toggle-*</code>
+debug selector 保持不变。流式回答继续用 Markdown 渲染，运行中显示光标；
+思考与工具调用保留原地展开/收起，工具组头部固定 37px 并省略长标题。</p>
+<p><strong>尚未完成：</strong> <code>PromptBar</code>、<code>SidebarNav</code>、
+<code>SelectionActions</code>、<code>PlanCard</code>、<code>QuestionFlow</code>、
+<code>FilterTable</code> 与 <code>DiffTable</code> 仍来自
+<code>gpui-ai</code>；<code>ProgressState</code>/<code>Progressive</code>
+仍由剩余组件共用。</p>
+<p><strong>验证：</strong> <code>cargo test -p tact-desktop --lib</code> 200
+通过，<code>cargo clippy -p tact-desktop --all-targets -- -D warnings</code>
+通过；覆盖矩阵同步了迁移后的剩余清单。</p>
+<p><strong>Pointers：</strong>
+<code>crates/desktop/src/ui/transcript_components.rs</code>、
+<code>crates/desktop/src/root.rs</code>、
+<code>docs/design/tact-desktop/component-coverage-matrix.md</code>。</p>
+<h2 id="36-2026-11-05--desktop-输入器与侧栏脱离-gpui-ai">36. 2026-11-05 —
+Desktop：输入器与侧栏脱离 gpui-ai</h2>
+<p><strong>目标：</strong> 继续第 4 步，把 <code>PromptBar</code> 和
+<code>SidebarNav</code> 从 <code>gpui-ai</code> 移到 Tact 自己维护的组件，
+保留现有事件、草稿/焦点 API、模型菜单、mention 建议、附件和侧栏筛选。</p>
+<p><strong>改后行为：</strong> <code>PromptBar</code> 落在
+<code>crates/desktop/src/ui/prompt_bar.rs</code>，用
+<code>gpui-component</code> 的 <code>TextareaState</code> 持有原生编辑器和
+草稿；模型菜单改用受控 <code>Popover</code>，不再把 240px 菜单算进
+composer 布局；mention 建议与模型列表各自持有滚动偏移，滚轮只滚动列表。
+<code>SidebarNav</code> 落在 <code>crates/desktop/src/ui/sidebar_nav.rs</code>，
+保留 sections/items、detail/trailing、active row 的
+<code>sidebar-nav-active-*</code> selector，并按当前 query 过滤行。</p>
+<p><strong>尚未完成：</strong> <code>SelectionActions</code>、
+<code>PlanCard</code>、<code>QuestionFlow</code>、<code>FilterTable</code>
+与 <code>DiffTable</code> 仍来自 <code>gpui-ai</code>；
+<code>ProgressState</code>/<code>Progressive</code> 与
+<code>gpui_ai::init</code> 也暂时保留。</p>
+<p><strong>验证：</strong> <code>cargo test -p tact-desktop --lib</code> 200
+通过，<code>cargo clippy -p tact-desktop --all-targets -- -D warnings</code>
+通过；覆盖矩阵同步了剩余清单。</p>
+<p><strong>Pointers：</strong>
+<code>crates/desktop/src/ui/prompt_bar.rs</code>、
+<code>crates/desktop/src/ui/sidebar_nav.rs</code>、
+<code>crates/desktop/src/root.rs</code>、
+<code>docs/design/tact-desktop/component-coverage-matrix.md</code>。</p>
+<h2 id="37-2026-11-05--desktop-彻底移除-gpui-ai">37. 2026-11-05 —
+Desktop：彻底移除 gpui-ai</h2>
+<p><strong>目标：</strong> 完成剩余迁移，删除 <code>gpui-ai</code> 依赖、
+<code>vendor/gpui-ai</code> 本地分支与 patch，只保留
+<code>gpui-component</code>。</p>
+<p><strong>改后行为：</strong> <code>SelectionActions</code>、
+<code>PlanCard</code>、<code>QuestionFlow</code>、<code>FilterTable</code> 与
+<code>DiffTable</code> 分别落在
+<code>crates/desktop/src/ui/{selection_actions,plan_card,question_flow,filter_table,diff_table}.rs</code>。
+多文件 diff 的 <code>diff-table-accept-*</code> selector 与决策事件保持不变；
+<code>SelectionActions</code> 用 <code>TextView</code> 提供可选择 Markdown，
+单击清空、双击选词；选中后的 Ask / Explain / Rewrite 工具条用
+<code>deferred</code> + <code>anchored</code> 浮层显示，不占消息布局行，
+不会把正文向下推。扩展表格与计划/问答卡保持原有行、状态和事件。
+<code>gpui_ai::init</code> 全部替换为 <code>gpui_component::init</code>。</p>
+<p><strong>复审修复：</strong> <code>SelectionActions</code> 现在保存 Markdown
+并跳过未变化的刷新；单击只在真正的原地点击时清空，拖拽和键盘选择会保留，
+<code>Escape</code> 与外部点击会收起工具条。工具条改为文本之后的绝对定位
+浮层，不再使用 <code>deferred</code>，因此不会盖住后打开的 Overlay。
+缓存的助手选择会在语言或明暗主题变化时同步动作标签和文本样式。
+<code>FilterTable</code> 改为单击选中、双击/Enter/Open 激活，按
+<code>fill</code> 对齐列并让数据行独立滚动；<code>DiffTable</code>
+按列宽/列 id 对齐，使用可本地化的文件名与 Accept/Reject 标签，并在固定高度内滚动。
+<code>PromptBar</code> 的重复 setter 不再重复通知，模型菜单和建议列表的滚轮
+不再穿透；<code>QuestionFlow</code> 未选择时禁用 Confirm，
+<code>SidebarNav</code> 在无 active 会话时清除旧高亮。
+StreamingText、Thinking、ToolCall、ArtifactPanel 和 InsightCard 的只读文本
+恢复 <code>selectable(true)</code>。</p>
+<p><strong>清理：</strong> 删除 <code>crates/desktop</code> 与 workspace 的
+<code>gpui-ai</code> 依赖、<code>[patch.crates-io]</code>、
+<code>vendor/gpui-ai</code> 与 <code>Cargo.lock</code> 条目；
+<code>THIRD-PARTY-NOTICES.md</code> 和 <code>ARCHITECTURE.md</code>
+同步去掉该依赖。</p>
+<p><strong>验证：</strong> <code>cargo test -p tact-desktop --lib</code> 215
+通过，<code>cargo clippy -p tact-desktop --all-targets -- -D warnings</code>
+通过；回归测试断言选中前后消息高度不变；<code>rg
+"gpui-ai|gpui_ai" Cargo.toml Cargo.lock crates/desktop</code> 无依赖引用。</p>
+<p><strong>Pointers：</strong>
+<code>crates/desktop/src/ui/selection_actions.rs</code>、
+<code>crates/desktop/src/ui/plan_card.rs</code>、
+<code>crates/desktop/src/ui/question_flow.rs</code>、
+<code>crates/desktop/src/ui/filter_table.rs</code>、
+<code>crates/desktop/src/ui/diff_table.rs</code>、
+<code>Cargo.toml</code>、<code>crates/desktop/Cargo.toml</code>。</p>
+<h2 id="38-2026-11-05--desktop-会话列表按项目分组">38. 2026-11-05 —
+Desktop：会话列表按项目分组</h2>
+<p><strong>目标：</strong> 左侧会话列表不再按今天/昨天/更早分组，而是按
+project 分组；同一分组内仍保持最近会话在前。</p>
+<p><strong>改后行为：</strong> controller 为每个已注册 project 保留一个
+<code>SessionCatalog</code>（项目自己的 <code>.tact/tact.db</code>），刷新时
+合并所有可用项目的会话；从未建过 session store 的项目直接跳过，不创建空库。
+rail 与 Session Manager 都按 project 生成分组标题，manager 的项目计数覆盖所有
+已加载项目；项目面板现在只过滤当前已加载的列表，不再先切换 project。
+点击其他项目的会话会先切换 project，再恢复该会话；manager 行的
+branch/subtitle 也来自该会话自己的 project。</p>
+<p><strong>分组样式：</strong> rail、Session Manager 会话列表和左侧项目目录共用
+同一套 project 身份：有 repository 时显示 <code>owner/repo</code>，否则显示
+目录名；组头统一为项目缩写、项目名和当前分组会话数。manager 在全局搜索/最近
+排序之后仍按 project 归并，同一项目只出现一个组头，不会因为跨项目的时间交错
+被拆成多个分组。</p>
+<p><strong>两级目录树：</strong> project 是父节点，session 是缩进的子节点；
+父节点带展开箭头、项目缩写、名称和会话数，子节点共享一条左侧层级线。点击父
+节点折叠/展开，rail 与 Session Manager 共用同一份折叠状态；搜索时自动展开以
+显示命中项。</p>
+<p><strong>项目目录：</strong> 当前 project 不再在 rail 顶部或 composer
+下方重复出现；项目切换保留在标题栏的 workspace switcher。New Run 也不再作为
+独立按钮或项目目录栏上的附属按钮，创建新会话仍可通过
+<code>Cmd/Ctrl+N</code>、File 菜单和失败恢复入口触发。rail 顶部因此只保留
+搜索，会话树有更多垂直空间。</p>
+<p><strong>长列表滚动：</strong> composer 的模型菜单、完整 model picker 和
+mention 建议改为固定行窗口：滚轮先累计像素，跨过一行才推进一行，渲染侧最多
+只构建 8 行，不再为每个像素偏移重建整份列表。模型总数超过 8 个时，快速模型
+菜单内直接显示检索框；完整 model picker 继续保留搜索，mention 列表则由输入的
+<code>@</code> token 完成过滤。</p>
+<p><strong>回到底部：</strong> “Back to bottom” 只在 transcript 实际滚离最后一行
+时显示。<code>tail_following=false</code> 不再单独触发按钮，因此停在底部时不会被
+浮动 pill 遮住内容。</p>
+<p><strong>Run 标题间距：</strong> Chat 标题区的顶部留白从 50px 收到 24px，
+“RUN / ELAPSED / TURN” 和主标题整体上移，靠近 Chat/Trajectory tabs，不再在
+顶部留下大块空白。</p>
+<p><strong>Think / Tool 降噪：</strong> 连续的 Thinking 和 ToolGroup 行按同一条
+过程流处理：连续两行以上默认折叠成一条摘要，例如
+“Ran 25 commands, read 12 files, ran 1 skill”。点击摘要展开原有 Thinking /
+ToolGroup，展开后相邻间距从普通行的 12px 收到 2px。只有一个工具、已折叠且不在
+运行中的 ToolGroup 不再画卡片边框/阴影，也不再显示多余的 “1”；完成的 Thinking
+使用更小的 12px 折叠标题和更紧的垂直 padding。运行中、展开、多工具或带审批的
+分组仍保留完整卡片和层级交互；pending/submitting gate 永不进入折叠摘要。</p>
+<p><strong>Project 移除 / Session 归档：</strong> rail 的 project 节点和
+Session Manager 的项目目录都提供移除入口，点击后先显示确认；移除只把 project
+从桌面 registry 移除，不删除磁盘文件。移除非当前 project 只关闭该 project 的
+parked host；移除当前 project 会关闭其 host，并自动切换到剩余 project，没有剩余
+project 时回到空状态。session 的 Archive / Restore 继续位于 Session Manager，
+并保留 Active / Archived / All 过滤和恢复流程；rail 的 session 行也支持右键
+弹出 Archive / Restore，菜单动作复用同一个 <code>SetSessionArchived</code>
+intent。</p>
+<p><strong>验证：</strong> <code>cargo test -p tact_desktop_core --lib</code>
+177 通过；<code>cargo test -p tact-desktop --lib</code> 231 通过；
+新增覆盖跨项目加载、跨项目 resume、rail 分组顺序、manager 分组顺序、同项目/
+跨项目 warm adopt、idle LRU 淘汰、pending gate 保留、CloseProject 等待和
+session-keyed UI 缓存、project 组头样式、两级目录树、composer 项目目录移除、
+模型列表行滚动/检索、mention 行窗口、连续 think/tool 摘要折叠与展开、紧凑节奏、
+单工具组降噪、pending gate 不被折叠、project 移除入口/确认/切换和 session
+archive 入口、rail 右键 Archive 菜单的回归测试。</p>
+<p><strong>预加载：</strong> project 分组加载完成后，controller 为可见的 idle
+会话预读 transcript 与输入历史（每个 project 最多 8 个、总计最多 32 个）；
+当前会话、parked 的运行中会话、locked 会话和空会话跳过。预取结果按
+project/session 缓存，切换时直接 seed reducer；parked 运行中的 stream
+继续使用内存里的实时状态，不会被预取读回覆盖。预取在后台执行，不阻塞
+会话列表渲染。</p>
+<p><strong>热会话：</strong> 离开窗口的 host 统一进入按
+<code>(project_id, session_id)</code> 键控的 warm pool；最多保留 6 个 idle
+host，超过上限时只淘汰最旧的 idle host，关闭放到后台 task，不阻塞切换主路径。
+运行中、stream 中、有队列或有待确认 gate 的 host 永不淘汰，并继续消费自己的
+事件。跨 project 切换先查目标会话是否已经 warm：命中时只切换 project
+metadata/catalog 并 adopt，不启动 host、不读 store、不刷新全项目列表；未命中
+才冷启动，旧 host 留在 warm pool。`CloseProject`、项目移除和退出会关闭并等待
+对应 parked host 与后台 close task。</p>
+<p><strong>UI 缓存：</strong> transcript row view、assistant selection 和
+thinking 展开状态改为按 <code>(session_id, row_id)</code> 缓存，root 保留最近
+6 个 session。切回已缓存会话时复用同一批 entity，只更新 row
+<code>Arc</code> 真正变化的行；epoch 变化不再把整份 transcript 标脏。展开的
+thinking 跟着自己的会话保留，不会串到另一个会话。</p>
+<p><strong>Pointers：</strong>
+<code>crates/desktop_core/src/controller.rs</code>、
+<code>crates/desktop/src/root.rs</code>、
+<code>crates/desktop/src/ui/session_manager.rs</code>、
+<code>crates/desktop/src/ui/sidebar_nav.rs</code>。</p>
 <h2 id="related-docs">Related Docs</h2>
 <ul>
 <li><a href="./07_chapter_tool_zh.html">工具系统</a></li>

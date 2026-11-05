@@ -96,7 +96,7 @@ impl Harness {
         let root_slot_for_window = root_slot.clone();
         let window = cx
             .open_offscreen_window(size(px(width), px(height)), move |window, cx| {
-                gpui_ai::init(cx);
+                gpui_component::init(cx);
                 crate::theme::apply(appearance, Some(window), cx);
                 let root = cx.new(|cx| DesktopRoot::new_for_test(shutdown, window, cx));
                 *root_slot_for_window.borrow_mut() = Some(root.clone());

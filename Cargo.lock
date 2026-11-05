@@ -3183,16 +3183,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gpui-ai"
-version = "0.8.0"
-dependencies = [
- "gpui-base",
- "gpui-component",
- "gpui-pre",
- "web-time",
-]
-
-[[package]]
 name = "gpui-base"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9076,7 +9066,6 @@ dependencies = [
  "chrono",
  "cocoa 0.26.0",
  "embed-resource",
- "gpui-ai",
  "gpui-base",
  "gpui-component",
  "gpui-component-macros",

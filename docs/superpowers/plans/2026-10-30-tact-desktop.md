@@ -1,5 +1,8 @@
 # Tact Desktop Implementation Plan
 
+> Historical: the `gpui-ai` dependency and `vendor/gpui-ai` fork were removed
+> on 2026-11-05. Component work now lands under `crates/desktop/src/ui/`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
 > `superpowers:subagent-driven-development` (recommended) or
 > `superpowers:executing-plans` to implement this plan task-by-task. Steps use

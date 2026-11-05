@@ -512,7 +512,8 @@ impl RenderOnce for ArtifactPanel {
                 ArtifactKind::Markdown => TextView::markdown(
                     ElementId::Name(format!("{}-preview", self.id).into()),
                     self.artifact.source.clone(),
-                ),
+                )
+                .selectable(true),
                 ArtifactKind::Code => {
                     let language = self
                         .artifact
@@ -524,16 +525,19 @@ impl RenderOnce for ArtifactPanel {
                         ElementId::Name(format!("{}-preview", self.id).into()),
                         format!("```{language}\n{}\n```", self.artifact.source),
                     )
+                    .selectable(true)
                 }
                 _ => TextView::markdown(
                     ElementId::Name(format!("{}-preview", self.id).into()),
                     self.artifact.source.clone(),
-                ),
+                )
+                .selectable(true),
             },
             ArtifactView::Source => TextView::markdown(
                 ElementId::Name(format!("{}-source", self.id).into()),
                 format!("```\n{}\n```", self.artifact.source),
-            ),
+            )
+            .selectable(true),
         };
         v_flex()
             .id(ElementId::Name(self.id.clone()))
@@ -581,6 +585,10 @@ impl RenderOnce for ArtifactPanel {
             )
             .child(
                 div()
+                    .debug_selector({
+                        let id = self.artifact.id.clone();
+                        move || format!("artifact-body-{id}")
+                    })
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scrollbar()
@@ -617,6 +625,10 @@ impl RenderOnce for InsightCard {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         v_flex()
             .id(ElementId::Name(self.id.clone()))
+            .debug_selector({
+                let id = self.id.clone();
+                move || format!("insight-card-{id}")
+            })
             .w_full()
             .gap_2()
             .rounded(px(8.))
@@ -626,10 +638,10 @@ impl RenderOnce for InsightCard {
             .p_3()
             .child(div().text_sm().font_semibold().child(self.title))
             .when_some(self.body, |card, body| {
-                card.child(TextView::markdown(
-                    ElementId::Name(format!("{}-body", self.id).into()),
-                    body,
-                ))
+                card.child(
+                    TextView::markdown(ElementId::Name(format!("{}-body", self.id).into()), body)
+                        .selectable(true),
+                )
             })
     }
 }
@@ -882,5 +894,85 @@ impl RenderOnce for MessageQueue {
             list = list.child(row);
         }
         list
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{Context, Modifiers, MouseButton, Render, TestAppContext, div, point, px, size};
+
+    use super::*;
+
+    struct ReaderProbe;
+
+    impl Render for ReaderProbe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let artifact = Artifact::new("artifact-test", "Artifact", "Alpha beta gamma")
+                .kind(ArtifactKind::Markdown);
+            div().child(gpui_base::TextSelectionLayer).p_4().child(
+                v_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .w(px(700.))
+                            .h(px(240.))
+                            .child(ArtifactPanel::new("artifact-panel", &artifact)),
+                    )
+                    .child(InsightCard::new("insight-test", "Insight").body("Alpha beta gamma")),
+            )
+        }
+    }
+
+    fn drag_select(
+        window: &mut gpui::VisualTestContext,
+        selector: &'static str,
+        start_offset: gpui::Pixels,
+    ) {
+        let bounds = window.debug_bounds(selector).expect(selector);
+        let start = point(bounds.origin.x + px(28.), bounds.origin.y + start_offset);
+        let end = point(
+            bounds.origin.x + px(28.),
+            bounds.origin.y + bounds.size.height - px(8.),
+        );
+        window.simulate_event(gpui::MouseDownEvent {
+            position: start,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count: 1,
+            first_mouse: true,
+        });
+        window.simulate_event(gpui::MouseMoveEvent {
+            position: end,
+            pressed_button: Some(MouseButton::Left),
+            modifiers: Modifiers::default(),
+        });
+        window.simulate_event(gpui::MouseUpEvent {
+            position: end,
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count: 1,
+        });
+        window.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn reader_text_is_selectable(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (_probe, window) = cx.add_window_view(|_, _| ReaderProbe);
+        window.simulate_resize(size(px(900.), px(700.)));
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        for (selector, start_offset) in [
+            ("artifact-body-artifact-test", px(20.)),
+            ("insight-card-insight-test", px(55.)),
+        ] {
+            drag_select(window, selector, start_offset);
+            let selected = window.update(gpui_base::TextSelection::selected_text);
+            assert!(
+                !selected.trim().is_empty(),
+                "{selector} must expose selectable text"
+            );
+            window.update(gpui_base::TextSelection::clear);
+            window.update(|window, cx| window.draw(cx).clear(cx));
+        }
     }
 }

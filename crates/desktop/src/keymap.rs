@@ -183,14 +183,6 @@ pub const fn command_center_hint() -> &'static str {
     }
 }
 
-pub const fn new_session_hint() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "⌘N"
-    } else {
-        "Ctrl+N"
-    }
-}
-
 pub const fn settings_hint() -> &'static str {
     if cfg!(target_os = "macos") {
         "⌘,"

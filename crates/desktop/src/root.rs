@@ -1,6 +1,6 @@
 use std::{
     cell::{Cell, RefCell},
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
     rc::Rc,
     sync::Arc,
@@ -9,22 +9,10 @@ use std::{
 
 use gpui::{
     Anchor, Animation, AnimationExt as _, AnyElement, AppContext as _, ClickEvent, Context, Entity,
-    FollowMode, InteractiveElement as _, IntoElement, ListAlignment, ListOffset, ListState,
-    ParentElement as _, PathBuilder, Render, Role, ScrollHandle, SharedString,
+    FollowMode, InteractiveElement as _, IntoElement, KeyDownEvent, ListAlignment, ListOffset,
+    ListState, ParentElement as _, PathBuilder, Render, Role, ScrollHandle, SharedString,
     StatefulInteractiveElement as _, Styled, Task, WeakEntity, Window, canvas, div, list, point,
     prelude::FluentBuilder as _, px,
-};
-use gpui_ai::prelude::{
-    ChoiceOption, DiffCell, DiffChangeKind, DiffColumn, DiffProposalAction, DiffProposalState,
-    DiffRow, DiffTable, DiffTableEvent, FilterCell, FilterColumn, FilterDefinition, FilterRow,
-    FilterTable, FilterTableEvent, PlanCard, PlanCardLabels, PlanState, PlanStep, PlanStepStatus,
-    ProgressState, Progressive, PromptAttachment, PromptBar, PromptBarEvent, PromptBarLabels,
-    PromptCommand, PromptMention, PromptModel, PromptSubmit, Question, QuestionFlow,
-    QuestionFlowEvent, SelectionAction, SelectionActions, SelectionActionsEvent, SidebarNav,
-    SidebarNavEvent, SidebarNavItem, SidebarNavLabels, SidebarNavPresentation, SidebarSection,
-    StreamedContent, StreamingText, Thinking, ThinkingEvent, ThinkingLabels, ThinkingTrace,
-    ToolApproval, ToolCall, ToolCallEvent, ToolCallLabels, ToolGroup, ToolGroupEvent,
-    ToolInvocation,
 };
 use gpui_base::FocusTrapElement as _;
 use gpui_component::popover::Popover;
@@ -54,21 +42,46 @@ use crate::i18n::{self, TextKey};
 use crate::ui::command_search::{
     CommandSearch, CommandSearchEvent, CommandSearchItem, CommandSearchLabels,
 };
+use crate::ui::diff_table::{
+    DiffCell, DiffChangeKind, DiffColumn, DiffProposalAction, DiffProposalState, DiffRow,
+    DiffTable, DiffTableEvent, DiffTableLabels,
+};
+use crate::ui::filter_table::{
+    FilterCell, FilterColumn, FilterDefinition, FilterRow, FilterTable, FilterTableEvent,
+};
 use crate::ui::leaf::{
     AttachmentItem, AttachmentStrip, ContextCard, ContextCardEvent, ContextMeter, ContextUsage,
     LoadingState, Orbs, Suggestion, Suggestions, SuggestionsEvent, Toggle, ToggleEvent,
     ToggleShape, ToolChip, ToolStatus,
 };
+use crate::ui::plan_card::{PlanCard, PlanCardLabels, PlanState, PlanStep, PlanStepStatus};
+use crate::ui::prompt_bar::{
+    ProgressState, PromptBar, PromptBarEvent, PromptBarLabels, PromptCommand, PromptMention,
+    PromptModel, PromptSubmit,
+};
+use crate::ui::question_flow::{ChoiceOption, Question, QuestionFlow, QuestionFlowEvent};
 use crate::ui::reader_components::{
     Artifact, ArtifactKind, ArtifactPanel, ArtifactPanelEvent, ArtifactView, CodeBlock, CodeDiff,
     DiffFile, InsightCard, MessageQueue, MessageQueueLabels, QueueEvent, QueuedMessage,
     SearchResult, SearchResults, SearchResultsEvent,
 };
+use crate::ui::row_scroll::RowScroll;
+use crate::ui::selection_actions::{SelectionAction, SelectionActions, SelectionActionsEvent};
 use crate::ui::shell::{RunTab, TrajectoryDetailTab};
+use crate::ui::sidebar_nav::{
+    SidebarNav, SidebarNavEvent, SidebarNavItem, SidebarNavLabels, SidebarNavPresentation,
+    SidebarSection,
+};
 use crate::ui::sticky::GroupStatus;
 use crate::ui::trajectory as trajectory_page;
+use crate::ui::transcript_components::{
+    StreamedContent, StreamingText, Thinking, ThinkingEvent, ThinkingLabels, ToolCall,
+    ToolCallEvent, ToolCallLabels, ToolGroup, ToolGroupEvent,
+};
 use crate::ui::{ansi, diff_review, mermaid, web_search};
 use crate::{keymap, theme};
+
+const TRANSCRIPT_SESSION_CACHE: usize = 6;
 
 /// One row of a picker menu, in pixels.
 const MODEL_PICKER_ROW_HEIGHT: f32 = 30.;
@@ -173,6 +186,7 @@ enum FormAction {
     McpAddChoose(String),
     McpAddCommand(String),
     McpPrompt { server: String, name: String },
+    RemoveProject(ProjectId),
     ConfirmCancelRun,
 }
 
@@ -218,6 +232,8 @@ struct TranscriptRowView {
 struct AssistantSelection {
     row: Arc<TranscriptRow>,
     selection: Entity<SelectionActions>,
+    language: tact_catalog::CatalogLocale,
+    appearance: Appearance,
 }
 
 impl Render for TranscriptRowView {
@@ -413,19 +429,46 @@ struct TranscriptScrollerView {
     scroller: Entity<TranscriptListState>,
     rows: Arc<Vec<Entity<TranscriptRowView>>>,
     root: WeakEntity<DesktopRoot>,
+    session_id: SessionId,
     language: tact_catalog::CatalogLocale,
     tail_following: bool,
     new_activity: bool,
     wheel_enabled: bool,
+    process_roles: Arc<Vec<ProcessRowRole>>,
+    process_groups: Arc<Vec<ProcessGroup>>,
+    expanded_process_groups: HashSet<RowId>,
     pending_scroll: Rc<Cell<f32>>,
     scroll_scheduled: Rc<Cell<bool>>,
     scroll_task: Rc<RefCell<Option<Task<()>>>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProcessRowRole {
+    Normal,
+    Summary(usize),
+    Hidden(usize),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ProcessGroup {
+    first_index: usize,
+    end_index: usize,
+    first_row: RowId,
+    first_ordinal: u64,
+    commands: usize,
+    files_read: usize,
+    files_changed: usize,
+    skills: usize,
+    other_tools: usize,
+    thoughts: usize,
+    active: bool,
 }
 
 impl TranscriptScrollerView {
     fn new(
         scroller: Entity<TranscriptListState>,
         root: WeakEntity<DesktopRoot>,
+        session_id: SessionId,
         language: tact_catalog::CatalogLocale,
         tail_following: bool,
     ) -> Self {
@@ -433,10 +476,14 @@ impl TranscriptScrollerView {
             scroller,
             rows: Arc::new(Vec::new()),
             root,
+            session_id,
             language,
             tail_following,
             new_activity: false,
             wheel_enabled: true,
+            process_roles: Arc::new(Vec::new()),
+            process_groups: Arc::new(Vec::new()),
+            expanded_process_groups: HashSet::new(),
             pending_scroll: Rc::new(Cell::new(0.)),
             scroll_scheduled: Rc::new(Cell::new(false)),
             scroll_task: Rc::new(RefCell::new(None)),
@@ -446,26 +493,45 @@ impl TranscriptScrollerView {
     fn set_state(
         &mut self,
         rows: Vec<Entity<TranscriptRowView>>,
-        language: tact_catalog::CatalogLocale,
-        tail_following: bool,
+        session_id: &SessionId,
+        snapshot: &DesktopSnapshot,
         new_activity: bool,
         wheel_enabled: bool,
         cx: &mut Context<Self>,
     ) -> bool {
+        let language = snapshot.language;
+        let tail_following = snapshot.tail_following;
         let rows_changed = self.rows.len() != rows.len()
             || self
                 .rows
                 .iter()
                 .zip(rows.iter())
                 .any(|(current, next)| current.entity_id() != next.entity_id());
+        let session_changed = self.session_id != *session_id;
+        if session_changed {
+            self.session_id = session_id.clone();
+            self.expanded_process_groups.clear();
+        }
+        if rows_changed {
+            self.rows = Arc::new(rows);
+        }
+        let (process_roles, process_groups) = build_process_layout(&self.rows, cx);
+        let layout_changed = self.process_roles.as_ref() != &process_roles
+            || self.process_groups.as_ref() != &process_groups;
+        self.process_roles = Arc::new(process_roles);
+        self.process_groups = Arc::new(process_groups);
+        self.expanded_process_groups.retain(|row| {
+            self.process_groups
+                .iter()
+                .any(|group| &group.first_row == row)
+        });
         let changed = rows_changed
+            || session_changed
+            || layout_changed
             || self.language != language
             || self.tail_following != tail_following
             || self.new_activity != new_activity
             || self.wheel_enabled != wheel_enabled;
-        if rows_changed {
-            self.rows = Arc::new(rows);
-        }
         self.language = language;
         self.tail_following = tail_following;
         self.new_activity = new_activity;
@@ -477,6 +543,24 @@ impl TranscriptScrollerView {
             cx.notify();
         }
         changed
+    }
+
+    fn toggle_process_group(&mut self, first_row: RowId, cx: &mut Context<Self>) {
+        let Some(group) = self
+            .process_groups
+            .iter()
+            .find(|group| group.first_row == first_row)
+            .cloned()
+        else {
+            return;
+        };
+        if !self.expanded_process_groups.remove(&first_row) {
+            self.expanded_process_groups.insert(first_row);
+        }
+        self.scroller.update(cx, |state, cx| {
+            state.remeasure_items(group.first_index..group.end_index, cx);
+        });
+        cx.notify();
     }
 
     fn back_to_bottom(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -555,24 +639,126 @@ impl TranscriptScrollerView {
     }
 }
 
+fn process_summary_element(
+    group: &ProcessGroup,
+    expanded: bool,
+    language: tact_catalog::CatalogLocale,
+    weak: WeakEntity<TranscriptScrollerView>,
+    cx: &gpui::App,
+) -> AnyElement {
+    let label = process_summary_text(group, language);
+    let first_row = group.first_row;
+    let ordinal = group.first_ordinal;
+    h_flex()
+        .id(SharedString::from(format!("process-summary-{ordinal}")))
+        .debug_selector(move || format!("transcript-process-summary-{ordinal}"))
+        .role(Role::Button)
+        .aria_label(label.clone())
+        .aria_expanded(expanded)
+        .focusable()
+        .tab_stop(true)
+        .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
+        .cursor_pointer()
+        .gap_1()
+        .items_center()
+        .rounded(px(6.))
+        .px_1()
+        .py_1()
+        .hover(|style| style.bg(cx.theme().muted.opacity(0.5)))
+        .child(
+            Icon::new(if expanded {
+                IconName::ChevronDown
+            } else {
+                IconName::ChevronRight
+            })
+            .xsmall()
+            .text_color(cx.theme().muted_foreground),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .truncate()
+                .text_size(px(13.))
+                .text_color(cx.theme().muted_foreground)
+                .child(label),
+        )
+        .on_click(move |_, _, cx| {
+            let _ = weak.update(cx, |view, cx| {
+                view.toggle_process_group(first_row, cx);
+            });
+        })
+        .into_any_element()
+}
+
 impl Render for TranscriptScrollerView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let rows = self.rows.clone();
+        let process_roles = self.process_roles.clone();
+        let process_groups = self.process_groups.clone();
+        let expanded_process_groups = self.expanded_process_groups.clone();
+        let language = self.language;
+        let process_weak = cx.weak_entity();
         let list_state = self.scroller.read(cx).list_state.clone();
         let item_count = list_state.item_count();
-        let list = list(list_state.clone(), move |index, _, _| {
+        let list = list(list_state.clone(), move |index, _, cx| {
+            let role = process_roles
+                .get(index)
+                .copied()
+                .unwrap_or(ProcessRowRole::Normal);
+            let process_group = match role {
+                ProcessRowRole::Summary(group) | ProcessRowRole::Hidden(group) => {
+                    process_groups.get(group)
+                }
+                ProcessRowRole::Normal => None,
+            };
+            let process_expanded = process_group
+                .is_some_and(|group| expanded_process_groups.contains(&group.first_row));
+            if matches!(role, ProcessRowRole::Hidden(_)) && !process_expanded {
+                return div().into_any_element();
+            }
+            let tight_process_gap = rows
+                .get(index)
+                .is_some_and(|view| is_process_row(&view.read(cx).row.body))
+                && rows
+                    .get(index + 1)
+                    .is_some_and(|view| is_process_row(&view.read(cx).row.body));
+            let row_element = rows
+                .get(index)
+                .cloned()
+                .map(IntoElement::into_any_element)
+                .unwrap_or_else(|| div().into_any_element());
+            let (content, tight) = match (role, process_group) {
+                (ProcessRowRole::Summary(_), Some(group)) if !process_expanded => (
+                    process_summary_element(group, false, language, process_weak.clone(), cx),
+                    false,
+                ),
+                (ProcessRowRole::Summary(_), Some(group)) => (
+                    v_flex()
+                        .w_full()
+                        .gap(px(2.))
+                        .child(process_summary_element(
+                            group,
+                            true,
+                            language,
+                            process_weak.clone(),
+                            cx,
+                        ))
+                        .child(row_element)
+                        .into_any_element(),
+                    tight_process_gap,
+                ),
+                _ => (row_element, tight_process_gap),
+            };
             div()
                 .w_full()
                 .min_w_0()
                 .px_3()
-                .when(index + 1 < item_count, |this| this.pb_8())
                 .refine_style(&transcript_row_style())
-                .child(
-                    rows.get(index)
-                        .cloned()
-                        .map(IntoElement::into_any_element)
-                        .unwrap_or_else(|| div().into_any_element()),
-                )
+                .when(index + 1 < item_count, |this| {
+                    this.pb(px(if tight { 2. } else { 12. }))
+                })
+                .child(content)
                 .into_any_element()
         })
         .size_full()
@@ -599,7 +785,7 @@ impl Render for TranscriptScrollerView {
                 });
             },
         );
-        let show_back_to_bottom = self.scroller.read(cx).is_scrolled_up() || !self.tail_following;
+        let show_back_to_bottom = self.scroller.read(cx).is_scrolled_up();
         div()
             .relative()
             .size_full()
@@ -620,13 +806,14 @@ pub(crate) struct DesktopRoot {
     prompt: Entity<PromptBar>,
     sidebar_nav: Entity<SidebarNav>,
     extensions_table: Entity<FilterTable>,
-    assistant_selections: HashMap<(String, RowId), AssistantSelection>,
-    transcript_rows: HashMap<RowId, Entity<TranscriptRowView>>,
+    assistant_selections: HashMap<(String, SessionId, RowId), AssistantSelection>,
+    transcript_rows: HashMap<(SessionId, RowId), Entity<TranscriptRowView>>,
     pending_row_updates: HashSet<RowId>,
     /// Thinking rows the reader expanded inline. The `Thinking` component is
     /// controlled, so the shell owns this state and the trace stays in the
     /// transcript instead of opening a reader.
-    expanded_thinking: HashSet<RowId>,
+    expanded_thinking: HashSet<(SessionId, RowId)>,
+    transcript_session_cache: VecDeque<SessionId>,
     command_search: Entity<CommandSearch>,
     command_scope: Option<CommandId>,
     command_hit_count: usize,
@@ -658,7 +845,7 @@ pub(crate) struct DesktopRoot {
     model_picker_query: String,
     /// Scroll owner for the model rows, so keyboard selection can bring the
     /// highlighted row into view.
-    model_picker_scroll: ScrollHandle,
+    model_picker_scroll: RowScroll,
     /// Bumped whenever an overlay opens, so the entrance animation plays for
     /// each one instead of only for the first.
     overlay_epoch: u64,
@@ -692,6 +879,7 @@ pub(crate) struct DesktopRoot {
     pending_voice_text: Option<String>,
     history_cursor: Option<usize>,
     session_project_filter: Option<ProjectId>,
+    collapsed_session_projects: HashSet<ProjectId>,
     reset_session_search_on_open: bool,
     toast: Option<Toast>,
     focus_restore: crate::ui::shell::FocusRestoration<gpui::FocusHandle>,
@@ -774,10 +962,16 @@ impl DesktopRoot {
         };
         let scroller = cx.new(|_| TranscriptListState::new(snapshot.transcript.len()));
         let root_weak = cx.weak_entity();
+        let initial_session_id = snapshot
+            .session
+            .id
+            .clone()
+            .unwrap_or_else(|| SessionId(format!("epoch-{}", snapshot.session.epoch.0)));
         let transcript_scroller = cx.new(|_| {
             TranscriptScrollerView::new(
                 scroller.clone(),
                 root_weak.clone(),
+                initial_session_id,
                 snapshot.language,
                 snapshot.tail_following,
             )
@@ -876,7 +1070,7 @@ impl DesktopRoot {
         let sidebar_subscription = cx.subscribe_in(
             &sidebar_nav,
             window,
-            |this, _, event: &SidebarNavEvent, _, cx| match event {
+            |this, _, event: &SidebarNavEvent, window, cx| match event {
                 SidebarNavEvent::Selected { item_id, .. } => {
                     this.dispatch(DesktopIntent::ResumeSession {
                         session_id: SessionId(item_id.to_string()),
@@ -888,6 +1082,41 @@ impl DesktopRoot {
                 SidebarNavEvent::QueryChanged { query, .. } => {
                     this.sidebar_query = query.to_string();
                     cx.notify();
+                }
+                SidebarNavEvent::SectionToggled {
+                    section_id,
+                    collapsed,
+                    ..
+                } => {
+                    if let Some(project_id) = section_id.strip_prefix("sessions-project-") {
+                        let project_id = ProjectId(project_id.to_string());
+                        if *collapsed {
+                            this.collapsed_session_projects.insert(project_id);
+                        } else {
+                            this.collapsed_session_projects.remove(&project_id);
+                        }
+                        cx.notify();
+                    }
+                }
+                SidebarNavEvent::SectionActionRequested { section_id, .. } => {
+                    if let Some(project_id) = section_id.strip_prefix("sessions-project-") {
+                        this.open_remove_project(ProjectId(project_id.to_string()), window, cx);
+                    }
+                }
+                SidebarNavEvent::ItemActionRequested { item_id, .. } => {
+                    if let Some(session) = this
+                        .snapshot
+                        .sessions
+                        .items
+                        .iter()
+                        .find(|session| session.id == item_id.as_ref())
+                    {
+                        let archived = session.archived_at.is_none();
+                        this.dispatch(DesktopIntent::SetSessionArchived {
+                            session_id: SessionId(item_id.to_string()),
+                            archived,
+                        });
+                    }
                 }
                 SidebarNavEvent::CollapsedChanged { .. } => {}
             },
@@ -1021,7 +1250,7 @@ impl DesktopRoot {
                     // A query change reorders nothing but rebuilds the visible
                     // set, so the old cursor would point at a different model.
                     this.model_picker_cursor = 0;
-                    this.model_picker_scroll.set_offset(point(px(0.), px(0.)));
+                    this.model_picker_scroll.reset();
                     cx.notify();
                 }
             },
@@ -1053,6 +1282,7 @@ impl DesktopRoot {
             transcript_rows: HashMap::new(),
             pending_row_updates: HashSet::new(),
             expanded_thinking: HashSet::new(),
+            transcript_session_cache: VecDeque::new(),
             command_search,
             command_scope: None,
             command_hit_count: 0,
@@ -1079,7 +1309,7 @@ impl DesktopRoot {
             model_picker_cursor: 0,
             model_search,
             model_picker_query: String::new(),
-            model_picker_scroll: ScrollHandle::new(),
+            model_picker_scroll: RowScroll::default(),
             overlay_epoch: 0,
             submitted_gates: HashSet::new(),
             #[cfg(test)]
@@ -1096,6 +1326,7 @@ impl DesktopRoot {
             pending_voice_text: None,
             history_cursor: None,
             session_project_filter: None,
+            collapsed_session_projects: HashSet::new(),
             reset_session_search_on_open: false,
             toast: None,
             focus_restore: crate::ui::shell::FocusRestoration::default(),
@@ -1305,10 +1536,15 @@ impl DesktopRoot {
         )
     }
 
+    fn toggle_session_project(&mut self, project_id: ProjectId) {
+        if !self.collapsed_session_projects.remove(&project_id) {
+            self.collapsed_session_projects.insert(project_id);
+        }
+    }
+
     fn sync_sidebar_nav(&self, window: &mut Window, cx: &mut Context<Self>) {
         let today = chrono::Local::now().date_naive();
-        let yesterday = today - chrono::Duration::days(1);
-        let mut buckets: [Vec<SidebarNavItem>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+        let mut groups: Vec<(ProjectId, String, String, Vec<SidebarNavItem>)> = Vec::new();
         // `sessions.selected` is set when the click lands, before the new host
         // has produced a snapshot. Prefer it so the rail answers immediately;
         // `session.id` still covers the startup frame where no row is selected.
@@ -1323,54 +1559,76 @@ impl DesktopRoot {
                 self.snapshot.language,
             );
             let updated = session.updated_at.with_timezone(&chrono::Local);
-            let day = updated.date_naive();
-            let bucket = if day >= today {
-                0
-            } else if day == yesterday {
-                1
-            } else {
-                2
-            };
-            let trailing = if bucket == 0 {
+            let trailing = if updated.date_naive() >= today {
                 updated.format("%H:%M").to_string()
             } else {
                 updated.format("%b %-d").to_string()
             };
+            let project_name = self
+                .snapshot
+                .projects
+                .iter()
+                .find(|project| project.id.as_ref() == Some(&session.project_id))
+                .map(project_identity_label)
+                .or_else(|| {
+                    (self.snapshot.project.id.as_ref() == Some(&session.project_id))
+                        .then(|| project_identity_label(&self.snapshot.project))
+                })
+                .or_else(|| {
+                    session
+                        .root_dir
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .map(str::to_owned)
+                })
+                .unwrap_or_else(|| self.text(TextKey::Projects).to_string());
             let item = SidebarNavItem::new(session.id.clone(), title)
                 .detail(detail)
-                .trailing(trailing)
-                .disabled(locked);
+                .trailing(trailing);
             let item = if locked {
-                item.badge(self.text(TextKey::Locked).to_string())
+                item.disabled(true)
+                    .badge(self.text(TextKey::Locked).to_string())
             } else {
-                item
+                item.context_action(
+                    self.text(if session.archived_at.is_some() {
+                        TextKey::Restore
+                    } else {
+                        TextKey::Archive
+                    })
+                    .to_string(),
+                )
             };
-            buckets[bucket].push(item);
+            let group_id = format!("sessions-project-{}", session.project_id.0);
+            if let Some((_, _, _, items)) = groups
+                .iter_mut()
+                .find(|(project_id, _, _, _)| project_id == &session.project_id)
+            {
+                items.push(item);
+            } else {
+                groups.push((
+                    session.project_id.clone(),
+                    group_id,
+                    project_name,
+                    vec![item],
+                ));
+            }
         }
         let (labels, active) = (
             sidebar_nav_labels(self.snapshot.language),
             active_id.map(|id| id.0.clone()),
         );
-        let (today_label, yesterday_label, earlier_label) = match self.snapshot.language {
-            tact_catalog::CatalogLocale::En => ("TODAY", "YESTERDAY", "EARLIER"),
-            tact_catalog::CatalogLocale::Zh => ("今天", "昨天", "更早"),
-        };
-        let mut sections = Vec::new();
-        for (index, label) in [today_label, yesterday_label, earlier_label]
+        let mut sections: Vec<SidebarSection> = groups
             .into_iter()
-            .enumerate()
-        {
-            if buckets[index].is_empty() {
-                continue;
-            }
-            sections.push(
-                SidebarSection::new(
-                    SharedString::from(format!("sessions-{index}")),
-                    SharedString::from(label),
-                )
-                .items(std::mem::take(&mut buckets[index])),
-            );
-        }
+            .map(|(project_id, id, label, items)| {
+                let count = items.len();
+                SidebarSection::new(SharedString::from(id), SharedString::from(label.clone()))
+                    .leading(project_initials(&label))
+                    .meta(count.to_string())
+                    .action(self.text(TextKey::RemoveProject))
+                    .collapsed(self.collapsed_session_projects.contains(&project_id))
+                    .items(items)
+            })
+            .collect();
         if sections.is_empty() {
             sections.push(
                 SidebarSection::new("sessions", self.text(TextKey::Sessions)).items(Vec::new()),
@@ -1382,6 +1640,8 @@ impl DesktopRoot {
             nav.set_sections(sections, cx);
             if let Some(active) = active {
                 nav.set_active_item(active, cx);
+            } else {
+                nav.clear_active_item(cx);
             }
         });
     }
@@ -1546,7 +1806,7 @@ impl DesktopRoot {
                 window,
                 cx,
             );
-            table.set_rows(Progressive::complete(Arc::from(rows)), cx);
+            table.set_rows(Arc::from(rows), cx);
         });
         has_rows
     }
@@ -1626,16 +1886,15 @@ impl DesktopRoot {
                 );
                 let commit_gap = commit.revision > self.last_commit_revision.saturating_add(1);
                 let epoch_changed = self.snapshot.session.epoch != commit.snapshot.session.epoch;
+                if epoch_changed {
+                    self.pending_row_updates.clear();
+                }
                 self.pending_row_updates
                     .extend(commit.dirty_rows.iter().copied());
-                if commit_gap || epoch_changed {
+                if commit_gap && !epoch_changed {
                     self.pending_row_updates
                         .extend(commit.snapshot.transcript.iter().map(|row| row.id));
                 }
-                // Keep the row views across the epoch boundary. Every row is
-                // in `pending_row_updates` below, so each view is refreshed
-                // with its new row; clearing the map would drop and rebuild
-                // one entity per message on every session switch.
                 if epoch_changed {
                     self.submitted_gates.clear();
                 }
@@ -1670,13 +1929,7 @@ impl DesktopRoot {
                 let became_ready = self.snapshot.session.phase != SessionPhase::Ready
                     && commit.snapshot.session.phase == SessionPhase::Ready;
                 let appearance_changed = self.snapshot.appearance != commit.snapshot.appearance;
-                let session_changed = self.snapshot.session.epoch != commit.snapshot.session.epoch;
                 self.snapshot = commit.snapshot;
-                if session_changed {
-                    // Row ids restart per session; an expansion from the old
-                    // session must not open a same-numbered row here.
-                    self.expanded_thinking.clear();
-                }
                 let pending_gates = self.snapshot.pending_gates.len();
                 if pending_gates != self.last_badge {
                     self.last_badge = pending_gates;
@@ -1954,7 +2207,8 @@ impl DesktopRoot {
 
     #[cfg(feature = "ui-capture")]
     pub(crate) fn capture_expand_thinking(&mut self, row: RowId, cx: &mut Context<Self>) {
-        self.expanded_thinking.insert(row);
+        let session_id = self.transcript_session_id();
+        self.expanded_thinking.insert((session_id, row));
         self.pending_row_updates.insert(row);
         cx.notify();
     }
@@ -3017,7 +3271,7 @@ impl DesktopRoot {
         };
         // Each opening starts from the unfiltered list, at the selected model.
         self.model_picker_query.clear();
-        self.model_picker_scroll.set_offset(point(px(0.), px(0.)));
+        self.model_picker_scroll.reset();
         self.model_picker_cursor = models
             .iter()
             .position(|model| model.as_ref() == selected)
@@ -3052,29 +3306,14 @@ impl DesktopRoot {
 
     /// Keeps the keyboard cursor on screen after it moves.
     ///
-    /// Rows are a fixed height, so the visible band is arithmetic rather than
-    /// a query to the scroll view. The scroll offset is read back on every
-    /// move, which is what lets the pointer and the keyboard share the list:
-    /// a wheel scroll is respected, not undone by the next arrow key.
+    /// Rows are a fixed height, so the visible band is a row window rather
+    /// than a pixel scroll. Wheel and keyboard share the same top row.
     fn reveal_model_cursor(&self, cx: &mut Context<Self>) {
-        let count = self.model_picker_len();
-        if count == 0 {
-            return;
-        }
-        let row = px(MODEL_PICKER_ROW_HEIGHT);
-        let visible = px(MODEL_PICKER_ROW_HEIGHT * MODEL_PICKER_VISIBLE_ROWS as f32);
-        let top = self.model_picker_scroll.offset().y;
-        let cursor_top = row * self.model_picker_cursor as f32;
-        let cursor_bottom = cursor_top + row;
-        let offset = if cursor_top < top {
-            Some(cursor_top)
-        } else if cursor_bottom > top + visible {
-            Some(cursor_bottom - visible)
-        } else {
-            None
-        };
-        if let Some(offset) = offset {
-            self.model_picker_scroll.set_offset(point(px(0.), offset));
+        if self.model_picker_scroll.scroll_to(
+            self.model_picker_cursor,
+            self.model_picker_len(),
+            MODEL_PICKER_VISIBLE_ROWS,
+        ) {
             cx.notify();
         }
     }
@@ -3421,6 +3660,7 @@ impl DesktopRoot {
                     cx,
                 );
             }
+            FormAction::RemoveProject(_) => {}
             FormAction::ConfirmCancelRun => {}
             FormAction::McpAddChoose(_) => {}
             FormAction::Command(id) => {
@@ -3508,6 +3748,15 @@ impl DesktopRoot {
             }
             FormAction::McpAddChoose(_) => {}
             FormAction::McpAddTransport(_) | FormAction::McpAddCommand(_) => {}
+            FormAction::RemoveProject(project_id) => {
+                if value == "remove" {
+                    if self.session_project_filter.as_ref() == Some(&project_id) {
+                        self.session_project_filter = None;
+                    }
+                    self.collapsed_session_projects.remove(&project_id);
+                    self.dispatch(DesktopIntent::RemoveProject { project_id });
+                }
+            }
             FormAction::ConfirmCancelRun => {
                 if value == "stop" {
                     self.dispatch(DesktopIntent::CancelRun);
@@ -3811,7 +4060,7 @@ impl DesktopRoot {
             .attachments
             .iter()
             .map(|path| {
-                PromptAttachment::new(
+                AttachmentItem::new(
                     path.display().to_string(),
                     path.file_name()
                         .and_then(|name| name.to_str())
@@ -3949,13 +4198,38 @@ impl DesktopRoot {
         .detach();
     }
 
-    fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let project = self
+    fn open_remove_project(
+        &mut self,
+        project_id: ProjectId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let name = self
             .snapshot
-            .project
-            .repository
-            .clone()
-            .unwrap_or_else(|| self.snapshot.project.display_name.clone());
+            .projects
+            .iter()
+            .find(|project| project.id.as_ref() == Some(&project_id))
+            .map(project_identity_label)
+            .unwrap_or_else(|| project_id.0.clone());
+        self.remember_focus(window, cx);
+        self.set_form(
+            FormState {
+                title: self.text(TextKey::RemoveProject).into(),
+                action: FormAction::RemoveProject(project_id),
+                field: Some(format!("{name}\n{}", self.text(TextKey::RemoveProjectHint))),
+                required: false,
+                choice: Some(vec![
+                    (self.text(TextKey::Remove).into(), "remove".into()),
+                    (self.text(TextKey::Cancel).into(), "cancel".into()),
+                ]),
+            },
+            window,
+            cx,
+        );
+    }
+
+    fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let project = project_identity_label(&self.snapshot.project);
         let session_label = self
             .snapshot
             .session
@@ -4066,6 +4340,7 @@ impl DesktopRoot {
                     .child(
                         h_flex()
                             .id("workspace-switcher")
+                            .debug_selector(|| "workspace-switcher".into())
                             .role(Role::Button)
                             .focusable()
                             .tab_stop(true)
@@ -4263,26 +4538,6 @@ impl DesktopRoot {
         // whatever the pinned blocks below leave, so every pixel the removed
         // DURABLE block freed goes to the sessions. Their height is
         // `flex_none` chrome; the list's `min_h` keeps a short window usable.
-        let project = self
-            .snapshot
-            .project
-            .repository
-            .clone()
-            .unwrap_or_else(|| self.snapshot.project.display_name.clone());
-        let session_count = self.snapshot.sessions.items.len();
-        let project_meta = match (
-            self.snapshot.project.branch.as_deref(),
-            self.snapshot.language,
-        ) {
-            (Some(branch), tact_catalog::CatalogLocale::En) => {
-                format!("{session_count} sessions · {branch}")
-            }
-            (Some(branch), tact_catalog::CatalogLocale::Zh) => {
-                format!("{session_count} 个会话 · {branch}")
-            }
-            (None, tact_catalog::CatalogLocale::En) => format!("{session_count} sessions"),
-            (None, tact_catalog::CatalogLocale::Zh) => format!("{session_count} 个会话"),
-        };
         self.sync_sidebar_nav(window, cx);
 
         v_flex()
@@ -4301,127 +4556,6 @@ impl DesktopRoot {
             .border_r(px(theme::border_width()))
             .border_color(cx.theme().border)
             .bg(cx.theme().sidebar)
-            .child(
-                h_flex()
-                    .id("open-project")
-                    .role(Role::Button)
-                    .focusable()
-                    .tab_stop(true)
-                    .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
-                    .aria_label(self.text(TextKey::OpenProject))
-                    .cursor_pointer()
-                    .items_center()
-                    .gap(px(9.))
-                    .rounded(px(8.))
-                    .border_1()
-                    .border_color(cx.theme().sidebar_border)
-                    .bg(cx.theme().popover)
-                    .px(px(8.))
-                    .py(px(5.))
-                    .hover(|style| style.bg(cx.theme().muted))
-                    .child(
-                        div()
-                            .flex_none()
-                            .size(px(29.))
-                            .rounded(px(8.))
-                            .bg(cx.theme().accent)
-                            .text_size(px(10.))
-                            .font_family("Lilex")
-                            .font_semibold()
-                            .text_color(cx.theme().link)
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(project_initials(project.as_ref())),
-                    )
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .gap_0()
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(px(11.))
-                                    .font_semibold()
-                                    .child(project.to_string()),
-                            )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(px(10.))
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(project_meta.clone()),
-                            ),
-                    )
-                    .when(!self.snapshot.project.available, |row| {
-                        row.child(
-                            div()
-                                .flex_none()
-                                .rounded_full()
-                                .bg(cx.theme().danger)
-                                .px_2()
-                                .py_0p5()
-                                .text_xs()
-                                .text_color(cx.theme().primary_foreground)
-                                .child(self.text(TextKey::Unavailable)),
-                        )
-                    })
-                    .child(
-                        Icon::new(IconName::ChevronsUpDown)
-                            .size(px(13.))
-                            .text_color(cx.theme().muted_foreground),
-                    )
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.open_project_picker(cx);
-                    })),
-            )
-            .child(
-                h_flex()
-                    .id("new-run")
-                    .debug_selector(|| "new-run".into())
-                    .role(Role::Button)
-                    .focusable()
-                    .tab_stop(true)
-                    .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
-                    .aria_label(self.text(TextKey::NewSession))
-                    .cursor_pointer()
-                    .w_full()
-                    .h(px(37.))
-                    .mt(px(8.))
-                    .rounded(px(7.))
-                    .bg(cx.theme().primary)
-                    .text_color(cx.theme().primary_foreground)
-                    .px(px(10.))
-                    .gap(px(9.))
-                    .items_center()
-                    .child(Icon::new(IconName::Plus).size(px(15.)))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .whitespace_nowrap()
-                            .text_sm()
-                            .font_semibold()
-                            .child(self.text(TextKey::NewRun)),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .rounded(px(5.))
-                            .bg(gpui::rgba(0xffffff33))
-                            .px(px(5.))
-                            .py(px(1.))
-                            .text_size(px(10.))
-                            .font_family("Lilex")
-                            .child(keymap::new_session_hint()),
-                    )
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.dispatch(DesktopIntent::NewSession);
-                        cx.notify();
-                    })),
-            )
             .child(
                 h_flex()
                     .id("rail-search")
@@ -4794,13 +4928,75 @@ impl DesktopRoot {
         }
     }
 
+    fn transcript_session_id(&self) -> SessionId {
+        self.snapshot
+            .session
+            .id
+            .clone()
+            .unwrap_or_else(|| SessionId(format!("epoch-{}", self.snapshot.session.epoch.0)))
+    }
+
+    fn touch_transcript_session_cache(&mut self, session_id: &SessionId) {
+        self.transcript_session_cache
+            .retain(|cached| cached != session_id);
+        self.transcript_session_cache.push_front(session_id.clone());
+        while self.transcript_session_cache.len() > TRANSCRIPT_SESSION_CACHE {
+            let Some(evicted) = self.transcript_session_cache.pop_back() else {
+                break;
+            };
+            self.assistant_selections
+                .retain(|(_, cached_session, _), _| cached_session != &evicted);
+            self.transcript_rows
+                .retain(|(cached_session, _), _| cached_session != &evicted);
+            self.expanded_thinking
+                .retain(|(cached_session, _)| cached_session != &evicted);
+        }
+    }
+
     fn sync_assistant_selections(
         &mut self,
         transcript: &tact_desktop_core::TranscriptView,
         scope: &str,
+        session_id: &SessionId,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> HashMap<(String, RowId), Entity<SelectionActions>> {
+    ) -> HashMap<(String, SessionId, RowId), Entity<SelectionActions>> {
+        fn assistant_text_style(appearance: Appearance) -> TextViewStyle {
+            TextViewStyle {
+                paragraph_gap: gpui::rems(0.56),
+                heading_font_size: Some(std::sync::Arc::new(|level, _base| match level {
+                    1 => px(21.),
+                    2 => px(18.),
+                    3 => px(16.),
+                    _ => px(13.),
+                })),
+                is_dark: appearance == Appearance::Dark,
+                ..Default::default()
+            }
+        }
+
+        fn configure_selection(
+            selection: &Entity<SelectionActions>,
+            language: tact_catalog::CatalogLocale,
+            appearance: Appearance,
+            cx: &mut Context<DesktopRoot>,
+        ) {
+            selection.update(cx, |selection, cx| {
+                selection.set_toolbar_label(i18n::text(language, TextKey::SelectionActions), cx);
+                selection.set_actions(
+                    [
+                        SelectionAction::new("ask", i18n::text(language, TextKey::Ask)),
+                        SelectionAction::new("explain", i18n::text(language, TextKey::Explain)),
+                        SelectionAction::new("rewrite", i18n::text(language, TextKey::Rewrite)),
+                    ],
+                    cx,
+                );
+                selection.set_text_style(assistant_text_style(appearance), cx);
+            });
+        }
+
+        let language = self.snapshot.language;
+        let appearance = self.snapshot.appearance;
         let mut live = HashSet::new();
         let mut selections = HashMap::new();
         for row in transcript.iter() {
@@ -4808,13 +5004,24 @@ impl DesktopRoot {
                 continue;
             };
             live.insert(row.id);
-            let key = (scope.to_string(), row.id);
-            let cached = self
-                .assistant_selections
-                .get(&key)
-                .map(|entry| (entry.row.clone(), entry.selection.clone()));
-            if let Some((cached_row, selection)) = cached {
+            let key = (scope.to_string(), session_id.clone(), row.id);
+            let cached = self.assistant_selections.get(&key).map(|entry| {
+                (
+                    entry.row.clone(),
+                    entry.selection.clone(),
+                    entry.language,
+                    entry.appearance,
+                )
+            });
+            if let Some((cached_row, selection, cached_language, cached_appearance)) = cached {
                 if Arc::ptr_eq(&cached_row, row) {
+                    if cached_language != language || cached_appearance != appearance {
+                        configure_selection(&selection, language, appearance, cx);
+                        if let Some(entry) = self.assistant_selections.get_mut(&key) {
+                            entry.language = language;
+                            entry.appearance = appearance;
+                        }
+                    }
                     selections.insert(key, selection);
                     continue;
                 }
@@ -4822,11 +5029,16 @@ impl DesktopRoot {
                 selection.update(cx, |selection, cx| {
                     selection.set_markdown(display_markdown, cx);
                 });
+                if cached_language != language || cached_appearance != appearance {
+                    configure_selection(&selection, language, appearance, cx);
+                }
                 self.assistant_selections.insert(
                     key.clone(),
                     AssistantSelection {
                         row: row.clone(),
                         selection: selection.clone(),
+                        language,
+                        appearance,
                     },
                 );
                 selections.insert(key, selection);
@@ -4845,37 +5057,8 @@ impl DesktopRoot {
                 // a surface.
                 .frameless()
                 .natural_height()
-                .text_style(TextViewStyle {
-                    paragraph_gap: gpui::rems(0.56),
-                    heading_font_size: Some(std::sync::Arc::new(|level, _base| match level {
-                        1 => px(21.),
-                        2 => px(18.),
-                        3 => px(16.),
-                        _ => px(13.),
-                    })),
-                    is_dark: self.snapshot.appearance == Appearance::Dark,
-                    ..Default::default()
-                })
             });
-            selection.update(cx, |selection, cx| {
-                selection.set_actions(
-                    [
-                        SelectionAction::new(
-                            "ask",
-                            i18n::text(self.snapshot.language, TextKey::Ask),
-                        ),
-                        SelectionAction::new(
-                            "explain",
-                            i18n::text(self.snapshot.language, TextKey::Explain),
-                        ),
-                        SelectionAction::new(
-                            "rewrite",
-                            i18n::text(self.snapshot.language, TextKey::Rewrite),
-                        ),
-                    ],
-                    cx,
-                );
-            });
+            configure_selection(&selection, language, appearance, cx);
             let subscription = cx.subscribe_in(
                 &selection,
                 window,
@@ -4902,12 +5085,16 @@ impl DesktopRoot {
                 AssistantSelection {
                     row: row.clone(),
                     selection: selection.clone(),
+                    language,
+                    appearance,
                 },
             );
             selections.insert(key, selection);
         }
         self.assistant_selections
-            .retain(|(key_scope, row_id), _| key_scope != scope || live.contains(row_id));
+            .retain(|(key_scope, key_session, row_id), _| {
+                key_session != session_id || key_scope != scope || live.contains(row_id)
+            });
         selections
     }
 
@@ -5752,9 +5939,13 @@ impl DesktopRoot {
                 )
                 .into_any_element();
         }
-        let assistant_selections = self.sync_assistant_selections(&transcript, "main", window, cx);
+        let session_id = self.transcript_session_id();
+        self.touch_transcript_session_cache(&session_id);
+        let assistant_selections =
+            self.sync_assistant_selections(&transcript, "main", &session_id, window, cx);
         let row_views = self.sync_transcript_row_views(
             &transcript,
+            &session_id,
             snapshot.clone(),
             &assistant_selections,
             cx,
@@ -5764,8 +5955,8 @@ impl DesktopRoot {
         let scroller_changed = self.transcript_scroller.update(cx, |view, cx| {
             view.set_state(
                 row_views,
-                snapshot.language,
-                snapshot.tail_following,
+                &session_id,
+                &snapshot,
                 new_activity,
                 wheel_enabled,
                 cx,
@@ -5820,12 +6011,13 @@ impl DesktopRoot {
                     .flex_none()
                     .gap_2()
                     .px_0()
-                    .pt(px(50.))
+                    .pt(px(24.))
                     .pb(px(28.))
                     .border_b_1()
                     .border_color(cx.theme().border)
                     .child(
                         h_flex()
+                            .debug_selector(|| "transcript-run-meta".into())
                             .gap_2()
                             .items_center()
                             .text_size(px(10.))
@@ -5910,32 +6102,46 @@ impl DesktopRoot {
     fn sync_transcript_row_views(
         &mut self,
         transcript: &TranscriptView,
+        session_id: &SessionId,
         snapshot: Arc<DesktopSnapshot>,
-        assistant_selections: &HashMap<(String, RowId), Entity<SelectionActions>>,
+        assistant_selections: &HashMap<(String, SessionId, RowId), Entity<SelectionActions>>,
         cx: &mut Context<Self>,
     ) -> Vec<Entity<TranscriptRowView>> {
         let live = transcript.iter().map(|row| row.id).collect::<HashSet<_>>();
-        self.transcript_rows.retain(|id, _| live.contains(id));
+        self.transcript_rows.retain(|(cached_session, row_id), _| {
+            cached_session != session_id || live.contains(row_id)
+        });
         let mut views = Vec::with_capacity(transcript.len());
         for row in transcript.iter() {
+            let key = (session_id.clone(), row.id);
             let selection = assistant_selections
-                .get(&("main".to_string(), row.id))
+                .get(&("main".to_string(), session_id.clone(), row.id))
                 .cloned();
-            let thinking_open = self.expanded_thinking.contains(&row.id);
+            let thinking_open = self
+                .expanded_thinking
+                .contains(&(session_id.clone(), row.id));
+            let cached_view = self.transcript_rows.get(&key).cloned();
             let needs_update = self.pending_row_updates.contains(&row.id)
-                || !self.transcript_rows.contains_key(&row.id);
-            let view = if let Some(view) = self.transcript_rows.get(&row.id).cloned() {
-                let context_changed = view.read(cx).snapshot.appearance != snapshot.appearance
-                    || view.read(cx).snapshot.language != snapshot.language
-                    || view.read(cx).snapshot.show_hook_output != snapshot.show_hook_output
-                    || view.read(cx).thinking_open != thinking_open;
-                if needs_update || context_changed {
+                || cached_view
+                    .as_ref()
+                    .is_none_or(|view| !Arc::ptr_eq(&view.read(cx).row, row));
+            let view = if let Some(view) = cached_view {
+                let cached = view.read(cx);
+                let snapshot_changed = !Arc::ptr_eq(&cached.snapshot, &snapshot);
+                let context_changed = cached.snapshot.appearance != snapshot.appearance
+                    || cached.snapshot.language != snapshot.language
+                    || cached.snapshot.show_hook_output != snapshot.show_hook_output
+                    || (needs_update && cached.snapshot.session.epoch != snapshot.session.epoch)
+                    || cached.thinking_open != thinking_open;
+                if needs_update || context_changed || snapshot_changed {
                     view.update(cx, |view, cx| {
                         view.row = row.clone();
                         view.snapshot = snapshot.clone();
                         view.assistant_selection = selection;
                         view.thinking_open = thinking_open;
-                        cx.notify();
+                        if needs_update || context_changed {
+                            cx.notify();
+                        }
                     });
                 }
                 view
@@ -5949,7 +6155,7 @@ impl DesktopRoot {
                     thinking_open,
                     gate_focus: cx.focus_handle(),
                 });
-                self.transcript_rows.insert(row.id, view.clone());
+                self.transcript_rows.insert(key, view.clone());
                 view
             };
             views.push(view);
@@ -7396,11 +7602,14 @@ impl DesktopRoot {
                             // choosing it, the way the prototype's review
                             // action does. The row owns the handle so it
                             // survives the transcript's row virtualization.
-                            if let Some(row) = this.snapshot.transcript.get(index)
-                                && let Some(view) = this.transcript_rows.get(&row.id).cloned()
-                            {
-                                let focus = view.read(cx).gate_focus.clone();
-                                focus.focus(window, cx);
+                            if let Some(row) = this.snapshot.transcript.get(index) {
+                                let session_id = this.transcript_session_id();
+                                if let Some(view) =
+                                    this.transcript_rows.get(&(session_id, row.id)).cloned()
+                                {
+                                    let focus = view.read(cx).gate_focus.clone();
+                                    focus.focus(window, cx);
+                                }
                             }
                         }
                         if let Some((group_id, collapsed, tool_to_expand)) = group {
@@ -8524,6 +8733,7 @@ impl DesktopRoot {
                 Some(
                     v_flex()
                         .id("command-form-overlay")
+                        .debug_selector(|| "command-form-overlay".into())
                         .role(Role::Dialog)
                         .aria_label(form.title.clone())
                         .w(overlay_width(window, 480.))
@@ -8563,6 +8773,10 @@ impl DesktopRoot {
                                     gpui_base::Button::new(SharedString::from(format!(
                                         "form-choice-{value}"
                                     )))
+                                    .debug_selector({
+                                        let selector = format!("form-choice-{value}");
+                                        move || selector.clone()
+                                    })
                                     .aria_label(label.clone())
                                     .rounded_md()
                                     .border_1()
@@ -8906,9 +9120,16 @@ impl DesktopRoot {
             let label = self.text(TextKey::ChangedFiles);
             let table = cx.new(|cx| DiffTable::new("reader-diff", label, window, cx));
             table.update(cx, |table, cx| {
+                table.set_labels(
+                    DiffTableLabels {
+                        accept: self.text(TextKey::Accept).into(),
+                        reject: self.text(TextKey::Reject).into(),
+                    },
+                    cx,
+                );
                 table.set_columns(
                     [
-                        DiffColumn::new("file", "File").width_in_rems(20.),
+                        DiffColumn::new("file", self.text(TextKey::File)).width_in_rems(20.),
                         DiffColumn::new("added", "+").fixed(true).width_in_rems(3.5),
                         DiffColumn::new("removed", "−")
                             .fixed(true)
@@ -8944,13 +9165,33 @@ impl DesktopRoot {
             self._subscriptions.push(subscription);
             reader.diff_table = Some(table);
             reader.diff_applied = reader.diff_epoch;
-        } else if reader.diff_epoch != reader.diff_applied {
-            if let Some(table) = &reader.diff_table {
+        } else if let Some(table) = &reader.diff_table {
+            table.update(cx, |table, cx| {
+                table.set_labels(
+                    DiffTableLabels {
+                        accept: self.text(TextKey::Accept).into(),
+                        reject: self.text(TextKey::Reject).into(),
+                    },
+                    cx,
+                );
+                table.set_columns(
+                    [
+                        DiffColumn::new("file", self.text(TextKey::File)).width_in_rems(20.),
+                        DiffColumn::new("added", "+").fixed(true).width_in_rems(3.5),
+                        DiffColumn::new("removed", "−")
+                            .fixed(true)
+                            .width_in_rems(3.5),
+                    ],
+                    window,
+                    cx,
+                );
+            });
+            if reader.diff_epoch != reader.diff_applied {
                 table.update(cx, |table, cx| {
                     table.set_rows(diff_rows(files, &reader.decisions), window, cx);
                 });
+                reader.diff_applied = reader.diff_epoch;
             }
-            reader.diff_applied = reader.diff_epoch;
         }
         div()
             .h(px(260.))
@@ -8977,9 +9218,16 @@ impl DesktopRoot {
         } else {
             self.text(TextKey::Model)
         };
+        let model_count = models.len();
+        let model_start = self
+            .model_picker_scroll
+            .start(model_count, MODEL_PICKER_VISIBLE_ROWS);
+        let visible_rows = model_count.min(MODEL_PICKER_VISIBLE_ROWS);
         let rows = models
             .iter()
             .enumerate()
+            .skip(model_start)
+            .take(MODEL_PICKER_VISIBLE_ROWS)
             .map(|(index, model)| {
                 let value = model.to_string();
                 let active = index == self.model_picker_cursor;
@@ -9015,8 +9263,9 @@ impl DesktopRoot {
                 .into_any_element()
             })
             .collect::<Vec<_>>();
-        let list_height =
-            MODEL_PICKER_ROW_HEIGHT * rows.len().min(MODEL_PICKER_VISIBLE_ROWS) as f32;
+        let list_height = MODEL_PICKER_ROW_HEIGHT * visible_rows as f32;
+        let list_scroll = self.model_picker_scroll.clone();
+        let weak_for_list = cx.weak_entity();
         v_flex()
             .id("model-picker-overlay")
             .role(Role::Dialog)
@@ -9074,13 +9323,22 @@ impl DesktopRoot {
                         div()
                             .id("model-picker-scroll")
                             .size_full()
-                            .overflow_y_scroll()
-                            .track_scroll(&self.model_picker_scroll)
+                            .overflow_hidden()
+                            .on_scroll_wheel(move |event, _, cx| {
+                                let delta: f32 = event.delta.pixel_delta(px(20.)).y.into();
+                                if list_scroll.wheel(
+                                    delta,
+                                    model_count,
+                                    MODEL_PICKER_VISIBLE_ROWS,
+                                    MODEL_PICKER_ROW_HEIGHT,
+                                ) {
+                                    let weak = weak_for_list.clone();
+                                    let _ = weak.update(cx, |_, cx| cx.notify());
+                                }
+                                cx.stop_propagation();
+                            })
                             .child(v_flex().w_full().gap(px(2.)).children(rows)),
-                    )
-                    .child(gpui_component::scroll::Scrollbar::vertical(
-                        &self.model_picker_scroll,
-                    )),
+                    ),
             )
             .into_any_element()
     }
@@ -9105,9 +9363,12 @@ impl DesktopRoot {
                     .flatten()
             })
         });
+        let session_id = self.transcript_session_id();
         let selections = transcript
             .as_ref()
-            .map(|transcript| self.sync_assistant_selections(transcript, &child_id, window, cx))
+            .map(|transcript| {
+                self.sync_assistant_selections(transcript, &child_id, &session_id, window, cx)
+            })
             .unwrap_or_default();
         let rows = transcript
             .as_ref()
@@ -9115,7 +9376,9 @@ impl DesktopRoot {
                 transcript
                     .iter()
                     .map(|row| {
-                        let selection = selections.get(&(child_id.clone(), row.id)).cloned();
+                        let selection = selections
+                            .get(&(child_id.clone(), session_id.clone(), row.id))
+                            .cloned();
                         transcript_row_element(
                             row,
                             &self.snapshot,
@@ -10661,9 +10924,155 @@ impl DesktopRoot {
             &manager_view,
         );
         let visible_count = filtered.len();
+        let mut project_counts: HashMap<ProjectId, usize> = HashMap::new();
+        for session in &filtered {
+            *project_counts
+                .entry(session.project_id.clone())
+                .or_default() += 1;
+        }
+        let query_active = !self.snapshot.sessions.query.trim().is_empty();
+        let mut previous_project = None;
         let rows = filtered
             .into_iter()
-            .map(|session| {
+            .flat_map(|session| {
+                let mut output = Vec::new();
+                let collapsed = !query_active
+                    && self
+                        .collapsed_session_projects
+                        .contains(&session.project_id);
+                if previous_project.as_ref() != Some(&session.project_id) {
+                    let project_name = self
+                        .snapshot
+                        .projects
+                        .iter()
+                        .find(|project| project.id.as_ref() == Some(&session.project_id))
+                        .map(project_identity_label)
+                        .or_else(|| {
+                            (self.snapshot.project.id.as_ref() == Some(&session.project_id))
+                                .then(|| project_identity_label(&self.snapshot.project))
+                        })
+                        .or_else(|| {
+                            session
+                                .root_dir
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .map(str::to_owned)
+                        })
+                        .unwrap_or_else(|| "—".into());
+                    let count = project_counts
+                        .get(&session.project_id)
+                        .copied()
+                        .unwrap_or_default();
+                    let group_label = match self.snapshot.language {
+                        tact_catalog::CatalogLocale::En => {
+                            format!("{project_name}, {count} sessions")
+                        }
+                        tact_catalog::CatalogLocale::Zh => {
+                            format!("{project_name}，{count} 个会话")
+                        }
+                    };
+                    let initials = project_initials(&project_name);
+                    let toggle_project = session.project_id.clone();
+                    let toggle_key_project = toggle_project.clone();
+                    output.push(
+                        h_flex()
+                            .id(SharedString::from(format!(
+                                "manager-project-group-{}",
+                                session.project_id.0
+                            )))
+                            .debug_selector({
+                                let id = session.project_id.0.clone();
+                                move || format!("manager-project-group-{id}")
+                            })
+                            .role(Role::Button)
+                            .aria_label(group_label)
+                            .aria_expanded(!collapsed)
+                            .focusable()
+                            .tab_stop(true)
+                            .w_full()
+                            .items_center()
+                            .gap(px(7.))
+                            .rounded(px(6.))
+                            .px(px(12.))
+                            .pt(px(12.))
+                            .pb(px(4.))
+                            .cursor_pointer()
+                            .hover(|style| style.bg(cx.theme().muted))
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                this.toggle_session_project(toggle_project.clone());
+                                cx.notify();
+                            }))
+                            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+                                if event.keystroke.key == "enter" || event.keystroke.key == "space"
+                                {
+                                    this.toggle_session_project(toggle_key_project.clone());
+                                    cx.stop_propagation();
+                                    cx.notify();
+                                }
+                            }))
+                            .child(
+                                div()
+                                    .debug_selector({
+                                        let id = session.project_id.0.clone();
+                                        move || format!("manager-project-group-chevron-{id}")
+                                    })
+                                    .flex_none()
+                                    .child(
+                                        Icon::new(if collapsed {
+                                            IconName::ChevronRight
+                                        } else {
+                                            IconName::ChevronDown
+                                        })
+                                        .size(px(12.))
+                                        .text_color(cx.theme().muted_foreground),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .debug_selector({
+                                        let id = session.project_id.0.clone();
+                                        move || format!("manager-project-group-leading-{id}")
+                                    })
+                                    .flex_none()
+                                    .size(px(20.))
+                                    .rounded(px(5.))
+                                    .bg(cx.theme().secondary)
+                                    .font_family(cx.theme().mono_font_family.clone())
+                                    .text_size(px(8.))
+                                    .font_semibold()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(initials),
+                            )
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .flex_1()
+                                    .truncate()
+                                    .text_size(px(11.))
+                                    .font_semibold()
+                                    .child(project_name),
+                            )
+                            .child(
+                                div()
+                                    .debug_selector({
+                                        let id = session.project_id.0.clone();
+                                        move || format!("manager-project-group-count-{id}")
+                                    })
+                                    .flex_none()
+                                    .font_family(cx.theme().mono_font_family.clone())
+                                    .text_size(px(9.))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(count.to_string()),
+                            )
+                            .into_any_element(),
+                    );
+                    previous_project = Some(session.project_id.clone());
+                }
+                if collapsed {
+                    return output;
+                }
                 let session_id = SessionId(session.id.clone());
                 let rename_id = session_id.clone();
                 let archive_id = session_id.clone();
@@ -10675,9 +11084,21 @@ impl DesktopRoot {
                 let resume_id = session_id.clone();
                 let short_id = session.id.rsplit('-').next().unwrap_or(&session.id);
                 let short_id = &short_id[..short_id.len().min(4)];
+                let branch = self
+                    .snapshot
+                    .projects
+                    .iter()
+                    .find(|project| project.id.as_ref() == Some(&session.project_id))
+                    .and_then(|project| project.branch.as_deref())
+                    .or_else(|| {
+                        (self.snapshot.project.id.as_ref() == Some(&session.project_id))
+                            .then_some(self.snapshot.project.branch.as_deref())
+                            .flatten()
+                    })
+                    .unwrap_or("—");
                 let subtitle = format!(
                     "{} · {} {}",
-                    self.snapshot.project.branch.as_deref().unwrap_or("—"),
+                    branch,
                     self.text(TextKey::SessionShort),
                     short_id
                 );
@@ -10736,6 +11157,10 @@ impl DesktopRoot {
                     "archive-session-{}",
                     session.id
                 )))
+                .debug_selector({
+                    let selector = format!("archive-session-{}", session.id);
+                    move || selector.clone()
+                })
                 .role(Role::Button)
                 .tab_stop(true)
                 .aria_label(if archived {
@@ -10757,105 +11182,135 @@ impl DesktopRoot {
                         archived: !archived,
                     });
                 }));
-                h_flex()
-                    .id(SharedString::from(format!(
-                        "manager-session-{}",
-                        session.id
-                    )))
-                    .debug_selector({
-                        let selector = format!("manager-session-{}", session.id);
-                        move || selector.clone()
-                    })
-                    .w_full()
-                    .min_w_0()
-                    .items_center()
-                    .gap(px(10.))
-                    .h(px(44.))
-                    .px(px(12.))
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .when(current, |row| row.bg(cx.theme().accent))
-                    .child(div().flex_none().size(px(6.)).rounded_full().bg(dot))
-                    .child(
-                        v_flex()
-                            .id(SharedString::from(format!("resume-session-{}", session.id)))
-                            .role(Role::Button)
-                            .focusable()
-                            .tab_stop(!locked)
-                            .aria_label(row_label.clone())
-                            .flex_1()
-                            .min_w_0()
-                            .gap(px(1.))
-                            .when(!locked && !switching, |area| {
-                                area.cursor_pointer().on_click(cx.listener({
-                                    let resume_id = resume_id.clone();
-                                    move |this, _: &ClickEvent, window, cx| {
-                                        this.dispatch(DesktopIntent::ResumeSession {
-                                            session_id: resume_id.clone(),
-                                        });
-                                        this.close_overlay();
-                                        this.restore_focus(window, cx);
-                                        cx.notify();
-                                    }
-                                }))
-                            })
-                            .child(
-                                h_flex()
-                                    .items_center()
-                                    .gap(px(6.))
-                                    .child(
-                                        div()
-                                            .min_w_0()
-                                            .truncate()
-                                            .text_size(px(13.))
-                                            .font_semibold()
-                                            .child(title.clone()),
-                                    )
-                                    .when(archived, |row| {
-                                        row.child(
+                output.push(
+                    div()
+                        .w_full()
+                        .pl(px(14.))
+                        .child(
+                            div()
+                                .w_full()
+                                .pl(px(10.))
+                                .border_l(px(1.))
+                                .border_color(cx.theme().border)
+                                .child(
+                                    h_flex()
+                                        .id(SharedString::from(format!(
+                                            "manager-session-{}",
+                                            session.id
+                                        )))
+                                        .debug_selector({
+                                            let selector =
+                                                format!("manager-session-{}", session.id);
+                                            move || selector.clone()
+                                        })
+                                        .w_full()
+                                        .min_w_0()
+                                        .items_center()
+                                        .gap(px(10.))
+                                        .h(px(44.))
+                                        .px(px(12.))
+                                        .border_b_1()
+                                        .border_color(cx.theme().border)
+                                        .when(current, |row| row.bg(cx.theme().accent))
+                                        .child(
+                                            div().flex_none().size(px(6.)).rounded_full().bg(dot),
+                                        )
+                                        .child(
+                                            v_flex()
+                                                .id(SharedString::from(format!(
+                                                    "resume-session-{}",
+                                                    session.id
+                                                )))
+                                                .role(Role::Button)
+                                                .focusable()
+                                                .tab_stop(!locked)
+                                                .aria_label(row_label.clone())
+                                                .flex_1()
+                                                .min_w_0()
+                                                .gap(px(1.))
+                                                .when(!locked && !switching, |area| {
+                                                    area.cursor_pointer().on_click(cx.listener({
+                                                        let resume_id = resume_id.clone();
+                                                        move |this, _: &ClickEvent, window, cx| {
+                                                            this.dispatch(
+                                                                DesktopIntent::ResumeSession {
+                                                                    session_id: resume_id.clone(),
+                                                                },
+                                                            );
+                                                            this.close_overlay();
+                                                            this.restore_focus(window, cx);
+                                                            cx.notify();
+                                                        }
+                                                    }))
+                                                })
+                                                .child(
+                                                    h_flex()
+                                                        .items_center()
+                                                        .gap(px(6.))
+                                                        .child(
+                                                            div()
+                                                                .min_w_0()
+                                                                .truncate()
+                                                                .text_size(px(13.))
+                                                                .font_semibold()
+                                                                .child(title.clone()),
+                                                        )
+                                                        .when(archived, |row| {
+                                                            row.child(
+                                                                div()
+                                                                    .flex_none()
+                                                                    .rounded_full()
+                                                                    .bg(cx.theme().muted)
+                                                                    .px(px(6.))
+                                                                    .py(px(1.))
+                                                                    .text_size(px(9.))
+                                                                    .text_color(
+                                                                        cx.theme().muted_foreground,
+                                                                    )
+                                                                    .child(
+                                                                        self.text(
+                                                                            TextKey::Archived,
+                                                                        ),
+                                                                    ),
+                                                            )
+                                                        }),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .truncate()
+                                                        .text_size(px(10.))
+                                                        .font_family("Lilex")
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child(subtitle.clone()),
+                                                ),
+                                        )
+                                        .child(
                                             div()
                                                 .flex_none()
-                                                .rounded_full()
-                                                .bg(cx.theme().muted)
-                                                .px(px(6.))
-                                                .py(px(1.))
-                                                .text_size(px(9.))
+                                                .w(px(72.))
+                                                .text_right()
+                                                .text_size(px(10.))
+                                                .font_family("Lilex")
                                                 .text_color(cx.theme().muted_foreground)
-                                                .child(self.text(TextKey::Archived)),
+                                                .child(when.clone()),
                                         )
-                                    }),
-                            )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(px(10.))
-                                    .font_family("Lilex")
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(subtitle.clone()),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .w(px(72.))
-                            .text_right()
-                            .text_size(px(10.))
-                            .font_family("Lilex")
-                            .text_color(cx.theme().muted_foreground)
-                            .child(when.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .w(px(56.))
-                            .text_right()
-                            .text_size(px(10.))
-                            .font_family("Lilex")
-                            .text_color(cx.theme().muted_foreground)
-                            .child(messages.clone()),
-                    )
-                    .child(rename_button)
-                    .child(archive_button)
+                                        .child(
+                                            div()
+                                                .flex_none()
+                                                .w(px(56.))
+                                                .text_right()
+                                                .text_size(px(10.))
+                                                .font_family("Lilex")
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(messages.clone()),
+                                        )
+                                        .child(rename_button)
+                                        .child(archive_button),
+                                ),
+                        )
+                        .into_any_element(),
+                );
+                output
             })
             .collect::<Vec<_>>();
         let all_projects_label = match self.snapshot.language {
@@ -10863,7 +11318,7 @@ impl DesktopRoot {
             tact_catalog::CatalogLocale::Zh => "全部项目",
         };
         let all_projects_selected = self.session_project_filter.is_none();
-        let mut project_rows = vec![
+        let mut project_rows: Vec<AnyElement> = vec![
             gpui_base::Button::new("manager-project-all")
                 .selected(all_projects_selected)
                 .aria_label(all_projects_label)
@@ -10921,22 +11376,23 @@ impl DesktopRoot {
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.session_project_filter = None;
                     cx.notify();
-                })),
+                }))
+                .into_any_element(),
         ];
         project_rows.extend(self.snapshot.projects.iter().map(|project| {
             let selected = project.id == self.session_project_filter;
-            let root = project.root.clone();
             let project_id = project.id.clone();
-            // Only the active project's sessions are loaded; showing a count
-            // for any other project would render a false zero.
-            let count = project.id.as_ref().and_then(|id| {
-                crate::ui::session_manager::project_session_count(
-                    id,
-                    self.snapshot.project.id.as_ref(),
-                    &self.snapshot.sessions.items,
-                )
+            let remove_project_id = project_id.clone().expect("registered project has an id");
+            let project_key = project
+                .id
+                .as_ref()
+                .map(|id| id.0.clone())
+                .unwrap_or_else(|| "none".into());
+            let count = project.id.as_ref().filter(|_| project.available).map(|id| {
+                crate::ui::session_manager::project_session_count(id, &self.snapshot.sessions.items)
             });
-            let initials = initials_from_name(&project.display_name);
+            let project_label = project_identity_label(project);
+            let initials = project_initials(&project_label);
             let detail = match (self.snapshot.language, count) {
                 (tact_catalog::CatalogLocale::Zh, Some(count)) => {
                     format!("{count} 个会话")
@@ -10947,17 +11403,18 @@ impl DesktopRoot {
                 }
                 (tact_catalog::CatalogLocale::En, None) => "No sessions loaded".to_string(),
             };
-            gpui_base::Button::new(SharedString::from(format!(
+            let project_button = gpui_base::Button::new(SharedString::from(format!(
                 "manager-project-{}",
-                project
-                    .id
-                    .as_ref()
-                    .map(|id| id.0.as_str())
-                    .unwrap_or("none")
+                project_key
             )))
+            .debug_selector({
+                let project_key = project_key.clone();
+                move || format!("manager-project-{project_key}")
+            })
             .selected(selected)
-            .aria_label(project.display_name.to_string())
-            .w_full()
+            .aria_label(project_label.clone())
+            .flex_1()
+            .min_w_0()
             .justify_start()
             .rounded(px(8.))
             .bg(if selected {
@@ -10995,7 +11452,7 @@ impl DesktopRoot {
                                     .truncate()
                                     .text_size(px(12.))
                                     .font_semibold()
-                                    .child(project.display_name.to_string()),
+                                    .child(project_label.clone()),
                             )
                             .child(
                                 div()
@@ -11016,16 +11473,45 @@ impl DesktopRoot {
                         )
                     }),
             )
-            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 this.session_project_filter = project_id.clone();
-                if this.snapshot.project.id != project_id
-                    && let Some(root) = root.clone()
-                {
-                    this.dispatch(DesktopIntent::OpenProject { root });
-                    this.close_overlay();
-                    this.restore_focus(window, cx);
-                }
-            }))
+                cx.notify();
+            }));
+            h_flex()
+                .w_full()
+                .items_center()
+                .gap(px(2.))
+                .child(project_button)
+                .child(
+                    div()
+                        .id(SharedString::from(format!(
+                            "manager-remove-project-{project_key}"
+                        )))
+                        .debug_selector({
+                            let project_key = project_key.clone();
+                            move || format!("manager-remove-project-{project_key}")
+                        })
+                        .role(Role::Button)
+                        .focusable()
+                        .tab_stop(true)
+                        .aria_label(self.text(TextKey::RemoveProject))
+                        .cursor_pointer()
+                        .size(px(28.))
+                        .rounded(px(6.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .hover(|style| style.bg(cx.theme().muted))
+                        .child(
+                            Icon::new(IconName::Close)
+                                .xsmall()
+                                .text_color(cx.theme().muted_foreground),
+                        )
+                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            this.open_remove_project(remove_project_id.clone(), window, cx);
+                        })),
+                )
+                .into_any_element()
         }));
         project_rows.push(
             gpui_base::Button::new("manager-add-project")
@@ -11080,7 +11566,8 @@ impl DesktopRoot {
                     this.close_overlay();
                     this.restore_focus(window, cx);
                     this.open_project_picker(cx);
-                })),
+                }))
+                .into_any_element(),
         );
 
         let height = (f32::from(window.viewport_size().height) - 100.0).clamp(320.0, 720.0);
@@ -11233,7 +11720,7 @@ impl DesktopRoot {
                                 let group_label = if self.session_project_filter.is_none() {
                                     all_projects_label.to_string()
                                 } else {
-                                    self.snapshot.project.display_name.to_string()
+                                    project_identity_label(&self.snapshot.project)
                                 };
                                 h_flex()
                                     .w_full()
@@ -12083,6 +12570,14 @@ fn project_initials(project: &str) -> String {
     letters.to_uppercase()
 }
 
+fn project_identity_label(project: &tact_desktop_core::ProjectView) -> String {
+    project
+        .repository
+        .as_ref()
+        .map(|repository| repository.to_string())
+        .unwrap_or_else(|| project.display_name.to_string())
+}
+
 fn extension_rail_row(
     id: &'static str,
     icon: IconName,
@@ -12419,6 +12914,8 @@ fn prompt_bar_labels(locale: tact_catalog::CatalogLocale) -> PromptBarLabels {
             model_prefix: "Model: ".into(),
             no_models: "No models available".into(),
             available_models: "Available models".into(),
+            search_models: "Search models".into(),
+            no_matching_models: "No matching models".into(),
             running: "Running; cancel is available".into(),
             ready: "Ready for another prompt".into(),
             failed_prefix: "Failed: ".into(),
@@ -12435,6 +12932,8 @@ fn prompt_bar_labels(locale: tact_catalog::CatalogLocale) -> PromptBarLabels {
             model_prefix: "模型：".into(),
             no_models: "尚未配置模型".into(),
             available_models: "可用模型".into(),
+            search_models: "搜索模型".into(),
+            no_matching_models: "没有匹配的模型".into(),
             running: "运行中；可取消".into(),
             ready: "可以继续输入".into(),
             failed_prefix: "失败：".into(),
@@ -13066,6 +13565,11 @@ fn transcript_row_element(
     gate_focus: Option<&gpui::FocusHandle>,
     thinking_open: bool,
 ) -> AnyElement {
+    let session_id = snapshot
+        .session
+        .id
+        .clone()
+        .unwrap_or_else(|| SessionId(format!("epoch-{}", snapshot.session.epoch.0)));
     if !crate::ui::transcript::visible_row(row, snapshot) {
         return div().into_any_element();
     }
@@ -13468,17 +13972,14 @@ fn transcript_row_element(
                 .into_any_element()
         }
         RowBody::Thinking(thinking) => {
-            let mut trace = ThinkingTrace::new().prose(thinking.markdown.to_string());
-            if let Some(duration_ms) = thinking.duration_ms {
-                trace = trace.thought_for(Duration::from_millis(duration_ms));
-            }
-            let progressive = progressive(trace, thinking.status, snapshot.language);
             let reader_weak = weak.clone();
             v_flex()
                 .id(SharedString::from(format!("row-thinking-{id}")))
                 .debug_selector(move || format!("transcript-row-thinking-{id}"))
                 .child(
-                    Thinking::new(format!("thinking-{id}"), &progressive)
+                    Thinking::new(format!("thinking-{id}"), thinking.markdown.to_string())
+                        .status(thinking.status)
+                        .duration_ms(thinking.duration_ms)
                         .labels(thinking_labels(snapshot.language))
                         // The trace expands in place. It opens on its own
                         // while reasoning runs and afterwards stays where the
@@ -13493,11 +13994,12 @@ fn transcript_row_element(
                         .on_event(move |event, _, cx| {
                             let ThinkingEvent::Toggled { open, .. } = event;
                             let open = *open;
+                            let thinking_key = (session_id.clone(), row_id);
                             let _ = reader_weak.update(cx, |this, cx| {
                                 if open {
-                                    this.expanded_thinking.insert(row_id);
+                                    this.expanded_thinking.insert(thinking_key.clone());
                                 } else {
-                                    this.expanded_thinking.remove(&row_id);
+                                    this.expanded_thinking.remove(&thinking_key);
                                 }
                                 this.pending_row_updates.insert(row_id);
                                 cx.notify();
@@ -13542,27 +14044,30 @@ fn transcript_row_element(
                 .collect::<Vec<_>>();
             let group_id = row.id;
             let group_weak = weak.clone();
+            let active = matches!(group.status(), RowStatus::Running | RowStatus::Pending);
+            let quiet = group.items.len() == 1 && group.collapsed && !active;
             div()
                 .debug_selector(move || format!("transcript-row-tool-group-{id}"))
                 // The design makes the group the card: one border, one
                 // radius, and the calls as rows inside it.
                 .w_full()
                 .min_w_0()
-                .rounded(px(12.))
-                .border_1()
-                .border_color(snapshot_row_border(snapshot))
-                .bg(snapshot_row_surface(snapshot))
-                .shadow_sm()
-                .overflow_hidden()
+                .when(quiet, |card| card.rounded(px(6.)))
+                .when(!quiet, |card| {
+                    card.rounded(px(12.))
+                        .border_1()
+                        .border_color(snapshot_row_border(snapshot))
+                        .bg(snapshot_row_surface(snapshot))
+                        .shadow_sm()
+                        .overflow_hidden()
+                })
                 .child(
                     ToolGroup::new(format!("tool-group-{id}"))
                         .title(tool_group_title(group, snapshot.language))
                         .count(tool_count)
                         .compact()
-                        .active(matches!(
-                            group.status(),
-                            RowStatus::Running | RowStatus::Pending
-                        ))
+                        .quiet(quiet)
+                        .active(active)
                         .open(!group.collapsed)
                         .on_event(move |event, _, cx| {
                             if matches!(event, ToolGroupEvent::Toggled { .. }) {
@@ -14056,35 +14561,29 @@ fn tool_row_element(
     weak: WeakEntity<DesktopRoot>,
 ) -> AnyElement {
     let output = tool_body_markdown(tool, locale);
-    let mut invocation = ToolInvocation::new(tool.tool_id.to_string(), tool.name.to_string())
+    let mut call = ToolCall::new(tool.tool_id.to_string(), tool.name.to_string())
         .summary(tact_desktop_core::one_line_summary(&tool.arg_summary))
         .input(tool.arg_full.as_deref().unwrap_or(&tool.arg_summary))
-        // Gate decisions are rendered as first-class gate cards; this inline
-        // tool surface must not imply a second, disconnected approval action.
-        .approval(ToolApproval::NotRequired);
+        .status(tool.status)
+        .labels(tool_call_labels(locale))
+        .grouped()
+        .open(tool.expanded);
     if !output.is_empty() {
-        invocation = invocation.output(output);
+        call = call.output(output);
     }
-    let invocation = progressive(invocation, tool.status, locale);
     let call_weak = weak.clone();
     let reader_weak = weak;
     let tool_id = tool.id;
-    let mut row = v_flex().gap_1().child(
-        ToolCall::new(&invocation)
-            .labels(tool_call_labels(locale))
-            .grouped()
-            .open(tool.expanded)
-            .on_event(move |event, _, cx| {
-                if matches!(event, ToolCallEvent::Toggled { .. }) {
-                    let _ = call_weak.update(cx, |this, _| {
-                        this.dispatch(DesktopIntent::ToggleTool {
-                            group: group_id,
-                            tool: tool_id,
-                        });
-                    });
-                }
-            }),
-    );
+    let mut row = v_flex().gap_1().child(call.on_event(move |event, _, cx| {
+        if matches!(event, ToolCallEvent::Toggled { .. }) {
+            let _ = call_weak.update(cx, |this, _| {
+                this.dispatch(DesktopIntent::ToggleTool {
+                    group: group_id,
+                    tool: tool_id,
+                });
+            });
+        }
+    }));
     if !tool.output.preview.is_empty() || tool.output.detail.is_some() {
         row = row.child(
             div()
@@ -14175,10 +14674,7 @@ fn compact_markdown_line(line: &str) -> String {
 }
 
 /// Builds the `DiffTable` rows for a multi-file patch.
-fn diff_rows(
-    files: &[diff_review::FileDiff],
-    decisions: &[DiffProposalState],
-) -> Progressive<Arc<[DiffRow]>> {
+fn diff_rows(files: &[diff_review::FileDiff], decisions: &[DiffProposalState]) -> Arc<[DiffRow]> {
     let rows: Arc<[DiffRow]> = files
         .iter()
         .enumerate()
@@ -14202,7 +14698,7 @@ fn diff_rows(
         })
         .collect::<Vec<_>>()
         .into();
-    Progressive::complete(rows)
+    rows
 }
 
 fn tool_body_markdown(tool: &ToolRow, locale: tact_catalog::CatalogLocale) -> String {
@@ -14240,32 +14736,6 @@ fn tool_body_markdown(tool: &ToolRow, locale: tact_catalog::CatalogLocale) -> St
     }
 }
 
-fn progress_state(status: RowStatus, locale: tact_catalog::CatalogLocale) -> ProgressState {
-    match status {
-        RowStatus::Pending => ProgressState::Pending,
-        RowStatus::Running => ProgressState::Running,
-        RowStatus::Failed => ProgressState::Failed(i18n::text(locale, TextKey::ToolFailed).into()),
-        RowStatus::Success | RowStatus::Resolved => ProgressState::Complete,
-        RowStatus::Cancelled => ProgressState::Cancelled,
-        RowStatus::Unknown => ProgressState::Unknown,
-    }
-}
-
-fn progressive<T>(
-    content: T,
-    status: RowStatus,
-    locale: tact_catalog::CatalogLocale,
-) -> Progressive<T> {
-    match progress_state(status, locale) {
-        ProgressState::Pending => Progressive::pending(content),
-        ProgressState::Running => Progressive::running(content),
-        ProgressState::Complete => Progressive::complete(content),
-        ProgressState::Cancelled => Progressive::cancelled(content),
-        ProgressState::Unknown => Progressive::unknown(content),
-        ProgressState::Failed(reason) => Progressive::failed(content, reason),
-    }
-}
-
 fn streamed_text(
     markdown: &str,
     status: RowStatus,
@@ -14294,6 +14764,18 @@ fn streamed_text(
         RowStatus::Success | RowStatus::Resolved => {}
     }
     content
+}
+
+#[cfg(test)]
+fn progress_state(status: RowStatus, locale: tact_catalog::CatalogLocale) -> ProgressState {
+    match status {
+        RowStatus::Pending => ProgressState::Pending,
+        RowStatus::Running => ProgressState::Running,
+        RowStatus::Failed => ProgressState::Failed(i18n::text(locale, TextKey::ToolFailed).into()),
+        RowStatus::Success | RowStatus::Resolved => ProgressState::Complete,
+        RowStatus::Cancelled => ProgressState::Cancelled,
+        RowStatus::Unknown => ProgressState::Unknown,
+    }
 }
 
 fn gate_option_label(
@@ -15141,6 +15623,218 @@ fn row_starts_at_message_column(body: &RowBody) -> bool {
     !matches!(body, RowBody::User(_) | RowBody::Assistant(_))
 }
 
+fn is_process_row(body: &RowBody) -> bool {
+    matches!(body, RowBody::Thinking(_) | RowBody::ToolGroup(_))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProcessToolKind {
+    Command,
+    FileRead,
+    FileChanged,
+    Skill,
+    Other,
+}
+
+fn process_tool_kind(name: &str) -> ProcessToolKind {
+    let name = name.to_ascii_lowercase();
+    if ["bash", "shell", "exec", "command", "terminal", "cmd"]
+        .iter()
+        .any(|kind| name.contains(kind))
+    {
+        ProcessToolKind::Command
+    } else if [
+        "read",
+        "cat",
+        "view",
+        "open_file",
+        "list_file",
+        "ls",
+        "glob",
+    ]
+    .iter()
+    .any(|kind| name.contains(kind))
+    {
+        ProcessToolKind::FileRead
+    } else if [
+        "edit", "write", "patch", "create", "delete", "move", "rename", "replace",
+    ]
+    .iter()
+    .any(|kind| name.contains(kind))
+    {
+        ProcessToolKind::FileChanged
+    } else if name.contains("skill") {
+        ProcessToolKind::Skill
+    } else {
+        ProcessToolKind::Other
+    }
+}
+
+fn process_row_foldable(body: &RowBody) -> bool {
+    match body {
+        RowBody::Thinking(_) => true,
+        RowBody::ToolGroup(group) => !group.items.iter().any(|item| {
+            matches!(
+                item,
+                ToolGroupItem::Gate(gate)
+                    if matches!(gate.status, GateState::Pending | GateState::Submitting)
+            )
+        }),
+        _ => false,
+    }
+}
+
+fn build_process_layout(
+    rows: &[Entity<TranscriptRowView>],
+    cx: &gpui::App,
+) -> (Vec<ProcessRowRole>, Vec<ProcessGroup>) {
+    let mut roles = vec![ProcessRowRole::Normal; rows.len()];
+    let mut groups = Vec::new();
+    let mut index = 0;
+    while index < rows.len() {
+        if !process_row_foldable(&rows[index].read(cx).row.body) {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        let mut commands = 0;
+        let mut files_read = 0;
+        let mut files_changed = 0;
+        let mut skills = 0;
+        let mut other_tools = 0;
+        let mut thoughts = 0;
+        let mut active = false;
+        while index < rows.len() {
+            let row = &rows[index].read(cx).row;
+            if !process_row_foldable(&row.body) {
+                break;
+            }
+            match &row.body {
+                RowBody::Thinking(thinking) => {
+                    thoughts += 1;
+                    active |= matches!(thinking.status, RowStatus::Running | RowStatus::Pending);
+                }
+                RowBody::ToolGroup(group) => {
+                    active |= matches!(group.status(), RowStatus::Running | RowStatus::Pending);
+                    for item in group.items.iter() {
+                        let ToolGroupItem::Tool(tool) = item else {
+                            continue;
+                        };
+                        match process_tool_kind(&tool.name) {
+                            ProcessToolKind::Command => commands += 1,
+                            ProcessToolKind::FileRead => files_read += 1,
+                            ProcessToolKind::FileChanged => files_changed += 1,
+                            ProcessToolKind::Skill => skills += 1,
+                            ProcessToolKind::Other => other_tools += 1,
+                        }
+                    }
+                }
+                _ => break,
+            }
+            index += 1;
+        }
+        if index - start >= 2 {
+            let group_index = groups.len();
+            let first = &rows[start].read(cx).row;
+            roles[start] = ProcessRowRole::Summary(group_index);
+            for role in &mut roles[start + 1..index] {
+                *role = ProcessRowRole::Hidden(group_index);
+            }
+            groups.push(ProcessGroup {
+                first_index: start,
+                end_index: index,
+                first_row: first.id,
+                first_ordinal: first.ordinal,
+                commands,
+                files_read,
+                files_changed,
+                skills,
+                other_tools,
+                thoughts,
+                active,
+            });
+        }
+    }
+    (roles, groups)
+}
+
+fn process_summary_text(group: &ProcessGroup, language: tact_catalog::CatalogLocale) -> String {
+    let mut parts = Vec::new();
+    match language {
+        tact_catalog::CatalogLocale::En => {
+            if group.commands > 0 {
+                parts.push(if group.commands == 1 {
+                    "Ran 1 command".to_string()
+                } else {
+                    format!("Ran {} commands", group.commands)
+                });
+            }
+            if group.files_read > 0 {
+                parts.push(if group.files_read == 1 {
+                    "read 1 file".to_string()
+                } else {
+                    format!("read {} files", group.files_read)
+                });
+            }
+            if group.files_changed > 0 {
+                parts.push(if group.files_changed == 1 {
+                    "edited 1 file".to_string()
+                } else {
+                    format!("edited {} files", group.files_changed)
+                });
+            }
+            if group.skills > 0 {
+                parts.push(if group.skills == 1 {
+                    "ran 1 skill".to_string()
+                } else {
+                    format!("ran {} skills", group.skills)
+                });
+            }
+            if group.other_tools > 0 {
+                parts.push(if group.other_tools == 1 {
+                    "1 tool call".to_string()
+                } else {
+                    format!("{} tool calls", group.other_tools)
+                });
+            }
+        }
+        tact_catalog::CatalogLocale::Zh => {
+            if group.commands > 0 {
+                parts.push(format!("运行了 {} 条命令", group.commands));
+            }
+            if group.files_read > 0 {
+                parts.push(format!("读取了 {} 个文件", group.files_read));
+            }
+            if group.files_changed > 0 {
+                parts.push(format!("修改了 {} 个文件", group.files_changed));
+            }
+            if group.skills > 0 {
+                parts.push(format!("运行了 {} 个 skill", group.skills));
+            }
+            if group.other_tools > 0 {
+                parts.push(format!("{} 次工具调用", group.other_tools));
+            }
+        }
+    }
+    if parts.is_empty() && group.thoughts > 0 {
+        return match language {
+            tact_catalog::CatalogLocale::En if group.thoughts == 1 => "Thoughts".into(),
+            tact_catalog::CatalogLocale::En => format!("{} thoughts", group.thoughts),
+            tact_catalog::CatalogLocale::Zh => format!("{} 段思考", group.thoughts),
+        };
+    }
+    if parts.is_empty() {
+        return match language {
+            tact_catalog::CatalogLocale::En => "Activity".into(),
+            tact_catalog::CatalogLocale::Zh => "活动".into(),
+        };
+    }
+    parts.join(match language {
+        tact_catalog::CatalogLocale::En => ", ",
+        tact_catalog::CatalogLocale::Zh => "，",
+    })
+}
+
 /// The plan card's status pill.
 fn plan_status_label(executing: bool, locale: tact_catalog::CatalogLocale) -> &'static str {
     match (locale, executing) {
@@ -15699,6 +16393,78 @@ mod tests {
         INSTALL.call_once(|| config.install_process_config().unwrap());
     }
 
+    fn install_two_project_sessions(this: &mut DesktopRoot, cx: &mut Context<DesktopRoot>) {
+        let first_project = tact_desktop_core::ProjectId("project-a".into());
+        let second_project = tact_desktop_core::ProjectId("project-b".into());
+        let mut snapshot = (*this.snapshot).clone();
+        snapshot.project = tact_desktop_core::ProjectView {
+            id: Some(first_project.clone()),
+            root: Some("/tmp/project-a".into()),
+            display_name: "Project A".into(),
+            branch: Some("main".into()),
+            repository: None,
+            available: true,
+        };
+        snapshot.projects = vec![
+            snapshot.project.clone(),
+            tact_desktop_core::ProjectView {
+                id: Some(second_project.clone()),
+                root: Some("/tmp/project-b".into()),
+                display_name: "Project B".into(),
+                branch: Some("feature".into()),
+                repository: None,
+                available: true,
+            },
+        ]
+        .into();
+        let now = chrono::Utc::now();
+        snapshot.sessions.items = vec![
+            tact_desktop_core::SessionSummaryView {
+                id: "session-a".into(),
+                project_id: first_project,
+                root_dir: "/tmp/project-a".into(),
+                title: "Session A".into(),
+                updated_at: now,
+                archived_at: None,
+                locked: false,
+                message_count: 1,
+                search_score: 0,
+            },
+            tact_desktop_core::SessionSummaryView {
+                id: "session-b".into(),
+                project_id: second_project,
+                root_dir: "/tmp/project-b".into(),
+                title: "Session B".into(),
+                updated_at: now - chrono::Duration::hours(1),
+                archived_at: None,
+                locked: false,
+                message_count: 1,
+                search_score: 0,
+            },
+        ];
+        snapshot.sessions.selected = None;
+        this.snapshot = Arc::new(snapshot);
+        cx.notify();
+    }
+
+    fn set_transcript_session(
+        this: &mut DesktopRoot,
+        session_id: &str,
+        epoch: u64,
+        transcript: &TranscriptView,
+        cx: &mut Context<DesktopRoot>,
+    ) {
+        let mut snapshot = (*this.snapshot).clone();
+        snapshot.session.id = Some(SessionId(session_id.into()));
+        snapshot.session.epoch = SessionEpoch(epoch);
+        snapshot.transcript = transcript.clone();
+        this.snapshot = Arc::new(snapshot);
+        this.pending_row_updates.clear();
+        let count = transcript.len();
+        this.scroller.update(cx, |state, cx| state.reset(count, cx));
+        cx.notify();
+    }
+
     #[test]
     fn voice_button_only_shows_for_a_configured_worker() {
         let voice = |enabled, missing_api_key| VoiceUi {
@@ -15751,7 +16517,7 @@ mod tests {
         let (controller, _events) = DesktopController::start(config).unwrap();
         let shutdown = controller.clone();
         let (root, window) = cx.add_window_view(move |window, cx| {
-            gpui_ai::init(cx);
+            gpui_component::init(cx);
             crate::theme::apply(Appearance::Light, Some(window), cx);
             DesktopRoot::new_for_test(controller, window, cx)
         });
@@ -16393,7 +17159,7 @@ mod tests {
             Default::default();
         let slot = root_slot.clone();
         let (_, window) = cx.add_window_view(move |window, cx| {
-            gpui_ai::init(cx);
+            gpui_component::init(cx);
             crate::theme::apply(Appearance::Light, Some(window), cx);
             let root = cx.new(|cx| DesktopRoot::new_for_test(controller, window, cx));
             *slot.borrow_mut() = Some(root.clone());
@@ -16490,15 +17256,9 @@ mod tests {
             &files,
             &[DiffProposalState::Accepted, DiffProposalState::Pending],
         );
-        assert_eq!(rows.content().len(), 2);
-        assert_eq!(
-            rows.content()[0].proposal_state(),
-            DiffProposalState::Accepted
-        );
-        assert_eq!(
-            rows.content()[1].proposal_state(),
-            DiffProposalState::Pending
-        );
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].state_value(), DiffProposalState::Accepted);
+        assert_eq!(rows[1].state_value(), DiffProposalState::Pending);
     }
 
     #[test]
@@ -16811,7 +17571,7 @@ mod tests {
             reader
                 .selection
                 .as_ref()
-                .map(|selection| selection.read(cx).selected_text().to_string())
+                .map(|selection| selection.read(cx).selected_text(cx).to_string())
         });
         assert_eq!(
             reader_selection.as_deref(),
@@ -16841,7 +17601,7 @@ mod tests {
             reader
                 .selection
                 .as_ref()
-                .map(|selection| selection.read(cx).selected_text().to_string())
+                .map(|selection| selection.read(cx).selected_text(cx).to_string())
         });
         assert!(
             !selected.trim().is_empty()
@@ -16874,7 +17634,7 @@ mod tests {
             reader
                 .selection
                 .as_ref()
-                .map(|selection| selection.read(cx).selected_text().to_string())
+                .map(|selection| selection.read(cx).selected_text(cx).to_string())
         });
         assert!(
             selected.is_empty() && reader_selection.as_deref() == Some(""),
@@ -16885,19 +17645,278 @@ mod tests {
     }
 
     #[gpui::test]
-    fn thinking_expands_inline_without_a_reader(cx: &mut TestAppContext) {
+    fn cached_assistant_selection_follows_language_and_appearance(cx: &mut TestAppContext) {
         let (root, window, shutdown, data_dir) = probe_root(cx);
-        window.update(|window, cx| {
+        let (row_id, selection) = window.update(|window, cx| {
             root.update(cx, |this, cx| {
                 let mut snapshot = (*this.snapshot).clone();
                 snapshot.transcript = tact_desktop_core::fixtures::demo_transcript();
                 this.snapshot = Arc::new(snapshot);
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+            let this = root.read(cx);
+            let row_id = this
+                .snapshot
+                .transcript
+                .iter()
+                .find(|row| matches!(&row.body, RowBody::Assistant(_)))
+                .expect("assistant fixture")
+                .id;
+            let session_id = this.transcript_session_id();
+            let selection = this
+                .assistant_selections
+                .get(&("main".to_string(), session_id, row_id))
+                .expect("cached assistant selection")
+                .selection
+                .clone();
+            (row_id, selection)
+        });
+        let labels = window.update(|_, cx| selection.read(cx).action_labels());
+        assert_eq!(
+            labels.iter().map(SharedString::as_ref).collect::<Vec<_>>(),
+            ["Ask", "Explain", "Rewrite"]
+        );
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.language = tact_catalog::CatalogLocale::Zh;
+                snapshot.appearance = Appearance::Dark;
+                this.snapshot = Arc::new(snapshot);
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        let (labels, toolbar_label, dark) = window.update(|_, cx| {
+            let selection = root
+                .read(cx)
+                .assistant_selections
+                .get(&(
+                    "main".to_string(),
+                    root.read(cx).transcript_session_id(),
+                    row_id,
+                ))
+                .expect("cached assistant selection")
+                .selection
+                .read(cx);
+            (
+                selection.action_labels(),
+                selection.toolbar_label_text().clone(),
+                selection.text_is_dark(),
+            )
+        });
+        assert_eq!(
+            labels.iter().map(SharedString::as_ref).collect::<Vec<_>>(),
+            ["询问", "解释", "重写"]
+        );
+        assert_eq!(
+            toolbar_label.as_ref(),
+            i18n::text(tact_catalog::CatalogLocale::Zh, TextKey::SelectionActions)
+        );
+        assert!(dark, "cached selection style follows dark appearance");
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn switching_back_to_a_cached_session_reuses_its_ui_state(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        let transcript = tact_desktop_core::fixtures::demo_transcript();
+        let alpha = SessionId("cache-alpha".into());
+        let beta = SessionId("cache-beta".into());
+        let row_id = transcript
+            .iter()
+            .find(|row| matches!(&row.body, RowBody::Assistant(_)))
+            .expect("assistant fixture")
+            .id;
+
+        let (alpha_view, alpha_selection) = window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                set_transcript_session(this, "cache-alpha", 70, &transcript, cx);
+            });
+            window.draw(cx).clear(cx);
+            let this = root.read(cx);
+            (
+                this.transcript_rows
+                    .get(&(alpha.clone(), row_id))
+                    .expect("alpha row view")
+                    .clone(),
+                this.assistant_selections
+                    .get(&("main".to_string(), alpha.clone(), row_id))
+                    .expect("alpha selection")
+                    .selection
+                    .clone(),
+            )
+        });
+
+        let beta_view = window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                set_transcript_session(this, "cache-beta", 71, &transcript, cx);
+            });
+            window.draw(cx).clear(cx);
+            let this = root.read(cx);
+            let beta_view = this
+                .transcript_rows
+                .get(&(beta.clone(), row_id))
+                .expect("beta row view")
+                .clone();
+            assert_ne!(
+                beta_view.entity_id(),
+                alpha_view.entity_id(),
+                "row ids must not be shared across sessions"
+            );
+            assert!(
+                this.transcript_rows.contains_key(&(alpha.clone(), row_id)),
+                "switching away must keep the cached session intact"
+            );
+            beta_view
+        });
+
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                set_transcript_session(this, "cache-alpha", 72, &transcript, cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+        window.update(|_, cx| {
+            let this = root.read(cx);
+            let view = this
+                .transcript_rows
+                .get(&(alpha.clone(), row_id))
+                .expect("alpha row view after return");
+            let selection = this
+                .assistant_selections
+                .get(&("main".to_string(), alpha.clone(), row_id))
+                .expect("alpha selection after return");
+            assert_eq!(
+                view.entity_id(),
+                alpha_view.entity_id(),
+                "returning must reuse the row view"
+            );
+            assert_eq!(
+                selection.selection.entity_id(),
+                alpha_selection.entity_id(),
+                "returning must reuse the selection surface"
+            );
+            assert_eq!(
+                view.read(cx).snapshot.session.epoch,
+                SessionEpoch(72),
+                "the reused view must carry the adopted session epoch"
+            );
+            assert_eq!(
+                this.transcript_rows
+                    .get(&(beta.clone(), row_id))
+                    .expect("beta row view after return")
+                    .entity_id(),
+                beta_view.entity_id(),
+                "the other warm session's cache must survive"
+            );
+        });
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn transcript_cache_keeps_six_sessions_and_evicts_all_their_state(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        let transcript = tact_desktop_core::fixtures::demo_transcript();
+        let row_id = transcript
+            .iter()
+            .find(|row| matches!(&row.body, RowBody::Assistant(_)))
+            .expect("assistant fixture")
+            .id;
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                set_transcript_session(this, "cache-seed", 90, &transcript, cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+        window.update(|_, cx| {
+            root.update(cx, |this, cx| {
+                let seed = SessionId("cache-seed".into());
+                let row = this
+                    .transcript_rows
+                    .get(&(seed.clone(), row_id))
+                    .expect("seed row")
+                    .read(cx)
+                    .row
+                    .clone();
+                let view = this
+                    .transcript_rows
+                    .get(&(seed.clone(), row_id))
+                    .expect("seed row")
+                    .clone();
+                let selection = this
+                    .assistant_selections
+                    .get(&("main".to_string(), seed, row_id))
+                    .expect("seed selection")
+                    .selection
+                    .clone();
                 this.transcript_rows.clear();
-                let count = this.snapshot.transcript.len();
-                this.scroller.update(cx, |state, cx| {
-                    state.reset(count, cx);
-                    state.scroll_to_item(2, cx);
-                });
+                this.assistant_selections.clear();
+                this.expanded_thinking.clear();
+                this.transcript_session_cache.clear();
+                for index in 0..7 {
+                    let session = SessionId(format!("cache-{index}"));
+                    this.transcript_rows
+                        .insert((session.clone(), row_id), view.clone());
+                    this.assistant_selections.insert(
+                        ("main".to_string(), session.clone(), row_id),
+                        AssistantSelection {
+                            row: row.clone(),
+                            selection: selection.clone(),
+                            language: this.snapshot.language,
+                            appearance: this.snapshot.appearance,
+                        },
+                    );
+                    this.expanded_thinking.insert((session.clone(), row_id));
+                    this.touch_transcript_session_cache(&session);
+                }
+                assert_eq!(
+                    this.transcript_session_cache.len(),
+                    TRANSCRIPT_SESSION_CACHE
+                );
+                let evicted = SessionId("cache-0".into());
+                assert!(
+                    !this
+                        .transcript_rows
+                        .keys()
+                        .any(|(session, _)| session == &evicted)
+                );
+                assert!(
+                    !this
+                        .assistant_selections
+                        .keys()
+                        .any(|(_, session, _)| session == &evicted)
+                );
+                assert!(
+                    !this
+                        .expanded_thinking
+                        .iter()
+                        .any(|(session, _)| session == &evicted)
+                );
+                assert!(
+                    this.transcript_rows
+                        .contains_key(&(SessionId("cache-1".into()), row_id)),
+                    "the next session stays cached"
+                );
+            });
+        });
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn thinking_expands_inline_without_a_reader(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        let transcript = tact_desktop_core::fixtures::demo_transcript();
+        let alpha = SessionId("thinking-alpha".into());
+        let beta = SessionId("thinking-beta".into());
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                set_transcript_session(this, "thinking-alpha", 80, &transcript, cx);
+                this.scroller
+                    .update(cx, |state, cx| state.scroll_to_item(2, cx));
             });
             window.draw(cx).clear(cx);
         });
@@ -16914,7 +17933,8 @@ mod tests {
         window.update(|_, cx| {
             let root = root.read(cx);
             assert!(
-                root.expanded_thinking.contains(&RowId::new(2)),
+                root.expanded_thinking
+                    .contains(&(alpha.clone(), RowId::new(2))),
                 "the thought expands in place"
             );
             assert!(
@@ -16922,13 +17942,78 @@ mod tests {
                 "expanding a thought must not open a reader"
             );
         });
+        let (alpha_view, alpha_row) = window.update(|_, cx| {
+            let root = root.read(cx);
+            let view = root
+                .transcript_rows
+                .get(&(alpha.clone(), RowId::new(2)))
+                .expect("alpha thinking view")
+                .clone();
+            (view.entity_id(), view.read(cx).row.clone())
+        });
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                set_transcript_session(this, "thinking-beta", 81, &transcript, cx);
+                this.scroller
+                    .update(cx, |state, cx| state.scroll_to_item(2, cx));
+            });
+            window.draw(cx).clear(cx);
+        });
+        window.update(|_, cx| {
+            let root = root.read(cx);
+            let beta_view = root
+                .transcript_rows
+                .get(&(beta, RowId::new(2)))
+                .expect("beta thinking view");
+            assert!(
+                !beta_view.read(cx).thinking_open,
+                "one session's disclosure must not expand another session"
+            );
+            assert!(
+                root.transcript_rows
+                    .get(&(alpha.clone(), RowId::new(2)))
+                    .expect("alpha thinking view after switch")
+                    .read(cx)
+                    .thinking_open,
+                "switching away must preserve the open thought"
+            );
+        });
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                set_transcript_session(this, "thinking-alpha", 82, &transcript, cx);
+                this.scroller
+                    .update(cx, |state, cx| state.scroll_to_item(2, cx));
+            });
+            window.draw(cx).clear(cx);
+        });
+        window.update(|_, cx| {
+            let root = root.read(cx);
+            let view = root
+                .transcript_rows
+                .get(&(alpha.clone(), RowId::new(2)))
+                .expect("alpha thinking view after return");
+            assert_eq!(
+                view.entity_id(),
+                alpha_view,
+                "the expanded row must be the cached view"
+            );
+            assert!(
+                Arc::ptr_eq(&view.read(cx).row, &alpha_row),
+                "returning with unchanged content must not rebuild the row"
+            );
+            assert!(
+                view.read(cx).thinking_open,
+                "the session's expansion state must survive the round trip"
+            );
+        });
         window.simulate_click(toggle, gpui::Modifiers::default());
         window.update(|window, cx| {
             window.draw(cx).clear(cx);
         });
         window.update(|_, cx| {
+            let root = root.read(cx);
             assert!(
-                !root.read(cx).expanded_thinking.contains(&RowId::new(2)),
+                !root.expanded_thinking.contains(&(alpha, RowId::new(2))),
                 "a second click collapses the thought"
             );
         });
@@ -16966,6 +18051,113 @@ mod tests {
             thinking.origin.y - (user.origin.y + user.size.height),
             px(12.),
             "activity rows sit on the shell's tight rhythm, not the scroller default"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn process_runs_fold_to_one_line_and_expand_to_a_tight_stream(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(1600.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let demo = tact_desktop_core::fixtures::demo_transcript();
+                let mut rows = demo
+                    .iter()
+                    .filter(|row| matches!(row.ordinal, 2 | 3))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if let Some(row) = rows.iter_mut().find(|row| row.ordinal == 3) {
+                    let mut clean = (**row).clone();
+                    if let RowBody::ToolGroup(group) = &mut clean.body {
+                        group.items = Arc::from(
+                            group
+                                .items
+                                .iter()
+                                .filter(|item| !matches!(item, ToolGroupItem::Gate(_)))
+                                .cloned()
+                                .collect::<Vec<_>>(),
+                        );
+                        group.collapsed = true;
+                    }
+                    *row = Arc::new(clean);
+                }
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = tact_desktop_core::TranscriptView::from_rows(rows);
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+                this.scroller
+                    .update(cx, |state, cx| state.scroll_to_item(0, cx));
+            });
+            window.draw(cx).clear(cx);
+        });
+        let summary = window
+            .debug_bounds("transcript-process-summary-2")
+            .expect("process summary");
+        assert!(
+            window.debug_bounds("transcript-row-thinking-2").is_none()
+                && window.debug_bounds("transcript-row-tool-group-3").is_none(),
+            "a collapsed process run must show one summary row, not each child"
+        );
+        window.simulate_click(summary.center(), gpui::Modifiers::default());
+        window.run_until_parked();
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        let thinking = window
+            .debug_bounds("transcript-row-thinking-2")
+            .expect("thinking row");
+        let tools = window
+            .debug_bounds("transcript-row-tool-group-3")
+            .expect("tool group");
+        assert!(
+            tools.origin.y - thinking.bottom() <= px(8.),
+            "thinking and tool cards in one process stream must not pay the full row gap: \
+             thinking={thinking:?}, tools={tools:?}"
+        );
+        let expanded_summary = window
+            .debug_bounds("transcript-process-summary-2")
+            .expect("expanded process summary");
+        window.simulate_click(expanded_summary.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            window.debug_bounds("transcript-row-thinking-2").is_none()
+                && window.debug_bounds("transcript-row-tool-group-3").is_none(),
+            "collapsing the summary must hide the process children again"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn pending_gate_rows_are_never_hidden_by_a_process_summary(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(1200.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let demo = tact_desktop_core::fixtures::demo_transcript();
+                let rows = demo
+                    .iter()
+                    .filter(|row| matches!(row.ordinal, 2 | 3))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = tact_desktop_core::TranscriptView::from_rows(rows);
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+                this.scroller
+                    .update(cx, |state, cx| state.scroll_to_item(0, cx));
+            });
+            window.draw(cx).clear(cx);
+        });
+        window.run_until_parked();
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            window
+                .debug_bounds("transcript-process-summary-2")
+                .is_none(),
+            "a pending approval must never be folded behind a summary"
+        );
+        assert!(
+            window.debug_bounds("transcript-row-tool-group-3").is_some(),
+            "the actionable tool group must stay visible"
         );
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
@@ -17457,7 +18649,7 @@ mod tests {
         let (controller, _events) = DesktopController::start(config).unwrap();
         let shutdown = controller.clone();
         let (_, window) = cx.add_window_view(move |window, cx| {
-            gpui_ai::init(cx);
+            gpui_component::init(cx);
             crate::theme::apply(Appearance::Light, Some(window), cx);
             let root = cx.new(|cx| DesktopRoot::new_for_test(controller, window, cx));
             PermissionHarness { root }
@@ -17557,7 +18749,11 @@ mod tests {
                 .iter()
                 .find(|row| matches!(row.body, RowBody::Gate(_)))
                 .expect("gate row");
-            let view = root.transcript_rows.get(&row.id).expect("row view");
+            let session_id = root.transcript_session_id();
+            let view = root
+                .transcript_rows
+                .get(&(session_id, row.id))
+                .expect("row view");
             (window.focused(cx), view.read(cx).gate_focus.clone())
         });
         assert_eq!(
@@ -17687,7 +18883,7 @@ mod tests {
         let (controller, _events) = DesktopController::start(config).unwrap();
         let shutdown = controller.clone();
         let (_, window) = cx.add_window_view(move |window, cx| {
-            gpui_ai::init(cx);
+            gpui_component::init(cx);
             crate::theme::apply(Appearance::Light, Some(window), cx);
             let root = cx.new(|cx| DesktopRoot::new_for_test(controller, window, cx));
             ReadOnlyTranscriptProbe { root }
@@ -17773,7 +18969,7 @@ mod tests {
         let controller_for_shutdown = controller.clone();
 
         let (_, cx) = cx.add_window_view(move |window, cx| {
-            gpui_ai::init(cx);
+            gpui_component::init(cx);
             crate::theme::apply(Appearance::Light, Some(window), cx);
             drop(events);
             let root = cx.new(|cx| DesktopRoot::new_for_test(controller, window, cx));
@@ -18362,6 +19558,7 @@ mod tests {
     #[gpui::test]
     fn back_to_bottom_floats_above_the_sticky_strip(cx: &mut TestAppContext) {
         let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(600.)));
         window.update(|window, cx| {
             root.update(cx, |this, cx| {
                 let mut snapshot = (*this.snapshot).clone();
@@ -18389,6 +19586,23 @@ mod tests {
         let tail_following =
             window.update(|_, cx| root.read(cx).transcript_scroller.read(cx).tail_following);
         assert!(!tail_following, "back-to-bottom state reached the scroller");
+        assert!(
+            window.debug_bounds("back-to-bottom").is_none(),
+            "the pill must hide while the transcript is already at the last line"
+        );
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.scroller
+                    .update(cx, |state, cx| state.scroll_to_item(0, cx));
+            });
+            window.draw(cx).clear(cx);
+        });
+        window.run_until_parked();
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            window.update(|_, cx| root.read(cx).scroller.read(cx).is_scrolled_up()),
+            "the fixture must actually scroll away from the tail"
+        );
         let sticky = window.debug_bounds("sticky-strip").expect("sticky strip");
         let back = window
             .debug_bounds("back-to-bottom")
@@ -19071,12 +20285,60 @@ mod tests {
     }
 
     #[test]
+    fn project_groups_share_the_repository_directory_identity() {
+        let project = tact_desktop_core::ProjectView {
+            id: Some(ProjectId("p".into())),
+            root: Some("/tmp/gateway".into()),
+            display_name: "gateway".into(),
+            branch: None,
+            repository: Some("acme/gateway".into()),
+            available: true,
+        };
+        let label = project_identity_label(&project);
+        assert_eq!(label, "acme/gateway");
+        assert_eq!(project_initials(&label), "AG");
+
+        let local = tact_desktop_core::ProjectView {
+            repository: None,
+            display_name: "dotfiles".into(),
+            ..project
+        };
+        assert_eq!(project_identity_label(&local), "dotfiles");
+        assert_eq!(project_initials("dotfiles"), "D");
+    }
+
+    #[test]
     fn run_titles_drop_a_leading_url() {
         assert_eq!(
             strip_leading_url("https://labcoder.github.io/gpui-ai 分析下这个库"),
             "分析下这个库"
         );
         assert_eq!(strip_leading_url("  plain title"), "  plain title");
+    }
+
+    #[test]
+    fn process_summary_counts_commands_files_and_skills() {
+        let group = ProcessGroup {
+            first_index: 0,
+            end_index: 4,
+            first_row: RowId::new(0),
+            first_ordinal: 0,
+            commands: 25,
+            files_read: 12,
+            files_changed: 0,
+            skills: 1,
+            other_tools: 0,
+            thoughts: 3,
+            active: false,
+        };
+        assert_eq!(
+            process_summary_text(&group, tact_catalog::CatalogLocale::En),
+            "Ran 25 commands, read 12 files, ran 1 skill"
+        );
+        assert_eq!(
+            process_summary_text(&group, tact_catalog::CatalogLocale::Zh),
+            "运行了 25 条命令，读取了 12 个文件，运行了 1 个 skill"
+        );
     }
 
     #[gpui::test]
@@ -19112,6 +20374,30 @@ mod tests {
             "sticky x"
         );
 
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn run_header_sits_close_to_the_chat_tabs(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(840.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = tact_desktop_core::fixtures::demo_transcript();
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+        let tabs = window.debug_bounds("run-tabs").expect("run tabs");
+        let meta = window
+            .debug_bounds("transcript-run-meta")
+            .expect("run header meta");
+        assert!(
+            meta.origin.y - tabs.bottom() <= px(28.),
+            "the run header must not leave a large gap under the tabs: tabs={tabs:?}, meta={meta:?}"
+        );
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
     }
@@ -19199,6 +20485,239 @@ mod tests {
             "removing the durable block must not push Settings off the rail"
         );
 
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn session_rail_groups_sessions_by_project(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(900.)));
+        window.update(|window, cx| {
+            root.update(cx, install_two_project_sessions);
+            window.draw(cx).clear(cx);
+        });
+        let first_header = window
+            .debug_bounds("sidebar-nav-section-sessions-project-project-a")
+            .expect("project A heading");
+        let first_row = window
+            .debug_bounds("sidebar-nav-item-session-a")
+            .expect("project A session");
+        let second_header = window
+            .debug_bounds("sidebar-nav-section-sessions-project-project-b")
+            .expect("project B heading");
+        let second_row = window
+            .debug_bounds("sidebar-nav-item-session-b")
+            .expect("project B session");
+        assert!(
+            window
+                .debug_bounds("sidebar-nav-section-leading-sessions-project-project-a")
+                .is_some(),
+            "project A's heading must carry the shared project avatar"
+        );
+        assert!(
+            window
+                .debug_bounds("sidebar-nav-section-count-sessions-project-project-a")
+                .is_some(),
+            "project A's heading must carry its session count"
+        );
+        assert!(
+            first_header.origin.y < first_row.origin.y
+                && first_row.origin.y < second_header.origin.y
+                && second_header.origin.y < second_row.origin.y,
+            "sessions must sit under their project headings in recency order: {first_header:?}, {first_row:?}, {second_header:?}, {second_row:?}"
+        );
+        let children = window
+            .debug_bounds("sidebar-nav-section-children-sessions-project-project-a")
+            .expect("project A child tree");
+        assert!(
+            children.origin.x > first_header.origin.x && first_row.origin.x > first_header.origin.x,
+            "session rows must indent under their project node: header={first_header:?}, children={children:?}, row={first_row:?}"
+        );
+        window.simulate_click(first_header.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            window.debug_bounds("sidebar-nav-item-session-a").is_none(),
+            "collapsing a project must hide its session children"
+        );
+        window.update(|_, cx| {
+            assert!(
+                root.read(cx)
+                    .collapsed_session_projects
+                    .contains(&tact_desktop_core::ProjectId("project-a".into())),
+                "the rail must report the collapsed project"
+            );
+        });
+        window.simulate_click(first_header.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            window.debug_bounds("sidebar-nav-item-session-a").is_some(),
+            "expanding a project must restore its session children"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn project_remove_entry_opens_a_confirmation(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(900.)));
+        window.update(|window, cx| {
+            root.update(cx, install_two_project_sessions);
+            window.draw(cx).clear(cx);
+        });
+        let remove = window
+            .debug_bounds("sidebar-nav-section-action-sessions-project-project-a")
+            .expect("project remove action");
+        window.simulate_click(remove.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            window.debug_bounds("command-form-overlay").is_some(),
+            "the project remove action must open a confirmation surface"
+        );
+        assert!(
+            window.debug_bounds("form-choice-remove").is_some()
+                && window.debug_bounds("form-choice-cancel").is_some(),
+            "the confirmation must offer remove and cancel"
+        );
+        let remove_choice = window
+            .debug_bounds("form-choice-remove")
+            .expect("remove choice");
+        window.simulate_click(remove_choice.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            window.debug_bounds("command-form-overlay").is_none(),
+            "confirming removal must dismiss the confirmation surface"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn session_manager_groups_sessions_by_project(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(900.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                install_two_project_sessions(this, cx);
+                this.session_project_filter = None;
+                this.open_overlay(Overlay::SessionManager);
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        let first_header = window
+            .debug_bounds("manager-project-group-project-a")
+            .expect("manager project A heading");
+        let first_row = window
+            .debug_bounds("manager-session-session-a")
+            .expect("manager project A session");
+        let second_header = window
+            .debug_bounds("manager-project-group-project-b")
+            .expect("manager project B heading");
+        let second_row = window
+            .debug_bounds("manager-session-session-b")
+            .expect("manager project B session");
+        assert!(
+            window
+                .debug_bounds("manager-project-group-leading-project-a")
+                .is_some(),
+            "manager project A heading must carry the shared project avatar"
+        );
+        assert!(
+            window
+                .debug_bounds("manager-project-group-count-project-a")
+                .is_some(),
+            "manager project A heading must carry its session count"
+        );
+        assert!(
+            window
+                .debug_bounds("manager-remove-project-project-a")
+                .is_some(),
+            "the manager project directory must expose a remove action"
+        );
+        assert!(
+            window.debug_bounds("archive-session-session-a").is_some(),
+            "the session manager must expose archive for each session"
+        );
+        assert!(
+            first_header.origin.y < first_row.origin.y
+                && first_row.origin.y < second_header.origin.y
+                && second_header.origin.y < second_row.origin.y,
+            "manager rows must sit under their project headings: {first_header:?}, {first_row:?}, {second_header:?}, {second_row:?}"
+        );
+        assert!(
+            first_row.origin.x > first_header.origin.x,
+            "manager session rows must indent under their project node"
+        );
+        window.simulate_click(first_header.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            window.debug_bounds("manager-session-session-a").is_none(),
+            "collapsing a manager project must hide its session children"
+        );
+        assert!(
+            window.debug_bounds("manager-session-session-b").is_some(),
+            "collapsing one project must leave other project nodes visible"
+        );
+        window.simulate_click(first_header.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            window.debug_bounds("manager-session-session-a").is_some(),
+            "expanding a manager project must restore its session children"
+        );
+        let project_b = window
+            .debug_bounds("manager-project-project-b")
+            .expect("project B filter");
+        window.simulate_click(project_b.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            window.debug_bounds("manager-session-session-a").is_none(),
+            "the project filter must hide sessions from other projects"
+        );
+        assert!(
+            window.debug_bounds("manager-session-session-b").is_some(),
+            "the selected project's sessions must remain visible"
+        );
+        assert!(
+            window.debug_bounds("session-manager-overlay").is_some(),
+            "filtering by project must not close the manager"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn composer_has_no_project_directory_or_new_run_entry(cx: &mut TestAppContext) {
+        let (_root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(900.)));
+        window.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        assert!(
+            window.debug_bounds("composer-frame").is_some(),
+            "the composer itself must remain"
+        );
+        assert!(
+            window.debug_bounds("composer-project").is_none(),
+            "the composer must not repeat the project directory"
+        );
+        assert!(
+            window.debug_bounds("open-project").is_none(),
+            "the old rail project switcher must be gone"
+        );
+        assert!(
+            window.debug_bounds("new-run").is_none(),
+            "New Run must not be a standalone rail entry"
+        );
+        assert!(
+            window.debug_bounds("composer-new-run").is_none(),
+            "New Run must not be attached to the removed project bar"
+        );
+        assert!(
+            window.debug_bounds("workspace-switcher").is_some(),
+            "project switching remains available from the title bar"
+        );
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
     }
@@ -19341,7 +20860,7 @@ mod tests {
 
     #[gpui::test]
     fn localized_component_labels_are_not_english(cx: &mut TestAppContext) {
-        cx.update(gpui_ai::init);
+        cx.update(gpui_component::init);
         type CapturedLabels = Arc<std::sync::Mutex<(Option<String>, Option<String>)>>;
         struct LabelProbe {
             captured: CapturedLabels,
@@ -19400,7 +20919,7 @@ mod tests {
 
     #[gpui::test]
     fn localized_answer_and_suggestion_labels_are_not_english(cx: &mut TestAppContext) {
-        cx.update(gpui_ai::init);
+        cx.update(gpui_component::init);
         type CapturedLabels = Arc<std::sync::Mutex<(Option<String>, Option<String>)>>;
         struct LabelProbe {
             captured: CapturedLabels,
@@ -19624,7 +21143,7 @@ mod tests {
         let (controller, _events) = DesktopController::start(config).unwrap();
         let shutdown = controller.clone();
         let (probe, window) = cx.add_window_view(move |window, cx| {
-            gpui_ai::init(cx);
+            gpui_component::init(cx);
             crate::theme::apply(Appearance::Light, Some(window), cx);
             let root = cx.new(|cx| DesktopRoot::new_for_test(controller, window, cx));
             root.update(cx, |this, cx| {
@@ -19799,13 +21318,16 @@ mod tests {
             .debug_bounds("prompt-bar-model-picker")
             .expect("model menu opens");
         assert!(
-            menu.size.height <= px(240.) && menu.bottom() <= trigger.top(),
+            menu.size.height <= px(270.) && menu.bottom() <= trigger.top(),
             "the menu stays capped and flips above the composer: menu={menu:?}, trigger={trigger:?}"
         );
         let transcript_before = window
             .debug_bounds("transcript-row-thinking-2")
             .expect("transcript row behind the menu");
-        let wheel_at = point(menu.origin.x + px(20.), menu.origin.y + px(20.));
+        let model_list = window
+            .debug_bounds("prompt-bar-model-list")
+            .expect("model rows render");
+        let wheel_at = point(model_list.origin.x + px(20.), model_list.origin.y + px(20.));
         let transcript_view = window
             .debug_bounds("desktop-transcript")
             .expect("transcript viewport renders");
@@ -19814,12 +21336,46 @@ mod tests {
             "the wheel must land over the transcript for the isolation check to mean \
              anything: viewport={transcript_view:?}, wheel={wheel_at:?}"
         );
-        let last_after = assert_scrolls_past_cap(
-            window,
-            wheel_at,
-            "prompt-bar-model-option-model-00",
-            "prompt-bar-model-option-model-27",
+        assert!(
+            window.debug_bounds("prompt-bar-model-search").is_some(),
+            "a model list longer than eight rows needs its own search"
         );
+        window.simulate_event(gpui::ScrollWheelEvent {
+            position: wheel_at,
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-2000.))),
+            ..Default::default()
+        });
+        draw(window);
+        assert!(
+            window
+                .debug_bounds("prompt-bar-model-option-model-00")
+                .is_none(),
+            "row scrolling must window out rows above the viewport"
+        );
+        assert!(
+            window
+                .debug_bounds("prompt-bar-model-option-model-27")
+                .is_some(),
+            "the last model remains visible after row scrolling"
+        );
+        let search = window
+            .debug_bounds("prompt-bar-model-search")
+            .expect("model search field");
+        window.simulate_click(search.center(), gpui::Modifiers::default());
+        window.simulate_input("27");
+        draw(window);
+        assert!(
+            window
+                .debug_bounds("prompt-bar-model-option-model-27")
+                .is_some()
+                && window
+                    .debug_bounds("prompt-bar-model-option-model-00")
+                    .is_none(),
+            "typing in the model search must filter the row window"
+        );
+        let last_after = window
+            .debug_bounds("prompt-bar-model-option-model-27")
+            .expect("the filtered model row");
         let transcript_after = window
             .debug_bounds("transcript-row-thinking-2")
             .expect("transcript row after scrolling");
@@ -19927,11 +21483,19 @@ mod tests {
             .debug_bounds("prompt-bar-suggestion-0")
             .expect("first mention row renders")
             .center();
-        assert_scrolls_past_cap(
-            window,
-            at,
-            "prompt-bar-suggestion-0",
-            "prompt-bar-suggestion-29",
+        window.simulate_event(gpui::ScrollWheelEvent {
+            position: at,
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-2000.))),
+            ..Default::default()
+        });
+        draw(window);
+        assert!(
+            window.debug_bounds("prompt-bar-suggestion-0").is_none(),
+            "row scrolling must window out suggestions above the viewport"
+        );
+        assert!(
+            window.debug_bounds("prompt-bar-suggestion-29").is_some(),
+            "the last mention must remain reachable after row scrolling"
         );
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);

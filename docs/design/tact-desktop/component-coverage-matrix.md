@@ -1,5 +1,8 @@
 # gpui-ai Component Coverage Matrix
 
+> Historical: `gpui-ai` was removed on 2026-11-05; this matrix now records the
+> component mapping that the Tact-owned `ui::*` implementations replaced.
+
 Reference: `gpui-ai` v0.8.0 component catalog and exported `prelude`.
 
 Status values:
@@ -17,7 +20,7 @@ Status values:
 | `Orbs` | Direct | Subagent/background activity signal. |
 | `ContextMeter` | Direct | Inspector context tab. |
 | `ToolChip` | Direct | Latest-tool lifecycle chip in the Run inspector. |
-| `ToolCall` | Direct | Tool input/output/approval card. |
+| `ToolCall` | Direct | Tool input/output card; permission gates remain separate. |
 | `TaskRow` | Direct | Sticky task rows. |
 | `SearchResults` | Direct | Web-search tool reader: query, title and source domain; selecting a hit opens it. |
 | `TodoList` | Direct | Task checklist in the Run inspector. |
@@ -25,7 +28,7 @@ Status values:
 | `StreamingText` | Direct | Assistant Markdown stream. |
 | `CodeBlock` | Direct | Terminal output and code evidence. |
 | `CodeDiff` | Direct | Single-file patch review. |
-| `SelectionActions` | Compose | Ask / Explain / Rewrite toolbar for selected Markdown. |
+| `SelectionActions` | Compose | Selectable Markdown with a floating Ask / Explain / Rewrite toolbar; click, drag, and keyboard selections are supported. |
 | `Chat` | N/A | Its message model cannot interleave tools, reasoning, diffs and gates. |
 | `Suggestions` | Direct | Follow-up prompt chips after an answer. |
 | `AttachmentStrip` | Direct | Composer attachments. |
@@ -35,24 +38,24 @@ Status values:
 | `VoiceControls` | Direct | Composer microphone when the voice worker is configured; inserts the transcript on stop. |
 | `MessageQueue` | Direct | Queued prompts with send/remove/clear. |
 | `CommandSearch` | Direct | Flat command palette with group metadata in subtitle/keywords. |
-| `SidebarNav` | Compose | Project-scoped session rail with the app-owned filter and lock badges. |
-| `ThreadList` | Deferred | Insufficient for project-scoped fuzzy/filter manager; not claimed for that surface. |
-| `RecordsTable` | Compose | Used through `FilterTable`; direct session rows remain Tact-owned. |
-| `DiffTable` | Direct | A patch touching several files opens a per-file table with accept/reject decisions. |
-| `FilterTable` | Compose | Extensions Manager rows and filters. |
+| `SidebarNav` | Compose | Registered-project sessions grouped by project, with the app-owned filter and lock badges. |
+| `ThreadList` | Deferred | Insufficient for project-grouped fuzzy/filter manager; not claimed for that surface. |
+| `RecordsTable` | N/A | Historical only; the Tact-owned `FilterTable`/`DiffTable` render their own rows. |
+| `DiffTable` | Direct | A patch touching several files opens a scrollable per-file table with localized accept/reject decisions. |
+| `FilterTable` | Compose | Extensions Manager rows and filters; single click selects, double click or Open activates. |
 | `ComparisonTable` | N/A | No bounded feature-matrix workflow in Tact. |
 | `ApprovalCard` | Compose | Permission gates keep its one-click semantics; the visual shell is Tact-owned (P15) because the runtime offers four permission choices. |
 | `PlanCard` | Compose | Goals criteria use the plan-step grammar; the transcript plan card is Tact-owned so it can carry row identity. |
 | `RecommendationCard` | Deferred | No current recommendation decision workflow. |
 | `ContextCard` | Direct | Retained hook/tool evidence in the Context inspector. |
 | `InsightCard` | Compose | Stats and balance summaries. |
-| `ChoiceGroup` | Compose | `QuestionFlow` renders its options; `ChoiceGroup::cards` provides the bordered option cards. |
-| `QuestionFlow` | Direct | Multi-question clarification sequence; multi-select uses `Toggle`. |
+| `ChoiceGroup` | N/A | Historical only; the Tact-owned `QuestionFlow` renders its own option rows. |
+| `QuestionFlow` | Direct | Single-question Ask gate card; multi-select uses `Toggle`. |
 
-## Tact-owned replacements
+## Tact-owned surfaces
 
-The first two migration steps moved the leaf and reader surfaces off
-`gpui-ai` while keeping `gpui-component`:
+The desktop now uses `gpui-component` directly; every surface below is
+Tact-owned:
 
 - `LoadingState`, `ToolChip`, `Suggestions`, `ContextCard`, `ContextMeter`,
   `Toggle`, `AttachmentStrip` and `Orbs` live in
@@ -61,12 +64,18 @@ The first two migration steps moved the leaf and reader surfaces off
 - `CodeBlock`, `CodeDiff`, `SearchResults`, `ArtifactPanel`, `InsightCard`
   and `MessageQueue` live in
   `crates/desktop/src/ui/reader_components.rs`.
+- `StreamedContent`, `StreamingText`, `Thinking`, `ToolCall` and `ToolGroup`
+  live in `crates/desktop/src/ui/transcript_components.rs`.
+- `PromptBar` and its model/mention/attachment surface live in
+  `crates/desktop/src/ui/prompt_bar.rs`.
+- `SidebarNav` and its sections/items live in
+  `crates/desktop/src/ui/sidebar_nav.rs`.
+- `SelectionActions`, `PlanCard`, `QuestionFlow`, `FilterTable` and `DiffTable`
+  live in `selection_actions.rs`, `plan_card.rs`, `question_flow.rs`,
+  `filter_table.rs` and `diff_table.rs`.
 
-The remaining `gpui-ai` surface is the transcript/composer/rail layer:
-`StreamingText`, `Thinking`, `ToolCall`/`ToolGroup`, `PromptBar`,
-`SidebarNav`, `SelectionActions`, `FilterTable` and `DiffTable`, plus the
-shared `ProgressState`/`Progressive`/`StreamedContent` types and
-`gpui_ai::init` (needed for the remaining table and motion policies).
+No `gpui-ai` dependency or vendored fork remains; `gpui_component::init(cx)`
+is the only UI initialization.
 
 ## Unused Components That Reveal Product Gaps
 

@@ -1,5 +1,8 @@
 # Tact Desktop PRD
 
+> Historical: `gpui-ai` was removed on 2026-11-05; the AI surfaces are now
+> Tact-owned `gpui-component` components.
+
 - Status: prototype-ready
 - Date: 2026-10-30
 - Scope: native desktop frontend built on `tact_host`, with `gpui-ai` as the
@@ -50,7 +53,8 @@ integration.
 - Shipping a remote or web-hosted frontend in the first release. The initial
   transport is the existing in-process `tact_host` channel.
 - Multiple simultaneous project windows. V1 is one controller (one active
-  session) per window, and project switching is a serialized close-then-open.
+  session) per window. Project switching parks the visible host and adopts a
+  warm target or starts a cold one; the two projects may both keep parked hosts.
 - Achieving exact pixel parity with the TUI. Feature parity and information
   continuity are the requirement; the desktop has its own layout language.
 
@@ -286,11 +290,16 @@ reading.
 - Slash commands and command palette for all built-in commands.
 - Model, effort, thinking budget, permission, theme, and language controls.
 - Session history, input history, and resume.
-- Session management is project-scoped. The rail shows the active project and a
-  bounded, scrollable recent-session list; a dedicated Session Manager provides
-  a project pane, relevance-ranked fuzzy search, Active/Archived/All filters,
-  archive/restore and long list scrolling without compressing Extensions
-  navigation.
+- Session management spans every registered project. The rail groups its
+  bounded, scrollable list by project; a dedicated Session Manager provides the
+  same grouping, a project pane, relevance-ranked fuzzy search,
+  Active/Archived/All filters, archive/restore and long list scrolling without
+  compressing Extensions navigation. Visible idle sessions preload transcript
+  and input history in the background; running or parked sessions keep their
+  live state and locked sessions are not read speculatively. Up to six idle
+  sessions keep warm hosts in an LRU pool, so repeated switches adopt an
+  existing host instead of closing and starting one each time. Running hosts
+  are never evicted; cross-project switches adopt warm targets directly.
 - The transcript header is status-only. Model, permission mode and context usage
   stay in their owning controls (composer and Inspector) rather than duplicating
   them above the transcript.
@@ -378,7 +387,7 @@ entry and reports its output in a result surface).
 | Pending prompts | `MessageQueue` | Direct |
 | Attachments | `AttachmentStrip` | Direct |
 | Slash command tree | `PromptBar` + Tact-owned slash overlay | Compose; PromptBar commands are flat and cannot represent nested values |
-| Session list | Tact-owned project-scoped manager | Build locally; `ThreadList` lacks project/fuzzy/filter controls |
+| Session list | Tact-owned project-grouped manager | Build locally; `ThreadList` lacks project/fuzzy/filter controls |
 | Command palette | `CommandSearch` | Direct with a flat item list; group metadata travels in subtitle/keywords |
 | Context usage | `ContextMeter` | Direct |
 | Task and plugin tables | `TaskRow`, `TodoList`, `FilterTable` | Compose |
@@ -406,7 +415,7 @@ entry and reports its output in a result surface).
   `PromptCommand` is flat and has no nested/value/Tab-complete model.
 - `CommandSearch` renders a flat item list. Tact supplies stable IDs, subtitles
   and keywords; group headers are not claimed.
-- The full project-scoped Session Manager is Tact-owned. `ThreadList` is not
+- The full project-grouped Session Manager is Tact-owned. `ThreadList` is not
   claimed for it because upstream search is substring-only and has no project
   or Active/Archived/All filters.
 - The prototype names these surfaces with `data-gpui-ai` attributes. The desktop

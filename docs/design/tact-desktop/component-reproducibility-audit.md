@@ -1,5 +1,9 @@
 # gpui-ai Reproducibility Audit
 
+> Historical: the desktop removed its `gpui-ai` dependency on 2026-11-05.
+> This audit records the upstream gaps and local patches that the Tact-owned
+> `ui::*` components now absorb; it no longer describes a live dependency.
+
 Reference: `gpui-ai` v0.8.0, inspected from
 `https://github.com/labcoder/gpui-ai` and the live component catalog at
 `https://labcoder.github.io/gpui-ai/components`.
@@ -35,7 +39,7 @@ Resolution:
 - The prototype marks the slash surface as
   `PromptBar + TactSlashCommandOverlay`.
 
-### F2. ThreadList cannot reproduce the project-scoped session manager
+### F2. ThreadList cannot reproduce the project-grouped session manager
 
 Evidence:
 
@@ -43,7 +47,7 @@ Evidence:
   search input.
 - Its row filter is case-insensitive substring matching.
 - It has no project pane, Active/Archived/All filter, external fuzzy query, or
-  project-scoped management model.
+  project-grouped management model.
 
 Impact: the full Session Manager cannot be a direct `ThreadList`, and the rail
 cannot claim a bare `ThreadList` while also owning a separate search/Manage

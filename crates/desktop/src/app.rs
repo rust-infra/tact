@@ -142,7 +142,7 @@ fn run_inner(smoke: bool) -> Result<(), DesktopStartError> {
     gpui_platform::application()
         .with_assets(crate::assets::Assets)
         .run(move |cx: &mut App| {
-            gpui_ai::init(cx);
+            gpui_component::init(cx);
             if let Err(error) = cx.text_system().add_fonts(vec![
                 Cow::Borrowed(include_bytes!("../assets/fonts/IBMPlexSans-Regular.ttf").as_slice()),
                 Cow::Borrowed(include_bytes!("../assets/fonts/Lilex-Regular.ttf").as_slice()),

@@ -282,6 +282,7 @@ record them:
 | Inspector | Fixed 318px; values were clipped under the scrollbar (now padded, still cramped) | Fixed: scrollbar padding + truncation |
 | Command Center | Flat list; no groups, icons, recent section, or per-row shortcut hints | Fixed: group subtitle, group icon, `/command` hint, count caption |
 | Session Manager | No project grouping/chips, archive badge, or keyboard hints | Fixed: project chips include All projects; archived rows carry a badge |
+| Session list | Date buckets only showed the active project's recent sessions | Fixed: registered projects are loaded together and grouped by project |
 | Extensions | Empty tabs render nothing; `Refresh MCP` is a bare link | Fixed: MCP shows `No MCP servers yet` above Refresh |
 | Transcript | Hook context rendered as bare markdown; tool groups and diff were outside the capture window | Fixed: hook context card; captures now cover tool cards (`26c`) and the transcript tail |
 | Inspector | Run tab was a flat key/value list with no current step or signal rows | Fixed: Run map header, gauge, Current step, Thread signals, Latest activity |
