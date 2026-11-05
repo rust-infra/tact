@@ -391,7 +391,7 @@ Popups usually:
 
 ### Theme (`theme.rs`)
 
-- 12 built-in themes: `Dark`, `Light`, `SolarizedDark`, `SolarizedLight`, `GruvboxDark`, `Nord`, `Retro`, `Kawaii`, `Japanese`, `Brutal`, `Ink`, `InkLight`
+- 14 built-in themes: `Dark`, `Light`, `SolarizedDark`, `SolarizedLight`, `GruvboxDark`, `Nord`, `Retro`, `Kawaii`, `Japanese`, `Brutal`, `Ink`, `InkLight`, `Claude`, `ClaudeDark`
 - Each theme defines background, foreground, accent, warning, border, etc.
 - Cycle through themes with `Ctrl+T`
 

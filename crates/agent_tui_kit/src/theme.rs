@@ -21,6 +21,8 @@ pub enum ThemeName {
     Brutal,
     Ink,
     InkLight,
+    Claude,
+    ClaudeDark,
 }
 
 impl ThemeName {
@@ -43,6 +45,8 @@ impl ThemeName {
             ThemeName::Brutal,
             ThemeName::Ink,
             ThemeName::InkLight,
+            ThemeName::Claude,
+            ThemeName::ClaudeDark,
         ]
     }
     /// The canonical name, as `config.toml` spells it (`ink-light`, not
@@ -65,6 +69,8 @@ impl ThemeName {
             ThemeName::Brutal => "brutal",
             ThemeName::Ink => "ink",
             ThemeName::InkLight => "ink-light",
+            ThemeName::Claude => "claude",
+            ThemeName::ClaudeDark => "claude-dark",
         }
     }
 
@@ -95,6 +101,8 @@ impl FromStr for ThemeName {
             }
             "ink" => Ok(Self::Ink),
             "ink-light" | "ink_light" | "inklight" => Ok(Self::InkLight),
+            "claude" => Ok(Self::Claude),
+            "claude-dark" | "claude_dark" | "claudedark" => Ok(Self::ClaudeDark),
             other => Err(format!("unknown theme: {other}")),
         }
     }
@@ -354,6 +362,44 @@ impl From<ThemeName> for Theme {
                 error: Color::Rgb(200, 50, 50),
                 success: Color::Rgb(60, 160, 90),
             },
+            ThemeName::Claude => Self {
+                name,
+                bg: Color::Rgb(250, 249, 245),
+                fg: Color::Rgb(31, 30, 29),
+                accent: Color::Rgb(184, 85, 53),
+                warning: Color::Rgb(190, 120, 20),
+                error: Color::Rgb(191, 77, 67),
+                success: Color::Rgb(61, 122, 85),
+                highlight: Color::Rgb(239, 223, 214),
+                border: Color::Rgb(217, 214, 204),
+                status_bar_bg: Color::Rgb(240, 238, 230),
+                bottom_bar_bg: Color::Rgb(250, 249, 245),
+                bottom_bar_fg: Color::Rgb(110, 106, 96),
+                input_box_bg: Color::Rgb(255, 255, 255),
+                input_box_fg: Color::Rgb(31, 30, 29),
+                heading: Color::Rgb(184, 85, 53),
+                version: Color::Rgb(61, 122, 85),
+                muted: Color::Rgb(110, 106, 96),
+            },
+            ThemeName::ClaudeDark => Self {
+                name,
+                bg: Color::Rgb(38, 38, 36),
+                fg: Color::Rgb(240, 238, 230),
+                accent: Color::Rgb(217, 119, 87),
+                warning: Color::Rgb(224, 164, 88),
+                error: Color::Rgb(229, 115, 104),
+                success: Color::Rgb(127, 175, 139),
+                highlight: Color::Rgb(88, 61, 50),
+                border: Color::Rgb(68, 67, 64),
+                status_bar_bg: Color::Rgb(31, 30, 29),
+                bottom_bar_bg: Color::Rgb(38, 38, 36),
+                bottom_bar_fg: Color::Rgb(183, 181, 172),
+                input_box_bg: Color::Rgb(48, 48, 46),
+                input_box_fg: Color::Rgb(240, 238, 230),
+                heading: Color::Rgb(217, 119, 87),
+                version: Color::Rgb(127, 175, 139),
+                muted: Color::Rgb(183, 181, 172),
+            },
         }
     }
 }
@@ -385,15 +431,16 @@ impl Theme {
     }
 
     pub fn code_block_bg(&self) -> Color {
-        if self.is_light() {
-            Color::Rgb(248, 248, 248)
-        } else {
-            Color::Rgb(30, 35, 50)
+        match self.name {
+            ThemeName::Claude => Color::Rgb(255, 255, 255),
+            ThemeName::ClaudeDark => Color::Rgb(48, 48, 46),
+            _ if self.is_light() => Color::Rgb(248, 248, 248),
+            _ => Color::Rgb(30, 35, 50),
         }
     }
 
     pub fn code_block_fg(&self) -> Color {
-        if self.is_light() {
+        if self.is_light() || matches!(self.name, ThemeName::ClaudeDark) {
             self.fg
         } else {
             Color::Rgb(200, 200, 210)
@@ -405,7 +452,7 @@ impl Theme {
     }
 
     pub fn code_card_border(&self) -> Color {
-        if self.is_light() {
+        if self.is_light() || matches!(self.name, ThemeName::ClaudeDark) {
             self.border
         } else {
             Color::Rgb(100, 120, 180)
@@ -413,26 +460,27 @@ impl Theme {
     }
 
     pub fn code_card_title_fg(&self) -> Color {
-        if self.is_light() {
-            self.fg
-        } else {
-            Color::Rgb(160, 180, 240)
+        match self.name {
+            ThemeName::Claude | ThemeName::ClaudeDark => self.accent,
+            _ if self.is_light() => self.fg,
+            _ => Color::Rgb(160, 180, 240),
         }
     }
 
     pub fn thinking_card_border(&self) -> Color {
-        if self.is_light() {
-            self.border
-        } else {
-            Color::Rgb(140, 140, 220)
+        match self.name {
+            ThemeName::Claude => self.border,
+            ThemeName::ClaudeDark => Color::Rgb(90, 80, 73),
+            _ if self.is_light() => self.border,
+            _ => Color::Rgb(140, 140, 220),
         }
     }
 
     pub fn thinking_preview_fg(&self) -> Color {
-        if self.is_light() {
-            self.fg
-        } else {
-            Color::Rgb(180, 180, 200)
+        match self.name {
+            ThemeName::Claude | ThemeName::ClaudeDark => self.muted,
+            _ if self.is_light() => self.fg,
+            _ => Color::Rgb(180, 180, 200),
         }
     }
 
@@ -474,6 +522,39 @@ mod tests {
             "inklight".parse::<ThemeName>().unwrap(),
             ThemeName::InkLight
         );
+    }
+
+    #[test]
+    fn parse_claude_and_claude_dark() {
+        assert_eq!("claude".parse::<ThemeName>().unwrap(), ThemeName::Claude);
+        assert_eq!(
+            "claude-dark".parse::<ThemeName>().unwrap(),
+            ThemeName::ClaudeDark
+        );
+        assert_eq!(
+            "claude_dark".parse::<ThemeName>().unwrap(),
+            ThemeName::ClaudeDark
+        );
+        assert_eq!(
+            "ClaudeDark".parse::<ThemeName>().unwrap(),
+            ThemeName::ClaudeDark
+        );
+    }
+
+    #[test]
+    fn claude_palettes_match_the_desktop_family() {
+        let light = Theme::from(ThemeName::Claude);
+        assert!(light.is_light());
+        assert_eq!(light.bg, Color::Rgb(250, 249, 245));
+        assert_eq!(light.accent, Color::Rgb(184, 85, 53));
+        assert_eq!(light.code_block_bg(), Color::Rgb(255, 255, 255));
+
+        let dark = Theme::from(ThemeName::ClaudeDark);
+        assert!(!dark.is_light());
+        assert_eq!(dark.bg, Color::Rgb(38, 38, 36));
+        assert_eq!(dark.accent, Color::Rgb(217, 119, 87));
+        assert_eq!(dark.code_block_bg(), Color::Rgb(48, 48, 46));
+        assert_eq!(dark.thinking_card_border(), Color::Rgb(90, 80, 73));
     }
 
     #[test]

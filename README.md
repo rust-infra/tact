@@ -171,7 +171,7 @@ memory_enabled = true
 notifications_enabled = true
 
 [ui]
-theme = "retro"   # ink | ink-light | retro | brutal | nord | dark | auto ...
+theme = "retro"   # ink | ink-light | claude | claude-dark | retro | brutal | nord | dark | auto ...
 
 [tools]
 # Bash wall-clock timeout in seconds (default: 1800; 0 disables timeout)
@@ -522,7 +522,7 @@ skill_body_auto_inject = false
 # thinking_budget = 0
 
 [ui]
-theme = "retro"                  # ink | ink-light | retro | brutal | nord | dark | auto
+theme = "retro"                  # ink | ink-light | claude | claude-dark | retro | brutal | nord | dark | auto
 # vision_image.* only reduces tokens for attached images; it does not enable vision
 # [ui.vision_image]
 # compress = true

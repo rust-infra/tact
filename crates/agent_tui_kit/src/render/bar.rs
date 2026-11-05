@@ -519,6 +519,8 @@ pub fn render_status_bar(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
                 crate::theme::ThemeName::Brutal => msgs.theme_brutal,
                 crate::theme::ThemeName::Ink => msgs.theme_ink,
                 crate::theme::ThemeName::InkLight => msgs.theme_ink_light,
+                crate::theme::ThemeName::Claude => msgs.theme_claude,
+                crate::theme::ThemeName::ClaudeDark => msgs.theme_claude_dark,
             };
             let lang_label = ctx.language.label();
             (

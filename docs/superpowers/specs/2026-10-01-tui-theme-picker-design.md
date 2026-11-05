@@ -79,7 +79,7 @@ subagent / effort / theme) go through it. `replacing_a_model_keeps_its_trailing_
 
 - **No new CLI flag.** `--theme` already exists and keeps its meaning.
 - **No live reload of anything but the theme.** LLM / provider changes still need a restart.
-- **No theme editor and no user-defined themes.** The picker offers the twelve built-ins.
+- **No theme editor and no user-defined themes.** The picker offers the built-in set.
 
 ## Verification
 

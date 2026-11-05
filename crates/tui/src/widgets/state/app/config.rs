@@ -301,6 +301,8 @@ pub(crate) fn theme_label(msgs: &Messages, name: ThemeName) -> &'static str {
         ThemeName::Brutal => msgs.theme_brutal,
         ThemeName::Ink => msgs.theme_ink,
         ThemeName::InkLight => msgs.theme_ink_light,
+        ThemeName::Claude => msgs.theme_claude,
+        ThemeName::ClaudeDark => msgs.theme_claude_dark,
     }
 }
 

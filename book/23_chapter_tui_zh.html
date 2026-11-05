@@ -1699,7 +1699,7 @@ timeout）：</p>
 <p>活跃 tool 行也强制重绘，使 duration 计数器在无新
 <code>AgentUpdate</code> 时仍 tick。</p>
 <h3 id="610-渲染中的主题与-i18n">6.10 渲染中的主题与 i18n</h3>
-<p>颜色来自 <code>theme.rs</code> 的 <code>Theme</code>（12 主题；config
+<p>颜色来自 <code>theme.rs</code> 的 <code>Theme</code>（14 主题；config
 默认 <code>ink</code>）。运行时 <code>/theme</code>
 打开选择器（<code>SelectKind::ThemePick</code>，开在<strong>当前主题</strong>那一行，选中的行带
 <code> *</code> 标记），<code>Ctrl+T</code>
@@ -2609,8 +2609,8 @@ skills。<code>/plugin list</code> 渲染功能表（技能 / 命令 / 代理 / 
 args（<code>theme.fg</code>）。完整发现路径与 <code>$ARGUMENTS</code>
 规则：<a href="./02_chapter_skill_zh.html">Ch 2</a>。与模型 mid-turn 调用
 <code>load_skill</code> 分离。</p>
-<p><code>theme.rs</code> 中十二个 built-in
-主题：<code>dark</code>、<code>light</code>、<code>solarized-dark/light</code>、<code>gruvbox-dark</code>、<code>nord</code>、<code>retro</code>、<code>kawaii</code>、<code>japanese</code>、<code>brutal</code>、<code>ink</code>、<code>ink-light</code>。初始主题来自
+<p><code>theme.rs</code> 中十四个 built-in
+主题：<code>dark</code>、<code>light</code>、<code>solarized-dark/light</code>、<code>gruvbox-dark</code>、<code>nord</code>、<code>retro</code>、<code>kawaii</code>、<code>japanese</code>、<code>brutal</code>、<code>ink</code>、<code>ink-light</code>、<code>claude</code>、<code>claude-dark</code>。初始主题来自
 config（<a href="./21_chapter_config_zh.html">Ch
 21</a>）；<code>/theme</code> 选择、<code>Ctrl+T</code> 循环。选完会像
 <code>/model</code> 一样问一句「将主题保存到配置文件？」（默认
