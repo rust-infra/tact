@@ -17,6 +17,9 @@ pub enum DesktopIntent {
         project_id: ProjectId,
     },
     NewSession,
+    NewSessionInProject {
+        project_id: ProjectId,
+    },
     ResumeSession {
         session_id: SessionId,
     },

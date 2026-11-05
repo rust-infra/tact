@@ -8,10 +8,11 @@ use tact_protocol::{
 
 use crate::{
     AccountView, Appearance, BackgroundTaskView, CatalogLocale, CommandCatalogView, ComposerView,
-    DesktopConfig, DesktopSnapshot, ExtensionsView, FailureView, GateCard, GoalView, InspectorTab,
-    InspectorView, ProjectRecord, ProjectView, ReducedMotion, Revision, RowId, RunPhase,
-    RuntimeView, SectionMask, SessionEpoch, SessionListState, SessionPhase, SessionSummaryView,
-    SessionView, StateCommit, SubagentView, TaskView, TranscriptReducer, UsageView,
+    DesktopConfig, DesktopSnapshot, DesktopTheme, ExtensionsView, FailureView, GateCard, GoalView,
+    InspectorTab, InspectorView, ProjectRecord, ProjectView, ReducedMotion, Revision, RowId,
+    RunPhase, RuntimeView, SectionMask, SessionEpoch, SessionListState, SessionPhase,
+    SessionSummaryView, SessionView, StateCommit, SubagentView, TaskView, TranscriptReducer,
+    UsageView,
 };
 
 pub struct DesktopState {
@@ -33,6 +34,7 @@ pub struct DesktopState {
     pub voice_missing_api_key: bool,
     pub failure: Option<FailureView>,
     pub appearance: Appearance,
+    pub theme: DesktopTheme,
     pub motion: ReducedMotion,
     pub text_scale: f32,
     pub language: tact_catalog::CatalogLocale,
@@ -195,6 +197,7 @@ impl DesktopState {
             }),
             failure: None,
             appearance: config.appearance,
+            theme: config.theme,
             motion: config.reduced_motion,
             text_scale: config.text_scale,
             language: config.language,
@@ -647,6 +650,7 @@ impl DesktopState {
             voice_missing_api_key: self.voice_missing_api_key,
             failure: self.failure.clone(),
             appearance: self.appearance,
+            theme: self.theme,
             motion: self.motion,
             text_scale: self.text_scale,
             language: self.language,

@@ -30,9 +30,9 @@ use tact_catalog::{
 };
 use tact_desktop_core::{
     Appearance, ArchiveFilter, CommandAvailability, CommandForm, DesktopController, DesktopEffect,
-    DesktopEvent, DesktopIntent, DesktopSnapshot, ExtensionsTab, GateCard, GateKind, GateResponse,
-    GateSelection, GateState, InspectorTab, PermissionModeView, ProjectId, ReaderRef, RowBody,
-    RowId, RowStatus, SectionMask, SessionId, SessionPhase, SettingValue, Submission,
+    DesktopEvent, DesktopIntent, DesktopSnapshot, DesktopTheme, ExtensionsTab, GateCard, GateKind,
+    GateResponse, GateSelection, GateState, InspectorTab, PermissionModeView, ProjectId, ReaderRef,
+    RowBody, RowId, RowStatus, SectionMask, SessionId, SessionPhase, SettingValue, Submission,
     SurfaceSnapshot, ToolGroupItem, ToolRow, TrajectoryRecordId, TrajectoryView, TranscriptRow,
     TranscriptView, is_enabled,
 };
@@ -73,6 +73,7 @@ use crate::ui::sidebar_nav::{
     SidebarSection,
 };
 use crate::ui::sticky::GroupStatus;
+use crate::ui::surface;
 use crate::ui::trajectory as trajectory_page;
 use crate::ui::transcript_components::{
     StreamedContent, StreamingText, Thinking, ThinkingEvent, ThinkingLabels, ToolCall,
@@ -890,6 +891,7 @@ pub(crate) struct DesktopRoot {
     last_badge: usize,
     last_commit_revision: u64,
     last_appearance: Appearance,
+    last_theme: DesktopTheme,
     last_language: tact_catalog::CatalogLocale,
     mentions_root: Option<PathBuf>,
     prompt_mentions: Vec<PromptMention>,
@@ -1046,11 +1048,14 @@ impl DesktopRoot {
         let trajectory_search_subscription = cx.subscribe_in(
             &trajectory_search,
             window,
-            |this, _, event: &gpui_component::input::InputEvent, window, cx| {
-                if matches!(event, gpui_component::input::InputEvent::Change) {
+            |this, _, event: &gpui_component::input::InputEvent, window, cx| match event {
+                gpui_component::input::InputEvent::Change => {
                     let query = this.trajectory_search.read(cx).value().to_string();
                     this.set_trajectory_query(query, window, cx);
                 }
+                gpui_component::input::InputEvent::Focus
+                | gpui_component::input::InputEvent::Blur => cx.notify(),
+                _ => {}
             },
         );
         let editor_subscription = cx.subscribe_in(
@@ -1103,6 +1108,13 @@ impl DesktopRoot {
                         this.open_remove_project(ProjectId(project_id.to_string()), window, cx);
                     }
                 }
+                SidebarNavEvent::SectionNewSessionRequested { section_id, .. } => {
+                    if let Some(project_id) = section_id.strip_prefix("sessions-project-") {
+                        this.dispatch(DesktopIntent::NewSessionInProject {
+                            project_id: ProjectId(project_id.to_string()),
+                        });
+                    }
+                }
                 SidebarNavEvent::ItemActionRequested { item_id, .. } => {
                     if let Some(session) = this
                         .snapshot
@@ -1118,14 +1130,26 @@ impl DesktopRoot {
                         });
                     }
                 }
+                SidebarNavEvent::ItemNewSessionRequested { item_id, .. } => {
+                    let project_id = this
+                        .snapshot
+                        .sessions
+                        .items
+                        .iter()
+                        .find(|session| session.id == item_id.as_ref())
+                        .map(|session| session.project_id.clone());
+                    if let Some(project_id) = project_id {
+                        this.dispatch(DesktopIntent::NewSessionInProject { project_id });
+                    }
+                }
                 SidebarNavEvent::CollapsedChanged { .. } => {}
             },
         );
         let rail_search_subscription = cx.subscribe_in(
             &rail_search,
             window,
-            |this, _, event: &gpui_component::input::InputEvent, window, cx| {
-                if matches!(event, gpui_component::input::InputEvent::Change) {
+            |this, _, event: &gpui_component::input::InputEvent, window, cx| match event {
+                gpui_component::input::InputEvent::Change => {
                     let query = this.rail_search.read(cx).value().to_string();
                     this.sidebar_query = query.clone();
                     this.sidebar_nav.update(cx, |nav, cx| {
@@ -1133,6 +1157,9 @@ impl DesktopRoot {
                     });
                     cx.notify();
                 }
+                gpui_component::input::InputEvent::Focus
+                | gpui_component::input::InputEvent::Blur => cx.notify(),
+                _ => {}
             },
         );
         let extensions_table_subscription = cx.subscribe_in(
@@ -1224,34 +1251,45 @@ impl DesktopRoot {
         let session_search_subscription = cx.subscribe_in(
             &session_search,
             window,
-            |this, _, event: &gpui_component::input::InputEvent, _, cx| {
-                if matches!(event, gpui_component::input::InputEvent::Change) {
+            |this, _, event: &gpui_component::input::InputEvent, _, cx| match event {
+                gpui_component::input::InputEvent::Change => {
                     let query = this.session_search.read(cx).value().to_string();
                     this.dispatch(DesktopIntent::SetSessionQuery(query));
                 }
+                gpui_component::input::InputEvent::Focus
+                | gpui_component::input::InputEvent::Blur => cx.notify(),
+                _ => {}
             },
         );
         let extension_search_subscription = cx.subscribe_in(
             &extension_search,
             window,
-            |this, _, event: &gpui_component::input::InputEvent, _, cx| {
-                if matches!(event, gpui_component::input::InputEvent::Change) {
+            |this, _, event: &gpui_component::input::InputEvent, _, cx| match event {
+                gpui_component::input::InputEvent::Change => {
                     this.extension_query = this.extension_search.read(cx).value().to_string();
                     cx.notify();
                 }
+                gpui_component::input::InputEvent::Focus
+                | gpui_component::input::InputEvent::Blur => cx.notify(),
+                _ => {}
             },
         );
         let model_search_subscription = cx.subscribe_in(
             &model_search,
             window,
             |this, _, event: &gpui_component::input::InputEvent, _, cx| {
-                if matches!(event, gpui_component::input::InputEvent::Change) {
-                    this.model_picker_query = this.model_search.read(cx).value().to_string();
-                    // A query change reorders nothing but rebuilds the visible
-                    // set, so the old cursor would point at a different model.
-                    this.model_picker_cursor = 0;
-                    this.model_picker_scroll.reset();
-                    cx.notify();
+                match event {
+                    gpui_component::input::InputEvent::Change => {
+                        this.model_picker_query = this.model_search.read(cx).value().to_string();
+                        // A query change reorders nothing but rebuilds the visible
+                        // set, so the old cursor would point at a different model.
+                        this.model_picker_cursor = 0;
+                        this.model_picker_scroll.reset();
+                        cx.notify();
+                    }
+                    gpui_component::input::InputEvent::Focus
+                    | gpui_component::input::InputEvent::Blur => cx.notify(),
+                    _ => {}
                 }
             },
         );
@@ -1335,6 +1373,7 @@ impl DesktopRoot {
             last_badge: 0,
             last_commit_revision: initial_revision,
             last_appearance: Appearance::Light,
+            last_theme: DesktopTheme::Tact,
             last_language: initial_language,
             mentions_root: None,
             prompt_mentions: Vec::new(),
@@ -1365,6 +1404,7 @@ impl DesktopRoot {
             trajectory_detail_scroll: gpui::ScrollHandle::new(),
         };
         root.last_appearance = root.snapshot.appearance;
+        root.last_theme = root.snapshot.theme;
         root.sync_prompt_commands(cx);
         root.sync_prompt_state(cx);
         root.rebuild_command_search(window, cx, "");
@@ -1550,6 +1590,7 @@ impl DesktopRoot {
         // `session.id` still covers the startup frame where no row is selected.
         let selected = self.snapshot.sessions.selected.as_ref();
         let active_id = selected.or(self.snapshot.session.id.as_ref());
+        let new_session_label = self.text(TextKey::NewSession).to_string();
         for session in &self.snapshot.sessions.items {
             let title = self.session_title(session);
             let locked = session.locked && active_id != Some(&SessionId(session.id.clone()));
@@ -1588,6 +1629,7 @@ impl DesktopRoot {
             let item = if locked {
                 item.disabled(true)
                     .badge(self.text(TextKey::Locked).to_string())
+                    .new_session_action(new_session_label.clone())
             } else {
                 item.context_action(
                     self.text(if session.archived_at.is_some() {
@@ -1597,6 +1639,7 @@ impl DesktopRoot {
                     })
                     .to_string(),
                 )
+                .new_session_action(new_session_label.clone())
             };
             let group_id = format!("sessions-project-{}", session.project_id.0);
             if let Some((_, _, _, items)) = groups
@@ -1625,6 +1668,7 @@ impl DesktopRoot {
                     .leading(project_initials(&label))
                     .meta(count.to_string())
                     .action(self.text(TextKey::RemoveProject))
+                    .new_session_action(new_session_label.clone())
                     .collapsed(self.collapsed_session_projects.contains(&project_id))
                     .items(items)
             })
@@ -1929,6 +1973,7 @@ impl DesktopRoot {
                 let became_ready = self.snapshot.session.phase != SessionPhase::Ready
                     && commit.snapshot.session.phase == SessionPhase::Ready;
                 let appearance_changed = self.snapshot.appearance != commit.snapshot.appearance;
+                let theme_changed = self.snapshot.theme != commit.snapshot.theme;
                 self.snapshot = commit.snapshot;
                 let pending_gates = self.snapshot.pending_gates.len();
                 if pending_gates != self.last_badge {
@@ -1949,9 +1994,14 @@ impl DesktopRoot {
                         form.required = false;
                     }
                 }
-                if appearance_changed || self.snapshot.appearance != self.last_appearance {
+                if appearance_changed
+                    || theme_changed
+                    || self.snapshot.appearance != self.last_appearance
+                    || self.snapshot.theme != self.last_theme
+                {
                     self.last_appearance = self.snapshot.appearance;
-                    theme::apply(self.snapshot.appearance, None, cx);
+                    self.last_theme = self.snapshot.theme;
+                    theme::apply(self.snapshot.theme, self.snapshot.appearance, None, cx);
                 }
                 self.sync_prompt_state(cx);
                 self.refresh_typed_reader();
@@ -4563,35 +4613,28 @@ impl DesktopRoot {
                     .w_full()
                     .h(px(33.))
                     .mt(px(8.))
-                    .gap(px(8.))
                     .items_center()
-                    .rounded(px(7.))
-                    .border_1()
-                    .border_color(cx.theme().sidebar_border)
-                    .bg(cx.theme().popover)
-                    .px(px(10.))
                     .child(
-                        Icon::new(IconName::Search)
-                            .size(px(13.))
-                            .text_color(cx.theme().muted_foreground),
-                    )
-                    .child(
-                        div().flex_1().min_w_0().child(
-                            Input::new(&self.rail_search)
-                                .aria_label(self.text(TextKey::SearchSessions)),
-                        ),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .rounded(px(5.))
-                            .bg(cx.theme().muted)
-                            .px(px(5.))
-                            .py(px(1.))
-                            .text_size(px(10.))
-                            .font_family("Lilex")
-                            .text_color(cx.theme().muted_foreground)
-                            .child("/"),
+                        surface::quiet_search_input(&self.rail_search, window, cx)
+                            .w_full()
+                            .prefix(
+                                Icon::new(IconName::Search)
+                                    .size(px(13.))
+                                    .text_color(cx.theme().muted_foreground),
+                            )
+                            .suffix(
+                                div()
+                                    .flex_none()
+                                    .rounded(px(5.))
+                                    .bg(cx.theme().popover)
+                                    .px(px(5.))
+                                    .py(px(1.))
+                                    .text_size(px(10.))
+                                    .font_family("Lilex")
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("/"),
+                            )
+                            .aria_label(self.text(TextKey::SearchSessions)),
                     ),
             )
             .child(
@@ -5154,6 +5197,7 @@ impl DesktopRoot {
     fn render_trajectory_summary(
         &self,
         view: &TrajectoryView,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let line = trajectory_page::SummaryLine::new(view.summary(), self.text(TextKey::Measured));
@@ -5188,10 +5232,7 @@ impl DesktopRoot {
             .child(metric(self.text(TextKey::RecordPrefix), line.records, cx))
             .child(div().flex_1())
             .child(
-                // One box: the Input draws its own border, background and
-                // focus ring. Wrapping it in a second bordered container left
-                // two frames plus an outer ring crowding a 20px-tall field.
-                Input::new(&self.trajectory_search)
+                surface::quiet_search_input(&self.trajectory_search, window, cx)
                     .prefix(
                         Icon::new(IconName::Search)
                             .size(px(12.))
@@ -5385,7 +5426,11 @@ impl DesktopRoot {
     ///
     /// Everything here is derived from the same transcript the Chat page
     /// renders, so the two pages can never disagree about what the run did.
-    fn render_trajectory_page(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_trajectory_page(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let view = self.trajectory_view();
         if view.is_empty() {
             return v_flex()
@@ -5446,7 +5491,7 @@ impl DesktopRoot {
         })
         .size_full()
         .min_h_0();
-        let summary = self.render_trajectory_summary(&view, cx);
+        let summary = self.render_trajectory_summary(&view, window, cx);
         let overview = self.render_trajectory_overview(&view, visible.as_deref(), cx);
         let trajectory_detail = self.render_trajectory_detail(&view, cx);
         let subtitle = if self.trajectory_query.trim().is_empty() {
@@ -9238,23 +9283,19 @@ impl DesktopRoot {
                 .role(Role::RadioButton)
                 .tab_stop(true)
                 .aria_label(value.clone())
+                .aria_selected(chosen)
                 .selected(chosen)
                 .cursor_pointer()
                 .w_full()
                 .rounded_md()
-                .border_1()
-                .border_color(if active {
-                    cx.theme().primary
-                } else {
-                    cx.theme().border
-                })
                 .px_2()
                 // A fixed row height is what lets the keyboard keep its
                 // cursor on screen without measuring: the visible band is
                 // arithmetic.
-                .h(px(MODEL_PICKER_ROW_HEIGHT - 2.))
+                .h(px(MODEL_PICKER_ROW_HEIGHT))
                 .py_0()
-                .when(chosen, |row| row.bg(cx.theme().accent))
+                .bg(surface::selection_fill(chosen, active, false, cx))
+                .hover(|style| style.bg(surface::selection_hover_fill(chosen, false, cx)))
                 .child(div().w_full().min_w_0().truncate().child(value.clone()))
                 .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                     this.model_picker_cursor = index;
@@ -9300,7 +9341,7 @@ impl DesktopRoot {
                             .child(self.text(TextKey::Close)),
                     ),
             )
-            .child(Input::new(&self.model_search))
+            .child(surface::quiet_search_input(&self.model_search, window, cx))
             .when(rows.is_empty(), |dialog| {
                 dialog.child(
                     div()
@@ -9337,7 +9378,7 @@ impl DesktopRoot {
                                 }
                                 cx.stop_propagation();
                             })
-                            .child(v_flex().w_full().gap(px(2.)).children(rows)),
+                            .child(v_flex().w_full().gap_0().children(rows)),
                     ),
             )
             .into_any_element()
@@ -10770,11 +10811,19 @@ impl DesktopRoot {
                     .items_center()
                     .gap(px(10.))
                     .when(self.extension_manage, |row| {
-                        row.child(div().w(px(360.)).child(Input::new(&self.extension_search)))
-                            .child(div().flex_1())
+                        row.child(div().w(px(360.)).child(surface::quiet_search_input(
+                            &self.extension_search,
+                            window,
+                            cx,
+                        )))
+                        .child(div().flex_1())
                     })
                     .when(!self.extension_manage, |row| {
-                        row.child(div().flex_1().child(Input::new(&self.extension_search)))
+                        row.child(div().flex_1().child(surface::quiet_search_input(
+                            &self.extension_search,
+                            window,
+                            cx,
+                        )))
                     }),
             )
             .child(if self.extension_manage {
@@ -11680,12 +11729,13 @@ impl DesktopRoot {
                                     .w_full()
                                     .items_center()
                                     .gap(px(10.))
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .child(Input::new(&self.session_search)),
-                                    )
+                                    .child(div().flex_1().min_w_0().child(
+                                        surface::quiet_search_input(
+                                            &self.session_search,
+                                            window,
+                                            cx,
+                                        ),
+                                    ))
                                     .child(
                                         h_flex()
                                             .flex_none()
@@ -12136,7 +12186,7 @@ impl Render for DesktopRoot {
                                                         self.render_transcript(window, cx)
                                                     }
                                                     RunTab::Trajectory => {
-                                                        self.render_trajectory_page(cx)
+                                                        self.render_trajectory_page(window, cx)
                                                     }
                                                 },
                                             ))
@@ -12480,6 +12530,10 @@ fn setting_display_value(id: SettingId, snapshot: &DesktopSnapshot) -> String {
         SettingId::Theme => match snapshot.appearance {
             Appearance::Light => "light".into(),
             Appearance::Dark => "dark".into(),
+        },
+        SettingId::ThemeFamily => match snapshot.theme {
+            DesktopTheme::Tact => "Tact".into(),
+            DesktopTheme::Claude => "Claude".into(),
         },
         SettingId::Language => match snapshot.language {
             tact_catalog::CatalogLocale::En => "English".into(),
@@ -13235,25 +13289,17 @@ impl TrajectoryPalette {
     fn new(cx: &Context<DesktopRoot>) -> Self {
         let theme = cx.theme();
         let dark = theme.is_dark();
-        let input = if dark {
-            gpui::rgba(0x30d158b0).into()
-        } else {
-            gpui::rgba(0x34c759c0).into()
-        };
+        let input = theme.success.opacity(if dark { 0.69 } else { 0.75 });
         let model = if dark {
             gpui::rgba(0xbf8bffc4).into()
         } else {
             gpui::rgba(0xa06be0c8).into()
         };
-        let tools = if dark {
-            gpui::rgba(0xff9f0ae0).into()
-        } else {
-            gpui::rgba(0xf08a1ed8).into()
-        };
+        let tools = theme.warning.opacity(if dark { 0.88 } else { 0.85 });
         Self {
             lanes: [input, model, tools],
             rule: theme.border,
-            selection: gpui::rgba(0x0a84ff1f).into(),
+            selection: theme.primary.opacity(0.12),
             accent: theme.primary,
             error: theme.danger,
         }
@@ -13477,11 +13523,10 @@ impl LedgerPalette {
                 gpui::Hsla::from(gpui::rgba((label << 8) | 0xff)),
             )
         };
-        let (user, user_label) = if dark {
-            chip(0x0a84ff, 0x64b5ff, 0x38)
-        } else {
-            chip(0x0a84ff, 0x0a5ec7, 0x22)
-        };
+        let (user, user_label) = (
+            theme.primary.opacity(if dark { 0.22 } else { 0.13 }),
+            theme.primary,
+        );
         let (context, context_label) = if dark {
             chip(0x30d158, 0x63e07f, 0x38)
         } else {
@@ -13524,21 +13569,13 @@ impl LedgerPalette {
             error: (error, error_label),
             other: (other, other_label),
             rule: theme.border,
-            selected_row: if dark {
-                gpui::rgba(0x0a84ff33).into()
-            } else {
-                gpui::rgba(0x0a84ff1a).into()
-            },
+            selected_row: theme.primary.opacity(if dark { 0.20 } else { 0.10 }),
             hover_row: if dark {
                 gpui::rgba(0xffffff0f).into()
             } else {
                 gpui::rgba(0x0000000a).into()
             },
-            danger_chip: if dark {
-                gpui::rgba(0xff453a38).into()
-            } else {
-                gpui::rgba(0xff453a1f).into()
-            },
+            danger_chip: theme.danger.opacity(if dark { 0.22 } else { 0.12 }),
         }
     }
 
@@ -14964,12 +15001,14 @@ fn gate_element(
                 .p_2()
                 .rounded_md()
                 .border_1()
-                .border_color(gpui::rgb(0x5f6673))
+                .border_color(theme::palette(snapshot.theme, snapshot.appearance).border)
                 .child(div().text_sm().child(gate.prompt.to_string()))
                 .child(
                     div()
                         .text_xs()
-                        .text_color(gpui::rgb(0x98a2b3))
+                        .text_color(
+                            theme::palette(snapshot.theme, snapshot.appearance).muted_foreground,
+                        )
                         .child(origin),
                 )
                 .child(
@@ -15038,7 +15077,8 @@ fn gate_element(
                         .child(option_label)
                         .when_some(hint, |line, hint| {
                             let hint_color = if index == 0 {
-                                gpui::Hsla::from(gpui::rgb(0xffffff))
+                                theme::palette(snapshot.theme, snapshot.appearance)
+                                    .primary_foreground
                             } else if deny {
                                 snapshot_theme_danger(snapshot)
                             } else {
@@ -15076,7 +15116,9 @@ fn gate_element(
             if index == 0 {
                 action = action
                     .bg(snapshot_theme_primary(snapshot))
-                    .text_color(gpui::Hsla::from(gpui::rgb(0xffffff)))
+                    .text_color(
+                        theme::palette(snapshot.theme, snapshot.appearance).primary_foreground,
+                    )
                     .font_semibold();
                 if let Some(focus) = gate_focus {
                     action = action.track_focus(focus);
@@ -15434,7 +15476,10 @@ fn gate_element(
                                     .disabled(default_choices.is_empty())
                                     .rounded(px(5.))
                                     .bg(snapshot_theme_primary(snapshot))
-                                    .text_color(gpui::Hsla::from(gpui::rgb(0xffffff)))
+                                    .text_color(
+                                        theme::palette(snapshot.theme, snapshot.appearance)
+                                            .primary_foreground,
+                                    )
                                     .px(px(10.))
                                     .h(px(26.))
                                     .text_size(px(11.))
@@ -15482,17 +15527,11 @@ fn format_elapsed(started: chrono::DateTime<chrono::Utc>) -> String {
 }
 
 fn snapshot_row_background(snapshot: &DesktopSnapshot) -> gpui::Hsla {
-    match snapshot.appearance {
-        Appearance::Light => gpui::rgb(0xececf1).into(),
-        Appearance::Dark => gpui::rgb(0x2c2c2e).into(),
-    }
+    theme::palette(snapshot.theme, snapshot.appearance).muted
 }
 
 fn snapshot_row_border(snapshot: &DesktopSnapshot) -> gpui::Hsla {
-    match snapshot.appearance {
-        Appearance::Light => gpui::rgba(0x3c3c4324).into(),
-        Appearance::Dark => gpui::rgba(0xffffff1a).into(),
-    }
+    theme::palette(snapshot.theme, snapshot.appearance).border
 }
 
 /// Groups hook items by source; a source with any pending item needs review.
@@ -15760,13 +15799,20 @@ fn build_process_layout(
 
 fn process_summary_text(group: &ProcessGroup, language: tact_catalog::CatalogLocale) -> String {
     let mut parts = Vec::new();
+    if group.thoughts > 0 {
+        parts.push(match language {
+            tact_catalog::CatalogLocale::En if group.thoughts == 1 => "Thoughts".to_string(),
+            tact_catalog::CatalogLocale::En => format!("{} thoughts", group.thoughts),
+            tact_catalog::CatalogLocale::Zh => format!("{} 段思考", group.thoughts),
+        });
+    }
     match language {
         tact_catalog::CatalogLocale::En => {
             if group.commands > 0 {
                 parts.push(if group.commands == 1 {
-                    "Ran 1 command".to_string()
+                    "ran 1 command".to_string()
                 } else {
-                    format!("Ran {} commands", group.commands)
+                    format!("ran {} commands", group.commands)
                 });
             }
             if group.files_read > 0 {
@@ -15816,23 +15862,21 @@ fn process_summary_text(group: &ProcessGroup, language: tact_catalog::CatalogLoc
             }
         }
     }
-    if parts.is_empty() && group.thoughts > 0 {
-        return match language {
-            tact_catalog::CatalogLocale::En if group.thoughts == 1 => "Thoughts".into(),
-            tact_catalog::CatalogLocale::En => format!("{} thoughts", group.thoughts),
-            tact_catalog::CatalogLocale::Zh => format!("{} 段思考", group.thoughts),
-        };
-    }
     if parts.is_empty() {
         return match language {
             tact_catalog::CatalogLocale::En => "Activity".into(),
             tact_catalog::CatalogLocale::Zh => "活动".into(),
         };
     }
-    parts.join(match language {
+    let summary = parts.join(match language {
         tact_catalog::CatalogLocale::En => ", ",
         tact_catalog::CatalogLocale::Zh => "，",
-    })
+    });
+    let mut chars = summary.chars();
+    let Some(first) = chars.next() else {
+        return summary;
+    };
+    first.to_uppercase().chain(chars).collect()
 }
 
 /// The plan card's status pill.
@@ -15896,27 +15940,18 @@ fn initials_from_name(name: &str) -> String {
 }
 
 fn snapshot_row_surface(snapshot: &DesktopSnapshot) -> gpui::Hsla {
-    match snapshot.appearance {
-        Appearance::Light => gpui::rgb(0xffffff).into(),
-        Appearance::Dark => gpui::rgb(0x2c2c2e).into(),
-    }
+    theme::palette(snapshot.theme, snapshot.appearance).popover
 }
 
 /// The design's `--ink`: message labels and the user's avatar fill.
 fn snapshot_ink(snapshot: &DesktopSnapshot) -> gpui::Hsla {
-    match snapshot.appearance {
-        Appearance::Light => gpui::rgb(0x1d1d1f).into(),
-        Appearance::Dark => gpui::rgb(0xf5f5f7).into(),
-    }
+    theme::palette(snapshot.theme, snapshot.appearance).foreground
 }
 
 /// The design's `--canvas`: the transcript background, used as the user
 /// avatar's ink so the mark reads as a solid stamp in both appearances.
 fn snapshot_canvas(snapshot: &DesktopSnapshot) -> gpui::Hsla {
-    match snapshot.appearance {
-        Appearance::Light => gpui::rgb(0xf5f5f7).into(),
-        Appearance::Dark => gpui::rgb(0x1c1c1e).into(),
-    }
+    theme::palette(snapshot.theme, snapshot.appearance).background
 }
 
 /// The run title drops a leading URL, matching the design's headline.
@@ -15934,42 +15969,27 @@ fn strip_leading_url(text: &str) -> String {
 }
 
 fn snapshot_theme_primary(snapshot: &DesktopSnapshot) -> gpui::Hsla {
-    match snapshot.appearance {
-        Appearance::Light => gpui::rgb(0x007aff).into(),
-        Appearance::Dark => gpui::rgb(0x0a84ff).into(),
-    }
+    theme::palette(snapshot.theme, snapshot.appearance).primary
 }
 
 fn snapshot_theme_success(snapshot: &DesktopSnapshot) -> gpui::Hsla {
-    match snapshot.appearance {
-        Appearance::Light => gpui::rgb(0x34c759).into(),
-        Appearance::Dark => gpui::rgb(0x30d158).into(),
-    }
+    theme::palette(snapshot.theme, snapshot.appearance).success
 }
 
 fn snapshot_theme_danger(snapshot: &DesktopSnapshot) -> gpui::Hsla {
-    match snapshot.appearance {
-        Appearance::Light => gpui::rgb(0xff453a).into(),
-        Appearance::Dark => gpui::rgb(0xff453a).into(),
-    }
+    theme::palette(snapshot.theme, snapshot.appearance).danger
 }
 
-fn snapshot_theme_warning(_snapshot: &DesktopSnapshot) -> gpui::Hsla {
-    gpui::rgb(0xff9f0a).into()
+fn snapshot_theme_warning(snapshot: &DesktopSnapshot) -> gpui::Hsla {
+    theme::palette(snapshot.theme, snapshot.appearance).warning
 }
 
 fn snapshot_row_muted(snapshot: &DesktopSnapshot) -> gpui::Hsla {
-    match snapshot.appearance {
-        Appearance::Light => gpui::rgb(0x6e6e73).into(),
-        Appearance::Dark => gpui::rgb(0x98989d).into(),
-    }
+    theme::palette(snapshot.theme, snapshot.appearance).muted_foreground
 }
 
 fn snapshot_accent(snapshot: &DesktopSnapshot) -> gpui::Hsla {
-    match snapshot.appearance {
-        Appearance::Light => gpui::rgb(0x007aff).into(),
-        Appearance::Dark => gpui::rgb(0x0a84ff).into(),
-    }
+    theme::palette(snapshot.theme, snapshot.appearance).primary
 }
 
 fn goal_create_arguments(objective: &str, criteria: &str) -> CommandArguments {
@@ -16226,6 +16246,10 @@ fn choice_values(id: CommandId, snapshot: &DesktopSnapshot) -> Vec<(String, Stri
                 (i18n::text(locale, TextKey::Light).into(), "light".into()),
                 (i18n::text(locale, TextKey::Dark).into(), "dark".into()),
             ],
+            tact_catalog::FixedChoiceSet::ThemeFamily => vec![
+                ("Tact".into(), "tact".into()),
+                ("Claude".into(), "claude".into()),
+            ],
             tact_catalog::FixedChoiceSet::Language => vec![
                 (i18n::text(locale, TextKey::English).into(), "en".into()),
                 ("中文".into(), "zh".into()),
@@ -16283,6 +16307,10 @@ fn setting_choices(id: SettingId, locale: tact_catalog::CatalogLocale) -> Vec<(S
             (i18n::text(locale, TextKey::Light).into(), "light".into()),
             (i18n::text(locale, TextKey::Dark).into(), "dark".into()),
         ],
+        SettingId::ThemeFamily => vec![
+            ("Tact".into(), "tact".into()),
+            ("Claude".into(), "claude".into()),
+        ],
         SettingId::Language => vec![
             (i18n::text(locale, TextKey::English).into(), "en".into()),
             ("中文".into(), "zh".into()),
@@ -16317,6 +16345,7 @@ fn setting_value(id: SettingId, text: &str) -> FormValue {
         SettingId::ReasoningEffort
         | SettingId::PermissionMode
         | SettingId::Theme
+        | SettingId::ThemeFamily
         | SettingId::Language => FormValue::Setting(id, SettingValue::Choice(text.trim().into())),
         _ => FormValue::Setting(id, SettingValue::Text(text.trim().into())),
     }
@@ -16518,7 +16547,7 @@ mod tests {
         let shutdown = controller.clone();
         let (root, window) = cx.add_window_view(move |window, cx| {
             gpui_component::init(cx);
-            crate::theme::apply(Appearance::Light, Some(window), cx);
+            crate::theme::apply(DesktopTheme::Tact, Appearance::Light, Some(window), cx);
             DesktopRoot::new_for_test(controller, window, cx)
         });
         window.update(|window, cx| {
@@ -16578,6 +16607,32 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn theme_family_setting_offers_both_desktop_families() {
+        assert_eq!(
+            setting_choices(SettingId::ThemeFamily, tact_catalog::CatalogLocale::En),
+            vec![
+                ("Tact".to_string(), "tact".to_string()),
+                ("Claude".to_string(), "claude".to_string()),
+            ]
+        );
+        assert!(matches!(
+            setting_value(SettingId::ThemeFamily, "claude"),
+            FormValue::Setting(SettingId::ThemeFamily, SettingValue::Choice(value))
+                if value == "claude"
+        ));
+
+        let data_dir = probe_dir("theme-family-value");
+        let config = DesktopConfig::load(data_dir.clone()).unwrap();
+        let mut snapshot = DesktopSnapshot::empty(&config);
+        snapshot.theme = DesktopTheme::Claude;
+        assert_eq!(
+            setting_display_value(SettingId::ThemeFamily, &snapshot),
+            "Claude"
+        );
+        let _ = std::fs::remove_dir_all(data_dir);
     }
 
     #[test]
@@ -17160,7 +17215,7 @@ mod tests {
         let slot = root_slot.clone();
         let (_, window) = cx.add_window_view(move |window, cx| {
             gpui_component::init(cx);
-            crate::theme::apply(Appearance::Light, Some(window), cx);
+            crate::theme::apply(DesktopTheme::Tact, Appearance::Light, Some(window), cx);
             let root = cx.new(|cx| DesktopRoot::new_for_test(controller, window, cx));
             *slot.borrow_mut() = Some(root.clone());
             Root::new(root, window, cx)
@@ -18650,7 +18705,7 @@ mod tests {
         let shutdown = controller.clone();
         let (_, window) = cx.add_window_view(move |window, cx| {
             gpui_component::init(cx);
-            crate::theme::apply(Appearance::Light, Some(window), cx);
+            crate::theme::apply(DesktopTheme::Tact, Appearance::Light, Some(window), cx);
             let root = cx.new(|cx| DesktopRoot::new_for_test(controller, window, cx));
             PermissionHarness { root }
         });
@@ -18884,7 +18939,7 @@ mod tests {
         let shutdown = controller.clone();
         let (_, window) = cx.add_window_view(move |window, cx| {
             gpui_component::init(cx);
-            crate::theme::apply(Appearance::Light, Some(window), cx);
+            crate::theme::apply(DesktopTheme::Tact, Appearance::Light, Some(window), cx);
             let root = cx.new(|cx| DesktopRoot::new_for_test(controller, window, cx));
             ReadOnlyTranscriptProbe { root }
         });
@@ -18970,7 +19025,7 @@ mod tests {
 
         let (_, cx) = cx.add_window_view(move |window, cx| {
             gpui_component::init(cx);
-            crate::theme::apply(Appearance::Light, Some(window), cx);
+            crate::theme::apply(DesktopTheme::Tact, Appearance::Light, Some(window), cx);
             drop(events);
             let root = cx.new(|cx| DesktopRoot::new_for_test(controller, window, cx));
             Root::new(root, window, cx)
@@ -20333,10 +20388,20 @@ mod tests {
         };
         assert_eq!(
             process_summary_text(&group, tact_catalog::CatalogLocale::En),
-            "Ran 25 commands, read 12 files, ran 1 skill"
+            "3 thoughts, ran 25 commands, read 12 files, ran 1 skill"
         );
         assert_eq!(
             process_summary_text(&group, tact_catalog::CatalogLocale::Zh),
+            "3 段思考，运行了 25 条命令，读取了 12 个文件，运行了 1 个 skill"
+        );
+        let mut without_thoughts = group.clone();
+        without_thoughts.thoughts = 0;
+        assert_eq!(
+            process_summary_text(&without_thoughts, tact_catalog::CatalogLocale::En),
+            "Ran 25 commands, read 12 files, ran 1 skill"
+        );
+        assert_eq!(
+            process_summary_text(&without_thoughts, tact_catalog::CatalogLocale::Zh),
             "运行了 25 条命令，读取了 12 个文件，运行了 1 个 skill"
         );
     }
@@ -21144,7 +21209,7 @@ mod tests {
         let shutdown = controller.clone();
         let (probe, window) = cx.add_window_view(move |window, cx| {
             gpui_component::init(cx);
-            crate::theme::apply(Appearance::Light, Some(window), cx);
+            crate::theme::apply(DesktopTheme::Tact, Appearance::Light, Some(window), cx);
             let root = cx.new(|cx| DesktopRoot::new_for_test(controller, window, cx));
             root.update(cx, |this, cx| {
                 let mut snapshot = (*this.snapshot).clone();

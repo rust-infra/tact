@@ -39,6 +39,7 @@ pub mod slash_overlay;
 pub mod sticky;
 pub mod subagent_model;
 pub mod subagents;
+pub mod surface;
 pub mod system_prompt;
 pub mod task_dag;
 pub mod title_bar;

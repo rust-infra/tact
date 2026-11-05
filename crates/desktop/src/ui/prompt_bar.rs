@@ -10,13 +10,14 @@ use gpui::{
 };
 use gpui_component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, h_flex,
-    input::{Input, InputEvent, InputState, Textarea, TextareaState},
+    input::{InputEvent, InputState, Textarea, TextareaState},
     popover::Popover,
     v_flex,
 };
 
 use crate::ui::leaf::AttachmentItem;
 use crate::ui::row_scroll::RowScroll;
+use crate::ui::surface;
 
 const MODEL_MENU_ROW_HEIGHT: f32 = 27.5;
 const MODEL_MENU_VISIBLE_ROWS: usize = 8;
@@ -290,12 +291,14 @@ impl PromptBar {
         let model_search_subscription = cx.subscribe_in(
             &model_search,
             window,
-            |this, _, event: &InputEvent, _, cx| {
-                if matches!(event, InputEvent::Change) {
+            |this, _, event: &InputEvent, _, cx| match event {
+                InputEvent::Change => {
                     this.model_query = this.model_search.read(cx).value();
                     this.model_menu_row.reset();
                     cx.notify();
                 }
+                InputEvent::Focus | InputEvent::Blur => cx.notify(),
+                _ => {}
             },
         );
         Self {
@@ -640,7 +643,7 @@ impl Render for PromptBar {
         let model_list_height = MODEL_MENU_ROW_HEIGHT * model_visible_rows as f32;
         let model_menu_height = model_list_height
             + 8.
-            + if show_model_search { 34. } else { 0. }
+            + if show_model_search { 36. } else { 0. }
             + if model_count == 0 { 34. } else { 0. };
         let weak_for_menu = cx.weak_entity();
         let open_weak = cx.weak_entity();
@@ -651,6 +654,7 @@ impl Render for PromptBar {
         let no_matching_models_label = self.labels.no_matching_models.clone();
         let model_control = Popover::new("prompt-bar-model-picker-host")
             .anchor(Anchor::BottomLeft)
+            .p_0()
             .open(self.model_menu_open)
             .on_open_change(move |open, window, cx| {
                 let _ = open_weak.update(cx, |this, cx| {
@@ -695,7 +699,7 @@ impl Render for PromptBar {
                             ),
                     ),
             )
-            .content(move |_, _, cx| {
+            .content(move |_, window, cx| {
                 let weak = weak_for_menu.clone();
                 let wheel_scroll = model_menu_row.clone();
                 div()
@@ -706,17 +710,13 @@ impl Render for PromptBar {
                     .max_h(px(270.))
                     .overflow_hidden()
                     .occlude()
-                    .rounded(px(8.))
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().popover)
                     .when(show_model_search, |panel| {
                         panel.child(
                             div()
                                 .debug_selector(|| "prompt-bar-model-search".into())
                                 .px(px(4.))
                                 .pt(px(4.))
-                                .child(Input::new(&model_search)),
+                                .child(surface::quiet_search_input(&model_search, window, cx)),
                         )
                     })
                     .child(if model_count == 0 {
@@ -755,8 +755,10 @@ impl Render for PromptBar {
                                     .rounded(px(5.))
                                     .px_2()
                                     .py_0()
-                                    .when(selected, |row| row.bg(cx.theme().accent))
-                                    .hover(|style| style.bg(cx.theme().muted))
+                                    .bg(surface::selection_fill(selected, false, false, cx))
+                                    .hover(|style| {
+                                        style.bg(surface::selection_hover_fill(selected, false, cx))
+                                    })
                                     .child(
                                         div()
                                             .min_w_0()

@@ -22,6 +22,7 @@ pub struct SidebarNavItem {
     detail: Option<SharedString>,
     trailing: Option<SharedString>,
     context_action: Option<SharedString>,
+    new_session_action: Option<SharedString>,
     disabled: bool,
     children: Vec<SidebarNavItem>,
 }
@@ -36,6 +37,7 @@ impl SidebarNavItem {
             detail: None,
             trailing: None,
             context_action: None,
+            new_session_action: None,
             disabled: false,
             children: Vec::new(),
         }
@@ -66,6 +68,11 @@ impl SidebarNavItem {
         self
     }
 
+    pub fn new_session_action(mut self, label: impl Into<SharedString>) -> Self {
+        self.new_session_action = Some(label.into());
+        self
+    }
+
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
@@ -85,6 +92,7 @@ pub struct SidebarSection {
     leading: Option<SharedString>,
     meta: Option<SharedString>,
     action: Option<SharedString>,
+    new_session_action: Option<SharedString>,
     collapsed: bool,
     items: Vec<SidebarNavItem>,
 }
@@ -97,6 +105,7 @@ impl SidebarSection {
             leading: None,
             meta: None,
             action: None,
+            new_session_action: None,
             collapsed: false,
             items: Vec::new(),
         }
@@ -114,6 +123,11 @@ impl SidebarSection {
 
     pub fn action(mut self, label: impl Into<SharedString>) -> Self {
         self.action = Some(label.into());
+        self
+    }
+
+    pub fn new_session_action(mut self, label: impl Into<SharedString>) -> Self {
+        self.new_session_action = Some(label.into());
         self
     }
 
@@ -193,7 +207,15 @@ pub enum SidebarNavEvent {
         id: SharedString,
         section_id: SharedString,
     },
+    SectionNewSessionRequested {
+        id: SharedString,
+        section_id: SharedString,
+    },
     ItemActionRequested {
+        id: SharedString,
+        item_id: SharedString,
+    },
+    ItemNewSessionRequested {
         id: SharedString,
         item_id: SharedString,
     },
@@ -427,25 +449,44 @@ impl SidebarNav {
         for child in &item.children {
             row = row.child(self.render_item(child, cx));
         }
-        if let Some(action) = item.context_action.clone() {
+        let new_session_action = item.new_session_action.clone();
+        let context_action = item.context_action.clone();
+        if new_session_action.is_some() || context_action.is_some() {
             let weak = cx.weak_entity();
             let nav_id = self.id.clone();
             let item_id = item.id.clone();
             return row
                 .context_menu(move |menu, _, _| {
-                    let weak = weak.clone();
-                    let nav_id = nav_id.clone();
-                    let item_id = item_id.clone();
-                    let action = action.clone();
-                    menu.item(PopupMenuItem::new(action).on_click(move |_, _, cx| {
-                        let _ = weak.update(cx, |_, cx| {
-                            cx.emit(SidebarNavEvent::ItemActionRequested {
-                                id: nav_id.clone(),
-                                item_id: item_id.clone(),
+                    let mut menu = menu;
+                    if let Some(action) = new_session_action.clone() {
+                        let weak = weak.clone();
+                        let nav_id = nav_id.clone();
+                        let item_id = item_id.clone();
+                        menu = menu.item(PopupMenuItem::new(action).on_click(move |_, _, cx| {
+                            let _ = weak.update(cx, |_, cx| {
+                                cx.emit(SidebarNavEvent::ItemNewSessionRequested {
+                                    id: nav_id.clone(),
+                                    item_id: item_id.clone(),
+                                });
+                                cx.notify();
                             });
-                            cx.notify();
-                        });
-                    }))
+                        }));
+                    }
+                    if let Some(action) = context_action.clone() {
+                        let weak = weak.clone();
+                        let nav_id = nav_id.clone();
+                        let item_id = item_id.clone();
+                        menu = menu.item(PopupMenuItem::new(action).on_click(move |_, _, cx| {
+                            let _ = weak.update(cx, |_, cx| {
+                                cx.emit(SidebarNavEvent::ItemActionRequested {
+                                    id: nav_id.clone(),
+                                    item_id: item_id.clone(),
+                                });
+                                cx.notify();
+                            });
+                        }));
+                    }
+                    menu
                 })
                 .into_any_element();
         }
@@ -611,6 +652,53 @@ impl Render for SidebarNav {
                             })),
                     );
                 }
+                let new_session_action = section.new_session_action.clone();
+                let remove_action = section.action.clone();
+                let header = if new_session_action.is_some() || remove_action.is_some() {
+                    let weak = cx.weak_entity();
+                    let nav_id = self.id.clone();
+                    let section_id = section.id.clone();
+                    header
+                        .context_menu(move |menu, _, _| {
+                            let mut menu = menu;
+                            if let Some(action) = new_session_action.clone() {
+                                let weak = weak.clone();
+                                let nav_id = nav_id.clone();
+                                let section_id = section_id.clone();
+                                menu = menu.item(PopupMenuItem::new(action).on_click(
+                                    move |_, _, cx| {
+                                        let _ = weak.update(cx, |_, cx| {
+                                            cx.emit(SidebarNavEvent::SectionNewSessionRequested {
+                                                id: nav_id.clone(),
+                                                section_id: section_id.clone(),
+                                            });
+                                            cx.notify();
+                                        });
+                                    },
+                                ));
+                            }
+                            if let Some(action) = remove_action.clone() {
+                                let weak = weak.clone();
+                                let nav_id = nav_id.clone();
+                                let section_id = section_id.clone();
+                                menu = menu.item(PopupMenuItem::new(action).on_click(
+                                    move |_, _, cx| {
+                                        let _ = weak.update(cx, |_, cx| {
+                                            cx.emit(SidebarNavEvent::SectionActionRequested {
+                                                id: nav_id.clone(),
+                                                section_id: section_id.clone(),
+                                            });
+                                            cx.notify();
+                                        });
+                                    },
+                                ));
+                            }
+                            menu
+                        })
+                        .into_any_element()
+                } else {
+                    header.into_any_element()
+                };
                 body = body.child(header);
                 if expanded {
                     let children = v_flex().w_full().pl(px(12.));
@@ -768,6 +856,111 @@ mod tests {
         assert_eq!(
             hits, 1,
             "right-clicking a session must expose an archive action"
+        );
+    }
+
+    #[gpui::test]
+    fn project_context_menu_emits_new_session_action(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (probe, window) = cx.add_window_view(|window, cx| {
+            let nav = cx.new(|cx| SidebarNav::new("sidebar-new-session", window, cx));
+            nav.update(cx, |nav, cx| {
+                nav.set_sections(
+                    [
+                        SidebarSection::new("sessions-project-alpha", "Alpha project")
+                            .new_session_action("New session")
+                            .items([SidebarNavItem::new("session-one", "Session one")]),
+                    ],
+                    cx,
+                );
+            });
+            let hits = Rc::new(Cell::new(0));
+            let hits_for_event = hits.clone();
+            let subscription = cx.subscribe(&nav, move |_, _, event: &SidebarNavEvent, _| {
+                if matches!(event, SidebarNavEvent::SectionNewSessionRequested { .. }) {
+                    hits_for_event.set(hits_for_event.get() + 1);
+                }
+            });
+            ContextMenuProbe {
+                nav,
+                hits,
+                _subscription: subscription,
+            }
+        });
+        window.simulate_resize(size(px(400.), px(500.)));
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        let header = window
+            .debug_bounds("sidebar-nav-section-sessions-project-alpha")
+            .expect("project header");
+        window.simulate_event(MouseDownEvent {
+            button: MouseButton::Right,
+            position: header.center(),
+            modifiers: Default::default(),
+            click_count: 1,
+            first_mouse: false,
+        });
+        window.run_until_parked();
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        window.simulate_keystrokes("down enter");
+        window.run_until_parked();
+        let hits = window.update(|_, cx| probe.read(cx).hits.get());
+        assert_eq!(
+            hits, 1,
+            "right-clicking a project must expose a new-session action"
+        );
+    }
+
+    #[gpui::test]
+    fn session_context_menu_emits_new_session_action(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (probe, window) = cx.add_window_view(|window, cx| {
+            let nav = cx.new(|cx| SidebarNav::new("sidebar-session-new", window, cx));
+            nav.update(cx, |nav, cx| {
+                nav.set_sections(
+                    [
+                        SidebarSection::new("sessions", "Sessions").items([SidebarNavItem::new(
+                            "session-one",
+                            "Session one",
+                        )
+                        .new_session_action("New session")
+                        .context_action("Archive")]),
+                    ],
+                    cx,
+                );
+            });
+            let hits = Rc::new(Cell::new(0));
+            let hits_for_event = hits.clone();
+            let subscription = cx.subscribe(&nav, move |_, _, event: &SidebarNavEvent, _| {
+                if matches!(event, SidebarNavEvent::ItemNewSessionRequested { .. }) {
+                    hits_for_event.set(hits_for_event.get() + 1);
+                }
+            });
+            ContextMenuProbe {
+                nav,
+                hits,
+                _subscription: subscription,
+            }
+        });
+        window.simulate_resize(size(px(400.), px(500.)));
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        let row = window
+            .debug_bounds("sidebar-nav-item-session-one")
+            .expect("session row");
+        window.simulate_event(MouseDownEvent {
+            button: MouseButton::Right,
+            position: row.center(),
+            modifiers: Default::default(),
+            click_count: 1,
+            first_mouse: false,
+        });
+        window.run_until_parked();
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        window.simulate_keystrokes("down enter");
+        window.run_until_parked();
+        let hits = window.update(|_, cx| probe.read(cx).hits.get());
+        assert_eq!(
+            hits, 1,
+            "a session's new-session action must come before archive"
         );
     }
 }

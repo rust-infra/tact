@@ -9,6 +9,8 @@ use gpui::{
 };
 use gpui_component::{ActiveTheme as _, StyledExt as _, h_flex, v_flex};
 
+use crate::ui::surface;
+
 type EventHandler<E> = Rc<dyn Fn(&E, &mut Window, &mut gpui::App)>;
 
 /// One choice in a question.
@@ -220,21 +222,13 @@ impl RenderOnce for QuestionFlow {
                             .items_center()
                             .gap_2()
                             .rounded(px(7.))
-                            .border_1()
-                            .border_color(if selected_option {
-                                cx.theme().primary
-                            } else {
-                                cx.theme().border
-                            })
-                            .bg(if selected_option {
-                                cx.theme().accent
-                            } else {
-                                cx.theme().popover
-                            })
+                            .bg(surface::selection_fill(selected_option, false, true, cx))
                             .px_3()
                             .py_2()
                             .cursor_pointer()
-                            .hover(|style| style.bg(cx.theme().muted))
+                            .hover(|style| {
+                                style.bg(surface::selection_hover_fill(selected_option, true, cx))
+                            })
                             .child(
                                 div()
                                     .size(px(8.))
@@ -279,12 +273,12 @@ impl RenderOnce for QuestionFlow {
             .aria_label(self.skip_label.clone())
             .cursor_pointer()
             .rounded(px(6.))
-            .border_1()
-            .border_color(cx.theme().border)
+            .bg(cx.theme().muted)
             .px_3()
             .py_1()
             .text_xs()
             .text_color(cx.theme().muted_foreground)
+            .hover(|style| style.bg(cx.theme().secondary_hover))
             .child(self.skip_label.clone())
             .when_some(skip_handler, |button, handler| {
                 button.on_click(move |_: &ClickEvent, window, cx| handler(&skip_event, window, cx))

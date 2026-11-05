@@ -33,6 +33,7 @@ pub fn values(setting: SettingId) -> Vec<(&'static str, &'static str)> {
             vec![("Default", "default"), ("Plan", "plan"), ("Auto", "auto")]
         }
         SettingId::Theme => vec![("Light", "light"), ("Dark", "dark")],
+        SettingId::ThemeFamily => vec![("Tact", "tact"), ("Claude", "claude")],
         SettingId::Language => vec![("English", "en"), ("中文", "zh")],
         SettingId::Notifications
         | SettingId::HookOutput

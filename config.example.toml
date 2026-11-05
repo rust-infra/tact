@@ -330,6 +330,8 @@ mode = "default"
 # ---------------------------------------------------------------------------
 [ui]
 # Theme name, or "auto" for terminal/system detection.
+# This is the TUI theme. Tact Desktop stores its own theme family and
+# appearance in desktop-settings.json and never reads this value.
 theme = "ink"     # ink | ink-light | retro | brutal | nord | dark | auto
 
 # UI language. Written by `/lang` when you accept its "save to config?" step.

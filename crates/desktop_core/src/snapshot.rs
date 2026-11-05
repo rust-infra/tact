@@ -8,9 +8,9 @@ use tact_host::ExtensionSnapshot;
 use tact_protocol::SurfaceSnapshot;
 
 use crate::{
-    Appearance, BackgroundTaskView, FailureView, GateCard, GoalView, ProjectId, ReducedMotion,
-    RowId, RowStatus, SessionEpoch, SessionSummaryView, SubagentView, TaskView, TranscriptView,
-    UsageView,
+    Appearance, BackgroundTaskView, DesktopTheme, FailureView, GateCard, GoalView, ProjectId,
+    ReducedMotion, RowId, RowStatus, SessionEpoch, SessionSummaryView, SubagentView, TaskView,
+    TranscriptView, UsageView,
 };
 
 pub type Revision = u64;
@@ -304,6 +304,7 @@ pub struct DesktopSnapshot {
     pub voice_missing_api_key: bool,
     pub failure: Option<FailureView>,
     pub appearance: Appearance,
+    pub theme: DesktopTheme,
     pub motion: ReducedMotion,
     pub text_scale: f32,
     pub language: CatalogLocale,
@@ -375,6 +376,7 @@ impl DesktopSnapshot {
             voice_missing_api_key: false,
             failure: None,
             appearance: config.appearance,
+            theme: config.theme,
             motion: config.reduced_motion,
             text_scale: config.text_scale,
             language: config.language,

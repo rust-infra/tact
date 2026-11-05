@@ -27,8 +27,8 @@ pub use command_router::{
     search as search_commands, setting_mode,
 };
 pub use config::{
-    Appearance, DesktopConfig, HostLaunchOptions, InitialSession, PermissionModeView,
-    ReducedMotion, app_support_dir, appearance_from_theme, configured_theme,
+    Appearance, DesktopConfig, DesktopTheme, HostLaunchOptions, InitialSession, PermissionModeView,
+    ReducedMotion, app_support_dir,
 };
 pub use controller::{DesktopController, DesktopEvents, help_reader, tact_ui_binary_path};
 pub use effect::{DesktopEffect, DesktopEvent};

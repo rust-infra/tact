@@ -164,6 +164,7 @@ pub const fn setting_mode(id: SettingId) -> SettingMode {
         | SettingId::Notifications
         | SettingId::HookOutput
         | SettingId::Theme
+        | SettingId::ThemeFamily
         | SettingId::Language => SettingMode::Live,
     }
 }
@@ -177,6 +178,9 @@ fn setting_form(id: SettingId) -> CommandForm {
             tact_catalog::FixedChoiceSet::ReasoningEffort,
         )),
         SettingId::Theme => Some(ChoiceSource::Fixed(tact_catalog::FixedChoiceSet::Theme)),
+        SettingId::ThemeFamily => Some(ChoiceSource::Fixed(
+            tact_catalog::FixedChoiceSet::ThemeFamily,
+        )),
         SettingId::Language => Some(ChoiceSource::Fixed(tact_catalog::FixedChoiceSet::Language)),
         SettingId::Notifications
         | SettingId::MicroCompact

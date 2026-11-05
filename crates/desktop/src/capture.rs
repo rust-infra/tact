@@ -17,8 +17,8 @@ use gpui::{AnyWindowHandle, AppContext as _, Entity, VisualTestAppContext, px, s
 use gpui_component::Root;
 use tact_catalog::SettingId;
 use tact_desktop_core::{
-    Appearance, DesktopConfig, DesktopController, DesktopSnapshot, ExtensionsTab, HookItemSnapshot,
-    HookSnapshot, InspectorTab, ReaderRef, RowId, SessionPhase, SurfaceSnapshot,
+    Appearance, DesktopConfig, DesktopController, DesktopSnapshot, DesktopTheme, ExtensionsTab,
+    HookItemSnapshot, HookSnapshot, InspectorTab, ReaderRef, RowId, SessionPhase, SurfaceSnapshot,
 };
 
 use crate::root::{DesktopRoot, ReaderKind};
@@ -38,15 +38,32 @@ pub struct Harness {
     root: Option<Entity<DesktopRoot>>,
     pub window: AnyWindowHandle,
     pub controller: DesktopController,
+    theme: DesktopTheme,
     data_dir: PathBuf,
 }
 
 impl Harness {
     pub fn open(appearance: Appearance, text_scale: f32) -> Result<Self> {
-        Self::open_sized(appearance, text_scale, WINDOW_WIDTH, WINDOW_HEIGHT)
+        Self::open_themed(
+            DesktopTheme::Tact,
+            appearance,
+            text_scale,
+            WINDOW_WIDTH,
+            WINDOW_HEIGHT,
+        )
     }
 
     pub fn open_sized(
+        appearance: Appearance,
+        text_scale: f32,
+        width: f32,
+        height: f32,
+    ) -> Result<Self> {
+        Self::open_themed(DesktopTheme::Tact, appearance, text_scale, width, height)
+    }
+
+    pub fn open_themed(
+        theme: DesktopTheme,
         appearance: Appearance,
         text_scale: f32,
         width: f32,
@@ -68,6 +85,7 @@ impl Harness {
         let mut config = DesktopConfig::load(data_dir.clone())
             .map_err(|error| anyhow::anyhow!("load desktop config: {error:?}"))?;
         config.appearance = appearance;
+        config.theme = theme;
         config.text_scale = text_scale;
         // The harness must not read the checkout's real `.tact` store: session
         // rows would change with the developer's history and the captures
@@ -97,7 +115,7 @@ impl Harness {
         let window = cx
             .open_offscreen_window(size(px(width), px(height)), move |window, cx| {
                 gpui_component::init(cx);
-                crate::theme::apply(appearance, Some(window), cx);
+                crate::theme::apply(theme, appearance, Some(window), cx);
                 let root = cx.new(|cx| DesktopRoot::new_for_test(shutdown, window, cx));
                 *root_slot_for_window.borrow_mut() = Some(root.clone());
                 cx.new(|cx| Root::new(root, window, cx))
@@ -114,6 +132,7 @@ impl Harness {
             root: Some(root),
             window,
             controller,
+            theme,
             data_dir,
         };
         harness.seed_capture_sessions(&project_dir);
@@ -241,13 +260,27 @@ impl Harness {
     }
 
     pub fn set_appearance(&mut self, appearance: Appearance) {
+        let theme = self.theme;
         self.cx
             .update_window(self.window, |_, window, cx| {
-                crate::theme::apply(appearance, Some(window), cx);
+                crate::theme::apply(theme, appearance, Some(window), cx);
             })
             .expect("apply appearance");
         let mut snapshot = self.snapshot();
         snapshot.appearance = appearance;
+        self.set_snapshot(snapshot);
+    }
+
+    pub fn set_theme(&mut self, theme: DesktopTheme) {
+        self.theme = theme;
+        let appearance = self.snapshot().appearance;
+        self.cx
+            .update_window(self.window, |_, window, cx| {
+                crate::theme::apply(theme, appearance, Some(window), cx);
+            })
+            .expect("apply theme");
+        let mut snapshot = self.snapshot();
+        snapshot.theme = theme;
         self.set_snapshot(snapshot);
     }
 
@@ -327,6 +360,13 @@ pub fn capture_all(out: &Path) -> Result<Vec<PathBuf>> {
     harness.set_appearance(Appearance::Dark);
     shoot(&mut harness, "02-shell-dark")?;
     harness.set_appearance(Appearance::Light);
+
+    harness.set_theme(DesktopTheme::Claude);
+    shoot(&mut harness, "02b-shell-claude-light")?;
+    harness.set_appearance(Appearance::Dark);
+    shoot(&mut harness, "02c-shell-claude-dark")?;
+    harness.set_appearance(Appearance::Light);
+    harness.set_theme(DesktopTheme::Tact);
 
     harness.with_root(|root, window, cx| root.capture_open_command_center(window, cx));
     shoot(&mut harness, "03-command-center")?;

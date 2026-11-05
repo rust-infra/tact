@@ -15,9 +15,9 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     AccountView, Appearance, CatalogLocale, DesktopConfig, DesktopEffect, DesktopEvent,
-    DesktopSnapshot, InitialSession, PermissionModeView, ProjectId, ProjectRecord, ProjectRegistry,
-    RequestId, RunPhase, SectionMask, SessionCatalog, SessionId, SessionPhase, SessionSummaryView,
-    StateCommit,
+    DesktopSnapshot, DesktopTheme, InitialSession, PermissionModeView, ProjectId, ProjectRecord,
+    ProjectRegistry, RequestId, RunPhase, SectionMask, SessionCatalog, SessionId, SessionPhase,
+    SessionSummaryView, StateCommit,
     commands::{CommandRoute, route_command, route_setting},
     error::{DesktopClosed, DesktopShutdownError, DesktopStartError, FailureKind, FailureView},
     intent::{DesktopIntent, GateResponse, ReaderRef, ReaderRequest, SettingValue, Submission},
@@ -833,6 +833,25 @@ impl DesktopActor {
                     return Ok(());
                 }
                 self.start_session(InitialSession::New).await?;
+            }
+            DesktopIntent::NewSessionInProject { project_id } => {
+                if self.session_switch_in_flight() {
+                    return Ok(());
+                }
+                if self.project.as_ref().map(|project| &project.id) == Some(&project_id) {
+                    self.start_session(InitialSession::New).await?;
+                    return Ok(());
+                }
+                let root = self
+                    .registry
+                    .records()
+                    .iter()
+                    .find(|project| project.id == project_id)
+                    .map(|project| project.root.clone())
+                    .ok_or_else(|| "project not found".to_string())?;
+                self.open_project(root, InitialSession::New)
+                    .await
+                    .map_err(|error| format!("{error:?}"))?;
             }
             DesktopIntent::ResumeSession { session_id } => {
                 // Re-opening the session that is already open tears down a
@@ -2249,6 +2268,15 @@ impl DesktopActor {
                 self.state.show_hook_output = *value;
                 persist = true;
             }
+            (SettingId::ThemeFamily, SettingValue::Choice(value)) => {
+                self.state.theme = if value == "claude" {
+                    DesktopTheme::Claude
+                } else {
+                    DesktopTheme::Tact
+                };
+                self.config.theme = self.state.theme;
+                persist = true;
+            }
             _ => {}
         }
         if persist {
@@ -3443,6 +3471,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn new_session_in_project_switches_project_and_starts_a_new_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_project(tmp.path());
+        let first_root = std::fs::canonicalize(tmp.path().join("project")).unwrap();
+        let second_root = std::fs::canonicalize(tmp.path().join("second")).unwrap();
+        let app_data = tmp.path().join("app-data");
+        let mut registry = ProjectRegistry::open(&app_data).unwrap();
+        registry.register(&first_root).unwrap();
+        let second_project = registry.register(&second_root).unwrap();
+        let factory = FakeFactory::new();
+        let (controller, _events) =
+            DesktopController::start_with_factory(config(tmp.path()), factory.clone()).unwrap();
+        wait_ready(&controller).await;
+
+        controller
+            .dispatch(DesktopIntent::NewSessionInProject {
+                project_id: second_project.id.clone(),
+            })
+            .unwrap();
+        controller.when_idle().await.unwrap();
+        wait_ready(&controller).await;
+
+        let snapshot = controller.snapshot();
+        assert_eq!(
+            snapshot.project.id.as_ref(),
+            Some(&second_project.id),
+            "the new session must belong to the requested project"
+        );
+        assert!(
+            matches!(snapshot.session.phase, SessionPhase::Ready),
+            "the requested project's new session must start: {:?}",
+            snapshot.session.phase
+        );
+        let log = factory.log.lock().unwrap().clone();
+        assert!(
+            log.iter()
+                .any(|entry| entry.replace('\\', "/").contains("/second:session-")),
+            "the requested project's host must start a fresh session: {log:?}"
+        );
+        assert!(
+            !log.iter().any(|entry| entry.starts_with("close:")),
+            "switching to the requested project must park the old host: {log:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn session_list_spans_registered_projects_and_resume_switches_project() {
         let tmp = tempfile::tempdir().unwrap();
         make_project(tmp.path());
@@ -4488,6 +4562,29 @@ mod tests {
         assert_eq!(loaded.host.provider.as_deref(), Some("openai"));
         assert_eq!(loaded.host.max_tokens, Some(4096));
         assert!(!loaded.notifications);
+    }
+
+    #[tokio::test]
+    async fn theme_family_setting_persists_without_touching_the_tui_theme() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_project(tmp.path());
+        let factory = FakeFactory::new();
+        let (controller, _events) =
+            DesktopController::start_with_factory(config(tmp.path()), factory).unwrap();
+        wait_ready(&controller).await;
+        assert_eq!(controller.snapshot().theme, DesktopTheme::Tact);
+
+        controller
+            .dispatch(DesktopIntent::SetSetting {
+                id: SettingId::ThemeFamily,
+                value: SettingValue::Choice("claude".into()),
+            })
+            .unwrap();
+        controller.when_idle().await.unwrap();
+        assert_eq!(controller.snapshot().theme, DesktopTheme::Claude);
+
+        let loaded = DesktopConfig::load(tmp.path().join("app-data")).unwrap();
+        assert_eq!(loaded.theme, DesktopTheme::Claude);
     }
 
     #[tokio::test]

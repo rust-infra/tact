@@ -24,6 +24,14 @@ pub enum Appearance {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum DesktopTheme {
+    #[default]
+    Tact,
+    Claude,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ReducedMotion {
     #[serde(alias = "respect")]
     #[default]
@@ -103,9 +111,7 @@ pub struct DesktopConfig {
     pub update_batch: Duration,
     pub gate_reconcile: Duration,
     pub appearance: Appearance,
-    /// Whether the desktop settings file already chose an appearance. A
-    /// first launch inherits the existing Tact theme instead.
-    pub appearance_explicit: bool,
+    pub theme: DesktopTheme,
     pub language: CatalogLocale,
     pub reduced_motion: ReducedMotion,
     pub text_scale: f32,
@@ -117,6 +123,8 @@ pub struct DesktopConfig {
 struct DesktopSettingsFile {
     initial_project: Option<PathBuf>,
     appearance: Appearance,
+    #[serde(default)]
+    theme: DesktopTheme,
     language: String,
     reduced_motion: ReducedMotion,
     #[serde(default = "default_text_scale")]
@@ -127,31 +135,6 @@ struct DesktopSettingsFile {
     show_hook_output: bool,
     #[serde(default)]
     host: HostLaunchOptions,
-}
-
-/// Maps an existing Tact theme name to the desktop appearance.
-///
-/// The desktop ships Light and Dark only; themes whose names identify them as
-/// dark variants migrate to Dark, everything else to Light.
-pub fn configured_theme() -> Option<String> {
-    tact::config::try_settings().map(|settings| settings.ui.theme)
-}
-
-pub fn appearance_from_theme(theme: &str) -> Appearance {
-    let theme = theme.to_ascii_lowercase();
-    let dark = theme.contains("dark")
-        || theme.contains("midnight")
-        || theme.contains("night")
-        || theme.contains("nord")
-        || theme.contains("dracula")
-        || theme.contains("monokai")
-        || theme.contains("mocha")
-        || theme.contains("black");
-    if dark {
-        Appearance::Dark
-    } else {
-        Appearance::Light
-    }
 }
 
 impl DesktopConfig {
@@ -181,7 +164,10 @@ impl DesktopConfig {
                 .as_ref()
                 .map(|settings| settings.appearance)
                 .unwrap_or_default(),
-            appearance_explicit: persisted.is_some(),
+            theme: persisted
+                .as_ref()
+                .map(|settings| settings.theme)
+                .unwrap_or_default(),
             language: persisted
                 .as_ref()
                 .map(|settings| match settings.language.as_str() {
@@ -219,6 +205,7 @@ impl DesktopConfig {
         let persisted = DesktopSettingsFile {
             initial_project: self.initial_project.clone(),
             appearance: self.appearance,
+            theme: self.theme,
             language: match self.language {
                 CatalogLocale::En => "en".to_string(),
                 CatalogLocale::Zh => "zh".to_string(),
@@ -332,15 +319,41 @@ pub fn app_support_dir() -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Appearance, ReducedMotion, appearance_from_theme};
+    use super::{Appearance, DesktopConfig, DesktopTheme, ReducedMotion};
 
     #[test]
-    fn existing_tact_themes_migrate_to_the_desktop_appearance() {
-        assert_eq!(appearance_from_theme("default"), Appearance::Light);
-        assert_eq!(appearance_from_theme("solarized-light"), Appearance::Light);
-        assert_eq!(appearance_from_theme("dark"), Appearance::Dark);
-        assert_eq!(appearance_from_theme("tokyo-night"), Appearance::Dark);
-        assert_eq!(appearance_from_theme("catppuccin-mocha"), Appearance::Dark);
+    fn desktop_theme_survives_save_and_load() {
+        let app_data = tempfile::tempdir().unwrap();
+        let mut config = DesktopConfig::load(app_data.path().to_path_buf()).unwrap();
+        assert_eq!(config.theme, DesktopTheme::Tact);
+        assert_eq!(config.appearance, Appearance::Light);
+
+        config.theme = DesktopTheme::Claude;
+        config.appearance = Appearance::Dark;
+        config.save().unwrap();
+
+        let loaded = DesktopConfig::load(app_data.path().to_path_buf()).unwrap();
+        assert_eq!(loaded.theme, DesktopTheme::Claude);
+        assert_eq!(loaded.appearance, Appearance::Dark);
+    }
+
+    #[test]
+    fn an_old_settings_file_without_a_theme_reads_as_tact() {
+        let app_data = tempfile::tempdir().unwrap();
+        std::fs::write(
+            app_data.path().join("desktop-settings.json"),
+            r#"{
+                "initial_project": null,
+                "appearance": "dark",
+                "language": "en",
+                "reduced_motion": "system"
+            }"#,
+        )
+        .unwrap();
+
+        let config = DesktopConfig::load(app_data.path().to_path_buf()).unwrap();
+        assert_eq!(config.theme, DesktopTheme::Tact);
+        assert_eq!(config.appearance, Appearance::Dark);
     }
 
     #[test]

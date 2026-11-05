@@ -128,11 +128,6 @@ fn run_inner(smoke: bool) -> Result<(), DesktopStartError> {
         config.initial_project = std::env::current_dir().ok();
     }
     config.install_process_config()?;
-    if !config.appearance_explicit
-        && let Some(theme) = tact_desktop_core::configured_theme()
-    {
-        config.appearance = tact_desktop_core::appearance_from_theme(&theme);
-    }
     tact_desktop_core::install_exit_listener()?;
     let (controller, events) = DesktopController::start(config)?;
     let shutdown_state = Arc::new(ShutdownState::default());
@@ -185,7 +180,7 @@ fn run_inner(smoke: bool) -> Result<(), DesktopStartError> {
                 }
             });
             std::mem::forget(quit_subscription);
-            crate::theme::apply(initial.appearance, None, cx);
+            crate::theme::apply(initial.theme, initial.appearance, None, cx);
             let controller_for_root = controller.clone();
             let controller_for_close = controller.clone();
             let shutdown_for_close = shutdown_state.clone();
@@ -200,7 +195,7 @@ fn run_inner(smoke: bool) -> Result<(), DesktopStartError> {
             }
             window_options.window_bounds = Some(WindowBounds::Windowed(bounds));
             cx.open_window(window_options, move |window, cx| {
-                crate::theme::apply(initial.appearance, Some(window), cx);
+                crate::theme::apply(initial.theme, initial.appearance, Some(window), cx);
                 window.on_window_should_close(cx, move |_, cx| {
                     if shutdown_for_close.is_succeeded() {
                         return true;
