@@ -753,6 +753,8 @@
 <li class="toc-l2"><a href="#39-2026-11-06--desktop-%E6%9D%83%E9%99%90%E5%8D%A1%E7%9A%84%E9%95%BF%E5%91%BD%E4%BB%A4%E9%A2%84%E8%A7%88" title="39. 2026-11-06 — Desktop：权限卡的长命令预览"><span class="toc-label">39. 2026-11-06 — Desktop：权限卡的长命令预览</span></a></li>
 <li class="toc-l2"><a href="#40-2026-11-06--desktop-%E7%94%A8%E6%88%B7%E6%B6%88%E6%81%AF%E7%9A%84%E6%97%B6%E9%97%B4%E4%B8%8E%E5%A4%8D%E5%88%B6" title="40. 2026-11-06 — Desktop：用户消息的时间与复制"><span class="toc-label">40. 2026-11-06 — Desktop：用户消息的时间与复制</span></a></li>
 <li class="toc-l2"><a href="#41-2026-11-06--desktop-%E8%BE%93%E5%85%A5%E5%99%A8%E6%A8%A1%E5%9E%8B%E9%80%89%E6%8B%A9%E5%99%A8%E5%9C%A8%E5%90%AF%E5%8A%A8%E5%90%8E%E7%A7%BB%E4%BD%8D" title="41. 2026-11-06 — Desktop：输入器模型选择器在启动后移位"><span class="toc-label">41. 2026-11-06 — Desktop：输入器模型选择器在启动后移位</span></a></li>
+<li class="toc-l2"><a href="#42-2026-11-06--desktop-%E6%80%9D%E8%80%83%E8%A1%8C%E5%9C%A8%E5%AE%9E%E6%97%B6%E8%BD%AC%E5%BD%95%E9%87%8C%E4%B8%A2%E5%A4%B1" title="42. 2026-11-06 — Desktop：思考行在实时转录里丢失"><span class="toc-label">42. 2026-11-06 — Desktop：思考行在实时转录里丢失</span></a></li>
+<li class="toc-l2"><a href="#43-2026-11-06--desktop-%E5%8C%BA%E5%88%86%E8%BF%87%E7%A8%8B%E5%8F%99%E8%BF%B0%E4%B8%8E%E6%9C%80%E7%BB%88%E7%AD%94%E6%A1%88" title="43. 2026-11-06 — Desktop：区分过程叙述与最终答案"><span class="toc-label">43. 2026-11-06 — Desktop：区分过程叙述与最终答案</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -22500,6 +22502,27 @@ x 坐标。代价是空闲时权限选择器与发送按钮之间多出约 32px 
 （运行中）对照页脚布局。</p>
 <p><strong>Pointers：</strong> <code>crates/desktop/src/ui/prompt_bar.rs</code>、
 <code>crates/desktop/src/root.rs</code>。</p>
+<h2 id="42-2026-11-06--desktop-思考行在实时转录里丢失">42. 2026-11-06 —
+Desktop：思考行在实时转录里丢失</h2>
+<p><strong>目标：</strong> 实时转录里，一段思考必须出现在它引发的工具调用之前；重载后
+与持久化历史一致。</p>
+<p><strong>现象：</strong> 会话运行结束后，实时视图里第一段思考整行缺失，后面的工具组
+和思考交替出现，看起来像 tool 排在 thinking 前面；同一会话重载后，历史里顺序正常。</p>
+<p><strong>根因：</strong> <code>ThinkingChunk::Started</code> 与
+<code>ThinkingChunk::Finished</code> 和思考正文一样走 advisory progress lane。
+progress lane 满时会丢更新：Started 丢失后 reducer 不会创建 thinking 行，后续
+delta 也可能一起丢；<code>StepQueued</code> 走 terminal lane 正常到达，于是工具行
+先出现、思考行缺失。Finished 丢失还会让 <code>active_thinking</code> 保持打开，
+下一段思考的 Started 被忽略，正文并进上一行。</p>
+<p><strong>修复：</strong> Started 与 Finished 改走 terminal lane，保证可靠且与
+工具事件同序；只有思考正文的 Delta 继续走 progress lane。</p>
+<p><strong>验证：</strong> 新增
+<code>a_full_progress_lane_keeps_the_thinking_lifecycle</code>：容量为 1 的 progress
+lane 先塞满，再发 Started 与一个 terminal 更新。修复前只收到
+<code>[StreamChunk("filler"), TurnStats]</code>，Started 被丢弃；修复后两者都到达。
+<code>cargo test -p tact --lib</code> 1511 通过。</p>
+<p><strong>Pointers：</strong> <code>crates/tact/src/runtime/event_adapter.rs</code>、
+<code>crates/protocol/src/events.rs</code>。</p>
 <h2 id="related-docs">Related Docs</h2>
 <ul>
 <li><a href="./07_chapter_tool_zh.html">工具系统</a></li>
