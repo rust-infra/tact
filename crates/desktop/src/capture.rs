@@ -588,6 +588,70 @@ pub fn capture_all(out: &Path) -> Result<Vec<PathBuf>> {
     snapshot.transcript = design_transcript();
     harness.set_snapshot(snapshot);
 
+    // A permission gate repeats the command it asks about. A heredoc must stay
+    // a preview, or the card swallows the transcript and pushes the decision
+    // out of view.
+    let script = "export https_proxy=http://127.0.0.1:7890 http_proxy=$https_proxy\n\
+cd /tmp/btc/artifacts\n\
+python3 - <<'PY'\n\
+import json, datetime, statistics\n\
+raw=json.load(open('/tmp/mp_1y.json'))['prices']\n\
+pairs=sorted((q['time'], q['USD']) for q in raw if q.get('USD') is not None)\n\
+print('range', datetime.datetime.fromtimestamp(pairs[0][0], datetime.UTC).date(), '->', datetime.datetime.fromtimestamp(pairs[-1][0], datetime.UTC).date(), 'pts', len(pairs))\n\
+byday={}\n\
+for t,p in pairs:\n\
+    k=int(datetime.datetime.fromtimestamp(t, datetime.UTC).replace(hour=0,minute=0,second=0,microsecond=0).timestamp())\n\
+    byday[k]=p\n\
+days=sorted(byday.items())\n\
+vals=[p for _,p in days]\n\
+i_max=vals.index(max(vals)); i_min=vals.index(min(vals))\n\
+print('ATH', days[i_max], 'ATL', days[i_min])\n\
+cur=vals[-1]\n\
+print('cur %.0f drawdown from ATH %.1f%%' % (cur, (cur/max(vals)-1)*100))\n\
+def ago(n):\n\
+    return days[-1-n][1]\n\
+for n,lab in [(1,'24h'),(7,'7d'),(30,'30d'),(90,'90d'),(365,'1y')]:\n\
+    print(lab, '%.2f%%' % ((cur/ago(n)-1)*100))\n\
+json.dump({'series': days}, open('/tmp/btc/btc.json','w'))\n\
+PY";
+    let mut rows = design_transcript()
+        .iter()
+        .take(6)
+        .map(|row| (**row).clone())
+        .collect::<Vec<_>>();
+    if let tact_desktop_core::RowBody::ToolGroup(group) = &mut rows[5].body {
+        let mut items = group.items.to_vec();
+        let mut tool_id = None;
+        if let Some(tact_desktop_core::ToolGroupItem::Tool(tool)) = items.first_mut() {
+            tool.arg_summary = Arc::from("python3 - <<'PY' · btc series");
+            tool.arg_full = Some(Arc::from(script));
+            tool_id = Some(tool.tool_id.clone());
+        }
+        if let Some(tool_id) = tool_id
+            && let Some(tact_desktop_core::ToolGroupItem::Gate(gate)) = items
+                .iter_mut()
+                .find(|item| matches!(item, tact_desktop_core::ToolGroupItem::Gate(_)))
+        {
+            gate.origin = tact_desktop_core::GateOrigin::Tool { tool_id };
+            gate.prompt = Arc::from("Allow Tact to run this script?");
+        }
+        items.retain(|item| match item {
+            tact_desktop_core::ToolGroupItem::Tool(tool) => tool.name.as_ref() == "shell",
+            _ => true,
+        });
+        group.items = Arc::from(items);
+    }
+    let tool_group = rows.remove(5);
+    let long_gate = tact_desktop_core::TranscriptView::from_rows(vec![Arc::new(tool_group)]);
+    let mut snapshot = harness.snapshot();
+    snapshot.transcript = long_gate;
+    harness.set_snapshot(snapshot);
+    harness.with_root(|root, _, cx| root.capture_scroll_to(0, cx));
+    shoot(&mut harness, "33c-gate-long-command")?;
+    let mut snapshot = harness.snapshot();
+    snapshot.transcript = design_transcript();
+    harness.set_snapshot(snapshot);
+
     harness.set_appearance(Appearance::Dark);
     harness.with_root(|root, _, cx| root.capture_scroll_to(0, cx));
     shoot(&mut harness, "27-transcript-dark")?;

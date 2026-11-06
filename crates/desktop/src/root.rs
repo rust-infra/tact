@@ -85,6 +85,11 @@ use crate::{keymap, theme};
 
 const TRANSCRIPT_SESSION_CACHE: usize = 6;
 
+/// A permission gate repeats the command it asks about. Past this many lines
+/// the preview scrolls instead of growing, so the decision stays in view.
+const GATE_COMMAND_PREVIEW_LINES: usize = 8;
+const GATE_COMMAND_MAX_HEIGHT: f32 = 168.;
+
 /// One row of a picker menu, in pixels.
 const MODEL_PICKER_ROW_HEIGHT: f32 = 30.;
 /// Rows a model picker shows before it scrolls.
@@ -15345,18 +15350,28 @@ fn gate_element(
                 )
             })
             .when_some(prompt_command, |card, command| {
+                let clamped = command.lines().count() > GATE_COMMAND_PREVIEW_LINES;
                 card.child(
                     div()
+                        .debug_selector(|| "gate-command-preview".into())
+                        .w_full()
+                        .min_w_0()
                         .rounded(px(8.))
                         .border_1()
                         .border_color(snapshot_row_border(snapshot))
                         .bg(snapshot_row_background(snapshot))
-                        .px(px(12.))
-                        .py(px(8.))
-                        .text_size(px(12.))
-                        .font_family("Lilex")
-                        .text_color(snapshot_ink(snapshot))
-                        .child(command),
+                        .when(clamped, |block| block.h(px(GATE_COMMAND_MAX_HEIGHT)))
+                        .child(
+                            div()
+                                .w_full()
+                                .overflow_y_scrollbar()
+                                .px(px(12.))
+                                .py(px(8.))
+                                .text_size(px(12.))
+                                .font_family("Lilex")
+                                .text_color(snapshot_ink(snapshot))
+                                .child(command),
+                        ),
                 )
             })
             .child(actions);
@@ -18981,6 +18996,73 @@ mod tests {
         window.update(|window, cx| window.draw(cx).clear(cx));
         let submitted = window.update(|_, cx| root.read(cx).submitted_gates.contains(&request_id));
         assert!(submitted, "clicking an option answers the gate");
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn a_long_gate_command_preview_stays_bounded(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        let script = (0..60)
+            .map(|line| format!("echo line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let rows = tact_desktop_core::fixtures::demo_transcript()
+            .iter()
+            .map(|row| {
+                let mut row = (**row).clone();
+                if let RowBody::ToolGroup(group) = &mut row.body {
+                    let mut items = group.items.to_vec();
+                    let mut tool_id = None;
+                    if let Some(ToolGroupItem::Tool(tool)) = items.first_mut() {
+                        tool.arg_summary = Arc::from("bash · long script");
+                        tool.arg_full = Some(Arc::from(script.as_str()));
+                        tool_id = Some(tool.tool_id.clone());
+                    }
+                    if let Some(tool_id) = tool_id
+                        && let Some(ToolGroupItem::Gate(gate)) = items
+                            .iter_mut()
+                            .find(|item| matches!(item, ToolGroupItem::Gate(_)))
+                    {
+                        gate.origin = tact_desktop_core::GateOrigin::Tool { tool_id };
+                        gate.prompt = Arc::from("Allow Tact to run this script?");
+                    }
+                    group.items = Arc::from(items);
+                }
+                Arc::new(row)
+            })
+            .collect::<Vec<_>>();
+        let transcript = TranscriptView::from_rows(rows);
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = transcript;
+                this.snapshot = Arc::new(snapshot);
+                this.pending_row_updates
+                    .extend(this.snapshot.transcript.iter().map(|row| row.id));
+                let count = this.snapshot.transcript.len();
+                this.scroller.update(cx, |state, cx| {
+                    state.reset(count, cx);
+                    state.scroll_to_item(5, cx);
+                });
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+            window.draw(cx).clear(cx);
+        });
+        let preview = window
+            .debug_bounds("gate-command-preview")
+            .expect("the gate repeats the command it asks about");
+        assert!(
+            preview.size.height <= px(GATE_COMMAND_MAX_HEIGHT),
+            "the command preview is bounded so the decision stays in view: {:.1}px",
+            preview.size.height.as_f32()
+        );
+        assert!(
+            preview.size.height >= px(100.),
+            "the bounded preview still shows the command: {:.1}px",
+            preview.size.height.as_f32()
+        );
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
     }
