@@ -752,6 +752,7 @@
 <li class="toc-l2"><a href="#38-2026-11-05--desktop-%E4%BC%9A%E8%AF%9D%E5%88%97%E8%A1%A8%E6%8C%89%E9%A1%B9%E7%9B%AE%E5%88%86%E7%BB%84" title="38. 2026-11-05 — Desktop：会话列表按项目分组"><span class="toc-label">38. 2026-11-05 — Desktop：会话列表按项目分组</span></a></li>
 <li class="toc-l2"><a href="#39-2026-11-06--desktop-%E6%9D%83%E9%99%90%E5%8D%A1%E7%9A%84%E9%95%BF%E5%91%BD%E4%BB%A4%E9%A2%84%E8%A7%88" title="39. 2026-11-06 — Desktop：权限卡的长命令预览"><span class="toc-label">39. 2026-11-06 — Desktop：权限卡的长命令预览</span></a></li>
 <li class="toc-l2"><a href="#40-2026-11-06--desktop-%E7%94%A8%E6%88%B7%E6%B6%88%E6%81%AF%E7%9A%84%E6%97%B6%E9%97%B4%E4%B8%8E%E5%A4%8D%E5%88%B6" title="40. 2026-11-06 — Desktop：用户消息的时间与复制"><span class="toc-label">40. 2026-11-06 — Desktop：用户消息的时间与复制</span></a></li>
+<li class="toc-l2"><a href="#41-2026-11-06--desktop-%E8%BE%93%E5%85%A5%E5%99%A8%E6%A8%A1%E5%9E%8B%E9%80%89%E6%8B%A9%E5%99%A8%E5%9C%A8%E5%90%AF%E5%8A%A8%E5%90%8E%E7%A7%BB%E4%BD%8D" title="41. 2026-11-06 — Desktop：输入器模型选择器在启动后移位"><span class="toc-label">41. 2026-11-06 — Desktop：输入器模型选择器在启动后移位</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -22478,6 +22479,27 @@ aria label 为 “Copy message” / “复制消息”，点击把该条消息�
 <code>26a-transcript-top.png</code> 显示新的页脚。</p>
 <p><strong>Pointers：</strong> <code>crates/desktop/src/root.rs</code>、
 <code>crates/desktop/src/i18n.rs</code>。</p>
+<h2 id="41-2026-11-06--desktop-输入器模型选择器在启动后移位">41. 2026-11-06 —
+Desktop：输入器模型选择器在启动后移位</h2>
+<p><strong>目标：</strong> composer 底部的模型选择器从第一帧起就停在最终位置，启动
+过程和运行状态切换都不能把它推走。</p>
+<p><strong>现象：</strong> 启动时模型按钮先显示较窄的占位文案，模型列表到达后标签
+变宽，按钮向左移动约 43px；恢复会话处于 Opening/Starting 时，“Running · Esc
+interrupts” 提示和停止按钮加入右侧簇，把模型与权限选择器再向左推约 209px，进入
+Ready 后才移回。</p>
+<p><strong>改后行为：</strong> 模型标签固定为 180px 宽，长名称照常截断，短名称预留
+空白；运行提示移进左侧弹性间隙并右对齐，不再占用右侧簇的宽度；空闲时保留停止
+按钮的 28px 槽位，运行开始时按钮原地出现。模型与权限选择器在所有状态下保持同一
+x 坐标。代价是空闲时权限选择器与发送按钮之间多出约 32px 留白。</p>
+<p><strong>验证：</strong> 新增
+<code>the_model_picker_keeps_its_slot_while_the_composer_initialises</code>：修复前
+同一测试打印 <code>initial=926, loaded=883</code> 与
+<code>starting=674</code>，修复后未选中模型、模型列表已加载、Starting 三种状态
+的模型按钮 x 相同。<code>cargo test -p tact-desktop --lib</code> 248 通过。视觉
+捕获 <code>01-shell-light.png</code>（空闲）与 <code>26a-transcript-top.png</code>
+（运行中）对照页脚布局。</p>
+<p><strong>Pointers：</strong> <code>crates/desktop/src/ui/prompt_bar.rs</code>、
+<code>crates/desktop/src/root.rs</code>。</p>
 <h2 id="related-docs">Related Docs</h2>
 <ul>
 <li><a href="./07_chapter_tool_zh.html">工具系统</a></li>

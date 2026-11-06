@@ -21965,6 +21965,63 @@ mod tests {
     }
 
     #[gpui::test]
+    fn the_model_picker_keeps_its_slot_while_the_composer_initialises(cx: &mut TestAppContext) {
+        fn trigger_x(
+            window: &mut VisualTestContext,
+            root: &Entity<DesktopRoot>,
+            models: &[&str],
+            model: &str,
+            phase: SessionPhase,
+        ) -> f32 {
+            window.update(|_, cx| {
+                root.update(cx, |this, cx| {
+                    let mut snapshot = (*this.snapshot).clone();
+                    snapshot.composer.models = models
+                        .iter()
+                        .map(|model| Arc::from(*model))
+                        .collect::<Vec<_>>()
+                        .into();
+                    snapshot.composer.model = Arc::from(model);
+                    snapshot.session.phase = phase;
+                    this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+                });
+            });
+            draw(window);
+            window
+                .debug_bounds("prompt-bar-model-trigger")
+                .expect("model trigger renders")
+                .origin
+                .x
+                .as_f32()
+        }
+
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(840.)));
+        draw(window);
+        let initial = window
+            .debug_bounds("prompt-bar-model-trigger")
+            .expect("model trigger renders")
+            .origin
+            .x
+            .as_f32();
+        let model = "opencode-go/deepseek-v4.1-flash";
+        let loaded = trigger_x(window, &root, &[model], model, SessionPhase::Ready);
+        let starting = trigger_x(window, &root, &[model], model, SessionPhase::Starting);
+        assert_eq!(
+            initial, loaded,
+            "the model trigger must not move when the model list loads: \
+             initial={initial}, loaded={loaded}"
+        );
+        assert_eq!(
+            loaded, starting,
+            "the model trigger must not move while the session starts: \
+             loaded={loaded}, starting={starting}"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
     fn model_menu_scrolls_past_its_first_screenful(cx: &mut TestAppContext) {
         let (root, window, shutdown, data_dir) = probe_root(cx);
         window.simulate_resize(size(px(1280.), px(840.)));

@@ -725,13 +725,7 @@ impl Render for PromptBar {
                                     .xsmall()
                                     .text_color(cx.theme().muted_foreground),
                             )
-                            .child(
-                                div()
-                                    .max_w(px(180.))
-                                    .truncate()
-                                    .text_xs()
-                                    .child(model_label),
-                            ),
+                            .child(div().w(px(180.)).truncate().text_xs().child(model_label)),
                     ),
             )
             .content(move |_, window, cx| {
@@ -887,24 +881,32 @@ impl Render for PromptBar {
                     id: this.id.clone(),
                 });
             }));
+        // The running hint comes and goes with the session phase. Keep it in
+        // the flexible gap so its width never shifts the fixed controls on
+        // the right.
+        let footer_spacer = h_flex().flex_1().min_w_0().justify_end().when_some(
+            self.footer_status.clone(),
+            |row, status| {
+                row.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(status),
+                )
+            },
+        );
         let footer = h_flex()
             .w_full()
             .items_center()
             .gap_1()
             .children(leading)
-            .child(div().flex_1())
+            .child(footer_spacer)
             .child(model_control)
             .children(trailing)
-            .when_some(self.footer_status.clone(), |row, status| {
-                row.child(
-                    div()
-                        .flex_none()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(status),
-                )
-            })
+            // The stop control is transient. Reserve its slot while idle so
+            // starting a run does not move the model and permission pickers.
             .when(running, |row| row.child(stop))
+            .when(!running, |row| row.child(div().size(px(28.))))
             .child(send);
         let mut attachments = h_flex().flex_wrap().gap_1();
         for attachment in &self.attachments {
