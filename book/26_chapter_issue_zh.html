@@ -756,6 +756,7 @@
 <li class="toc-l2"><a href="#42-2026-11-06--desktop-%E6%80%9D%E8%80%83%E8%A1%8C%E5%9C%A8%E5%AE%9E%E6%97%B6%E8%BD%AC%E5%BD%95%E9%87%8C%E4%B8%A2%E5%A4%B1" title="42. 2026-11-06 — Desktop：思考行在实时转录里丢失"><span class="toc-label">42. 2026-11-06 — Desktop：思考行在实时转录里丢失</span></a></li>
 <li class="toc-l2"><a href="#43-2026-11-06--desktop-%E5%8C%BA%E5%88%86%E8%BF%87%E7%A8%8B%E5%8F%99%E8%BF%B0%E4%B8%8E%E6%9C%80%E7%BB%88%E7%AD%94%E6%A1%88" title="43. 2026-11-06 — Desktop：区分过程叙述与最终答案"><span class="toc-label">43. 2026-11-06 — Desktop：区分过程叙述与最终答案</span></a></li>
 <li class="toc-l2"><a href="#44-2026-11-06--desktop-%E5%8F%AA%E7%9C%8B%E7%AD%94%E6%A1%88%E4%B8%8E%E5%AE%9E%E6%97%B6%E6%B4%BB%E5%8A%A8%E8%A1%8C" title="44. 2026-11-06 — Desktop：只看答案与实时活动行"><span class="toc-label">44. 2026-11-06 — Desktop：只看答案与实时活动行</span></a></li>
+<li class="toc-l2"><a href="#45-2026-11-06--desktop-%E8%80%97%E6%97%B6%E5%B9%B6%E5%85%A5%E8%BF%87%E7%A8%8B%E6%91%98%E8%A6%81" title="45. 2026-11-06 — Desktop：耗时并入过程摘要"><span class="toc-label">45. 2026-11-06 — Desktop：耗时并入过程摘要</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -22583,6 +22584,22 @@ run 结束后行消失、定时任务被丢弃。</p>
 捕获 <code>26a-transcript-top.png</code> 同时显示 Answers 开关和活动行。</p>
 <p><strong>Pointers：</strong> <code>crates/desktop/src/root.rs</code>、
 <code>crates/desktop/src/i18n.rs</code>。</p>
+<h2 id="45-2026-11-06--desktop-耗时并入过程摘要">45. 2026-11-06 —
+Desktop：耗时并入过程摘要</h2>
+<p><strong>目标：</strong> composer 上方的独立耗时 chip 和过程摘要重复，合并成一条。</p>
+<p><strong>改后行为：</strong> 活动组运行中，摘要整行变成当前动作和计时，例如
+“Running · Editing root.rs · 2s”，左侧保留展开箭头并显示动画圆点；组结束后恢复
+“3 thoughts, ran 4 commands”，末尾保留本次活动的耗时。耗时按活动组自己的墙钟，
+从组第一次进入 active 到 settle，切 turn 不会把它重置。composer 上方的独立 chip
+移除；顶部 RUN 的 ELAPSED 仍然按 turn 统计。</p>
+<p><strong>验证：</strong>
+<code>the_process_summary_label_switches_from_live_to_counts</code> 覆盖运行中与
+settle 后的文案，<code>the_process_summary_shows_the_live_status_and_keeps_its_clock</code>
+断言活动组有计时、settle 后计时停止且耗时被保留、composer chip 不存在。
+<code>cargo test -p tact-desktop --lib</code> 254 通过，视觉捕获
+<code>26f-process-summary-clock.png</code> 显示合并后的摘要。</p>
+<p><strong>Pointers：</strong> <code>crates/desktop/src/root.rs</code>、
+<code>crates/desktop/src/capture.rs</code>。</p>
 <h2 id="related-docs">Related Docs</h2>
 <ul>
 <li><a href="./07_chapter_tool_zh.html">工具系统</a></li>

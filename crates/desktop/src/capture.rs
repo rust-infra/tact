@@ -18,7 +18,9 @@ use gpui_component::Root;
 use tact_catalog::SettingId;
 use tact_desktop_core::{
     Appearance, DesktopConfig, DesktopController, DesktopSnapshot, DesktopTheme, ExtensionsTab,
-    HookItemSnapshot, HookSnapshot, InspectorTab, ReaderRef, RowId, SessionPhase, SurfaceSnapshot,
+    HookItemSnapshot, HookSnapshot, InspectorTab, LatestToolView, ReaderRef, RowBody, RowId,
+    RowStatus, RunPhase, SessionPhase, SurfaceSnapshot, ToolBody, ToolGroupItem, ToolGroupRow,
+    ToolMetaView, ToolOutputView, ToolRow, TranscriptRow, TranscriptView, transcript::ThinkingRow,
 };
 
 use crate::root::{DesktopRoot, ReaderKind};
@@ -582,6 +584,76 @@ pub fn capture_all(out: &Path) -> Result<Vec<PathBuf>> {
     let mut snapshot = harness.snapshot();
     snapshot.transcript = long_command;
     harness.set_snapshot(snapshot);
+    // A running process group replaces its counts with the live action and
+    // clock; the settled group keeps the elapsed time.
+    let demo = tact_desktop_core::fixtures::demo_transcript();
+    let loop_id = demo
+        .iter()
+        .find_map(|row| match &row.body {
+            RowBody::ToolGroup(group) => Some(group.loop_id),
+            _ => None,
+        })
+        .expect("demo tool group");
+    let rows = vec![
+        Arc::new(TranscriptRow {
+            id: RowId::new(0),
+            ordinal: 0,
+            loop_id: None,
+            time: None,
+            body: RowBody::Thinking(ThinkingRow {
+                markdown: Arc::from("plan"),
+                status: RowStatus::Success,
+                duration_ms: None,
+            }),
+        }),
+        Arc::new(TranscriptRow {
+            id: RowId::new(1),
+            ordinal: 1,
+            loop_id: Some(loop_id),
+            time: None,
+            body: RowBody::ToolGroup(ToolGroupRow {
+                loop_id,
+                items: Arc::from([ToolGroupItem::Tool(ToolRow {
+                    id: RowId::new(11),
+                    tool_id: Arc::from("tool-1"),
+                    name: Arc::from("edit_file"),
+                    arg_summary: Arc::from("root.rs"),
+                    arg_full: None,
+                    status: RowStatus::Running,
+                    body: ToolBody::None,
+                    output: ToolOutputView::default(),
+                    meta: ToolMetaView::default(),
+                    subagent: None,
+                    expanded: false,
+                    keep_live: false,
+                    destructive: false,
+                    duration_ms: None,
+                })]),
+                summary: Arc::from("edit_file"),
+                collapsed: true,
+                collapse_override: None,
+            }),
+        }),
+    ];
+    let mut snapshot = harness.snapshot();
+    snapshot.transcript = TranscriptView::from_rows(rows);
+    snapshot.session.phase = SessionPhase::Running;
+    snapshot.runtime.current_phase = RunPhase::RunningTools;
+    snapshot.runtime.latest_tool_detail = Some(LatestToolView {
+        tool_id: "call-1".into(),
+        group: None,
+        row: None,
+        label: "Editing root.rs".into(),
+        duration_ms: None,
+        status: RowStatus::Running,
+    });
+    harness.set_snapshot(snapshot);
+    harness.with_root(|root, _, cx| root.capture_scroll_to(0, cx));
+    shoot(&mut harness, "26f-process-summary-clock")?;
+    let mut snapshot = harness.snapshot();
+    snapshot.transcript = design_transcript();
+    harness.set_snapshot(snapshot);
+
     harness.with_root(|root, _, cx| root.capture_scroll_to(5, cx));
     shoot(&mut harness, "46-tool-group-long-command")?;
     let mut snapshot = harness.snapshot();

@@ -442,6 +442,13 @@ struct TranscriptScrollerView {
     new_activity: bool,
     wheel_enabled: bool,
     answers_only: bool,
+    /// Current live activity label ("Running · edit_file bridge.rs").
+    live_label: Option<String>,
+    /// When each active process group started.
+    group_started: HashMap<RowId, chrono::DateTime<chrono::Utc>>,
+    /// Elapsed time retained for a settled process group.
+    group_elapsed: HashMap<RowId, String>,
+    activity_timer: Option<Task<()>>,
     process_roles: Arc<Vec<ProcessRowRole>>,
     process_groups: Arc<Vec<ProcessGroup>>,
     expanded_process_groups: HashSet<RowId>,
@@ -490,6 +497,10 @@ impl TranscriptScrollerView {
             new_activity: false,
             wheel_enabled: true,
             answers_only: false,
+            live_label: None,
+            group_started: HashMap::new(),
+            group_elapsed: HashMap::new(),
+            activity_timer: None,
             process_roles: Arc::new(Vec::new()),
             process_groups: Arc::new(Vec::new()),
             expanded_process_groups: HashSet::new(),
@@ -507,6 +518,7 @@ impl TranscriptScrollerView {
         new_activity: bool,
         wheel_enabled: bool,
         answers_only: bool,
+        live_label: Option<String>,
         cx: &mut Context<Self>,
     ) -> bool {
         let language = snapshot.language;
@@ -521,15 +533,35 @@ impl TranscriptScrollerView {
         if session_changed {
             self.session_id = session_id.clone();
             self.expanded_process_groups.clear();
+            self.group_started.clear();
+            self.group_elapsed.clear();
         }
         if rows_changed {
             self.rows = Arc::new(rows);
         }
+        let previous_groups = self.process_groups.clone();
         let (process_roles, process_groups) = build_process_layout(&self.rows, cx);
         let layout_changed = self.process_roles.as_ref() != &process_roles
             || self.process_groups.as_ref() != &process_groups;
         self.process_roles = Arc::new(process_roles);
         self.process_groups = Arc::new(process_groups);
+        if !session_changed {
+            let now = chrono::Utc::now();
+            for old in previous_groups.iter().filter(|group| group.active) {
+                let still_active = self
+                    .process_groups
+                    .iter()
+                    .any(|group| group.first_row == old.first_row && group.active);
+                if !still_active && let Some(started) = self.group_started.remove(&old.first_row) {
+                    self.group_elapsed
+                        .insert(old.first_row, format_elapsed(started));
+                }
+            }
+            for group in self.process_groups.iter().filter(|group| group.active) {
+                self.group_started.entry(group.first_row).or_insert(now);
+            }
+        }
+        self.ensure_activity_timer(cx);
         self.expanded_process_groups.retain(|row| {
             self.process_groups
                 .iter()
@@ -542,12 +574,14 @@ impl TranscriptScrollerView {
             || self.tail_following != tail_following
             || self.new_activity != new_activity
             || self.wheel_enabled != wheel_enabled
-            || self.answers_only != answers_only;
+            || self.answers_only != answers_only
+            || self.live_label != live_label;
         self.language = language;
         self.tail_following = tail_following;
         self.new_activity = new_activity;
         self.wheel_enabled = wheel_enabled;
         self.answers_only = answers_only;
+        self.live_label = live_label;
         if !wheel_enabled {
             self.pending_scroll.set(0.);
         }
@@ -555,6 +589,32 @@ impl TranscriptScrollerView {
             cx.notify();
         }
         changed
+    }
+
+    /// Repaints the summary clock once a second while a process group runs.
+    fn ensure_activity_timer(&mut self, cx: &mut Context<Self>) {
+        let active = self.process_groups.iter().any(|group| group.active);
+        if !active {
+            self.activity_timer = None;
+            return;
+        }
+        if self.activity_timer.is_some() {
+            return;
+        }
+        self.activity_timer = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let keep = this
+                    .update(cx, |this, cx| {
+                        cx.notify();
+                        this.process_groups.iter().any(|group| group.active)
+                    })
+                    .unwrap_or(false);
+                if !keep {
+                    break;
+                }
+            }
+        }));
     }
 
     fn toggle_process_group(&mut self, first_row: RowId, cx: &mut Context<Self>) {
@@ -651,14 +711,39 @@ impl TranscriptScrollerView {
     }
 }
 
+/// The summary row's text: the live action while the group runs, the counts
+/// plus the retained duration once it settles.
+fn process_summary_label(
+    group: &ProcessGroup,
+    live: Option<&str>,
+    elapsed: Option<&str>,
+    language: tact_catalog::CatalogLocale,
+) -> String {
+    if group.active {
+        if let Some(live) = live {
+            return match elapsed {
+                Some(elapsed) => format!("{live} · {elapsed}"),
+                None => live.to_string(),
+            };
+        }
+    }
+    let counts = process_summary_text(group, language);
+    match elapsed {
+        Some(elapsed) => format!("{counts} · {elapsed}"),
+        None => counts,
+    }
+}
+
 fn process_summary_element(
     group: &ProcessGroup,
     expanded: bool,
     language: tact_catalog::CatalogLocale,
+    live: Option<&str>,
+    elapsed: Option<&str>,
     weak: WeakEntity<TranscriptScrollerView>,
     cx: &gpui::App,
 ) -> AnyElement {
-    let label = process_summary_text(group, language);
+    let label = process_summary_label(group, live, elapsed, language);
     let first_row = group.first_row;
     let ordinal = group.first_ordinal;
     h_flex()
@@ -686,6 +771,7 @@ fn process_summary_element(
             .xsmall()
             .text_color(cx.theme().muted_foreground),
         )
+        .when(group.active, |row| row.child(Orbs::new().diameter(px(12.))))
         .child(
             div()
                 .min_w_0()
@@ -707,6 +793,9 @@ impl Render for TranscriptScrollerView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let rows = self.rows.clone();
         let answers_only = self.answers_only;
+        let live_label = self.live_label.clone();
+        let group_started = self.group_started.clone();
+        let group_elapsed = self.group_elapsed.clone();
         let process_roles = self.process_roles.clone();
         let process_groups = self.process_groups.clone();
         let expanded_process_groups = self.expanded_process_groups.clone();
@@ -734,6 +823,18 @@ impl Render for TranscriptScrollerView {
             };
             let process_expanded = process_group
                 .is_some_and(|group| expanded_process_groups.contains(&group.first_row));
+            let summary_live = process_group
+                .filter(|group| group.active)
+                .and_then(|_| live_label.clone());
+            let summary_elapsed = process_group.and_then(|group| {
+                if group.active {
+                    group_started
+                        .get(&group.first_row)
+                        .map(|started| format_elapsed(*started))
+                } else {
+                    group_elapsed.get(&group.first_row).cloned()
+                }
+            });
             if matches!(role, ProcessRowRole::Hidden(_)) && !process_expanded {
                 return div().into_any_element();
             }
@@ -750,7 +851,15 @@ impl Render for TranscriptScrollerView {
                 .unwrap_or_else(|| div().into_any_element());
             let (content, tight) = match (role, process_group) {
                 (ProcessRowRole::Summary(_), Some(group)) if !process_expanded => (
-                    process_summary_element(group, false, language, process_weak.clone(), cx),
+                    process_summary_element(
+                        group,
+                        false,
+                        language,
+                        summary_live.as_deref(),
+                        summary_elapsed.as_deref(),
+                        process_weak.clone(),
+                        cx,
+                    ),
                     false,
                 ),
                 (ProcessRowRole::Summary(_), Some(group)) => (
@@ -761,6 +870,8 @@ impl Render for TranscriptScrollerView {
                             group,
                             true,
                             language,
+                            summary_live.as_deref(),
+                            summary_elapsed.as_deref(),
                             process_weak.clone(),
                             cx,
                         ))
@@ -884,7 +995,6 @@ pub(crate) struct DesktopRoot {
     queue_expanded: bool,
     /// Hide process rows and keep only the user's messages and final answers.
     answers_only: bool,
-    live_activity_timer: Option<Task<()>>,
     recent_commands: Vec<CommandId>,
     sticky_tasks_collapsed: bool,
     /// First row the expanded strip paints. The strip shows at most
@@ -1385,7 +1495,6 @@ impl DesktopRoot {
             queue_cursor: 0,
             queue_expanded: false,
             answers_only: false,
-            live_activity_timer: None,
             recent_commands: Vec::new(),
             sticky_tasks_collapsed: true,
             sticky_tasks_scroll: 0,
@@ -6131,6 +6240,7 @@ impl DesktopRoot {
         );
         let new_activity = self.new_activity;
         let wheel_enabled = self.overlay.is_none();
+        let live_label = self.live_activity_label();
         let scroller_changed = self.transcript_scroller.update(cx, |view, cx| {
             view.set_state(
                 row_views,
@@ -6139,6 +6249,7 @@ impl DesktopRoot {
                 new_activity,
                 wheel_enabled,
                 self.answers_only,
+                live_label,
                 cx,
             )
         });
@@ -8659,7 +8770,7 @@ impl DesktopRoot {
             .into_any_element()
     }
 
-    /// Whether the composer should show the live activity row.
+    /// Whether a run is active, so the transcript summary shows its clock.
     fn live_activity_visible(&self) -> bool {
         matches!(
             self.snapshot.session.phase,
@@ -8667,33 +8778,8 @@ impl DesktopRoot {
         )
     }
 
-    /// Keeps a one-second repaint running while the activity row is visible.
-    fn tick_live_activity(&mut self, cx: &mut Context<Self>) {
-        if !self.live_activity_visible() {
-            self.live_activity_timer = None;
-            return;
-        }
-        if self.live_activity_timer.is_some() {
-            return;
-        }
-        self.live_activity_timer = Some(cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(Duration::from_secs(1)).await;
-                let keep = this
-                    .update(cx, |this, cx| {
-                        cx.notify();
-                        this.live_activity_visible()
-                    })
-                    .unwrap_or(false);
-                if !keep {
-                    break;
-                }
-            }
-        }));
-    }
-
-    /// The tool being run (or the phase when no tool is active) and the turn clock.
-    fn live_activity(&self) -> Option<(String, String)> {
+    /// The current activity label for the process summary.
+    fn live_activity_label(&self) -> Option<String> {
         if !self.live_activity_visible() {
             return None;
         }
@@ -8703,28 +8789,22 @@ impl DesktopRoot {
             .latest_tool_detail
             .clone()
             .filter(|tool| matches!(tool.status, RowStatus::Running | RowStatus::Pending));
-        let label = match &tool {
-            Some(tool) => truncate_display_text(&tool.label, 60),
+        Some(match tool {
+            Some(tool) => format!(
+                "{} · {}",
+                self.text(TextKey::Running),
+                truncate_display_text(&tool.label, 60)
+            ),
             None => match self.snapshot.runtime.current_phase {
                 tact_desktop_core::RunPhase::Thinking => {
                     format!("{}…", self.text(TextKey::Thinking))
                 }
                 _ => self.text(TextKey::Running).to_string(),
             },
-        };
-        let elapsed = self
-            .snapshot
-            .runtime
-            .turn_started_at
-            .or(self.snapshot.runtime.run_started_at)
-            .map(format_elapsed)
-            .unwrap_or_else(|| "0s".to_string());
-        Some((label, elapsed))
+        })
     }
 
     fn render_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        self.tick_live_activity(cx);
-        let live_activity = self.live_activity();
         let labels = prompt_bar_labels(self.snapshot.language);
         self.prompt.update(cx, |prompt, cx| {
             prompt.set_labels(labels, window, cx);
@@ -8812,42 +8892,6 @@ impl DesktopRoot {
             .gap_2()
             .px(px(22.))
             .pb(px(18.))
-            .when_some(live_activity, |area, (label, elapsed)| {
-                area.child(
-                    h_flex().w_full().justify_start().child(
-                        h_flex()
-                            .id("composer-live-activity")
-                            .debug_selector(|| "composer-live-activity".into())
-                            .role(Role::Status)
-                            .aria_label(format!("{label} · {elapsed}"))
-                            .items_center()
-                            .gap(px(8.))
-                            .px(px(10.))
-                            .py(px(5.))
-                            .rounded_full()
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .bg(cx.theme().popover)
-                            .child(Orbs::new().diameter(px(14.)))
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_xs()
-                                    .text_color(cx.theme().foreground)
-                                    .child(label),
-                            )
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .font_family("Lilex")
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(elapsed),
-                            ),
-                    ),
-                )
-            })
             .when(self.voice.listening || self.voice.transcribing, |area| {
                 area.child(self.render_voice_status(cx))
             })
@@ -21467,18 +21511,102 @@ mod tests {
         let _ = std::fs::remove_dir_all(data_dir);
     }
 
+    #[test]
+    fn the_process_summary_label_switches_from_live_to_counts() {
+        let group = ProcessGroup {
+            first_index: 0,
+            end_index: 2,
+            first_row: RowId::new(0),
+            first_ordinal: 0,
+            commands: 4,
+            files_read: 0,
+            files_changed: 0,
+            skills: 0,
+            other_tools: 0,
+            thoughts: 3,
+            active: true,
+        };
+        assert_eq!(
+            process_summary_label(
+                &group,
+                Some("Running · edit_file bridge.rs"),
+                Some("2s"),
+                tact_catalog::CatalogLocale::En,
+            ),
+            "Running · edit_file bridge.rs · 2s"
+        );
+        let mut settled = group.clone();
+        settled.active = false;
+        assert_eq!(
+            process_summary_label(&settled, None, Some("2s"), tact_catalog::CatalogLocale::En),
+            "3 thoughts, ran 4 commands · 2s"
+        );
+    }
+
     #[gpui::test]
-    fn the_composer_shows_the_live_activity_row(cx: &mut TestAppContext) {
+    fn the_process_summary_shows_the_live_status_and_keeps_its_clock(cx: &mut TestAppContext) {
+        use tact_desktop_core::{
+            ToolBody, ToolGroupItem, ToolGroupRow, ToolMetaView, ToolOutputView, ToolRow,
+            transcript::ThinkingRow,
+        };
+
+        fn row(id: u64, body: RowBody) -> Arc<TranscriptRow> {
+            Arc::new(TranscriptRow {
+                id: RowId::new(id),
+                ordinal: id,
+                loop_id: None,
+                time: None,
+                body,
+            })
+        }
+
+        fn thinking() -> RowBody {
+            RowBody::Thinking(ThinkingRow {
+                markdown: Arc::from("plan"),
+                status: RowStatus::Success,
+                duration_ms: None,
+            })
+        }
+
+        fn tool_group(loop_id: tact_desktop_core::LoopId, status: RowStatus) -> RowBody {
+            RowBody::ToolGroup(ToolGroupRow {
+                loop_id,
+                items: Arc::from([ToolGroupItem::Tool(ToolRow {
+                    id: RowId::new(12),
+                    tool_id: Arc::from("tool-1"),
+                    name: Arc::from("bash"),
+                    arg_summary: Arc::from("echo hi"),
+                    arg_full: None,
+                    status,
+                    body: ToolBody::None,
+                    output: ToolOutputView::default(),
+                    meta: ToolMetaView::default(),
+                    subagent: None,
+                    expanded: false,
+                    keep_live: false,
+                    destructive: false,
+                    duration_ms: None,
+                })]),
+                summary: Arc::from("bash"),
+                collapsed: true,
+                collapse_override: None,
+            })
+        }
+
         let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(1400.)));
         window.update(|window, cx| {
             root.update(cx, |this, cx| {
+                let loop_id = tact_desktop_core::fixtures::demo_transcript()
+                    .iter()
+                    .find_map(|row| match &row.body {
+                        RowBody::ToolGroup(group) => Some(group.loop_id),
+                        _ => None,
+                    })
+                    .expect("demo tool group");
                 let mut snapshot = (*this.snapshot).clone();
                 snapshot.session.phase = SessionPhase::Running;
                 snapshot.runtime.current_phase = tact_desktop_core::RunPhase::RunningTools;
-                snapshot.runtime.run_started_at =
-                    Some(chrono::Utc::now() - chrono::Duration::hours(1));
-                snapshot.runtime.turn_started_at =
-                    Some(chrono::Utc::now() - chrono::Duration::seconds(12));
                 snapshot.runtime.latest_tool_detail = Some(LatestToolView {
                     tool_id: "call-live".into(),
                     group: None,
@@ -21487,33 +21615,65 @@ mod tests {
                     duration_ms: None,
                     status: RowStatus::Running,
                 });
+                snapshot.transcript = TranscriptView::from_rows(vec![
+                    row(0, thinking()),
+                    row(1, tool_group(loop_id, RowStatus::Running)),
+                ]);
                 this.set_snapshot_for_capture(Arc::new(snapshot), cx);
             });
             window.draw(cx).clear(cx);
         });
+
         assert!(
-            window.debug_bounds("composer-live-activity").is_some(),
-            "a running tool shows the live activity row"
+            window
+                .debug_bounds("transcript-process-summary-0")
+                .is_some(),
+            "the running status lives on the process summary"
         );
-        let activity = window.update(|_, cx| root.update(cx, |this, _| this.live_activity()));
-        let (label, elapsed) = activity.expect("activity");
-        assert_eq!(label, "Editing root.rs");
-        assert_eq!(
-            elapsed, "12s",
-            "the row counts the turn, not the whole session"
+        let clock_started = window.update(|_, cx| {
+            root.read(cx)
+                .transcript_scroller
+                .read(cx)
+                .group_started
+                .contains_key(&RowId::new(0))
+        });
+        assert!(clock_started, "an active group gets a clock");
+        assert!(
+            window.debug_bounds("composer-live-activity").is_none(),
+            "the standalone composer chip is gone"
         );
 
         window.update(|window, cx| {
             root.update(cx, |this, cx| {
+                let loop_id = tact_desktop_core::fixtures::demo_transcript()
+                    .iter()
+                    .find_map(|row| match &row.body {
+                        RowBody::ToolGroup(group) => Some(group.loop_id),
+                        _ => None,
+                    })
+                    .expect("demo tool group");
                 let mut snapshot = (*this.snapshot).clone();
                 snapshot.session.phase = SessionPhase::Ready;
+                snapshot.transcript = TranscriptView::from_rows(vec![
+                    row(0, thinking()),
+                    row(1, tool_group(loop_id, RowStatus::Success)),
+                ]);
                 this.set_snapshot_for_capture(Arc::new(snapshot), cx);
             });
             window.draw(cx).clear(cx);
         });
+
+        let (started, elapsed) = window.update(|_, cx| {
+            let scroller = root.read(cx).transcript_scroller.read(cx);
+            (
+                scroller.group_started.contains_key(&RowId::new(0)),
+                scroller.group_elapsed.get(&RowId::new(0)).cloned(),
+            )
+        });
+        assert!(!started, "the clock stops when the group settles");
         assert!(
-            window.debug_bounds("composer-live-activity").is_none(),
-            "the row disappears when the run settles"
+            elapsed.is_some_and(|elapsed| !elapsed.is_empty()),
+            "the settled summary keeps the elapsed time"
         );
 
         shutdown.shutdown_blocking().unwrap();
