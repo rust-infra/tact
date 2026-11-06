@@ -13805,25 +13805,13 @@ fn transcript_row_element(
                     .items_end()
                     .gap_1()
                     .child(
-                        h_flex()
-                            .items_baseline()
-                            .gap(px(7.))
-                            .child(
-                                div()
-                                    .text_size(px(11.))
-                                    .font_semibold()
-                                    .text_color(snapshot_ink(snapshot))
-                                    .child(i18n::text(snapshot.language, TextKey::You)),
-                            )
-                            .when_some(row.time.clone(), |line, time| {
-                                line.child(
-                                    div()
-                                        .text_size(px(10.))
-                                        .font_family("Lilex")
-                                        .text_color(snapshot_row_muted(snapshot))
-                                        .child(time.to_string()),
-                                )
-                            }),
+                        h_flex().items_baseline().gap(px(7.)).child(
+                            div()
+                                .text_size(px(11.))
+                                .font_semibold()
+                                .text_color(snapshot_ink(snapshot))
+                                .child(i18n::text(snapshot.language, TextKey::You)),
+                        ),
                     )
                     .child(
                         div()
@@ -13863,7 +13851,47 @@ fn transcript_row_element(
                                     )
                                 })),
                         )
-                    }),
+                    })
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .mt(px(4.))
+                            .gap(px(8.))
+                            .when_some(row.time.clone(), |line, time| {
+                                line.child(
+                                    div()
+                                        .debug_selector(move || format!("user-time-{id}"))
+                                        .text_size(px(10.))
+                                        .font_family("Lilex")
+                                        .text_color(snapshot_row_muted(snapshot))
+                                        .child(time.to_string()),
+                                )
+                            })
+                            .child(
+                                gpui_base::Button::new(("copy-user", id))
+                                    .debug_selector(move || format!("copy-user-{id}"))
+                                    .role(Role::Button)
+                                    .aria_label(i18n::text(snapshot.language, TextKey::CopyMessage))
+                                    .cursor_pointer()
+                                    .rounded(px(4.))
+                                    .p(px(3.))
+                                    .focus(|style| style.bg(gpui::rgba(0x007aff22)))
+                                    .hover(|style| style.bg(snapshot_row_border(snapshot)))
+                                    .child(
+                                        Icon::new(IconName::Copy)
+                                            .xsmall()
+                                            .text_color(snapshot_row_muted(snapshot)),
+                                    )
+                                    .on_click({
+                                        let text = user.text.to_string();
+                                        move |_, _, cx| {
+                                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                                text.clone(),
+                                            ));
+                                        }
+                                    }),
+                            ),
+                    ),
             )
             .child(
                 div()
@@ -18526,6 +18554,61 @@ mod tests {
         assert!(
             bubble.origin.x > row.origin.x + row.size.width / 2.,
             "a short message stays on the right half"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn a_user_message_footer_shows_the_time_and_copies_the_text(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        let text = "summarize the migration";
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = tact_desktop_core::TranscriptView::from_rows(vec![Arc::new(
+                    tact_desktop_core::TranscriptRow {
+                        id: RowId::new(0),
+                        ordinal: 0,
+                        loop_id: None,
+                        time: Some(Arc::from("10:42")),
+                        body: tact_desktop_core::RowBody::User(
+                            tact_desktop_core::transcript::UserRow {
+                                text: Arc::from(text),
+                                attachments: Arc::from([]),
+                            },
+                        ),
+                    },
+                )]);
+                this.snapshot = Arc::new(snapshot);
+                this.transcript_rows.clear();
+                this.scroller.update(cx, |state, cx| state.reset(1, cx));
+            });
+            window.draw(cx).clear(cx);
+        });
+        let time = window
+            .debug_bounds("user-time-0")
+            .expect("the message time");
+        let bubble = window.debug_bounds("user-message-0").expect("user bubble");
+        assert!(
+            time.origin.y > bubble.origin.y,
+            "the time sits below the message, not in its header"
+        );
+        let copy = window
+            .debug_bounds("copy-user-0")
+            .expect("the copy control");
+        window.simulate_click(copy.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        let copied = window
+            .update(|_, cx| cx.read_from_clipboard())
+            .and_then(|item| match item.entries.into_iter().next() {
+                Some(gpui::ClipboardEntry::String(entry)) => Some(entry.text),
+                _ => None,
+            });
+        assert_eq!(
+            copied.as_deref(),
+            Some(text),
+            "the copy control writes the message text"
         );
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
