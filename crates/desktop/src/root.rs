@@ -884,9 +884,6 @@ pub(crate) struct DesktopRoot {
     queue_expanded: bool,
     /// Hide process rows and keep only the user's messages and final answers.
     answers_only: bool,
-    /// The live activity row's current clock key and start.
-    live_activity_key: Option<String>,
-    live_activity_started: chrono::DateTime<chrono::Utc>,
     live_activity_timer: Option<Task<()>>,
     recent_commands: Vec<CommandId>,
     sticky_tasks_collapsed: bool,
@@ -1388,8 +1385,6 @@ impl DesktopRoot {
             queue_cursor: 0,
             queue_expanded: false,
             answers_only: false,
-            live_activity_key: None,
-            live_activity_started: chrono::Utc::now(),
             live_activity_timer: None,
             recent_commands: Vec::new(),
             sticky_tasks_collapsed: true,
@@ -6172,7 +6167,8 @@ impl DesktopRoot {
         let elapsed = self
             .snapshot
             .runtime
-            .run_started_at
+            .turn_started_at
+            .or(self.snapshot.runtime.run_started_at)
             .map(format_elapsed)
             .unwrap_or_else(|| "0s".to_string());
         let turns = self.snapshot.runtime.turns_taken;
@@ -8696,10 +8692,9 @@ impl DesktopRoot {
         }));
     }
 
-    /// The tool being run (or the phase when no tool is active) and its clock.
-    fn live_activity(&mut self) -> Option<(String, String)> {
+    /// The tool being run (or the phase when no tool is active) and the turn clock.
+    fn live_activity(&self) -> Option<(String, String)> {
         if !self.live_activity_visible() {
-            self.live_activity_key = None;
             return None;
         }
         let tool = self
@@ -8708,14 +8703,6 @@ impl DesktopRoot {
             .latest_tool_detail
             .clone()
             .filter(|tool| matches!(tool.status, RowStatus::Running | RowStatus::Pending));
-        let key = match &tool {
-            Some(tool) => format!("tool:{}", tool.tool_id),
-            None => "run".to_string(),
-        };
-        if self.live_activity_key.as_deref() != Some(key.as_str()) {
-            self.live_activity_key = Some(key);
-            self.live_activity_started = chrono::Utc::now();
-        }
         let label = match &tool {
             Some(tool) => truncate_display_text(&tool.label, 60),
             None => match self.snapshot.runtime.current_phase {
@@ -8725,10 +8712,13 @@ impl DesktopRoot {
                 _ => self.text(TextKey::Running).to_string(),
             },
         };
-        let elapsed = match (&tool, self.snapshot.runtime.run_started_at) {
-            (None, Some(started)) => format_elapsed(started),
-            _ => format_elapsed(self.live_activity_started),
-        };
+        let elapsed = self
+            .snapshot
+            .runtime
+            .turn_started_at
+            .or(self.snapshot.runtime.run_started_at)
+            .map(format_elapsed)
+            .unwrap_or_else(|| "0s".to_string());
         Some((label, elapsed))
     }
 
@@ -21486,6 +21476,8 @@ mod tests {
                 snapshot.session.phase = SessionPhase::Running;
                 snapshot.runtime.current_phase = tact_desktop_core::RunPhase::RunningTools;
                 snapshot.runtime.run_started_at =
+                    Some(chrono::Utc::now() - chrono::Duration::hours(1));
+                snapshot.runtime.turn_started_at =
                     Some(chrono::Utc::now() - chrono::Duration::seconds(12));
                 snapshot.runtime.latest_tool_detail = Some(LatestToolView {
                     tool_id: "call-live".into(),
@@ -21506,7 +21498,10 @@ mod tests {
         let activity = window.update(|_, cx| root.update(cx, |this, _| this.live_activity()));
         let (label, elapsed) = activity.expect("activity");
         assert_eq!(label, "Editing root.rs");
-        assert!(!elapsed.is_empty(), "the row carries a clock");
+        assert_eq!(
+            elapsed, "12s",
+            "the row counts the turn, not the whole session"
+        );
 
         window.update(|window, cx| {
             root.update(cx, |this, cx| {

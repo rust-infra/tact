@@ -117,6 +117,9 @@ pub struct LatestToolView {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeView {
     pub run_started_at: Option<DateTime<Utc>>,
+    /// When the current turn started; the UI's elapsed clock counts this, not
+    /// the whole session run.
+    pub turn_started_at: Option<DateTime<Utc>>,
     pub current_phase: RunPhase,
     /// Compatibility label for consumers that only need the rendered name.
     pub latest_tool: Option<Arc<str>>,
@@ -132,6 +135,7 @@ impl Default for RuntimeView {
     fn default() -> Self {
         Self {
             run_started_at: None,
+            turn_started_at: None,
             current_phase: RunPhase::Idle,
             latest_tool: None,
             latest_tool_detail: None,

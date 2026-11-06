@@ -462,6 +462,11 @@ impl DesktopState {
                 if self.runtime.run_started_at.is_none() {
                     self.runtime.run_started_at = Some(Utc::now());
                 }
+                if self.runtime.turn_started_at.is_none()
+                    || self.runtime.turns_taken != *turns_taken
+                {
+                    self.runtime.turn_started_at = Some(Utc::now());
+                }
                 let run_id = run_id
                     .clone()
                     .or_else(|| self.pending_run.take())
@@ -919,6 +924,34 @@ mod tests {
             run_id: "run-1".into(),
         });
         assert_eq!(state.runtime.current_phase, RunPhase::Complete);
+    }
+
+    #[test]
+    fn each_turn_gets_its_own_clock() {
+        let (mut state, _tmp) = state();
+        state.apply_agent_update(AgentUpdate::RunStarted {
+            run_id: "run-1".into(),
+        });
+        state.apply_agent_update(AgentUpdate::TurnStats {
+            run_id: Some("run-1".into()),
+            turns_taken: 1,
+            max_turns: None,
+        });
+        let first = state.runtime.turn_started_at.expect("first turn clock");
+        state.apply_agent_update(AgentUpdate::TurnStats {
+            run_id: Some("run-1".into()),
+            turns_taken: 2,
+            max_turns: None,
+        });
+        let second = state.runtime.turn_started_at.expect("second turn clock");
+        assert!(second >= first);
+        // A repeated TurnStats for the same turn keeps the clock.
+        state.apply_agent_update(AgentUpdate::TurnStats {
+            run_id: Some("run-1".into()),
+            turns_taken: 2,
+            max_turns: None,
+        });
+        assert_eq!(state.runtime.turn_started_at, Some(second));
     }
 
     #[test]

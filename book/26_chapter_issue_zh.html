@@ -22553,7 +22553,7 @@ phase；Chat 推断单测；回放测试断言 <code>EasyInputMessage.phase</cod
 覆盖 MessageFinished 写入、工具前文本推断、RunFinished 最终答案、历史按位置推断；
 桌面覆盖 Commentary 进入活动组、FinalAnswer 不进入。
 <code>cargo test -p tact_llm --all-features --lib</code> 331 通过，
-<code>-p tact_desktop_core</code> 184 通过，<code>-p tact-desktop</code> 250 通过，
+<code>-p tact_desktop_core</code> 185 通过，<code>-p tact-desktop</code> 250 通过，
 <code>-p tact</code> 1511 通过，<code>-p tui</code> 754 通过。</p>
 <p><strong>Pointers：</strong> <code>crates/agent_api/src/message.rs</code>、
 <code>crates/tact_llm/src/openai/responses/normalize.rs</code>、
@@ -22572,7 +22572,8 @@ gate），以及 Error。行列表不变，隐藏行渲染成零高度，滚动�
 定位都不受影响。</p>
 <p><strong>实时活动行：</strong> composer 上方新增一条状态 chip，显示当前正在运行的
 工具 label 和已用时间，例如 “edit_file bridge.rs · 12s”。没有运行中的工具时按
-阶段显示 Thinking / Running，并用 `run_started_at` 计时。可见期间每秒重绘一次，
+阶段显示 Thinking / Running。计时按本 turn 的 `turn_started_at` 走，缺失时退回
+`run_started_at`；顶部 RUN 的 ELAPSED 也用同一个 turn 时钟。可见期间每秒重绘一次，
 run 结束后行消失、定时任务被丢弃。</p>
 <p><strong>验证：</strong> <code>answers_only_keeps_pending_gates_and_errors</code>
 覆盖保留集合，<code>answers_only_hides_process_rows_and_keeps_the_answer</code>
