@@ -755,6 +755,7 @@
 <li class="toc-l2"><a href="#41-2026-11-06--desktop-%E8%BE%93%E5%85%A5%E5%99%A8%E6%A8%A1%E5%9E%8B%E9%80%89%E6%8B%A9%E5%99%A8%E5%9C%A8%E5%90%AF%E5%8A%A8%E5%90%8E%E7%A7%BB%E4%BD%8D" title="41. 2026-11-06 — Desktop：输入器模型选择器在启动后移位"><span class="toc-label">41. 2026-11-06 — Desktop：输入器模型选择器在启动后移位</span></a></li>
 <li class="toc-l2"><a href="#42-2026-11-06--desktop-%E6%80%9D%E8%80%83%E8%A1%8C%E5%9C%A8%E5%AE%9E%E6%97%B6%E8%BD%AC%E5%BD%95%E9%87%8C%E4%B8%A2%E5%A4%B1" title="42. 2026-11-06 — Desktop：思考行在实时转录里丢失"><span class="toc-label">42. 2026-11-06 — Desktop：思考行在实时转录里丢失</span></a></li>
 <li class="toc-l2"><a href="#43-2026-11-06--desktop-%E5%8C%BA%E5%88%86%E8%BF%87%E7%A8%8B%E5%8F%99%E8%BF%B0%E4%B8%8E%E6%9C%80%E7%BB%88%E7%AD%94%E6%A1%88" title="43. 2026-11-06 — Desktop：区分过程叙述与最终答案"><span class="toc-label">43. 2026-11-06 — Desktop：区分过程叙述与最终答案</span></a></li>
+<li class="toc-l2"><a href="#44-2026-11-06--desktop-%E5%8F%AA%E7%9C%8B%E7%AD%94%E6%A1%88%E4%B8%8E%E5%AE%9E%E6%97%B6%E6%B4%BB%E5%8A%A8%E8%A1%8C" title="44. 2026-11-06 — Desktop：只看答案与实时活动行"><span class="toc-label">44. 2026-11-06 — Desktop：只看答案与实时活动行</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -22560,6 +22561,27 @@ phase；Chat 推断单测；回放测试断言 <code>EasyInputMessage.phase</cod
 <code>crates/tact/src/runtime/event_adapter.rs</code>、
 <code>crates/desktop_core/src/transcript/reducer.rs</code>、
 <code>crates/desktop/src/root.rs</code>。</p>
+<h2 id="44-2026-11-06--desktop-只看答案与实时活动行">44. 2026-11-06 —
+Desktop：只看答案与实时活动行</h2>
+<p><strong>目标：</strong> 会话很长时只看最终答案；运行中的过程要有一条持续刷新的
+状态行，像 Claude Code 的 “Editing root.rs 7m 53s”。</p>
+<p><strong>只看答案：</strong> Chat 标签栏右侧新增 “Answers” / “只看答案” 开关。
+打开后隐藏 Thinking、工具组、Commentary 叙述、Plan、Diff、Notice 和 Hook 行，只保留
+用户消息、非 Commentary 的 assistant 文本、待处理或提交中的 gate（包括工具组里的
+gate），以及 Error。行列表不变，隐藏行渲染成零高度，滚动位置和 gate 的 Review
+定位都不受影响。</p>
+<p><strong>实时活动行：</strong> composer 上方新增一条状态 chip，显示当前正在运行的
+工具 label 和已用时间，例如 “edit_file bridge.rs · 12s”。没有运行中的工具时按
+阶段显示 Thinking / Running，并用 `run_started_at` 计时。可见期间每秒重绘一次，
+run 结束后行消失、定时任务被丢弃。</p>
+<p><strong>验证：</strong> <code>answers_only_keeps_pending_gates_and_errors</code>
+覆盖保留集合，<code>answers_only_hides_process_rows_and_keeps_the_answer</code>
+点击开关后断言过程行消失、用户消息和最终答案仍在，
+<code>the_composer_shows_the_live_activity_row</code> 断言运行中出现、结束后消失，
+并校验 label 与时钟。<code>cargo test -p tact-desktop --lib</code> 253 通过，视觉
+捕获 <code>26a-transcript-top.png</code> 同时显示 Answers 开关和活动行。</p>
+<p><strong>Pointers：</strong> <code>crates/desktop/src/root.rs</code>、
+<code>crates/desktop/src/i18n.rs</code>。</p>
 <h2 id="related-docs">Related Docs</h2>
 <ul>
 <li><a href="./07_chapter_tool_zh.html">工具系统</a></li>

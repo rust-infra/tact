@@ -441,6 +441,7 @@ struct TranscriptScrollerView {
     tail_following: bool,
     new_activity: bool,
     wheel_enabled: bool,
+    answers_only: bool,
     process_roles: Arc<Vec<ProcessRowRole>>,
     process_groups: Arc<Vec<ProcessGroup>>,
     expanded_process_groups: HashSet<RowId>,
@@ -488,6 +489,7 @@ impl TranscriptScrollerView {
             tail_following,
             new_activity: false,
             wheel_enabled: true,
+            answers_only: false,
             process_roles: Arc::new(Vec::new()),
             process_groups: Arc::new(Vec::new()),
             expanded_process_groups: HashSet::new(),
@@ -504,6 +506,7 @@ impl TranscriptScrollerView {
         snapshot: &DesktopSnapshot,
         new_activity: bool,
         wheel_enabled: bool,
+        answers_only: bool,
         cx: &mut Context<Self>,
     ) -> bool {
         let language = snapshot.language;
@@ -538,11 +541,13 @@ impl TranscriptScrollerView {
             || self.language != language
             || self.tail_following != tail_following
             || self.new_activity != new_activity
-            || self.wheel_enabled != wheel_enabled;
+            || self.wheel_enabled != wheel_enabled
+            || self.answers_only != answers_only;
         self.language = language;
         self.tail_following = tail_following;
         self.new_activity = new_activity;
         self.wheel_enabled = wheel_enabled;
+        self.answers_only = answers_only;
         if !wheel_enabled {
             self.pending_scroll.set(0.);
         }
@@ -701,6 +706,7 @@ fn process_summary_element(
 impl Render for TranscriptScrollerView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let rows = self.rows.clone();
+        let answers_only = self.answers_only;
         let process_roles = self.process_roles.clone();
         let process_groups = self.process_groups.clone();
         let expanded_process_groups = self.expanded_process_groups.clone();
@@ -709,6 +715,13 @@ impl Render for TranscriptScrollerView {
         let list_state = self.scroller.read(cx).list_state.clone();
         let item_count = list_state.item_count();
         let list = list(list_state.clone(), move |index, _, cx| {
+            if answers_only
+                && rows
+                    .get(index)
+                    .is_some_and(|view| !answers_only_visible(&view.read(cx).row.body))
+            {
+                return div().into_any_element();
+            }
             let role = process_roles
                 .get(index)
                 .copied()
@@ -869,6 +882,12 @@ pub(crate) struct DesktopRoot {
     platform_prompts: std::sync::atomic::AtomicUsize,
     queue_cursor: usize,
     queue_expanded: bool,
+    /// Hide process rows and keep only the user's messages and final answers.
+    answers_only: bool,
+    /// The live activity row's current clock key and start.
+    live_activity_key: Option<String>,
+    live_activity_started: chrono::DateTime<chrono::Utc>,
+    live_activity_timer: Option<Task<()>>,
     recent_commands: Vec<CommandId>,
     sticky_tasks_collapsed: bool,
     /// First row the expanded strip paints. The strip shows at most
@@ -1368,6 +1387,10 @@ impl DesktopRoot {
             platform_prompts: std::sync::atomic::AtomicUsize::new(0),
             queue_cursor: 0,
             queue_expanded: false,
+            answers_only: false,
+            live_activity_key: None,
+            live_activity_started: chrono::Utc::now(),
+            live_activity_timer: None,
             recent_commands: Vec::new(),
             sticky_tasks_collapsed: true,
             sticky_tasks_scroll: 0,
@@ -5266,6 +5289,40 @@ impl DesktopRoot {
                         this.select_run_tab(tab, cx);
                     }))
             }))
+            .when(self.run_tab == RunTab::Chat, |strip| {
+                strip.child(div().flex_1()).child(
+                    div()
+                        .id("run-tab-answers-only")
+                        .debug_selector(|| "run-tab-answers-only".into())
+                        .role(Role::Button)
+                        .aria_label(self.text(TextKey::AnswersOnly))
+                        .aria_selected(self.answers_only)
+                        .focusable()
+                        .tab_stop(true)
+                        .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
+                        .cursor_pointer()
+                        .mr(px(8.))
+                        .px(px(8.))
+                        .py(px(3.))
+                        .rounded(px(5.))
+                        .text_size(px(11.))
+                        .when(self.answers_only, |button| {
+                            button
+                                .bg(cx.theme().muted)
+                                .text_color(cx.theme().foreground)
+                        })
+                        .when(!self.answers_only, |button| {
+                            button
+                                .text_color(cx.theme().muted_foreground)
+                                .hover(|style| style.text_color(cx.theme().foreground))
+                        })
+                        .child(self.text(TextKey::AnswersOnly))
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.answers_only = !this.answers_only;
+                            cx.notify();
+                        })),
+                )
+            })
             .into_any_element()
     }
 
@@ -6086,6 +6143,7 @@ impl DesktopRoot {
                 &snapshot,
                 new_activity,
                 wheel_enabled,
+                self.answers_only,
                 cx,
             )
         });
@@ -8605,7 +8663,78 @@ impl DesktopRoot {
             .into_any_element()
     }
 
+    /// Whether the composer should show the live activity row.
+    fn live_activity_visible(&self) -> bool {
+        matches!(
+            self.snapshot.session.phase,
+            SessionPhase::Running | SessionPhase::Starting | SessionPhase::Opening
+        )
+    }
+
+    /// Keeps a one-second repaint running while the activity row is visible.
+    fn tick_live_activity(&mut self, cx: &mut Context<Self>) {
+        if !self.live_activity_visible() {
+            self.live_activity_timer = None;
+            return;
+        }
+        if self.live_activity_timer.is_some() {
+            return;
+        }
+        self.live_activity_timer = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let keep = this
+                    .update(cx, |this, cx| {
+                        cx.notify();
+                        this.live_activity_visible()
+                    })
+                    .unwrap_or(false);
+                if !keep {
+                    break;
+                }
+            }
+        }));
+    }
+
+    /// The tool being run (or the phase when no tool is active) and its clock.
+    fn live_activity(&mut self) -> Option<(String, String)> {
+        if !self.live_activity_visible() {
+            self.live_activity_key = None;
+            return None;
+        }
+        let tool = self
+            .snapshot
+            .runtime
+            .latest_tool_detail
+            .clone()
+            .filter(|tool| matches!(tool.status, RowStatus::Running | RowStatus::Pending));
+        let key = match &tool {
+            Some(tool) => format!("tool:{}", tool.tool_id),
+            None => "run".to_string(),
+        };
+        if self.live_activity_key.as_deref() != Some(key.as_str()) {
+            self.live_activity_key = Some(key);
+            self.live_activity_started = chrono::Utc::now();
+        }
+        let label = match &tool {
+            Some(tool) => truncate_display_text(&tool.label, 60),
+            None => match self.snapshot.runtime.current_phase {
+                tact_desktop_core::RunPhase::Thinking => {
+                    format!("{}…", self.text(TextKey::Thinking))
+                }
+                _ => self.text(TextKey::Running).to_string(),
+            },
+        };
+        let elapsed = match (&tool, self.snapshot.runtime.run_started_at) {
+            (None, Some(started)) => format_elapsed(started),
+            _ => format_elapsed(self.live_activity_started),
+        };
+        Some((label, elapsed))
+    }
+
     fn render_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        self.tick_live_activity(cx);
+        let live_activity = self.live_activity();
         let labels = prompt_bar_labels(self.snapshot.language);
         self.prompt.update(cx, |prompt, cx| {
             prompt.set_labels(labels, window, cx);
@@ -8693,6 +8822,42 @@ impl DesktopRoot {
             .gap_2()
             .px(px(22.))
             .pb(px(18.))
+            .when_some(live_activity, |area, (label, elapsed)| {
+                area.child(
+                    h_flex().w_full().justify_start().child(
+                        h_flex()
+                            .id("composer-live-activity")
+                            .debug_selector(|| "composer-live-activity".into())
+                            .role(Role::Status)
+                            .aria_label(format!("{label} · {elapsed}"))
+                            .items_center()
+                            .gap(px(8.))
+                            .px(px(10.))
+                            .py(px(5.))
+                            .rounded_full()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().popover)
+                            .child(Orbs::new().diameter(px(14.)))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_xs()
+                                    .text_color(cx.theme().foreground)
+                                    .child(label),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .font_family("Lilex")
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(elapsed),
+                            ),
+                    ),
+                )
+            })
             .when(self.voice.listening || self.voice.transcribing, |area| {
                 area.child(self.render_voice_status(cx))
             })
@@ -15872,6 +16037,24 @@ fn row_starts_at_message_column(body: &RowBody) -> bool {
     !matches!(body, RowBody::User(_) | RowBody::Assistant(_))
 }
 
+/// Rows the answers-only view keeps: the user's words, assistant text that is
+/// not narration, decisions still waiting, and errors.
+fn answers_only_visible(body: &RowBody) -> bool {
+    match body {
+        RowBody::User(_) | RowBody::Error(_) => true,
+        RowBody::Assistant(assistant) => assistant.phase != Some(MessagePhase::Commentary),
+        RowBody::Gate(gate) => matches!(gate.status, GateState::Pending | GateState::Submitting),
+        RowBody::ToolGroup(group) => group.items.iter().any(|item| {
+            matches!(
+                item,
+                ToolGroupItem::Gate(gate)
+                    if matches!(gate.status, GateState::Pending | GateState::Submitting)
+            )
+        }),
+        _ => false,
+    }
+}
+
 fn is_process_row(body: &RowBody) -> bool {
     match body {
         RowBody::Thinking(_) | RowBody::ToolGroup(_) => true,
@@ -20921,6 +21104,31 @@ mod tests {
         assert!(!process_row_foldable(&assistant(None)));
     }
 
+    #[test]
+    fn answers_only_keeps_pending_gates_and_errors() {
+        use tact_desktop_core::{ToolGroupItem, ToolGroupRow, transcript::ErrorRow};
+        let gate = tact_desktop_core::fixtures::demo_gate();
+        assert!(answers_only_visible(&RowBody::Gate(gate.clone())));
+        let loop_id = tact_desktop_core::fixtures::demo_transcript()
+            .iter()
+            .find_map(|row| match &row.body {
+                RowBody::ToolGroup(group) => Some(group.loop_id),
+                _ => None,
+            })
+            .expect("demo tool group");
+        assert!(answers_only_visible(&RowBody::ToolGroup(ToolGroupRow {
+            loop_id,
+            items: Arc::from([ToolGroupItem::Gate(gate)]),
+            summary: Arc::from("permission"),
+            collapsed: false,
+            collapse_override: None,
+        })));
+        assert!(answers_only_visible(&RowBody::Error(ErrorRow {
+            message: Arc::from("boom"),
+            retryable: false,
+        })));
+    }
+
     #[gpui::test]
     fn hidden_tool_plans_do_not_split_the_activity_group(cx: &mut TestAppContext) {
         use tact_desktop_core::{
@@ -21143,6 +21351,174 @@ mod tests {
             roles[3],
             ProcessRowRole::Normal,
             "the final answer stays outside the group"
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn answers_only_hides_process_rows_and_keeps_the_answer(cx: &mut TestAppContext) {
+        use tact_desktop_core::{
+            ToolBody, ToolGroupItem, ToolGroupRow, ToolMetaView, ToolOutputView, ToolRow,
+            transcript::{AssistantRow, ThinkingRow, UserRow},
+        };
+
+        fn row(id: u64, body: RowBody) -> Arc<TranscriptRow> {
+            Arc::new(TranscriptRow {
+                id: RowId::new(id),
+                ordinal: id,
+                loop_id: None,
+                time: None,
+                body,
+            })
+        }
+
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(1400.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let loop_id = tact_desktop_core::fixtures::demo_transcript()
+                    .iter()
+                    .find_map(|row| match &row.body {
+                        RowBody::ToolGroup(group) => Some(group.loop_id),
+                        _ => None,
+                    })
+                    .expect("demo tool group");
+                let rows = vec![
+                    row(
+                        0,
+                        RowBody::User(UserRow {
+                            text: Arc::from("question"),
+                            attachments: Arc::from([]),
+                        }),
+                    ),
+                    row(
+                        1,
+                        RowBody::Thinking(ThinkingRow {
+                            markdown: Arc::from("plan"),
+                            status: RowStatus::Success,
+                            duration_ms: None,
+                        }),
+                    ),
+                    row(
+                        2,
+                        RowBody::ToolGroup(ToolGroupRow {
+                            loop_id,
+                            items: Arc::from([ToolGroupItem::Tool(ToolRow {
+                                id: RowId::new(12),
+                                tool_id: Arc::from("tool-1"),
+                                name: Arc::from("bash"),
+                                arg_summary: Arc::from("echo hi"),
+                                arg_full: None,
+                                status: RowStatus::Success,
+                                body: ToolBody::None,
+                                output: ToolOutputView::default(),
+                                meta: ToolMetaView::default(),
+                                subagent: None,
+                                expanded: false,
+                                keep_live: false,
+                                destructive: false,
+                                duration_ms: None,
+                            })]),
+                            summary: Arc::from("bash"),
+                            collapsed: true,
+                            collapse_override: None,
+                        }),
+                    ),
+                    row(
+                        3,
+                        RowBody::Assistant(AssistantRow {
+                            markdown: Arc::from("checking"),
+                            status: RowStatus::Success,
+                            suggestions: Arc::from([]),
+                            phase: Some(MessagePhase::Commentary),
+                        }),
+                    ),
+                    row(
+                        4,
+                        RowBody::Assistant(AssistantRow {
+                            markdown: Arc::from("answer"),
+                            status: RowStatus::Success,
+                            suggestions: Arc::from([]),
+                            phase: Some(MessagePhase::FinalAnswer),
+                        }),
+                    ),
+                ];
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = TranscriptView::from_rows(rows);
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        let toggle = window
+            .debug_bounds("run-tab-answers-only")
+            .expect("answers-only toggle");
+        window.simulate_click(toggle.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+
+        assert!(
+            window.debug_bounds("transcript-row-user-0").is_some(),
+            "the user's question stays"
+        );
+        assert!(
+            window.debug_bounds("transcript-row-assistant-4").is_some(),
+            "the final answer stays"
+        );
+        assert!(
+            window.debug_bounds("transcript-row-thinking-1").is_none()
+                && window.debug_bounds("transcript-row-tool-group-2").is_none()
+                && window.debug_bounds("transcript-row-assistant-3").is_none(),
+            "process rows are hidden"
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn the_composer_shows_the_live_activity_row(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.session.phase = SessionPhase::Running;
+                snapshot.runtime.current_phase = tact_desktop_core::RunPhase::RunningTools;
+                snapshot.runtime.run_started_at =
+                    Some(chrono::Utc::now() - chrono::Duration::seconds(12));
+                snapshot.runtime.latest_tool_detail = Some(LatestToolView {
+                    tool_id: "call-live".into(),
+                    group: None,
+                    row: None,
+                    label: "Editing root.rs".into(),
+                    duration_ms: None,
+                    status: RowStatus::Running,
+                });
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+        assert!(
+            window.debug_bounds("composer-live-activity").is_some(),
+            "a running tool shows the live activity row"
+        );
+        let activity = window.update(|_, cx| root.update(cx, |this, _| this.live_activity()));
+        let (label, elapsed) = activity.expect("activity");
+        assert_eq!(label, "Editing root.rs");
+        assert!(!elapsed.is_empty(), "the row carries a clock");
+
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.session.phase = SessionPhase::Ready;
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+        assert!(
+            window.debug_bounds("composer-live-activity").is_none(),
+            "the row disappears when the run settles"
         );
 
         shutdown.shutdown_blocking().unwrap();
