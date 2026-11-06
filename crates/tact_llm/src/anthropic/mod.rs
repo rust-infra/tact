@@ -467,6 +467,7 @@ impl LlmClient for AnthropicAdapter {
 
         Ok(LlmResponse {
             blocks: response_blocks,
+            phase: None,
             stop_reason,
             usage: token_usage,
             request_body: Some(json_body),
@@ -522,6 +523,7 @@ impl LlmClient for AnthropicAdapter {
 
         Ok(LlmResponse {
             blocks: payload.content,
+            phase: None,
             stop_reason: parse_stop_reason(payload.stop_reason),
             usage: token_usage,
             request_body: Some(json_body),

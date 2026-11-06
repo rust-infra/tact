@@ -27,7 +27,7 @@ pub use event::{AgentEvent, AgentNotice, EventDelivery};
 pub use extension::{EventObserver, EventPort};
 pub use message::{
     AgentContentBlock, AgentImageSource, AgentMessage, AgentRole, MessageId, MessageOrigin,
-    ToolResultStatus,
+    MessagePhase, ToolResultStatus,
 };
 pub use model::{
     MessageDelta, ModelCallKind, ModelCallOptions, ModelCapabilities, ModelCapabilitiesError,

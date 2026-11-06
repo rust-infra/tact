@@ -270,6 +270,7 @@ impl LlmClient for MockClient {
         }
         Ok(LlmResponse {
             blocks,
+            phase: None,
             stop_reason,
             usage,
             request_body: None,
@@ -285,6 +286,7 @@ impl LlmClient for MockClient {
         let (blocks, stop_reason, usage) = self.next_turn(request)?;
         Ok(LlmResponse {
             blocks,
+            phase: None,
             stop_reason,
             usage,
             request_body: None,
@@ -304,6 +306,7 @@ impl LlmClient for MockClient {
         let (blocks, stop_reason, usage) = self.next_turn(request)?;
         Ok(LlmResponse {
             blocks,
+            phase: None,
             stop_reason,
             usage,
             request_body: None,

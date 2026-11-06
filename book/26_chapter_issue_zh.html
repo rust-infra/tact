@@ -22523,6 +22523,43 @@ lane 先塞满，再发 Started 与一个 terminal 更新。修复前只收到
 <code>cargo test -p tact --lib</code> 1511 通过。</p>
 <p><strong>Pointers：</strong> <code>crates/tact/src/runtime/event_adapter.rs</code>、
 <code>crates/protocol/src/events.rs</code>。</p>
+<h2 id="43-2026-11-06--desktop-区分过程叙述与最终答案">43. 2026-11-06 —
+Desktop：区分过程叙述与最终答案</h2>
+<p><strong>目标：</strong> 同一轮里的 assistant 文本要能区分“过程叙述”和“最终答案”，最终
+答案才能独立渲染，过程叙述可以并进活动组折叠。</p>
+<p><strong>协议依据：</strong> OpenAI Responses 的 assistant message 带
+<code>phase</code>，枚举为 <code>commentary</code> / <code>final_answer</code>；官方
+schema 还要求回放时保留并重发 phase。Codex 在协议层用 <code>MessagePhase</code>
+（Commentary / PartialAnswer / FinalAnswer）承载它，缺失时回退到按位置推断。
+Anthropic Messages 和 Chat Completions 没有这个字段。</p>
+<p><strong>改后行为：</strong> <code>agent_api</code> 新增
+<code>MessagePhase</code> 与 <code>AgentMessage.phase</code>（serde default，旧数据
+为 None）。Responses 适配器从 <code>OutputMessage.phase</code> 读取，并在回放的
+<code>EasyInputMessage</code> 上原样带回；Chat 适配器在响应结束时推断，带
+tool_calls 的 text 记为 Commentary，纯文本记为 FinalAnswer。内核的
+<code>MessageFinished</code> 把 phase 作为 <code>AgentUpdate::MessageFinished</code>
+发给 UI，桌面 reducer 写入 <code>AssistantRow.phase</code>。phase 为空时 reducer
+按位置兜底：文本后紧跟工具组记为 Commentary，本轮结束的最后一条文本记为
+FinalAnswer。桌面活动组现在把 Commentary 文本并入 thinking 和工具一起折叠，
+FinalAnswer 与用户消息保持独立。</p>
+<p><strong>已知限制：</strong> Tact 的 phase 是 message 级，一个
+<code>LlmResponse</code> 对应一条 <code>AgentMessage</code>。server-side tool
+（如 native web_search）如果在同一个 response 里产出多条 message item，phase
+会被合并成最后一条标签。Chat 的推断在“没有最终回答就停住”时可能把最后一句叙述
+当成答案；需要 PartialAnswer 时再扩展枚举。</p>
+<p><strong>验证：</strong> Responses fixture 断言 final_answer 与 commentary 两种
+phase；Chat 推断单测；回放测试断言 <code>EasyInputMessage.phase</code>；reducer
+覆盖 MessageFinished 写入、工具前文本推断、RunFinished 最终答案、历史按位置推断；
+桌面覆盖 Commentary 进入活动组、FinalAnswer 不进入。
+<code>cargo test -p tact_llm --all-features --lib</code> 331 通过，
+<code>-p tact_desktop_core</code> 184 通过，<code>-p tact-desktop</code> 250 通过，
+<code>-p tact</code> 1511 通过，<code>-p tui</code> 754 通过。</p>
+<p><strong>Pointers：</strong> <code>crates/agent_api/src/message.rs</code>、
+<code>crates/tact_llm/src/openai/responses/normalize.rs</code>、
+<code>crates/tact_llm/src/openai/compatible/mod.rs</code>、
+<code>crates/tact/src/runtime/event_adapter.rs</code>、
+<code>crates/desktop_core/src/transcript/reducer.rs</code>、
+<code>crates/desktop/src/root.rs</code>。</p>
 <h2 id="related-docs">Related Docs</h2>
 <ul>
 <li><a href="./07_chapter_tool_zh.html">工具系统</a></li>

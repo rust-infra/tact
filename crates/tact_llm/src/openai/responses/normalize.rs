@@ -7,12 +7,16 @@ use crate::provider_state::{
 };
 use crate::{ContentBlock, Message, Role, StopReason, TokenUsageInfo};
 use async_openai_responses::types::responses::{
-    OutputItem, OutputMessageContent, OutputStatus, Response, Status, SummaryPart,
+    MessagePhase as SdkMessagePhase, OutputItem, OutputMessageContent, OutputStatus, Response,
+    Status, SummaryPart,
 };
+use tact_agent_api::MessagePhase;
 
 #[derive(Debug)]
 pub(crate) struct NormalizedResponse {
     pub blocks: Vec<ContentBlock>,
+    /// Provider phase of the last assistant message item, when present.
+    pub phase: Option<MessagePhase>,
     pub stop_reason: Option<StopReason>,
     pub usage: Option<TokenUsageInfo>,
     /// Every terminal output item retained as JSON in output order, including
@@ -117,6 +121,7 @@ pub(crate) fn normalize_response(response: Response) -> Result<NormalizedRespons
         ));
     }
 
+    let mut response_phase = None;
     for output in &response.output {
         match output {
             OutputItem::Reasoning(reasoning) => {
@@ -145,6 +150,12 @@ pub(crate) fn normalize_response(response: Response) -> Result<NormalizedRespons
                 }
             }
             OutputItem::Message(message) => {
+                if let Some(phase) = message.phase {
+                    response_phase = Some(match phase {
+                        SdkMessagePhase::Commentary => MessagePhase::Commentary,
+                        SdkMessagePhase::FinalAnswer => MessagePhase::FinalAnswer,
+                    });
+                }
                 for content in &message.content {
                     match content {
                         OutputMessageContent::OutputText(output) => {
@@ -214,6 +225,7 @@ pub(crate) fn normalize_response(response: Response) -> Result<NormalizedRespons
 
     Ok(NormalizedResponse {
         blocks,
+        phase: response_phase,
         stop_reason,
         usage,
         output_items,

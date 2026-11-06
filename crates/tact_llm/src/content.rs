@@ -6,6 +6,7 @@
 //! the Anthropic adapter can deserialize events without the upstream SDK.
 
 use serde::{Deserialize, Serialize};
+use tact_agent_api::MessagePhase;
 
 /// Role of a message sender.
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +96,11 @@ pub struct Message {
     pub role: Role,
     #[serde(flatten)]
     pub content: MessageContent,
+    /// Provider label for an assistant message, when known.
+    ///
+    /// `None` for user/tool messages and for providers that do not emit one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<MessagePhase>,
     /// In-memory cell marker; never serialized (see [`MessageKind`]).
     #[serde(skip)]
     pub kind: MessageKind,
@@ -107,6 +113,7 @@ impl Message {
             content: MessageContent::Text {
                 content: text.into(),
             },
+            phase: None,
             kind: MessageKind::Normal,
         }
     }
@@ -115,8 +122,15 @@ impl Message {
         Self {
             role,
             content: MessageContent::Blocks { content: blocks },
+            phase: None,
             kind: MessageKind::Normal,
         }
+    }
+
+    /// Attaches the provider's phase label (builder style).
+    pub fn with_phase(mut self, phase: Option<MessagePhase>) -> Self {
+        self.phase = phase;
+        self
     }
 
     /// Marks this cell with a [`MessageKind`] (builder style).

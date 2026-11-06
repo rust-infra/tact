@@ -3,7 +3,7 @@ use std::{
     sync::Arc,
 };
 
-use tact_agent_api::{AgentContentBlock, AgentMessage, AgentRole, MessageOrigin};
+use tact_agent_api::{AgentContentBlock, AgentMessage, AgentRole, MessageOrigin, MessagePhase};
 use tact_protocol::{
     AgentUpdate, StepStatus, ThinkingChunk, ToolOutputChunk, ToolVisualKind, UiResponse,
 };
@@ -426,6 +426,7 @@ impl TranscriptReducer {
                         self.last_finished_rows.push(row);
                         delta.changed(row);
                     }
+                    self.settle_final_answer(&mut delta);
                 }
                 if self.pending_run.as_deref() == Some(run_id.as_str()) {
                     self.pending_run = None;
@@ -475,6 +476,14 @@ impl TranscriptReducer {
             }
             AgentUpdate::MessageStarted { message_id } => {
                 self.begin_assistant_message(&message_id, &mut delta);
+            }
+            AgentUpdate::MessageFinished { message_id, phase } => {
+                if let Some(phase) = phase
+                    && let Some(row) = self.assistant_messages.get(&message_id).copied()
+                {
+                    self.update_assistant(row, |assistant| assistant.phase = Some(phase));
+                    delta.changed(row);
+                }
             }
             AgentUpdate::UiResponseRejected { request_id } => {
                 let id = RequestId(request_id);
@@ -569,6 +578,7 @@ impl TranscriptReducer {
                 presentation,
                 ..
             } => {
+                self.mark_active_assistant_commentary(&mut delta);
                 if self.set_plan_step(idx, RowStatus::Pending)
                     && let Some(plan) = self.active_plan
                 {
@@ -602,6 +612,7 @@ impl TranscriptReducer {
                 presentation,
                 ..
             } => {
+                self.mark_active_assistant_commentary(&mut delta);
                 if self.set_plan_step(idx, RowStatus::Running)
                     && let Some(plan) = self.active_plan
                 {
@@ -915,6 +926,7 @@ impl TranscriptReducer {
                     });
                     delta.changed(row);
                 }
+                self.settle_final_answer(&mut delta);
                 self.pending_run = None;
                 self.active_run = None;
                 self.active_loop = None;
@@ -969,6 +981,7 @@ impl TranscriptReducer {
                     });
                     delta.changed(row);
                 }
+                self.settle_final_answer(&mut delta);
                 if let Some(row) = self.active_thinking.take() {
                     self.update_thinking(row, |thinking| {
                         thinking.status = RowStatus::Success;
@@ -1292,6 +1305,7 @@ impl TranscriptReducer {
                                 markdown: Arc::from(text),
                                 status: RowStatus::Success,
                                 suggestions: Arc::from([]),
+                                phase: message.phase,
                             }),
                             None,
                         );
@@ -1360,6 +1374,8 @@ impl TranscriptReducer {
             self.settle_group(group, true);
             delta.changed(group);
         }
+        // Legacy history carries no provider phase; label it by turn position.
+        self.infer_phases_from_position(&mut delta);
         delta
     }
 
@@ -1379,6 +1395,7 @@ impl TranscriptReducer {
                 markdown: Arc::from(""),
                 status: RowStatus::Running,
                 suggestions: Arc::from([]),
+                phase: None,
             }),
         );
         if self.active_message_id.is_none() {
@@ -1531,6 +1548,7 @@ impl TranscriptReducer {
                         markdown: Arc::from(text),
                         status: RowStatus::Success,
                         suggestions: Arc::from([]),
+                        phase: None,
                     })
                 }
                 SubagentTranscriptEntry::Thinking { text, duration_us } => {
@@ -1636,6 +1654,7 @@ impl TranscriptReducer {
                         markdown: Arc::from(text),
                         status: RowStatus::Running,
                         suggestions: Arc::from([]),
+                        phase: None,
                     }),
                 }));
             }
@@ -1997,6 +2016,85 @@ impl TranscriptReducer {
                 update(assistant);
                 self.rows.set(index, Arc::new(next));
             }
+        }
+    }
+
+    /// A tool call followed, so the open assistant text was narration.
+    fn mark_active_assistant_commentary(&mut self, delta: &mut RowDelta) {
+        let Some(row) = self.active_assistant else {
+            return;
+        };
+        let unlabeled = self
+            .rows
+            .iter()
+            .find(|candidate| candidate.id == row)
+            .is_some_and(|candidate| match &candidate.body {
+                RowBody::Assistant(assistant) => {
+                    assistant.phase.is_none() && !assistant.markdown.trim().is_empty()
+                }
+                _ => false,
+            });
+        if unlabeled {
+            self.update_assistant(row, |assistant| {
+                assistant.phase = Some(MessagePhase::Commentary);
+            });
+            delta.changed(row);
+        }
+    }
+
+    /// The run ended, so the last unlabeled assistant text is the answer.
+    fn settle_final_answer(&mut self, delta: &mut RowDelta) {
+        let last = self.rows.iter().rev().find_map(|row| match &row.body {
+            RowBody::User(_) => Some(None),
+            RowBody::Assistant(assistant) if !assistant.markdown.trim().is_empty() => {
+                Some((assistant.phase.is_none()).then_some(row.id))
+            }
+            _ => None,
+        });
+        if let Some(Some(row)) = last {
+            self.update_assistant(row, |assistant| {
+                assistant.phase = Some(MessagePhase::FinalAnswer);
+            });
+            delta.changed(row);
+        }
+    }
+
+    /// Labels assistant text by turn position for history without a provider phase.
+    ///
+    /// Text followed by a tool group is narration; the last text before a user
+    /// turn, or at the end, is that turn's answer.
+    fn infer_phases_from_position(&mut self, delta: &mut RowDelta) {
+        let mut updates: Vec<(RowId, MessagePhase)> = Vec::new();
+        let mut pending: Option<RowId> = None;
+        for row in self.rows.iter() {
+            match &row.body {
+                RowBody::Assistant(assistant) if !assistant.markdown.trim().is_empty() => {
+                    if let Some(previous) = pending.take() {
+                        updates.push((previous, MessagePhase::Commentary));
+                    }
+                    if assistant.phase.is_none() {
+                        pending = Some(row.id);
+                    }
+                }
+                RowBody::ToolGroup(_) => {
+                    if let Some(row) = pending.take() {
+                        updates.push((row, MessagePhase::Commentary));
+                    }
+                }
+                RowBody::User(_) => {
+                    if let Some(row) = pending.take() {
+                        updates.push((row, MessagePhase::FinalAnswer));
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(row) = pending {
+            updates.push((row, MessagePhase::FinalAnswer));
+        }
+        for (row, phase) in updates {
+            self.update_assistant(row, |assistant| assistant.phase = Some(phase));
+            delta.changed(row);
         }
     }
 
@@ -2365,6 +2463,131 @@ mod tests {
             arg_full: "README.md".into(),
             presentation: ToolPresentationInfo::generic("read_file"),
         }
+    }
+
+    fn assistant_phases(reducer: &TranscriptReducer) -> Vec<Option<MessagePhase>> {
+        reducer
+            .rows
+            .iter()
+            .filter_map(|row| match &row.body {
+                RowBody::Assistant(assistant) => Some(assistant.phase),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn message_finished_labels_the_assistant_text() {
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-1");
+        turn(&mut reducer);
+        reducer.apply_agent_update(
+            AgentUpdate::MessageStarted {
+                message_id: "m1".into(),
+            },
+            &context(1),
+        );
+        reducer.apply_agent_update(AgentUpdate::StreamChunk("answer".into()), &context(1));
+        reducer.apply_agent_update(
+            AgentUpdate::MessageFinished {
+                message_id: "m1".into(),
+                phase: Some(MessagePhase::FinalAnswer),
+            },
+            &context(1),
+        );
+        assert_eq!(
+            assistant_phases(&reducer),
+            [Some(MessagePhase::FinalAnswer)],
+            "the provider phase lands on the assistant row"
+        );
+    }
+
+    #[test]
+    fn text_before_a_tool_is_commentary_without_a_phase() {
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-1");
+        turn(&mut reducer);
+        reducer.apply_agent_update(
+            AgentUpdate::MessageStarted {
+                message_id: "m1".into(),
+            },
+            &context(1),
+        );
+        reducer.apply_agent_update(AgentUpdate::StreamChunk("checking".into()), &context(1));
+        reducer.apply_agent_update(step_started("tool-1"), &context(1));
+        assert_eq!(
+            assistant_phases(&reducer),
+            [Some(MessagePhase::Commentary)],
+            "text followed by a tool call was narration"
+        );
+    }
+
+    #[test]
+    fn finishing_the_run_labels_the_last_text_as_the_answer() {
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-1");
+        turn(&mut reducer);
+        reducer.apply_agent_update(
+            AgentUpdate::MessageStarted {
+                message_id: "m1".into(),
+            },
+            &context(1),
+        );
+        reducer.apply_agent_update(AgentUpdate::StreamChunk("done".into()), &context(1));
+        reducer.apply_agent_update(
+            AgentUpdate::RunFinished {
+                run_id: "run-1".into(),
+            },
+            &context(1),
+        );
+        assert_eq!(
+            assistant_phases(&reducer),
+            [Some(MessagePhase::FinalAnswer)],
+            "the last text of the run is the answer"
+        );
+    }
+
+    #[test]
+    fn persisted_history_without_phase_is_labelled_by_position() {
+        let mut reducer = TranscriptReducer::new();
+        reducer.seed_persisted(
+            &[
+                AgentMessage::new(
+                    AgentRole::User,
+                    MessageOrigin::User,
+                    vec![AgentContentBlock::Text { text: "go".into() }],
+                ),
+                AgentMessage::new(
+                    AgentRole::Assistant,
+                    MessageOrigin::Assistant,
+                    vec![
+                        AgentContentBlock::Text {
+                            text: "checking".into(),
+                        },
+                        AgentContentBlock::ToolUse {
+                            id: "tool-1".into(),
+                            name: "read_file".into(),
+                            input: json!({"path": "README.md"}),
+                        },
+                    ],
+                ),
+                AgentMessage::new(
+                    AgentRole::Assistant,
+                    MessageOrigin::Assistant,
+                    vec![AgentContentBlock::Text {
+                        text: "done".into(),
+                    }],
+                ),
+            ],
+            &context(1),
+        );
+        assert_eq!(
+            assistant_phases(&reducer),
+            [
+                Some(MessagePhase::Commentary),
+                Some(MessagePhase::FinalAnswer)
+            ]
+        );
     }
 
     fn step_finished(tool_id: &str) -> AgentUpdate {

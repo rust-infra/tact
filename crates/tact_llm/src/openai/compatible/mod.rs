@@ -41,6 +41,7 @@ pub use multi_model::ChatCompletionsAdapter;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap};
 use secrecy::{ExposeSecret, Secret};
 use serde::{Deserialize, Serialize};
+use tact_agent_api::MessagePhase;
 
 /// Build UI events for one OpenAI-compatible stream delta.
 ///
@@ -275,6 +276,27 @@ struct StreamUsage {
 #[derive(Debug, Deserialize)]
 struct StreamCompletionTokensDetails {
     reasoning_tokens: Option<u32>,
+}
+
+/// Chat Completions has no phase field, so infer it from one response.
+///
+/// Text that sits beside a tool call is narration for that call; text alone is
+/// this response's answer. A tool-only response has no text to label.
+fn inferred_phase(blocks: &[ContentBlock]) -> Option<MessagePhase> {
+    if !blocks
+        .iter()
+        .any(|block| matches!(block, ContentBlock::Text { .. }))
+    {
+        return None;
+    }
+    if blocks
+        .iter()
+        .any(|block| matches!(block, ContentBlock::ToolUse { .. }))
+    {
+        Some(MessagePhase::Commentary)
+    } else {
+        Some(MessagePhase::FinalAnswer)
+    }
 }
 
 fn tool_use_block_from_parts(
@@ -633,6 +655,7 @@ impl OpenAiAdapter {
         }
 
         Ok(LlmResponse {
+            phase: inferred_phase(&response_blocks),
             blocks: response_blocks,
             stop_reason,
             usage: token_usage,
@@ -771,6 +794,7 @@ impl OpenAiAdapter {
         });
 
         Ok(LlmResponse {
+            phase: inferred_phase(&blocks),
             blocks,
             stop_reason,
             usage: token_usage,
@@ -783,6 +807,24 @@ impl OpenAiAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inferred_phase_labels_text_beside_a_tool_as_commentary() {
+        let text = ContentBlock::Text {
+            text: "let me check".into(),
+        };
+        let tool = ContentBlock::ToolUse {
+            id: "call_1".into(),
+            name: "read_file".into(),
+            input: serde_json::json!({}),
+        };
+        assert_eq!(
+            inferred_phase(&[text.clone(), tool.clone()]),
+            Some(MessagePhase::Commentary)
+        );
+        assert_eq!(inferred_phase(&[text]), Some(MessagePhase::FinalAnswer));
+        assert_eq!(inferred_phase(&[tool]), None);
+    }
 
     #[test]
     fn tool_use_block_from_parts_skips_empty_slots() {

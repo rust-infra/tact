@@ -614,6 +614,7 @@ impl OpenAiResponsesAdapter {
     ) -> LlmResponse {
         LlmResponse {
             blocks: normalized.blocks,
+            phase: normalized.phase,
             stop_reason: normalized.stop_reason,
             usage: normalized.usage,
             request_body: Some(request_body),
@@ -858,6 +859,7 @@ impl LlmClient for OpenAiResponsesAdapter {
         };
         Ok(LlmResponse {
             blocks: Vec::new(),
+            phase: None,
             stop_reason: None,
             // Preserve the token accounting reported by the compaction pass
             // so the native compact call is observable like any other LLM

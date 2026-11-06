@@ -102,6 +102,19 @@ pub enum AgentContentBlock {
     },
 }
 
+/// Where an assistant message sits in its turn.
+///
+/// Providers that label messages (OpenAI Responses `phase`) set this. Providers
+/// that do not leave it `None`, and consumers fall back to turn position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessagePhase {
+    /// Mid-turn narration; more output or tool calls may follow.
+    Commentary,
+    /// The assistant's terminal answer for the turn.
+    FinalAnswer,
+}
+
 /// Logical transcript message. `origin` is persistence metadata and never
 /// changes the provider-neutral role used for model conversion.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,6 +122,10 @@ pub struct AgentMessage {
     pub role: AgentRole,
     pub origin: MessageOrigin,
     pub content: Vec<AgentContentBlock>,
+    /// Optional provider label for assistant text; `None` for user/tool rows,
+    /// for providers without a phase, and for legacy persisted rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<MessagePhase>,
 }
 
 impl AgentMessage {
@@ -117,7 +134,14 @@ impl AgentMessage {
             role,
             origin,
             content,
+            phase: None,
         }
+    }
+
+    /// Attach the provider's phase label, leaving the message unchanged for `None`.
+    pub fn with_phase(mut self, phase: Option<MessagePhase>) -> Self {
+        self.phase = phase;
+        self
     }
 
     pub fn text(role: AgentRole, origin: MessageOrigin, text: impl Into<String>) -> Self {

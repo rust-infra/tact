@@ -46,6 +46,7 @@ pub use snapshot::{
 pub use state::DesktopState;
 pub use tact::store::ArchiveFilter;
 pub use tact::voice::{VoiceCommand, VoiceEvent};
+pub use tact_agent_api::MessagePhase;
 pub use tact_catalog::{CatalogLocale, CommandCatalog, CommandId, LocalizedText};
 pub use tact_protocol::{
     BackgroundTaskStatusSnapshot, GoalCriterionStatusSnapshot, GoalPhaseSnapshot,

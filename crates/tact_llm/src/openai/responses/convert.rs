@@ -2,10 +2,11 @@ use async_openai_responses::types::responses::{
     ContextManagementParam, ContextManagementParamType, CreateResponseArgs, EasyInputContent,
     EasyInputMessage, FunctionCallOutput, FunctionCallOutputItemParam, FunctionTool,
     FunctionToolCall, IncludeEnum, InputContent, InputImageContent, InputItem, InputParam,
-    InputTextContent, Item, MessageType, OutputStatus, Reasoning, ReasoningSummary,
-    Role as ResponsesRole, Tool as ResponsesTool, ToolChoiceFunction, ToolChoiceOptions,
-    ToolChoiceParam, WebSearchTool,
+    InputTextContent, Item, MessagePhase as SdkMessagePhase, MessageType, OutputStatus, Reasoning,
+    ReasoningSummary, Role as ResponsesRole, Tool as ResponsesTool, ToolChoiceFunction,
+    ToolChoiceOptions, ToolChoiceParam, WebSearchTool,
 };
+use tact_agent_api::MessagePhase;
 
 use super::{history, wire};
 use crate::error::LlmError;
@@ -19,20 +20,33 @@ fn responses_role(role: Role) -> ResponsesRole {
     }
 }
 
-fn message_item(role: Role, content: EasyInputContent) -> InputItem {
+fn sdk_phase(phase: Option<MessagePhase>) -> Option<SdkMessagePhase> {
+    phase.map(|phase| match phase {
+        MessagePhase::Commentary => SdkMessagePhase::Commentary,
+        MessagePhase::FinalAnswer => SdkMessagePhase::FinalAnswer,
+    })
+}
+
+fn message_item(role: Role, content: EasyInputContent, phase: Option<MessagePhase>) -> InputItem {
     InputItem::EasyMessage(EasyInputMessage {
         r#type: MessageType::Message,
         role: responses_role(role),
         content,
-        phase: None,
+        phase: sdk_phase(phase),
     })
 }
 
-fn flush_message_content(role: Role, content: &mut Vec<InputContent>, input: &mut Vec<InputItem>) {
+fn flush_message_content(
+    role: Role,
+    phase: Option<MessagePhase>,
+    content: &mut Vec<InputContent>,
+    input: &mut Vec<InputItem>,
+) {
     if !content.is_empty() {
         input.push(message_item(
             role,
             EasyInputContent::ContentList(std::mem::take(content)),
+            phase,
         ));
     }
 }
@@ -77,11 +91,17 @@ fn message_to_input(
     message: &Message,
     policy: ResponsesRequestPolicy,
 ) -> Result<Vec<InputItem>, LlmError> {
-    let Message { role, content, .. } = message;
+    let Message {
+        role,
+        content,
+        phase,
+        ..
+    } = message;
     if let MessageContent::Text { content } = content {
         return Ok(vec![message_item(
             *role,
             EasyInputContent::Text(content.clone()),
+            *phase,
         )]);
     }
 
@@ -115,7 +135,7 @@ fn message_to_input(
                 }));
             }
             ContentBlock::Thinking { signature, .. } => {
-                flush_message_content(*role, &mut message_content, &mut input);
+                flush_message_content(*role, *phase, &mut message_content, &mut input);
                 // The reasoning signature is always decoded above so
                 // `function_call_item_ids` stay attached to their function
                 // calls. Whether the reasoning item itself is replayed is a
@@ -133,7 +153,7 @@ fn message_to_input(
                 name,
                 input: args,
             } => {
-                flush_message_content(*role, &mut message_content, &mut input);
+                flush_message_content(*role, *phase, &mut message_content, &mut input);
                 let arguments = serde_json::to_string(args).map_err(|error| {
                     LlmError::Unsupported(format!("serialize arguments for tool '{name}': {error}"))
                 })?;
@@ -152,7 +172,7 @@ fn message_to_input(
                 tool_use_id,
                 content,
             } => {
-                flush_message_content(*role, &mut message_content, &mut input);
+                flush_message_content(*role, *phase, &mut message_content, &mut input);
                 input.push(InputItem::Item(Item::FunctionCallOutput(
                     FunctionCallOutputItemParam {
                         call_id: Some(tool_use_id.clone()),
@@ -167,7 +187,7 @@ fn message_to_input(
             }
         }
     }
-    flush_message_content(*role, &mut message_content, &mut input);
+    flush_message_content(*role, *phase, &mut message_content, &mut input);
     Ok(input)
 }
 
@@ -479,6 +499,24 @@ mod tests {
     /// Appending a message after the baseline leaves it reusable — which is how
     /// injected `SessionStart` context arrives (one synthetic user message on
     /// the tail). Only a change *inside* the covered prefix is stale.
+    #[test]
+    fn an_assistant_phase_is_replayed_on_the_message_item() {
+        let message = Message::new_blocks(
+            Role::Assistant,
+            vec![ContentBlock::Text {
+                text: "done".into(),
+            }],
+        )
+        .with_phase(Some(tact_agent_api::MessagePhase::FinalAnswer));
+        let item = message_to_input(&message, ResponsesRequestPolicy::default())
+            .unwrap()
+            .remove(0);
+        let async_openai_responses::types::responses::InputItem::EasyMessage(message) = item else {
+            panic!("expected an easy message");
+        };
+        assert_eq!(message.phase, Some(super::SdkMessagePhase::FinalAnswer));
+    }
+
     #[test]
     fn a_message_appended_after_the_baseline_keeps_it_reusable() {
         let mut request = request_with_history();

@@ -31,10 +31,10 @@ use tact_catalog::{
 use tact_desktop_core::{
     Appearance, ArchiveFilter, CommandAvailability, CommandForm, DesktopController, DesktopEffect,
     DesktopEvent, DesktopIntent, DesktopSnapshot, DesktopTheme, ExtensionsTab, GateCard, GateKind,
-    GateResponse, GateSelection, GateState, InspectorTab, PermissionModeView, ProjectId, ReaderRef,
-    RowBody, RowId, RowStatus, SectionMask, SessionId, SessionPhase, SettingValue, Submission,
-    SurfaceSnapshot, ToolGroupItem, ToolRow, TrajectoryRecordId, TrajectoryView, TranscriptRow,
-    TranscriptView, is_enabled,
+    GateResponse, GateSelection, GateState, InspectorTab, MessagePhase, PermissionModeView,
+    ProjectId, ReaderRef, RowBody, RowId, RowStatus, SectionMask, SessionId, SessionPhase,
+    SettingValue, Submission, SurfaceSnapshot, ToolGroupItem, ToolRow, TrajectoryRecordId,
+    TrajectoryView, TranscriptRow, TranscriptView, is_enabled,
 };
 use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr as _};
 
@@ -15873,7 +15873,11 @@ fn row_starts_at_message_column(body: &RowBody) -> bool {
 }
 
 fn is_process_row(body: &RowBody) -> bool {
-    matches!(body, RowBody::Thinking(_) | RowBody::ToolGroup(_))
+    match body {
+        RowBody::Thinking(_) | RowBody::ToolGroup(_) => true,
+        RowBody::Assistant(assistant) => assistant.phase == Some(MessagePhase::Commentary),
+        _ => false,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -15922,6 +15926,7 @@ fn process_tool_kind(name: &str) -> ProcessToolKind {
 fn process_row_foldable(body: &RowBody) -> bool {
     match body {
         RowBody::Thinking(_) => true,
+        RowBody::Assistant(assistant) => assistant.phase == Some(MessagePhase::Commentary),
         RowBody::ToolGroup(group) => !group.items.iter().any(|item| {
             matches!(
                 item,
@@ -15984,6 +15989,8 @@ fn build_process_layout(
                         }
                     }
                 }
+                // Narration is part of the same process region and adds no count.
+                RowBody::Assistant(_) => {}
                 _ => break,
             }
             index += 1;
@@ -20893,6 +20900,27 @@ mod tests {
         );
     }
 
+    #[test]
+    fn commentary_assistant_text_joins_the_process_group() {
+        use tact_desktop_core::transcript::AssistantRow;
+        let assistant = |phase| {
+            RowBody::Assistant(AssistantRow {
+                markdown: Arc::from("note"),
+                status: RowStatus::Success,
+                suggestions: Arc::from([]),
+                phase,
+            })
+        };
+        assert!(process_row_foldable(&assistant(Some(
+            MessagePhase::Commentary
+        ))));
+        assert!(is_process_row(&assistant(Some(MessagePhase::Commentary))));
+        assert!(!process_row_foldable(&assistant(Some(
+            MessagePhase::FinalAnswer
+        ))));
+        assert!(!process_row_foldable(&assistant(None)));
+    }
+
     #[gpui::test]
     fn hidden_tool_plans_do_not_split_the_activity_group(cx: &mut TestAppContext) {
         use tact_desktop_core::{
@@ -20986,6 +21014,7 @@ mod tests {
                             markdown: Arc::from("answer"),
                             status: RowStatus::Success,
                             suggestions: Arc::from(Vec::<Arc<str>>::new()),
+                            phase: None,
                         }),
                     ),
                 ];
@@ -21010,6 +21039,111 @@ mod tests {
         );
         assert_eq!(groups[0].thoughts, 2);
         assert_eq!(groups[0].commands, 2);
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn commentary_text_joins_the_activity_group_but_the_answer_stays_out(cx: &mut TestAppContext) {
+        use tact_desktop_core::{
+            ToolBody, ToolGroupItem, ToolGroupRow, ToolMetaView, ToolOutputView, ToolRow,
+            transcript::{AssistantRow, ThinkingRow},
+        };
+
+        fn row(id: u64, body: RowBody) -> Arc<TranscriptRow> {
+            Arc::new(TranscriptRow {
+                id: RowId::new(id),
+                ordinal: id,
+                loop_id: None,
+                time: None,
+                body,
+            })
+        }
+
+        fn assistant(text: &str, phase: MessagePhase) -> RowBody {
+            RowBody::Assistant(AssistantRow {
+                markdown: Arc::from(text),
+                status: RowStatus::Success,
+                suggestions: Arc::from([]),
+                phase: Some(phase),
+            })
+        }
+
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let loop_id = tact_desktop_core::fixtures::demo_transcript()
+                    .iter()
+                    .find_map(|row| match &row.body {
+                        RowBody::ToolGroup(group) => Some(group.loop_id),
+                        _ => None,
+                    })
+                    .expect("demo tool group");
+                let rows = vec![
+                    row(
+                        0,
+                        RowBody::Thinking(ThinkingRow {
+                            markdown: Arc::from("plan"),
+                            status: RowStatus::Success,
+                            duration_ms: None,
+                        }),
+                    ),
+                    row(1, assistant("checking the store", MessagePhase::Commentary)),
+                    row(
+                        2,
+                        RowBody::ToolGroup(ToolGroupRow {
+                            loop_id,
+                            items: Arc::from([ToolGroupItem::Tool(ToolRow {
+                                id: RowId::new(12),
+                                tool_id: Arc::from("tool-1"),
+                                name: Arc::from("bash"),
+                                arg_summary: Arc::from("echo hi"),
+                                arg_full: None,
+                                status: RowStatus::Success,
+                                body: ToolBody::None,
+                                output: ToolOutputView::default(),
+                                meta: ToolMetaView::default(),
+                                subagent: None,
+                                expanded: false,
+                                keep_live: false,
+                                destructive: false,
+                                duration_ms: None,
+                            })]),
+                            summary: Arc::from("bash"),
+                            collapsed: true,
+                            collapse_override: None,
+                        }),
+                    ),
+                    row(3, assistant("done", MessagePhase::FinalAnswer)),
+                ];
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = TranscriptView::from_rows(rows);
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        let (groups, roles) = window.update(|_, cx| {
+            let scroller = root.read(cx).transcript_scroller.read(cx);
+            (
+                scroller.process_groups.clone(),
+                scroller.process_roles.clone(),
+            )
+        });
+        assert_eq!(groups.len(), 1, "commentary must stay in one process group");
+        assert_eq!(groups[0].thoughts, 1);
+        assert_eq!(groups[0].commands, 1);
+        assert_eq!(
+            roles[1],
+            ProcessRowRole::Hidden(0),
+            "the narration row is part of the group"
+        );
+        assert_eq!(
+            roles[3],
+            ProcessRowRole::Normal,
+            "the final answer stays outside the group"
+        );
 
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);

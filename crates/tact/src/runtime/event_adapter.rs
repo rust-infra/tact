@@ -189,7 +189,20 @@ impl TactEventBridge {
                     message_id: message_id.to_string(),
                 });
             }
-            AgentEvent::MessageFinished { .. } => {}
+            AgentEvent::MessageFinished {
+                message_id,
+                message,
+            } => {
+                // Metadata-only: emit it when the provider labelled the text.
+                // Without a phase there is nothing for the consumer to apply,
+                // and the baseline's frozen update order stays untouched.
+                if let Some(phase) = message.phase {
+                    self.events.send(AgentUpdate::MessageFinished {
+                        message_id: message_id.to_string(),
+                        phase: Some(phase),
+                    });
+                }
+            }
             AgentEvent::TurnStarted {
                 run_id,
                 turn,
