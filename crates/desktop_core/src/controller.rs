@@ -2269,11 +2269,7 @@ impl DesktopActor {
                 persist = true;
             }
             (SettingId::ThemeFamily, SettingValue::Choice(value)) => {
-                self.state.theme = if value == "claude" {
-                    DesktopTheme::Claude
-                } else {
-                    DesktopTheme::Tact
-                };
+                self.state.theme = DesktopTheme::from_value(value);
                 self.config.theme = self.state.theme;
                 persist = true;
             }

@@ -367,8 +367,15 @@ pub fn capture_all(out: &Path) -> Result<Vec<PathBuf>> {
     shoot(&mut harness, "02b-shell-claude-light")?;
     harness.set_appearance(Appearance::Dark);
     shoot(&mut harness, "02c-shell-claude-dark")?;
+
+    harness.set_theme(DesktopTheme::Cursor);
     harness.set_appearance(Appearance::Light);
+    shoot(&mut harness, "02d-shell-cursor-light")?;
+    harness.set_appearance(Appearance::Dark);
+    shoot(&mut harness, "02e-shell-cursor-dark")?;
+
     harness.set_theme(DesktopTheme::Tact);
+    harness.set_appearance(Appearance::Light);
 
     harness.with_root(|root, window, cx| root.capture_open_command_center(window, cx));
     shoot(&mut harness, "03-command-center")?;

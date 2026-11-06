@@ -12899,10 +12899,7 @@ fn setting_display_value(id: SettingId, snapshot: &DesktopSnapshot) -> String {
             Appearance::Light => "light".into(),
             Appearance::Dark => "dark".into(),
         },
-        SettingId::ThemeFamily => match snapshot.theme {
-            DesktopTheme::Tact => "Tact".into(),
-            DesktopTheme::Claude => "Claude".into(),
-        },
+        SettingId::ThemeFamily => snapshot.theme.label().into(),
         SettingId::Language => match snapshot.language {
             tact_catalog::CatalogLocale::En => "English".into(),
             tact_catalog::CatalogLocale::Zh => "中文".into(),
@@ -16695,10 +16692,10 @@ fn choice_values(id: CommandId, snapshot: &DesktopSnapshot) -> Vec<(String, Stri
                 (i18n::text(locale, TextKey::Light).into(), "light".into()),
                 (i18n::text(locale, TextKey::Dark).into(), "dark".into()),
             ],
-            tact_catalog::FixedChoiceSet::ThemeFamily => vec![
-                ("Tact".into(), "tact".into()),
-                ("Claude".into(), "claude".into()),
-            ],
+            tact_catalog::FixedChoiceSet::ThemeFamily => DesktopTheme::ALL
+                .iter()
+                .map(|theme| (theme.label().into(), theme.value().into()))
+                .collect(),
             tact_catalog::FixedChoiceSet::Language => vec![
                 (i18n::text(locale, TextKey::English).into(), "en".into()),
                 ("中文".into(), "zh".into()),
@@ -16756,10 +16753,10 @@ fn setting_choices(id: SettingId, locale: tact_catalog::CatalogLocale) -> Vec<(S
             (i18n::text(locale, TextKey::Light).into(), "light".into()),
             (i18n::text(locale, TextKey::Dark).into(), "dark".into()),
         ],
-        SettingId::ThemeFamily => vec![
-            ("Tact".into(), "tact".into()),
-            ("Claude".into(), "claude".into()),
-        ],
+        SettingId::ThemeFamily => DesktopTheme::ALL
+            .iter()
+            .map(|theme| (theme.label().to_string(), theme.value().to_string()))
+            .collect(),
         SettingId::Language => vec![
             (i18n::text(locale, TextKey::English).into(), "en".into()),
             ("中文".into(), "zh".into()),
@@ -17059,12 +17056,13 @@ mod tests {
     }
 
     #[test]
-    fn theme_family_setting_offers_both_desktop_families() {
+    fn theme_family_setting_offers_every_desktop_family() {
         assert_eq!(
             setting_choices(SettingId::ThemeFamily, tact_catalog::CatalogLocale::En),
             vec![
                 ("Tact".to_string(), "tact".to_string()),
                 ("Claude".to_string(), "claude".to_string()),
+                ("Cursor".to_string(), "cursor".to_string()),
             ]
         );
         assert!(matches!(
@@ -17076,10 +17074,10 @@ mod tests {
         let data_dir = probe_dir("theme-family-value");
         let config = DesktopConfig::load(data_dir.clone()).unwrap();
         let mut snapshot = DesktopSnapshot::empty(&config);
-        snapshot.theme = DesktopTheme::Claude;
+        snapshot.theme = DesktopTheme::Cursor;
         assert_eq!(
             setting_display_value(SettingId::ThemeFamily, &snapshot),
-            "Claude"
+            "Cursor"
         );
         let _ = std::fs::remove_dir_all(data_dir);
     }

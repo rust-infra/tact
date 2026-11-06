@@ -343,7 +343,7 @@ that guards each one.
 | Native menus and global shortcuts | Implemented: `cx.set_menus` File/View/Session menus; keymap matches the PRD interaction table | `keymap_matches_prd_interaction_table` |
 | OS notifications and dock/taskbar badges | Implemented: system notifications from `DesktopEffect::Notify`; the macOS Dock tile shows the pending-decision count and clears at zero; Windows draws a taskbar overlay icon on the process window and clears it | `badge_labels_clear_at_zero_and_bound_at_ninety_nine`; the full desktop crate type-checks with `cargo check -p tact-desktop --target x86_64-pc-windows-gnu` |
 | Voice recording and transcription controls | Implemented: `tact::voice` worker, composer microphone, status row and transcript insertion | `voice_transcript_lands_in_the_composer`; capture `26b` |
-| Separate desktop themes | Implemented: `DesktopTheme::{Tact, Claude}` is stored as `theme` in `desktop-settings.json`; the TUI's `[ui] theme` is never read by the desktop | `desktop_theme_survives_save_and_load`; `theme_family_setting_persists_without_touching_the_tui_theme`; captures `02b-shell-claude-light`, `02c-shell-claude-dark` |
+| Separate desktop themes | Implemented: `DesktopTheme::{Tact, Claude, Cursor}` is stored as `theme` in `desktop-settings.json`; the TUI's `[ui] theme` is never read by the desktop | `desktop_theme_survives_save_and_load`; `theme_family_setting_persists_without_touching_the_tui_theme`; captures `02b-shell-claude-light`, `02c-shell-claude-dark`, `02d-shell-cursor-light`, `02e-shell-cursor-dark` |
 
 ### Entry Parity Contract
 
@@ -523,10 +523,11 @@ The desktop uses a native platform visual language:
 - Long CJK prompt titles use a smaller display scale, tighter tracking, natural
   wrapping and a 1.12 line height instead of the Latin hero-title scale.
 
-Two theme families ship: **Tact** (the macOS design prototype) and **Claude**
-(warm cream, charcoal, orange accent). Each family has Light and Dark
-appearances and shares one token contract, so switching either the family or
-the appearance never changes component geometry.
+Three theme families ship: **Tact** (the macOS design prototype), **Claude**
+(warm cream, charcoal, orange accent) and **Cursor** (editor chrome, near-black
+dark surfaces, VS Code blue accent). Each family has Light and Dark appearances
+and shares one token contract, so switching either the family or the appearance
+never changes component geometry.
 
 ### Motion Policy
 

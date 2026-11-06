@@ -61,6 +61,8 @@ pub fn palette(theme: DesktopTheme, appearance: Appearance) -> Palette {
         (DesktopTheme::Tact, Appearance::Dark) => tact_dark(),
         (DesktopTheme::Claude, Appearance::Light) => claude_light(),
         (DesktopTheme::Claude, Appearance::Dark) => claude_dark(),
+        (DesktopTheme::Cursor, Appearance::Light) => cursor_light(),
+        (DesktopTheme::Cursor, Appearance::Dark) => cursor_dark(),
     }
 }
 
@@ -318,6 +320,98 @@ fn claude_dark() -> Palette {
     }
 }
 
+fn cursor_light() -> Palette {
+    Palette {
+        background: color(0xffffff),
+        foreground: color(0x1f1f1f),
+        border: color(0xe5e5e5),
+        input: alpha(0x1f1f1f, 0.08),
+        muted: color(0xf3f3f3),
+        muted_foreground: color(0x6b6b6b),
+        popover: color(0xffffff),
+        popover_foreground: color(0x1f1f1f),
+        accent: alpha(0x005fb8, 0.10),
+        accent_foreground: color(0x1f1f1f),
+        primary: color(0x005fb8),
+        primary_hover: color(0x0070d8),
+        primary_active: color(0x004e96),
+        primary_foreground: color(0xffffff),
+        secondary: color(0xf3f3f3),
+        secondary_hover: color(0xebebeb),
+        secondary_active: color(0xe0e0e0),
+        secondary_foreground: color(0x1f1f1f),
+        selection: alpha(0x005fb8, 0.14),
+        ring: alpha(0x005fb8, 0.45),
+        sidebar: color(0xf8f8f8),
+        sidebar_foreground: color(0x1f1f1f),
+        sidebar_border: color(0xe5e5e5),
+        sidebar_accent: alpha(0x005fb8, 0.10),
+        sidebar_accent_foreground: color(0x1f1f1f),
+        sidebar_primary: color(0x005fb8),
+        sidebar_primary_foreground: color(0xffffff),
+        title_bar: color(0xf8f8f8),
+        title_bar_border: color(0xe5e5e5),
+        link: color(0x005fb8),
+        link_hover: color(0x0070d8),
+        link_active: color(0x004e96),
+        success: color(0x2e7d32),
+        success_foreground: color(0xffffff),
+        warning: color(0xbf8803),
+        warning_foreground: color(0x1f1f1f),
+        danger: color(0xe51400),
+        danger_foreground: color(0xffffff),
+        caret: color(0x005fb8),
+        group_box: color(0xffffff),
+        group_box_foreground: color(0x1f1f1f),
+    }
+}
+
+fn cursor_dark() -> Palette {
+    Palette {
+        background: color(0x181818),
+        foreground: color(0xd4d4d4),
+        border: color(0x2b2b2b),
+        input: alpha(0xd4d4d4, 0.12),
+        muted: color(0x222222),
+        muted_foreground: color(0x9d9d9d),
+        popover: color(0x1f1f1f),
+        popover_foreground: color(0xd4d4d4),
+        accent: alpha(0x3794ff, 0.16),
+        accent_foreground: color(0xd4d4d4),
+        primary: color(0x0078d4),
+        primary_hover: color(0x1a8ad4),
+        primary_active: color(0x0062b1),
+        primary_foreground: color(0xffffff),
+        secondary: color(0x222222),
+        secondary_hover: color(0x2b2b2b),
+        secondary_active: color(0x303030),
+        secondary_foreground: color(0xd4d4d4),
+        selection: alpha(0x0078d4, 0.28),
+        ring: alpha(0x3794ff, 0.55),
+        sidebar: color(0x141414),
+        sidebar_foreground: color(0xd4d4d4),
+        sidebar_border: color(0x2b2b2b),
+        sidebar_accent: alpha(0x3794ff, 0.16),
+        sidebar_accent_foreground: color(0xffffff),
+        sidebar_primary: color(0x0078d4),
+        sidebar_primary_foreground: color(0xffffff),
+        title_bar: color(0x141414),
+        title_bar_border: color(0x2b2b2b),
+        link: color(0x3794ff),
+        link_hover: color(0x58a6ff),
+        link_active: color(0x4daafc),
+        success: color(0x89d185),
+        success_foreground: color(0x181818),
+        warning: color(0xcca700),
+        warning_foreground: color(0x181818),
+        danger: color(0xf14c4c),
+        danger_foreground: color(0x181818),
+        caret: color(0x3794ff),
+        group_box: color(0x1f1f1f),
+        group_box_foreground: color(0xd4d4d4),
+    }
+}
+
 fn color(hex: u32) -> Hsla {
     rgba(hex << 8 | 0xff).into()
 }
@@ -397,5 +491,18 @@ mod tests {
         let dark = palette(DesktopTheme::Claude, Appearance::Dark);
         assert_eq!(dark.background, color(0x262624));
         assert_eq!(dark.primary, color(0xd97757));
+    }
+
+    #[test]
+    fn cursor_palette_uses_the_editor_chrome_and_blue_accent() {
+        let light = palette(DesktopTheme::Cursor, Appearance::Light);
+        assert_eq!(light.background, color(0xffffff));
+        assert_eq!(light.sidebar, color(0xf8f8f8));
+        assert_eq!(light.primary, color(0x005fb8));
+
+        let dark = palette(DesktopTheme::Cursor, Appearance::Dark);
+        assert_eq!(dark.background, color(0x181818));
+        assert_eq!(dark.sidebar, color(0x141414));
+        assert_eq!(dark.primary, color(0x0078d4));
     }
 }

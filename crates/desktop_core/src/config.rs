@@ -28,6 +28,34 @@ pub enum DesktopTheme {
     #[default]
     Tact,
     Claude,
+    Cursor,
+}
+
+impl DesktopTheme {
+    pub const ALL: [Self; 3] = [Self::Tact, Self::Claude, Self::Cursor];
+
+    pub const fn value(self) -> &'static str {
+        match self {
+            Self::Tact => "tact",
+            Self::Claude => "claude",
+            Self::Cursor => "cursor",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Tact => "Tact",
+            Self::Claude => "Claude",
+            Self::Cursor => "Cursor",
+        }
+    }
+
+    pub fn from_value(value: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|theme| theme.value() == value)
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -354,6 +382,14 @@ mod tests {
         let config = DesktopConfig::load(app_data.path().to_path_buf()).unwrap();
         assert_eq!(config.theme, DesktopTheme::Tact);
         assert_eq!(config.appearance, Appearance::Dark);
+    }
+
+    #[test]
+    fn theme_values_round_trip_and_unknown_values_fall_back_to_tact() {
+        for theme in DesktopTheme::ALL {
+            assert_eq!(DesktopTheme::from_value(theme.value()), theme);
+        }
+        assert_eq!(DesktopTheme::from_value("unknown"), DesktopTheme::Tact);
     }
 
     #[test]
