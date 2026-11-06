@@ -112,7 +112,7 @@ let mut session = AgentBuilder::new(model)
     .build_session("chat-1")?;
 
 let outcome = session.run_text("hello").await?;
-let answer = session.last_assistant_message();
+let answer = session.last_final_message();
 ```
 
 ### Restored Session
@@ -287,6 +287,7 @@ impl AgentSession {
     pub fn state(&self) -> &AgentState;
     pub fn transcript(&self) -> &[AgentMessage];
     pub fn last_assistant_message(&self) -> Option<&AgentMessage>;
+    pub fn last_final_message(&self) -> Option<&AgentMessage>;
     pub fn control(&self) -> SessionControl;
 
     pub async fn run_text(
@@ -331,6 +332,13 @@ concurrently. This is the SDK-level serialization boundary.
 `last_assistant_message` returns the last transcript message whose role is
 `AgentRole::Assistant`. It is a read-only convenience for embedders that do not
 install an event observer.
+
+`last_final_message` is the answer accessor: it returns the last assistant
+message when the provider labelled it `final_answer` or left the phase empty
+(legacy history), and returns `None` when the turn's last text is explicitly
+`commentary`. Hooks use the same rule through `last_answer`, which falls back to
+`last_assistant_message` so a turn that stopped on commentary still reports its
+last text.
 
 ## State Initialization
 

@@ -2186,7 +2186,7 @@ fn apply_hook_sources(
                 let command = command.clone();
                 let dirs = dirs.clone();
                 let work_dir = work_dir.clone();
-                let task_description = agent.last_assistant_message().unwrap_or_default();
+                let task_description = agent.last_answer().unwrap_or_default();
                 Box::pin(async move {
                     // TaskCompleted has no matcher in Claude Code; an explicit
                     // matcher is ignored (matching everything) for parity.
@@ -2258,7 +2258,7 @@ fn apply_hook_sources(
                 let command = command.clone();
                 let dirs = dirs.clone();
                 let work_dir = work_dir.clone();
-                let last = agent.last_assistant_message();
+                let last = agent.last_answer();
                 Box::pin(async move {
                     // Stop has no matcher in Codex; an explicit matcher is
                     // ignored (matching everything) for parity.
