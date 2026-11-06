@@ -479,6 +479,16 @@ struct ProcessGroup {
     active: bool,
 }
 
+/// Per-frame inputs the root hands the transcript scroller. Bundled so the
+/// setter keeps one argument per concern as the shell grows.
+struct TranscriptViewState {
+    rows: Vec<Entity<TranscriptRowView>>,
+    new_activity: bool,
+    wheel_enabled: bool,
+    answers_only: bool,
+    live_label: Option<String>,
+}
+
 impl TranscriptScrollerView {
     fn new(
         scroller: Entity<TranscriptListState>,
@@ -512,15 +522,18 @@ impl TranscriptScrollerView {
 
     fn set_state(
         &mut self,
-        rows: Vec<Entity<TranscriptRowView>>,
+        state: TranscriptViewState,
         session_id: &SessionId,
         snapshot: &DesktopSnapshot,
-        new_activity: bool,
-        wheel_enabled: bool,
-        answers_only: bool,
-        live_label: Option<String>,
         cx: &mut Context<Self>,
     ) -> bool {
+        let TranscriptViewState {
+            rows,
+            new_activity,
+            wheel_enabled,
+            answers_only,
+            live_label,
+        } = state;
         let language = snapshot.language;
         let tail_following = snapshot.tail_following;
         let rows_changed = self.rows.len() != rows.len()
@@ -719,13 +732,13 @@ fn process_summary_label(
     elapsed: Option<&str>,
     language: tact_catalog::CatalogLocale,
 ) -> String {
-    if group.active {
-        if let Some(live) = live {
-            return match elapsed {
-                Some(elapsed) => format!("{live} · {elapsed}"),
-                None => live.to_string(),
-            };
-        }
+    if group.active
+        && let Some(live) = live
+    {
+        return match elapsed {
+            Some(elapsed) => format!("{live} · {elapsed}"),
+            None => live.to_string(),
+        };
     }
     let counts = process_summary_text(group, language);
     match elapsed {
@@ -6240,16 +6253,19 @@ impl DesktopRoot {
         );
         let new_activity = self.new_activity;
         let wheel_enabled = self.overlay.is_none();
+        let answers_only = self.answers_only;
         let live_label = self.live_activity_label();
         let scroller_changed = self.transcript_scroller.update(cx, |view, cx| {
             view.set_state(
-                row_views,
+                TranscriptViewState {
+                    rows: row_views,
+                    new_activity,
+                    wheel_enabled,
+                    answers_only,
+                    live_label,
+                },
                 &session_id,
                 &snapshot,
-                new_activity,
-                wheel_enabled,
-                self.answers_only,
-                live_label,
                 cx,
             )
         });
