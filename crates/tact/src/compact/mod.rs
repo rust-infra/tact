@@ -194,27 +194,63 @@ pub(crate) fn approx_text_tokens(text: &str) -> usize {
     ascii.div_ceil(4).saturating_add(non_ascii)
 }
 
-/// Estimates the token size of the serialized message list.
+/// Fixed budget for an image block.
 ///
-/// On serialization failure, returns a large sentinel so auto-compact prefers
-/// to run rather than underestimating and overflowing the provider.
-pub fn estimate_context_tokens(messages: &[Message]) -> usize {
-    match serde_json::to_string(messages) {
-        Ok(serialized) => approx_text_tokens(&serialized),
-        Err(error) => {
-            tracing::warn!(
-                %error,
-                message_count = messages.len(),
-                "failed to serialize context for token estimate; treating as oversized"
-            );
-            usize::MAX / 2
-        }
-    }
+/// Base64 length is an encoding size, not a token count: a 1280×1061
+/// screenshot arrives as ~125 KB of base64 but costs roughly 1.6k vision
+/// tokens. Counting the encoded payload as text inflated an image-heavy
+/// session to 151k estimated tokens while the provider reported only 33k,
+/// which falsely crossed the 80% auto-compaction threshold.
+pub(crate) const IMAGE_TOKEN_ESTIMATE: usize = 1_600;
+pub(crate) const MESSAGE_OVERHEAD_TOKENS: usize = 8;
+pub(crate) const BLOCK_OVERHEAD_TOKENS: usize = 4;
+
+fn approx_json_tokens(value: &serde_json::Value) -> usize {
+    serde_json::to_string(value)
+        .map(|serialized| approx_text_tokens(&serialized))
+        .unwrap_or(usize::MAX / 2)
 }
 
-/// Estimated tokens of a single serialized message.
+fn estimate_block_tokens(block: &ContentBlock) -> usize {
+    BLOCK_OVERHEAD_TOKENS.saturating_add(match block {
+        ContentBlock::Text { text } => approx_text_tokens(text),
+        ContentBlock::Image { .. } => IMAGE_TOKEN_ESTIMATE,
+        ContentBlock::ToolUse { id, name, input } => approx_text_tokens(id)
+            .saturating_add(approx_text_tokens(name))
+            .saturating_add(approx_json_tokens(input)),
+        ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+        } => approx_text_tokens(tool_use_id).saturating_add(approx_text_tokens(content)),
+        ContentBlock::Thinking {
+            thinking,
+            signature,
+        } => approx_text_tokens(thinking).saturating_add(approx_text_tokens(signature)),
+        ContentBlock::RedactedThinking { data } => approx_text_tokens(data),
+    })
+}
+
+/// Estimates the token size of the logical message list.
+///
+/// Structured payloads are counted field by field so image base64 is charged a
+/// vision budget instead of its encoded character length.
+pub fn estimate_context_tokens(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .map(estimate_message_tokens)
+        .fold(0usize, usize::saturating_add)
+}
+
+/// Estimated tokens of a single structured message.
 pub fn estimate_message_tokens(message: &Message) -> usize {
-    estimate_context_tokens(std::slice::from_ref(message))
+    let content = match &message.content {
+        MessageContent::Text { content } => approx_text_tokens(content),
+        MessageContent::Blocks { content } => content
+            .iter()
+            .map(estimate_block_tokens)
+            .fold(0usize, usize::saturating_add),
+    };
+    MESSAGE_OVERHEAD_TOKENS.saturating_add(content)
 }
 
 /// Token budget available for retained real-user messages after reserving
@@ -768,12 +804,12 @@ mod tests {
     use tact_llm::{ContentBlock, ImageSource, Message, MessageContent, MessageKind, Role};
 
     use super::{
-        HANDOFF_CLOSE_TAG, HANDOFF_OPEN_TAG, KEEP_USER_MESSAGE_TOKENS, MAX_COMPACT_ARTIFACTS,
-        OMITTED_IMAGE, PERSIST_THRESHOLD, SUBAGENT_ADVISORY_THRESHOLD_PERCENT, SUMMARY_PREFIX,
-        approx_text_tokens, build_compacted_history, collect_user_messages,
-        context_pressure_advisory, estimate_context_tokens, estimate_message_tokens,
-        is_real_user_message, is_summary_message, persist_large_output,
-        persist_large_output_over_tokens, recent_messages_for_summary,
+        BLOCK_OVERHEAD_TOKENS, HANDOFF_CLOSE_TAG, HANDOFF_OPEN_TAG, IMAGE_TOKEN_ESTIMATE,
+        KEEP_USER_MESSAGE_TOKENS, MAX_COMPACT_ARTIFACTS, MESSAGE_OVERHEAD_TOKENS, OMITTED_IMAGE,
+        PERSIST_THRESHOLD, SUBAGENT_ADVISORY_THRESHOLD_PERCENT, SUMMARY_PREFIX, approx_text_tokens,
+        build_compacted_history, collect_user_messages, context_pressure_advisory,
+        estimate_context_tokens, estimate_message_tokens, is_real_user_message, is_summary_message,
+        persist_large_output, persist_large_output_over_tokens, recent_messages_for_summary,
         retained_user_message_token_budget, should_auto_compact, subagent_advisory,
         summary_message, take_last_tokens, write_transcript,
     };
@@ -1262,11 +1298,31 @@ mod tests {
     }
 
     #[test]
-    fn estimate_message_tokens_counts_serialized_content() {
+    fn estimate_message_tokens_counts_structured_content() {
         let msg = Message::new_text(Role::User, "hi");
         let n = estimate_message_tokens(&msg);
         assert!(n > 0);
         assert_eq!(n, estimate_context_tokens(std::slice::from_ref(&msg)));
+    }
+
+    #[test]
+    fn image_base64_uses_a_vision_budget_not_text_length() {
+        let msg = Message::new_blocks(
+            Role::User,
+            vec![ContentBlock::Image {
+                source: ImageSource {
+                    type_: "base64".into(),
+                    media_type: "image/png".into(),
+                    data: "A".repeat(400_000),
+                },
+            }],
+        );
+        let estimated = estimate_message_tokens(&msg);
+        assert!(
+            estimated <= MESSAGE_OVERHEAD_TOKENS + BLOCK_OVERHEAD_TOKENS + IMAGE_TOKEN_ESTIMATE,
+            "an image's encoded payload must not be counted as text: {estimated} tokens"
+        );
+        assert!(!should_auto_compact(33_000, 200_000, estimated, 0, 8_000));
     }
 
     #[tokio::test]

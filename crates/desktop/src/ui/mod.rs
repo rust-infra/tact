@@ -16,6 +16,7 @@ pub mod composer;
 pub mod diff_review;
 pub mod diff_table;
 pub mod extensions;
+pub mod file_links;
 pub mod filter_table;
 pub mod goals;
 pub mod inspector;

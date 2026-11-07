@@ -39,6 +39,7 @@ serde_json = { workspace = true }
 tact_catalog = { version = "2.0.0", path = "../catalog" }
 tact_desktop_core = { version = "2.0.0", path = "../desktop_core" }
 unicode-width = { workspace = true }
+url = { workspace = true }
 gpui = { workspace = true }
 gpui_base = { workspace = true }
 gpui_component = { workspace = true }

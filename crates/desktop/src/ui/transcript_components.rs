@@ -3,12 +3,13 @@
 //! These are local, presentation-only replacements for the gpui-ai transcript
 //! components. The shell still owns the state and the expansion decisions.
 
-use std::{rc::Rc, time::Duration};
+use std::{path::PathBuf, rc::Rc, time::Duration};
 
 use gpui::{
     Animation, AnimationExt as _, AnyElement, App, ClickEvent, ElementId, InteractiveElement as _,
-    IntoElement, ParentElement, RenderOnce, Role, SharedString, StatefulInteractiveElement as _,
-    Styled, Window, div, prelude::FluentBuilder as _, px,
+    IntoElement, ObjectFit, ParentElement, RenderOnce, Role, SharedString,
+    StatefulInteractiveElement as _, Styled, StyledImage as _, Window, div, img,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, text::TextView, v_flex,
@@ -20,6 +21,9 @@ type EventHandler<E> = Rc<dyn Fn(&E, &mut Window, &mut App)>;
 
 /// Inline tool bodies are previews. The reader owns the full output.
 const TOOL_BODY_MAX_HEIGHT: f32 = 300.;
+/// Images need more room than text previews but should still stay bounded.
+const TOOL_BODY_MAX_HEIGHT_WITH_IMAGE: f32 = 420.;
+const TOOL_IMAGE_MAX_HEIGHT: f32 = 240.;
 
 /// The lifecycle of streamed content.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -393,6 +397,7 @@ pub struct ToolCall {
     summary: Option<SharedString>,
     input: Option<SharedString>,
     output: Option<SharedString>,
+    image: Option<PathBuf>,
     status: RowStatus,
     labels: ToolCallLabels,
     grouped: bool,
@@ -408,6 +413,7 @@ impl ToolCall {
             summary: None,
             input: None,
             output: None,
+            image: None,
             status: RowStatus::Pending,
             labels: ToolCallLabels::default(),
             grouped: false,
@@ -428,6 +434,11 @@ impl ToolCall {
 
     pub fn output(mut self, output: impl Into<SharedString>) -> Self {
         self.output = Some(output.into());
+        self
+    }
+
+    pub fn image_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.image = Some(path.into());
         self
     }
 
@@ -559,6 +570,7 @@ impl RenderOnce for ToolCall {
             .min_w_0()
             .child(header)
             .when(self.open, |column| {
+                let has_image = self.image.is_some();
                 let mut body = v_flex()
                     .debug_selector({
                         let id = self.id.clone();
@@ -566,7 +578,11 @@ impl RenderOnce for ToolCall {
                     })
                     .w_full()
                     .min_w_0()
-                    .max_h(px(TOOL_BODY_MAX_HEIGHT))
+                    .max_h(px(if has_image {
+                        TOOL_BODY_MAX_HEIGHT_WITH_IMAGE
+                    } else {
+                        TOOL_BODY_MAX_HEIGHT
+                    }))
                     .overflow_hidden()
                     .gap_1()
                     .px_2()
@@ -614,6 +630,28 @@ impl RenderOnce for ToolCall {
                                     output.to_string(),
                                 )
                                 .selectable(true),
+                            ),
+                    );
+                }
+                if let Some(image) = self.image {
+                    body = body.child(
+                        div()
+                            .debug_selector({
+                                let id = self.id.clone();
+                                move || format!("tool-call-image-{id}")
+                            })
+                            .w_full()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .rounded(px(6.))
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().muted.opacity(0.35))
+                            .child(
+                                img(image)
+                                    .w_full()
+                                    .max_h(px(TOOL_IMAGE_MAX_HEIGHT))
+                                    .object_fit(ObjectFit::Contain),
                             ),
                     );
                 }
@@ -833,6 +871,23 @@ mod tests {
         }
     }
 
+    struct ImageToolProbe;
+
+    impl Render for ImageToolProbe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let icon =
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/app-icon.png");
+            div().w(px(800.)).child(
+                ToolCall::new("image-tool", "read_image")
+                    .output(
+                        "`/home/rg/Work/charts/crop_bottom.png` · image/jpeg · 1280x354 px · 39578 bytes",
+                    )
+                    .image_path(icon)
+                    .open(true),
+            )
+        }
+    }
+
     #[gpui::test]
     fn one_tool_group_hides_the_redundant_count(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
@@ -862,6 +917,26 @@ mod tests {
             body.size.height <= px(TOOL_BODY_MAX_HEIGHT),
             "tool body {:?} must stay a preview",
             body.size.height
+        );
+    }
+
+    #[gpui::test]
+    fn read_image_keeps_metadata_and_renders_an_inline_preview(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (_probe, window) = cx.add_window_view(|_, _| ImageToolProbe);
+        window.simulate_resize(size(px(800.), px(900.)));
+        window.update(|window, cx| window.draw(cx).clear(cx));
+
+        assert!(
+            window.debug_bounds("tool-call-output-image-tool").is_some(),
+            "read_image metadata must stay visible"
+        );
+        let image = window
+            .debug_bounds("tool-call-image-image-tool")
+            .expect("read_image preview");
+        assert!(
+            image.size.height <= px(TOOL_IMAGE_MAX_HEIGHT + 2.),
+            "the preview must stay bounded: {image:?}"
         );
     }
 

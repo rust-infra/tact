@@ -1,6 +1,6 @@
 //! Local prompt composer built on `gpui-component`'s textarea.
 
-use std::rc::Rc;
+use std::{path::PathBuf, rc::Rc};
 
 use gpui::{
     Anchor, AnyElement, App, AppContext as _, ClickEvent, Context, ElementId, Entity, EventEmitter,
@@ -15,7 +15,7 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::ui::leaf::AttachmentItem;
+use crate::ui::leaf::{AttachmentItem, is_image_path};
 use crate::ui::row_scroll::RowScroll;
 use crate::ui::surface;
 
@@ -23,6 +23,33 @@ const MODEL_MENU_ROW_HEIGHT: f32 = 27.5;
 const MODEL_MENU_VISIBLE_ROWS: usize = 8;
 const SUGGESTION_ROW_HEIGHT: f32 = 27.5;
 const SUGGESTION_VISIBLE_ROWS: usize = 8;
+
+fn clipboard_image_path(cx: &App) -> Option<PathBuf> {
+    let item = cx.read_from_clipboard()?;
+    let mut image = None;
+    for entry in item.entries {
+        match entry {
+            gpui::ClipboardEntry::ExternalPaths(paths) => {
+                if let Some(path) = paths.0.into_iter().find(|path| is_image_path(path)) {
+                    return Some(path);
+                }
+            }
+            gpui::ClipboardEntry::Image(data) => image = Some(data),
+            gpui::ClipboardEntry::String(_) => {}
+        }
+    }
+    let image = image?;
+    let directory = std::env::temp_dir().join("tact-clipboard");
+    std::fs::create_dir_all(&directory).ok()?;
+    let path = directory.join(format!(
+        "clipboard-{}-{}.{}",
+        std::process::id(),
+        image.id,
+        image.format.extension()
+    ));
+    std::fs::write(&path, &image.bytes).ok()?;
+    Some(path)
+}
 
 /// The composer's running/ready lifecycle.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -236,6 +263,10 @@ pub enum PromptBarEvent {
         id: SharedString,
         attachment_id: SharedString,
     },
+    ImagePasted {
+        id: SharedString,
+        path: PathBuf,
+    },
     EnhanceRequested {
         id: SharedString,
         draft: SharedString,
@@ -268,6 +299,7 @@ pub struct PromptBar {
     last_draft: SharedString,
     _subscription: Subscription,
     _model_search_subscription: Subscription,
+    _keystroke_subscription: Subscription,
 }
 
 impl PromptBar {
@@ -301,6 +333,28 @@ impl PromptBar {
                 _ => {}
             },
         );
+        let editor_focus = editor.read(cx).focus_handle(cx);
+        let weak = cx.weak_entity();
+        let keystroke_subscription = cx.intercept_keystrokes(move |event, window, cx| {
+            let keystroke = &event.keystroke;
+            if keystroke.key.eq_ignore_ascii_case("v")
+                && keystroke.modifiers.secondary()
+                && !keystroke.modifiers.alt
+                && window
+                    .focused(cx)
+                    .is_some_and(|focused| focused == editor_focus)
+                && let Some(path) = clipboard_image_path(cx)
+            {
+                cx.stop_propagation();
+                let _ = weak.update(cx, |this, cx| {
+                    cx.emit(PromptBarEvent::ImagePasted {
+                        id: this.id.clone(),
+                        path,
+                    });
+                    cx.notify();
+                });
+            }
+        });
         Self {
             id: id.into(),
             editor,
@@ -326,6 +380,7 @@ impl PromptBar {
             last_draft: SharedString::default(),
             _subscription: subscription,
             _model_search_subscription: model_search_subscription,
+            _keystroke_subscription: keystroke_subscription,
         }
     }
 
@@ -1070,8 +1125,46 @@ impl Render for PromptBar {
 
 #[cfg(test)]
 mod tests {
+    use std::{cell::RefCell, rc::Rc};
+
     use super::*;
     use gpui::TestAppContext;
+
+    #[gpui::test]
+    fn pasting_an_image_adds_a_composer_attachment(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (prompt, window) =
+            cx.add_window_view(|window, cx| PromptBar::new("prompt", window, cx));
+        let pasted = Rc::new(RefCell::new(None));
+        let captured = pasted.clone();
+        let _subscription = window.update(|_, cx| {
+            cx.subscribe(&prompt, move |_, event: &PromptBarEvent, _| {
+                if let PromptBarEvent::ImagePasted { path, .. } = event {
+                    *captured.borrow_mut() = Some(path.clone());
+                }
+            })
+        });
+        window.update(|window, cx| {
+            prompt.update(cx, |prompt, cx| prompt.focus(window, cx));
+            let image = gpui::Image {
+                format: gpui::ImageFormat::Png,
+                bytes: vec![0x89, b'P', b'N', b'G'],
+                id: 42,
+            };
+            cx.write_to_clipboard(gpui::ClipboardItem::new_image(&image));
+            window.draw(cx).clear(cx);
+        });
+        window.simulate_keystrokes("secondary-v");
+        window.run_until_parked();
+
+        let path = pasted
+            .borrow()
+            .clone()
+            .expect("pasting a clipboard image emits an attachment");
+        assert_eq!(path.extension().and_then(|ext| ext.to_str()), Some("png"));
+        assert!(path.exists(), "the clipboard image must be written to disk");
+        let _ = std::fs::remove_file(path);
+    }
 
     #[gpui::test]
     fn set_draft_at_end_moves_the_caret_past_the_insertion(cx: &mut TestAppContext) {

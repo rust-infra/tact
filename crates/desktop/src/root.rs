@@ -1,7 +1,7 @@
 use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, HashSet, VecDeque},
-    path::PathBuf,
+    path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
     time::Duration,
@@ -10,9 +10,9 @@ use std::{
 use gpui::{
     Anchor, Animation, AnimationExt as _, AnyElement, AppContext as _, ClickEvent, Context, Entity,
     FollowMode, InteractiveElement as _, IntoElement, KeyDownEvent, ListAlignment, ListOffset,
-    ListState, ParentElement as _, PathBuilder, Render, Role, ScrollHandle, SharedString,
-    StatefulInteractiveElement as _, Styled, Task, WeakEntity, Window, canvas, div, list, point,
-    prelude::FluentBuilder as _, px,
+    ListState, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _,
+    PathBuilder, Render, Role, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled,
+    Task, WeakEntity, Window, canvas, div, list, point, prelude::FluentBuilder as _, px,
 };
 use gpui_base::FocusTrapElement as _;
 use gpui_component::popover::Popover;
@@ -46,6 +46,7 @@ use crate::ui::diff_table::{
     DiffCell, DiffChangeKind, DiffColumn, DiffProposalAction, DiffProposalState, DiffRow,
     DiffTable, DiffTableEvent, DiffTableLabels,
 };
+use crate::ui::file_links;
 use crate::ui::filter_table::{
     ActivationSource, FilterCell, FilterColumn, FilterDefinition, FilterRow, FilterTable,
     FilterTableEvent,
@@ -94,6 +95,9 @@ const GATE_COMMAND_MAX_HEIGHT: f32 = 168.;
 const MODEL_PICKER_ROW_HEIGHT: f32 = 30.;
 /// Rows a model picker shows before it scrolls.
 const MODEL_PICKER_VISIBLE_ROWS: usize = 8;
+/// Informational notifications disappear on their own; errors stay until the
+/// user dismisses them.
+const TOAST_HIDE_DELAY: Duration = Duration::from_secs(3);
 #[cfg(not(test))]
 const SCROLL_COALESCE_INTERVAL: Duration = Duration::from_millis(24);
 #[cfg(test)]
@@ -103,6 +107,19 @@ const SCROLL_COALESCE_INTERVAL: Duration = Duration::ZERO;
 struct Toast {
     title: SharedString,
     body: SharedString,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DividerSide {
+    Rail,
+    Inspector,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DividerDrag {
+    side: DividerSide,
+    pointer_x: f32,
+    width: f32,
 }
 
 #[derive(Clone)]
@@ -724,8 +741,8 @@ impl TranscriptScrollerView {
     }
 }
 
-/// The summary row's text: the live action while the group runs, the counts
-/// plus the retained duration once it settles.
+/// The summary row's text: the elapsed duration leads, followed by the live
+/// action while the group runs or the counts once it settles.
 fn process_summary_label(
     group: &ProcessGroup,
     live: Option<&str>,
@@ -736,13 +753,13 @@ fn process_summary_label(
         && let Some(live) = live
     {
         return match elapsed {
-            Some(elapsed) => format!("{live} · {elapsed}"),
+            Some(elapsed) => format!("{elapsed} · {live}"),
             None => live.to_string(),
         };
     }
     let counts = process_summary_text(group, language);
     match elapsed {
-        Some(elapsed) => format!("{counts} · {elapsed}"),
+        Some(elapsed) => format!("{elapsed} · {counts}"),
         None => counts,
     }
 }
@@ -851,12 +868,20 @@ impl Render for TranscriptScrollerView {
             if matches!(role, ProcessRowRole::Hidden(_)) && !process_expanded {
                 return div().into_any_element();
             }
-            let tight_process_gap = rows
-                .get(index)
-                .is_some_and(|view| is_process_row(&view.read(cx).row.body))
-                && rows
+            // Every item owned by a process group uses the stream rhythm,
+            // including transparent plan rows that render no content. Letting
+            // those invisible items pay the prose gap opened a blank band
+            // between consecutive thinking and tool rows.
+            let tight_process_gap = !matches!(role, ProcessRowRole::Normal)
+                || process_roles
                     .get(index + 1)
-                    .is_some_and(|view| is_process_row(&view.read(cx).row.body));
+                    .is_some_and(|next| !matches!(next, ProcessRowRole::Normal))
+                || (rows
+                    .get(index)
+                    .is_some_and(|view| is_process_row(&view.read(cx).row.body))
+                    && rows
+                        .get(index + 1)
+                        .is_some_and(|view| is_process_row(&view.read(cx).row.body)));
             let row_element = rows
                 .get(index)
                 .cloned()
@@ -900,7 +925,7 @@ impl Render for TranscriptScrollerView {
                 .px_3()
                 .refine_style(&transcript_row_style())
                 .when(index + 1 < item_count, |this| {
-                    this.pb(px(if tight { 2. } else { 12. }))
+                    this.pb(px(if tight { 0. } else { 12. }))
                 })
                 .child(content)
                 .into_any_element()
@@ -915,8 +940,7 @@ impl Render for TranscriptScrollerView {
             .size_full()
             .min_h_0()
             .min_w_0()
-            .child(list)
-            .vertical_scrollbar(&list_state);
+            .child(list);
         let scroll_weak = cx.weak_entity();
         let scroll = coalesced_wheel_canvas(
             self.pending_scroll.clone(),
@@ -972,6 +996,7 @@ pub(crate) struct DesktopRoot {
     focus_restore_pending: bool,
     focus_composer_on_ready: bool,
     _events_task: Option<Task<()>>,
+    run_clock_timer: Option<Task<()>>,
     left_visible: bool,
     right_visible: bool,
     overlay: Option<Overlay>,
@@ -1028,6 +1053,10 @@ pub(crate) struct DesktopRoot {
     collapsed_session_projects: HashSet<ProjectId>,
     reset_session_search_on_open: bool,
     toast: Option<Toast>,
+    toast_epoch: u64,
+    rail_width: f32,
+    inspector_width: f32,
+    divider_drag: Option<DividerDrag>,
     focus_restore: crate::ui::shell::FocusRestoration<gpui::FocusHandle>,
     last_surface_revision: Option<String>,
     /// The transcript row whose reader request is in flight.
@@ -1486,6 +1515,7 @@ impl DesktopRoot {
             focus_restore_pending: false,
             focus_composer_on_ready: false,
             _events_task: events_task,
+            run_clock_timer: None,
             left_visible: true,
             right_visible: false,
             overlay: None,
@@ -1519,6 +1549,10 @@ impl DesktopRoot {
             collapsed_session_projects: HashSet::new(),
             reset_session_search_on_open: false,
             toast: None,
+            toast_epoch: 0,
+            rail_width: crate::ui::layout::RAIL_WIDTH,
+            inspector_width: crate::ui::layout::INSPECTOR_WIDTH,
+            divider_drag: None,
             focus_restore: crate::ui::shell::FocusRestoration::default(),
             last_surface_revision: None,
             pending_reader: None,
@@ -2228,10 +2262,14 @@ impl DesktopRoot {
                     VoiceEvent::Error(message) => {
                         self.voice.listening = false;
                         self.voice.transcribing = false;
-                        self.toast = Some(Toast {
-                            title: self.text(TextKey::VoiceInput).into(),
-                            body: message.into(),
-                        });
+                        self.show_toast(
+                            Toast {
+                                title: self.text(TextKey::VoiceInput).into(),
+                                body: message.into(),
+                            },
+                            false,
+                            cx,
+                        );
                     }
                     VoiceEvent::Cancelled => {
                         self.voice.listening = false;
@@ -2242,11 +2280,14 @@ impl DesktopRoot {
             }
             DesktopEvent::Effect(effect) => self.handle_effect(effect, cx),
             DesktopEvent::Fatal(failure) => {
-                self.toast = Some(Toast {
-                    title: self.text(TextKey::TactStopped).into(),
-                    body: failure.message.to_string().into(),
-                });
-                cx.notify();
+                self.show_toast(
+                    Toast {
+                        title: self.text(TextKey::TactStopped).into(),
+                        body: failure.message.to_string().into(),
+                    },
+                    false,
+                    cx,
+                );
             }
         }
     }
@@ -2287,10 +2328,14 @@ impl DesktopRoot {
                         actions: Vec::new(),
                     });
                 }
-                self.toast = Some(Toast {
-                    title: title.into(),
-                    body: body.into(),
-                });
+                self.show_toast(
+                    Toast {
+                        title: title.into(),
+                        body: body.into(),
+                    },
+                    true,
+                    cx,
+                );
             }
             DesktopEffect::SaveTranscript {
                 markdown,
@@ -2309,17 +2354,40 @@ impl DesktopRoot {
                     if let Ok(Ok(Some(path))) = receiver.await {
                         let _ = std::fs::write(&path, markdown);
                         let _ = weak.update(cx, |this, cx| {
-                            this.toast = Some(Toast {
-                                title: this.text(TextKey::TranscriptSaved).into(),
-                                body: path.display().to_string().into(),
-                            });
-                            cx.notify();
+                            this.show_toast(
+                                Toast {
+                                    title: this.text(TextKey::TranscriptSaved).into(),
+                                    body: path.display().to_string().into(),
+                                },
+                                false,
+                                cx,
+                            );
                         });
                     }
                 })
                 .detach();
             }
             DesktopEffect::WindowCloseRequested => cx.quit(),
+        }
+        cx.notify();
+    }
+
+    fn show_toast(&mut self, toast: Toast, auto_hide: bool, cx: &mut Context<Self>) {
+        self.toast = Some(toast);
+        self.toast_epoch = self.toast_epoch.wrapping_add(1);
+        if auto_hide {
+            let epoch = self.toast_epoch;
+            let weak = cx.weak_entity();
+            cx.spawn(async move |_, cx| {
+                cx.background_executor().timer(TOAST_HIDE_DELAY).await;
+                let _ = weak.update(cx, |this, cx| {
+                    if this.toast_epoch == epoch {
+                        this.toast = None;
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
         }
         cx.notify();
     }
@@ -2784,6 +2852,12 @@ impl DesktopRoot {
                 self.refresh_slash_overlay(&draft, cx);
             }
             PromptBarEvent::AttachRequested { .. } => self.pick_attachments(cx),
+            PromptBarEvent::ImagePasted { path, .. } => {
+                if !self.attachments.contains(path) {
+                    self.attachments.push(path.clone());
+                    self.sync_prompt_attachments(cx);
+                }
+            }
             PromptBarEvent::AttachmentRemoved { attachment_id, .. } => {
                 self.attachments
                     .retain(|path| path.display().to_string() != attachment_id.as_ref());
@@ -2797,11 +2871,14 @@ impl DesktopRoot {
                 });
             }
             PromptBarEvent::EnhanceRequested { .. } => {
-                self.toast = Some(Toast {
-                    title: self.text(TextKey::PromptEnhancement).into(),
-                    body: self.text(TextKey::PromptEnhancementUnavailable).into(),
-                });
-                cx.notify();
+                self.show_toast(
+                    Toast {
+                        title: self.text(TextKey::PromptEnhancement).into(),
+                        body: self.text(TextKey::PromptEnhancementUnavailable).into(),
+                    },
+                    false,
+                    cx,
+                );
             }
         }
     }
@@ -3200,11 +3277,14 @@ impl DesktopRoot {
                 .update(cx, |prompt, cx| prompt.set_draft("", window, cx));
             return;
         }
-        self.toast = Some(Toast {
-            title: self.text(TextKey::UnknownCommand).into(),
-            body: text.to_string().into(),
-        });
-        cx.notify();
+        self.show_toast(
+            Toast {
+                title: self.text(TextKey::UnknownCommand).into(),
+                body: text.to_string().into(),
+            },
+            false,
+            cx,
+        );
     }
 
     fn execute_command(
@@ -3218,11 +3298,14 @@ impl DesktopRoot {
         if let Some(descriptor) = tact_catalog::builtins().get(&id)
             && !is_enabled(descriptor, availability)
         {
-            self.toast = Some(Toast {
-                title: self.text(TextKey::CommandUnavailable).into(),
-                body: descriptor.description.get(self.snapshot.language).into(),
-            });
-            cx.notify();
+            self.show_toast(
+                Toast {
+                    title: self.text(TextKey::CommandUnavailable).into(),
+                    body: descriptor.description.get(self.snapshot.language).into(),
+                },
+                false,
+                cx,
+            );
             return;
         }
         self.remember_focus(window, cx);
@@ -3314,10 +3397,14 @@ impl DesktopRoot {
                 tact_catalog::ComposerAction::MentionFile => self.pick_files(cx),
                 tact_catalog::ComposerAction::AttachImage => self.pick_attachments(cx),
                 tact_catalog::ComposerAction::Voice => {
-                    self.toast = Some(Toast {
-                        title: self.text(TextKey::VoiceInput).into(),
-                        body: self.text(TextKey::VoiceInputUnavailable).into(),
-                    });
+                    self.show_toast(
+                        Toast {
+                            title: self.text(TextKey::VoiceInput).into(),
+                            body: self.text(TextKey::VoiceInputUnavailable).into(),
+                        },
+                        false,
+                        cx,
+                    );
                 }
                 tact_catalog::ComposerAction::Queue => {
                     let draft = self.prompt.read(cx).draft(cx).to_string();
@@ -4799,8 +4886,66 @@ impl DesktopRoot {
             )
     }
 
-    fn render_session_rail(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let geometry = crate::ui::shell::geometry(self.snapshot.appearance);
+    fn render_divider(&self, side: DividerSide, cx: &mut Context<Self>) -> AnyElement {
+        let id = match side {
+            DividerSide::Rail => "rail-divider",
+            DividerSide::Inspector => "inspector-divider",
+        };
+        let label = match (self.snapshot.language, side) {
+            (tact_catalog::CatalogLocale::Zh, DividerSide::Rail) => "拖动调整会话栏宽度",
+            (tact_catalog::CatalogLocale::Zh, DividerSide::Inspector) => "拖动调整检查器宽度",
+            (_, DividerSide::Rail) => "Resize session rail",
+            (_, DividerSide::Inspector) => "Resize inspector",
+        };
+        let active = self.divider_drag.is_some_and(|drag| drag.side == side);
+        div()
+            .id(id)
+            .debug_selector(move || id.into())
+            .role(Role::Button)
+            .aria_label(label)
+            .flex_none()
+            .w(px(7.))
+            .h_full()
+            .relative()
+            .cursor_col_resize()
+            .hover(|style| style.bg(cx.theme().muted.opacity(0.55)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                    this.divider_drag = Some(DividerDrag {
+                        side,
+                        pointer_x: f32::from(event.position.x),
+                        width: match side {
+                            DividerSide::Rail => this.rail_width,
+                            DividerSide::Inspector => this.inspector_width,
+                        },
+                    });
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left(px(3.))
+                    .top_0()
+                    .h_full()
+                    .w(px(1.))
+                    .bg(if active {
+                        cx.theme().primary
+                    } else {
+                        cx.theme().border
+                    }),
+            )
+            .into_any_element()
+    }
+
+    fn render_session_rail(
+        &self,
+        width: gpui::Pixels,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         // The session list is the rail's main content: it stretches to fill
         // whatever the pinned blocks below leave, so every pixel the removed
         // DURABLE block freed goes to the sessions. Their height is
@@ -4812,17 +4957,14 @@ impl DesktopRoot {
             .debug_selector(|| "session-rail".into())
             .role(Role::Navigation)
             .aria_label(self.text(TextKey::ProjectsAndSessions))
-            .w(px(f32::from(geometry.rail_width) * self.snapshot.text_scale))
+            .w(width)
             .h_full()
-            .flex_none()
             .pt(px(14.))
             .px(px(12.))
             .pb(px(12.))
             .gap_1()
             .font_family(theme::native_font_family())
-            .border_r(px(theme::border_width()))
-            .border_color(cx.theme().border)
-            .bg(cx.theme().sidebar)
+            .bg(cx.theme().background)
             .child(
                 h_flex()
                     .id("rail-search")
@@ -4935,8 +5077,8 @@ impl DesktopRoot {
                     .debug_selector(|| "session-list".into())
                     .min_h_0()
                     // The list absorbs every pixel the rail has left once the
-                    // pinned blocks are placed: extensions, quota and Settings
-                    // sit at the bottom, so spare height is the sessions'.
+                    // pinned blocks are placed: quota and Settings sit at the
+                    // bottom, so spare height is the sessions'.
                     .flex_1()
                     .min_h(px(36. * self.snapshot.text_scale))
                     .mt(px(6.))
@@ -4970,90 +5112,6 @@ impl DesktopRoot {
                         this.overlay_focus_pending = false;
                         cx.notify();
                     })),
-            )
-            // Extensions hug the rail's bottom, above the quota card and
-            // Settings. They are the least-used block, so the height above
-            // them belongs to the session list, which stretches to fill it.
-            .child(
-                v_flex()
-                    .id("rail-extensions")
-                    .debug_selector(|| "rail-extensions".into())
-                    .gap_1()
-                    .border_t_1()
-                    .border_color(cx.theme().sidebar_border)
-                    .pt(px(14.))
-                    .child(
-                        div()
-                            .px(px(10.))
-                            .text_size(px(10.))
-                            .font_family("Lilex")
-                            .text_color(cx.theme().muted_foreground)
-                            .child(self.text(TextKey::Extensions).to_uppercase()),
-                    )
-                    .child(
-                        extension_rail_row(
-                            "extensions-mcp",
-                            IconName::Network,
-                            self.text(TextKey::Mcp),
-                            self.snapshot
-                                .surface
-                                .as_ref()
-                                .and_then(|surface| match surface {
-                                    SurfaceSnapshot::McpServers(servers) => Some(servers.len()),
-                                    _ => None,
-                                })
-                                .map(|count| count.to_string()),
-                            cx,
-                        )
-                        .on_click(cx.listener(
-                            |this, _: &ClickEvent, window, cx| {
-                                this.remember_focus(window, cx);
-                                this.open_overlay(Overlay::Extensions(ExtensionsTab::Mcp));
-                                this.dispatch(DesktopIntent::InvokeCommand {
-                                    id: CommandId::Builtin(BuiltinCommand::Mcp),
-                                    args: CommandArguments::default(),
-                                });
-                            },
-                        )),
-                    )
-                    .child(
-                        extension_rail_row(
-                            "extensions-skills",
-                            IconName::LayoutDashboard,
-                            self.text(TextKey::Skills),
-                            Some(self.snapshot.extensions.snapshot.skills.len().to_string()),
-                            cx,
-                        )
-                        .on_click(cx.listener(
-                            |this, _: &ClickEvent, window, cx| {
-                                this.remember_focus(window, cx);
-                                this.open_overlay(Overlay::Extensions(ExtensionsTab::Skills));
-                                this.dispatch(DesktopIntent::InvokeCommand {
-                                    id: CommandId::Builtin(BuiltinCommand::Skill),
-                                    args: CommandArguments::default(),
-                                });
-                            },
-                        )),
-                    )
-                    .child(
-                        extension_rail_row(
-                            "extensions-plugins",
-                            IconName::Bot,
-                            self.text(TextKey::Plugins),
-                            Some(self.snapshot.extensions.snapshot.plugins.len().to_string()),
-                            cx,
-                        )
-                        .on_click(cx.listener(
-                            |this, _: &ClickEvent, window, cx| {
-                                this.remember_focus(window, cx);
-                                this.open_overlay(Overlay::Extensions(ExtensionsTab::Plugins));
-                                this.dispatch(DesktopIntent::InvokeCommand {
-                                    id: CommandId::Builtin(BuiltinCommand::Plugin),
-                                    args: CommandArguments::default(),
-                                });
-                            },
-                        )),
-                    ),
             )
             .when_some(
                 self.account_summary(),
@@ -5093,9 +5151,7 @@ impl DesktopRoot {
                                     .child(
                                         div()
                                             .h_full()
-                                            .w(px((f32::from(geometry.rail_width) - 36.0)
-                                                * self.snapshot.text_scale
-                                                * ratio.clamp(0.0, 1.0)))
+                                            .w(gpui::relative(ratio.clamp(0.0, 1.0)))
                                             .rounded_full()
                                             .bg(cx.theme().success),
                                     ),
@@ -5285,7 +5341,10 @@ impl DesktopRoot {
                     selections.insert(key, selection);
                     continue;
                 }
-                let display_markdown = mermaid::strip_blocks(&assistant.markdown);
+                let display_markdown = assistant_display_markdown(
+                    &assistant.markdown,
+                    self.snapshot.project.root.as_deref(),
+                );
                 selection.update(cx, |selection, cx| {
                     selection.set_markdown(display_markdown, cx);
                 });
@@ -5304,7 +5363,10 @@ impl DesktopRoot {
                 selections.insert(key, selection);
                 continue;
             }
-            let display_markdown = mermaid::strip_blocks(&assistant.markdown);
+            let display_markdown = assistant_display_markdown(
+                &assistant.markdown,
+                self.snapshot.project.root.as_deref(),
+            );
             let selection = cx.new(|cx| {
                 SelectionActions::new(
                     format!("assistant-selection-{}", row.ordinal),
@@ -6317,10 +6379,10 @@ impl DesktopRoot {
             .child(
                 v_flex()
                     .flex_none()
-                    .gap_2()
+                    .gap_1()
                     .px_0()
-                    .pt(px(24.))
-                    .pb(px(28.))
+                    .pt(px(14.))
+                    .pb(px(18.))
                     .border_b_1()
                     .border_color(cx.theme().border)
                     .child(
@@ -6351,11 +6413,11 @@ impl DesktopRoot {
                             ))),
                     )
                     .child({
-                        // The design's hero is `clamp(24px, 2.25vw, 32px)`;
-                        // CJK uses 1.12 line height and an 840px measure.
+                        // Keep the run title subordinate to the conversation:
+                        // compact at `clamp(18px, 1.6vw, 23px)`.
                         let cjk_title = is_cjk_title(self.snapshot.language, &title);
-                        let headline = (f32::from(window.viewport_size().width) * 0.0225)
-                            .clamp(24., 32.)
+                        let headline = (f32::from(window.viewport_size().width) * 0.016)
+                            .clamp(18., 23.)
                             * self.snapshot.text_scale;
                         div()
                             .max_w(px(900.))
@@ -6365,12 +6427,12 @@ impl DesktopRoot {
                                 title
                                     .max_w(px(840. * self.snapshot.text_scale))
                                     .text_size(px(headline))
-                                    .line_height(px(headline * 1.12))
+                                    .line_height(px(headline * 1.15))
                             })
                             .when(!cjk_title, |title| {
                                 title
                                     .text_size(px(headline))
-                                    .line_height(px(headline * 1.24))
+                                    .line_height(px(headline * 1.2))
                             })
                             .child(title)
                     })
@@ -6378,8 +6440,8 @@ impl DesktopRoot {
                         column.child(
                             div()
                                 .max_w(px(900.))
-                                .text_size(px(14.))
-                                .line_height(px(23.))
+                                .text_size(px(13.))
+                                .line_height(px(20.))
                                 .text_color(cx.theme().muted_foreground)
                                 .child(subtitle),
                         )
@@ -6472,8 +6534,11 @@ impl DesktopRoot {
         views
     }
 
-    fn render_inspector(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let geometry = crate::ui::shell::geometry(self.snapshot.appearance);
+    fn render_inspector(
+        &mut self,
+        width: gpui::Pixels,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         // Labels are bare: the counts already sit in the sticky strip and the
         // rail on the same screen, and duplicating them costs the width the
         // fifth tab needs.
@@ -6552,17 +6617,12 @@ impl DesktopRoot {
             .debug_selector(|| "run-inspector".into())
             .role(Role::Complementary)
             .aria_label(self.text(TextKey::RunInspector))
-            .w(px(
-                f32::from(geometry.inspector_width) * self.snapshot.text_scale
-            ))
+            .w(width)
             .h_full()
-            .flex_none()
             .p(px(16.))
             .gap(px(14.))
             .font_family(theme::native_font_family())
-            .border_l(px(theme::border_width()))
-            .border_color(cx.theme().border)
-            .bg(cx.theme().popover)
+            .bg(cx.theme().background)
             .child(
                 v_flex()
                     .gap(px(2.))
@@ -8792,6 +8852,35 @@ impl DesktopRoot {
             self.snapshot.session.phase,
             SessionPhase::Running | SessionPhase::Starting | SessionPhase::Opening
         )
+    }
+
+    /// Repaints the run header once a second while its elapsed clock is live.
+    ///
+    /// The transcript's process-clock timer repaints only its own entity. The
+    /// header belongs to `DesktopRoot`, so without this timer it freezes after
+    /// the last host event even though the run is still in flight.
+    fn ensure_run_clock_timer(&mut self, cx: &mut Context<Self>) {
+        if !self.live_activity_visible() {
+            self.run_clock_timer = None;
+            return;
+        }
+        if self.run_clock_timer.is_some() {
+            return;
+        }
+        self.run_clock_timer = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let keep = this
+                    .update(cx, |this, cx| {
+                        cx.notify();
+                        this.live_activity_visible()
+                    })
+                    .unwrap_or(false);
+                if !keep {
+                    break;
+                }
+            }
+        }));
     }
 
     /// The current activity label for the process summary.
@@ -12276,6 +12365,7 @@ impl DesktopRoot {
 
 impl Render for DesktopRoot {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ensure_run_clock_timer(cx);
         if self.focus_restore_pending {
             self.focus_restore_pending = false;
             self.restore_focus(window, cx);
@@ -12369,18 +12459,23 @@ impl Render for DesktopRoot {
         let overlay_direct_motion = crate::ui::shell::motion_policy(self.snapshot.motion)
             .direct_state_changes
             || cx.reduce_motion();
-        let mut left_panel = self
-            .left_visible
-            .then(|| self.render_session_rail(window, cx).into_any_element());
+        let scale = self.snapshot.text_scale;
+        let rail_width = px(self.rail_width * scale);
+        let inspector_width = px(self.inspector_width * scale);
+        let mut left_panel = self.left_visible.then(|| {
+            self.render_session_rail(rail_width, window, cx)
+                .into_any_element()
+        });
         let inline_left = if shell_layout.rail_inline {
             left_panel.take()
         } else {
             None
         };
         let scrim_left = (!shell_layout.rail_inline).then_some(left_panel).flatten();
-        let mut right_panel = self
-            .right_visible
-            .then(|| self.render_inspector(cx).into_any_element());
+        let mut right_panel = self.right_visible.then(|| {
+            self.render_inspector(inspector_width, cx)
+                .into_any_element()
+        });
         let inline_right = if shell_layout.inspector_inline {
             right_panel.take()
         } else {
@@ -12546,55 +12641,99 @@ impl Render for DesktopRoot {
             .on_action(cx.listener(|this, _: &keymap::Dismiss, window, cx| {
                 this.dismiss_topmost(window, cx);
             }))
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                let Some(drag) = this.divider_drag else {
+                    return;
+                };
+                if event.pressed_button != Some(MouseButton::Left) {
+                    this.divider_drag = None;
+                    cx.notify();
+                    return;
+                }
+                let scale = this.snapshot.text_scale;
+                let delta = (f32::from(event.position.x) - drag.pointer_x) / scale;
+                match drag.side {
+                    DividerSide::Rail => {
+                        this.rail_width = (drag.width + delta).clamp(
+                            crate::ui::layout::RAIL_MIN_WIDTH,
+                            crate::ui::layout::RAIL_MAX_WIDTH,
+                        );
+                    }
+                    DividerSide::Inspector => {
+                        this.inspector_width = (drag.width - delta).clamp(
+                            crate::ui::layout::INSPECTOR_MIN_WIDTH,
+                            crate::ui::layout::INSPECTOR_MAX_WIDTH,
+                        );
+                    }
+                }
+                cx.notify();
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    if this.divider_drag.take().is_some() {
+                        cx.notify();
+                    }
+                }),
+            )
             .child(self.render_title_bar(cx))
             .child(
-                h_flex()
+                div()
                     .flex_1()
                     .min_h_0()
-                    .when_some(inline_left, |row, left| row.child(left))
+                    .relative()
                     .child(
-                        v_flex()
-                            .id("run-room")
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .child(self.render_run_tabs(cx))
+                        h_flex()
+                            .size_full()
+                            .when_some(inline_left, |row, left| row.child(left))
+                            .when(shell_layout.rail_inline, |row| {
+                                row.child(self.render_divider(DividerSide::Rail, cx))
+                            })
                             .child(
-                                h_flex()
+                                v_flex()
+                                    .id("run-room")
+                                    .debug_selector(|| "run-room".into())
                                     .flex_1()
-                                    .min_h_0()
+                                    .min_w_0()
+                                    .h_full()
+                                    .child(self.render_run_tabs(cx))
                                     .child(
-                                        v_flex()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .h_full()
-                                            .child(div().flex_1().min_h_0().relative().child(
-                                                match self.run_tab {
-                                                    RunTab::Chat => {
-                                                        self.render_transcript(window, cx)
-                                                    }
-                                                    RunTab::Trajectory => {
-                                                        self.render_trajectory_page(window, cx)
-                                                    }
-                                                },
-                                            ))
-                                            .when(
-                                                self.snapshot.failure.is_some()
-                                                    && self.run_tab == RunTab::Chat,
-                                                |column| column.child(self.render_failure(cx)),
-                                            )
-                                            // The ledger is evidence, not a place to
-                                            // continue the conversation: the sticky
-                                            // task panel and composer belong to the
-                                            // Chat page only.
-                                            .when(self.run_tab == RunTab::Chat, |column| {
-                                                column
-                                                    .child(self.render_sticky(cx))
-                                                    .child(self.render_composer(window, cx))
-                                            }),
-                                    )
-                                    .when_some(inline_right, |row, right| row.child(right)),
-                            ),
+                                        h_flex().flex_1().min_h_0().child(
+                                            v_flex()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .h_full()
+                                                .child(div().flex_1().min_h_0().relative().child(
+                                                    match self.run_tab {
+                                                        RunTab::Chat => {
+                                                            self.render_transcript(window, cx)
+                                                        }
+                                                        RunTab::Trajectory => {
+                                                            self.render_trajectory_page(window, cx)
+                                                        }
+                                                    },
+                                                ))
+                                                .when(
+                                                    self.snapshot.failure.is_some()
+                                                        && self.run_tab == RunTab::Chat,
+                                                    |column| column.child(self.render_failure(cx)),
+                                                )
+                                                // The ledger is evidence, not a place to
+                                                // continue the conversation: the sticky
+                                                // task panel and composer belong to the
+                                                // Chat page only.
+                                                .when(self.run_tab == RunTab::Chat, |column| {
+                                                    column
+                                                        .child(self.render_sticky(cx))
+                                                        .child(self.render_composer(window, cx))
+                                                }),
+                                        ),
+                                    ),
+                            )
+                            .when(shell_layout.inspector_inline, |row| {
+                                row.child(self.render_divider(DividerSide::Inspector, cx))
+                            })
+                            .when_some(inline_right, |row, right| row.child(right)),
                     )
                     .when_some(scrim_right, |row, right| {
                         row.child(
@@ -12612,12 +12751,11 @@ impl Render for DesktopRoot {
                                 .child(
                                     v_flex()
                                         .id("inspector-scrim")
-                                        .w(px(crate::ui::layout::INSPECTOR_WIDTH
-                                            * self.snapshot.text_scale))
+                                        .w(inspector_width)
                                         .h_full()
                                         .border_l_1()
                                         .border_color(cx.theme().border)
-                                        .bg(cx.theme().sidebar)
+                                        .bg(cx.theme().background)
                                         .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
                                             cx.stop_propagation()
                                         })
@@ -12640,12 +12778,11 @@ impl Render for DesktopRoot {
                                 .child(
                                     v_flex()
                                         .id("rail-scrim")
-                                        .w(px(crate::ui::layout::RAIL_WIDTH
-                                            * self.snapshot.text_scale))
+                                        .w(rail_width)
                                         .h_full()
                                         .border_r_1()
                                         .border_color(cx.theme().border)
-                                        .bg(cx.theme().sidebar)
+                                        .bg(cx.theme().background)
                                         .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
                                             cx.stop_propagation()
                                         })
@@ -12658,6 +12795,7 @@ impl Render for DesktopRoot {
                 root.child(
                     h_flex()
                         .id("desktop-toast")
+                        .debug_selector(|| "desktop-toast".into())
                         .role(Role::Status)
                         .aria_label(toast.title.clone())
                         .justify_between()
@@ -13011,44 +13149,6 @@ fn project_identity_label(project: &tact_desktop_core::ProjectView) -> String {
         .as_ref()
         .map(|repository| repository.to_string())
         .unwrap_or_else(|| project.display_name.to_string())
-}
-
-fn extension_rail_row(
-    id: &'static str,
-    icon: IconName,
-    label: &'static str,
-    count: Option<String>,
-    cx: &mut Context<DesktopRoot>,
-) -> gpui::Stateful<gpui::Div> {
-    h_flex()
-        .id(id)
-        .role(Role::Button)
-        .focusable()
-        .tab_stop(true)
-        .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
-        .aria_label(label)
-        .cursor_pointer()
-        .items_center()
-        .gap(px(9.))
-        .rounded(px(6.))
-        .h(px(29.))
-        .px(px(10.))
-        .hover(|style| style.bg(cx.theme().muted))
-        .child(
-            Icon::new(icon)
-                .size(px(14.))
-                .text_color(cx.theme().muted_foreground),
-        )
-        .child(div().flex_1().text_xs().child(label))
-        .when_some(count, |row, count| {
-            row.child(
-                div()
-                    .text_size(px(10.))
-                    .font_family("Lilex")
-                    .text_color(cx.theme().muted_foreground)
-                    .child(count),
-            )
-        })
 }
 
 fn action_button(
@@ -14122,7 +14222,8 @@ fn transcript_row_element(
             )
             .into_any_element(),
         RowBody::Assistant(assistant) => {
-            let display_markdown = mermaid::strip_blocks(&assistant.markdown);
+            let display_markdown =
+                assistant_display_markdown(&assistant.markdown, snapshot.project.root.as_deref());
             let diagrams: Vec<mermaid::Diagram> = mermaid::blocks(&assistant.markdown)
                 .iter()
                 .filter_map(|source| mermaid::parse(source))
@@ -15020,6 +15121,13 @@ fn tool_row_element(
     if !output.is_empty() {
         call = call.output(output);
     }
+    if tool.name.as_ref() == "read_image"
+        && let Some(image) = read_image_output(tool_output_text(tool))
+        && image.path.is_file()
+        && is_image_path(&image.path)
+    {
+        call = call.image_path(image.path);
+    }
     let call_weak = weak.clone();
     let reader_weak = weak;
     let tool_id = tool.id;
@@ -15151,6 +15259,11 @@ fn diff_rows(files: &[diff_review::FileDiff], decisions: &[DiffProposalState]) -
 }
 
 fn tool_body_markdown(tool: &ToolRow, locale: tact_catalog::CatalogLocale) -> String {
+    if tool.name.as_ref() == "read_image"
+        && let Some(image) = read_image_output(tool_output_text(tool))
+    {
+        return image.summary;
+    }
     let body = match &tool.body {
         tact_desktop_core::ToolBody::Code { language, text } => {
             let original = language.as_deref().unwrap_or("text");
@@ -15183,6 +15296,48 @@ fn tool_body_markdown(tool: &ToolRow, locale: tact_catalog::CatalogLocale) -> St
     } else {
         body
     }
+}
+
+fn tool_output_text(tool: &ToolRow) -> &str {
+    tool.output
+        .detail
+        .as_deref()
+        .unwrap_or(&tool.output.preview)
+}
+
+/// Assistant prose keeps its original Markdown; only the display copy turns
+/// existing absolute paths into compact, clickable file links.
+fn assistant_display_markdown(markdown: &str, root: Option<&Path>) -> String {
+    let stripped = mermaid::strip_blocks(markdown);
+    file_links::linkify_paths(&stripped, root)
+}
+
+/// The structurally useful parts of a `read_image` envelope. The base64 image
+/// block is never read here; the original envelope stays in the reader.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ReadImageOutput {
+    path: PathBuf,
+    summary: String,
+}
+
+/// `read_image` returns a small XML-ish envelope whose blank lines used to
+/// render as a large empty output box. Keep the transcript line compact; the
+/// reader still opens the untouched envelope.
+fn read_image_output(text: &str) -> Option<ReadImageOutput> {
+    let path = text.split_once("<path>")?.1.split_once("</path>")?.0.trim();
+    let metadata = text
+        .lines()
+        .find(|line| line.contains("image/") && line.contains(" px,"))?
+        .trim()
+        .replace(" image, ", " · ")
+        .replace(" px, ", " px · ");
+    if path.is_empty() || metadata.is_empty() {
+        return None;
+    }
+    Some(ReadImageOutput {
+        path: PathBuf::from(path),
+        summary: format!("`{path}` · {metadata}"),
+    })
 }
 
 fn streamed_text(
@@ -16153,19 +16308,30 @@ fn process_tool_kind(name: &str) -> ProcessToolKind {
     }
 }
 
-fn process_row_foldable(body: &RowBody) -> bool {
+fn process_row_groupable(body: &RowBody) -> bool {
     match body {
         RowBody::Thinking(_) => true,
         RowBody::Assistant(assistant) => assistant.phase == Some(MessagePhase::Commentary),
-        RowBody::ToolGroup(group) => !group.items.iter().any(|item| {
-            matches!(
-                item,
-                ToolGroupItem::Gate(gate)
-                    if matches!(gate.status, GateState::Pending | GateState::Submitting)
-            )
-        }),
+        RowBody::ToolGroup(_) => true,
         _ => false,
     }
+}
+
+/// A pending decision stays outside the fold so it can be answered. It is
+/// still part of the activity group: its tools count toward the summary and
+/// its gate keeps the group's clock running.
+fn process_row_visible_when_folded(body: &RowBody) -> bool {
+    matches!(
+        body,
+        RowBody::ToolGroup(group)
+            if group.items.iter().any(|item| {
+                matches!(
+                    item,
+                    ToolGroupItem::Gate(gate)
+                        if matches!(gate.status, GateState::Pending | GateState::Submitting)
+                )
+            })
+    )
 }
 
 fn build_process_layout(
@@ -16178,7 +16344,7 @@ fn build_process_layout(
     let mut groups = Vec::new();
     let mut index = 0;
     while index < rows.len() {
-        if !process_row_foldable(&rows[index].read(cx).row.body) {
+        if !process_row_groupable(&rows[index].read(cx).row.body) {
             index += 1;
             continue;
         }
@@ -16192,7 +16358,7 @@ fn build_process_layout(
         let mut active = false;
         while index < rows.len() {
             let row = &rows[index].read(cx).row;
-            if !process_row_foldable(&row.body) {
+            if !process_row_groupable(&row.body) {
                 if process_row_transparent(row, &transcript) {
                     index += 1;
                     continue;
@@ -16205,7 +16371,17 @@ fn build_process_layout(
                     active |= matches!(thinking.status, RowStatus::Running | RowStatus::Pending);
                 }
                 RowBody::ToolGroup(group) => {
-                    active |= matches!(group.status(), RowStatus::Running | RowStatus::Pending);
+                    active |= matches!(group.status(), RowStatus::Running | RowStatus::Pending)
+                        || group.items.iter().any(|item| {
+                            matches!(
+                                item,
+                                ToolGroupItem::Gate(gate)
+                                    if matches!(
+                                        gate.status,
+                                        GateState::Pending | GateState::Submitting
+                                    )
+                            )
+                        });
                     for item in group.items.iter() {
                         let ToolGroupItem::Tool(tool) = item else {
                             continue;
@@ -16229,8 +16405,11 @@ fn build_process_layout(
             let group_index = groups.len();
             let first = &rows[start].read(cx).row;
             roles[start] = ProcessRowRole::Summary(group_index);
-            for role in &mut roles[start + 1..index] {
-                *role = ProcessRowRole::Hidden(group_index);
+            for (offset, role) in roles[start + 1..index].iter_mut().enumerate() {
+                let body = &rows[start + 1 + offset].read(cx).row.body;
+                if !process_row_visible_when_folded(body) {
+                    *role = ProcessRowRole::Hidden(group_index);
+                }
             }
             groups.push(ProcessGroup {
                 first_index: start,
@@ -16525,11 +16704,14 @@ fn composer_voice_button(
         )
         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
             if !this.voice.enabled || this.voice.missing_api_key {
-                this.toast = Some(Toast {
-                    title: this.text(TextKey::VoiceInput).into(),
-                    body: this.text(TextKey::VoiceInputUnavailable).into(),
-                });
-                cx.notify();
+                this.show_toast(
+                    Toast {
+                        title: this.text(TextKey::VoiceInput).into(),
+                        body: this.text(TextKey::VoiceInputUnavailable).into(),
+                    },
+                    false,
+                    cx,
+                );
                 return;
             }
             if this.voice.transcribing {
@@ -18632,6 +18814,43 @@ mod tests {
                     }
                     *row = Arc::new(clean);
                 }
+                let tool_id = rows
+                    .iter()
+                    .find_map(|row| match &row.body {
+                        RowBody::ToolGroup(group) => group.items.iter().find_map(|item| {
+                            let ToolGroupItem::Tool(tool) = item else {
+                                return None;
+                            };
+                            Some(tool.tool_id.clone())
+                        }),
+                        _ => None,
+                    })
+                    .expect("tool id for the transparent plan");
+                rows.insert(
+                    1,
+                    Arc::new(TranscriptRow {
+                        id: RowId::new(20),
+                        ordinal: 20,
+                        loop_id: None,
+                        time: None,
+                        body: RowBody::Plan(tact_desktop_core::PlanRow {
+                            title: Arc::from("execution"),
+                            steps: Arc::from([tact_desktop_core::PlanStep {
+                                tool_id: Some(tool_id),
+                                label: Arc::from("read the chart"),
+                                status: RowStatus::Success,
+                                detail: None,
+                            }]),
+                        }),
+                    }),
+                );
+                let mut next_thinking = (**rows
+                    .first()
+                    .expect("thinking row before the transparent plan"))
+                .clone();
+                next_thinking.id = RowId::new(21);
+                next_thinking.ordinal = 21;
+                rows.push(Arc::new(next_thinking));
                 let mut snapshot = (*this.snapshot).clone();
                 snapshot.transcript = tact_desktop_core::TranscriptView::from_rows(rows);
                 this.set_snapshot_for_capture(Arc::new(snapshot), cx);
@@ -18662,6 +18881,14 @@ mod tests {
             "thinking and tool cards in one process stream must not pay the full row gap: \
              thinking={thinking:?}, tools={tools:?}"
         );
+        let next_thinking = window
+            .debug_bounds("transcript-row-thinking-21")
+            .expect("next thinking row");
+        assert!(
+            next_thinking.origin.y - tools.bottom() <= px(8.),
+            "the tool-to-thinking handoff must keep the same stream rhythm: \
+             tools={tools:?}, next_thinking={next_thinking:?}"
+        );
         let expanded_summary = window
             .debug_bounds("transcript-process-summary-2")
             .expect("expanded process summary");
@@ -18686,7 +18913,19 @@ mod tests {
                 let rows = demo
                     .iter()
                     .filter(|row| matches!(row.ordinal, 2 | 3))
-                    .cloned()
+                    .map(|row| {
+                        let mut row = (**row).clone();
+                        if let RowBody::ToolGroup(group) = &mut row.body {
+                            let mut items = group.items.to_vec();
+                            for item in &mut items {
+                                if let ToolGroupItem::Tool(tool) = item {
+                                    tool.status = RowStatus::Success;
+                                }
+                            }
+                            group.items = Arc::from(items);
+                        }
+                        Arc::new(row)
+                    })
                     .collect::<Vec<_>>();
                 let mut snapshot = (*this.snapshot).clone();
                 snapshot.transcript = tact_desktop_core::TranscriptView::from_rows(rows);
@@ -18701,12 +18940,31 @@ mod tests {
         assert!(
             window
                 .debug_bounds("transcript-process-summary-2")
-                .is_none(),
-            "a pending approval must never be folded behind a summary"
+                .is_some(),
+            "the thinking and tool rows share one timed summary"
+        );
+        let (groups, roles) = window.update(|_, cx| {
+            let scroller = root.read(cx).transcript_scroller.read(cx);
+            (
+                scroller.process_groups.clone(),
+                scroller.process_roles.clone(),
+            )
+        });
+        assert_eq!(groups.len(), 1);
+        assert!(
+            groups[0].active,
+            "the pending gate keeps the block's clock running"
+        );
+        assert_eq!(groups[0].commands, 1);
+        assert_eq!(groups[0].files_changed, 1);
+        assert_eq!(
+            roles[1],
+            ProcessRowRole::Normal,
+            "the actionable gate row stays outside the fold"
         );
         assert!(
             window.debug_bounds("transcript-row-tool-group-3").is_some(),
-            "the actionable tool group must stay visible"
+            "a pending approval must never be folded behind that summary"
         );
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
@@ -19708,9 +19966,9 @@ mod tests {
         let view_all = window
             .debug_bounds("view-all-sessions")
             .expect("view all sessions bounds");
-        let extensions = window
-            .debug_bounds("rail-extensions")
-            .expect("rail extensions bounds");
+        let settings = window
+            .debug_bounds("open-settings")
+            .expect("rail settings row");
         let list_bottom = list.origin.y + list.size.height;
         assert!(
             view_all.origin.y - list_bottom <= px(12.),
@@ -19719,8 +19977,12 @@ mod tests {
             view_all.origin.y
         );
         assert!(
-            view_all.origin.y + view_all.size.height <= extensions.origin.y + px(12.),
-            "view-all row overlaps the extensions section"
+            view_all.origin.y + view_all.size.height <= settings.origin.y + px(12.),
+            "view-all row overlaps the Settings entry"
+        );
+        assert!(
+            window.debug_bounds("rail-extensions").is_none(),
+            "the extensions block belongs to the Settings surface, not the rail"
         );
 
         shutdown.shutdown_blocking().unwrap();
@@ -20125,6 +20387,53 @@ mod tests {
             tool_body_markdown(&tool, tact_catalog::CatalogLocale::En),
             "_Only the last 50,000 characters are retained._\n\ntail"
         );
+    }
+
+    #[test]
+    fn read_image_output_keeps_metadata_and_exposes_the_file_path() {
+        let tool = ToolRow {
+            id: RowId::new(1),
+            tool_id: "image-1".into(),
+            name: "read_image".into(),
+            arg_summary: "charts/crop_bottom.png".into(),
+            arg_full: None,
+            status: RowStatus::Success,
+            body: ToolBody::None,
+            output: ToolOutputView {
+                preview: Arc::from(""),
+                detail: Some(
+                    "<path>/home/rg/Work/charts/crop_bottom.png</path>\n\
+                     <type>image</type>\n\
+                     <content>\n\
+                     image/jpeg image, 1280x354 px, 39578 bytes\n\
+                     </content>"
+                        .into(),
+                ),
+                truncated: false,
+            },
+            meta: ToolMetaView::default(),
+            subagent: None,
+            expanded: true,
+            keep_live: false,
+            destructive: false,
+            duration_ms: None,
+        };
+
+        let envelope = tool.output.detail.as_deref().expect("read_image detail");
+        let image = read_image_output(envelope).expect("read_image envelope");
+        assert_eq!(
+            image.path,
+            PathBuf::from("/home/rg/Work/charts/crop_bottom.png")
+        );
+        assert_eq!(
+            image.summary,
+            "`/home/rg/Work/charts/crop_bottom.png` · image/jpeg · 1280x354 px · 39578 bytes"
+        );
+        assert_eq!(
+            tool_body_markdown(&tool, tact_catalog::CatalogLocale::En),
+            image.summary
+        );
+        assert!(read_image_output("not an image envelope").is_none());
     }
 
     #[test]
@@ -21142,14 +21451,14 @@ mod tests {
                 phase,
             })
         };
-        assert!(process_row_foldable(&assistant(Some(
+        assert!(process_row_groupable(&assistant(Some(
             MessagePhase::Commentary
         ))));
         assert!(is_process_row(&assistant(Some(MessagePhase::Commentary))));
-        assert!(!process_row_foldable(&assistant(Some(
+        assert!(!process_row_groupable(&assistant(Some(
             MessagePhase::FinalAnswer
         ))));
-        assert!(!process_row_foldable(&assistant(None)));
+        assert!(!process_row_groupable(&assistant(None)));
     }
 
     #[test]
@@ -21547,13 +21856,13 @@ mod tests {
                 Some("2s"),
                 tact_catalog::CatalogLocale::En,
             ),
-            "Running · edit_file bridge.rs · 2s"
+            "2s · Running · edit_file bridge.rs"
         );
         let mut settled = group.clone();
         settled.active = false;
         assert_eq!(
             process_summary_label(&settled, None, Some("2s"), tact_catalog::CatalogLocale::En),
-            "3 thoughts, ran 4 commands · 2s"
+            "2s · 3 thoughts, ran 4 commands"
         );
     }
 
@@ -21574,10 +21883,10 @@ mod tests {
             })
         }
 
-        fn thinking() -> RowBody {
+        fn thinking(status: RowStatus) -> RowBody {
             RowBody::Thinking(ThinkingRow {
                 markdown: Arc::from("plan"),
-                status: RowStatus::Success,
+                status,
                 duration_ms: None,
             })
         }
@@ -21630,8 +21939,8 @@ mod tests {
                     status: RowStatus::Running,
                 });
                 snapshot.transcript = TranscriptView::from_rows(vec![
-                    row(0, thinking()),
-                    row(1, tool_group(loop_id, RowStatus::Running)),
+                    row(0, thinking(RowStatus::Running)),
+                    row(1, tool_group(loop_id, RowStatus::Pending)),
                 ]);
                 this.set_snapshot_for_capture(Arc::new(snapshot), cx);
             });
@@ -21644,14 +21953,15 @@ mod tests {
                 .is_some(),
             "the running status lives on the process summary"
         );
-        let clock_started = window.update(|_, cx| {
+        let started_at = window.update(|_, cx| {
             root.read(cx)
                 .transcript_scroller
                 .read(cx)
                 .group_started
-                .contains_key(&RowId::new(0))
+                .get(&RowId::new(0))
+                .copied()
         });
-        assert!(clock_started, "an active group gets a clock");
+        assert!(started_at.is_some(), "an active group gets a clock");
         assert!(
             window.debug_bounds("composer-live-activity").is_none(),
             "the standalone composer chip is gone"
@@ -21667,9 +21977,40 @@ mod tests {
                     })
                     .expect("demo tool group");
                 let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = TranscriptView::from_rows(vec![
+                    row(0, thinking(RowStatus::Success)),
+                    row(1, tool_group(loop_id, RowStatus::Running)),
+                ]);
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+        assert_eq!(
+            window.update(|_, cx| {
+                root.read(cx)
+                    .transcript_scroller
+                    .read(cx)
+                    .group_started
+                    .get(&RowId::new(0))
+                    .copied()
+            }),
+            started_at,
+            "the clock spans thinking into tools without restarting"
+        );
+
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let loop_id = tact_desktop_core::fixtures::demo_transcript()
+                    .iter()
+                    .find_map(|row| match &row.body {
+                        RowBody::ToolGroup(group) => Some(group.loop_id),
+                        _ => None,
+                    })
+                    .expect("demo tool group");
+                let mut snapshot = (*this.snapshot).clone();
                 snapshot.session.phase = SessionPhase::Ready;
                 snapshot.transcript = TranscriptView::from_rows(vec![
-                    row(0, thinking()),
+                    row(0, thinking(RowStatus::Success)),
                     row(1, tool_group(loop_id, RowStatus::Success)),
                 ]);
                 this.set_snapshot_for_capture(Arc::new(snapshot), cx);
@@ -21688,6 +22029,43 @@ mod tests {
         assert!(
             elapsed.is_some_and(|elapsed| !elapsed.is_empty()),
             "the settled summary keeps the elapsed time"
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn the_run_header_clock_repaints_while_a_run_is_active(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.session.phase = SessionPhase::Running;
+                snapshot.runtime.turn_started_at =
+                    Some(chrono::Utc::now() - chrono::Duration::seconds(5));
+                this.snapshot = Arc::new(snapshot);
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        assert!(
+            window.update(|_, cx| root.read(cx).run_clock_timer.is_some()),
+            "a running turn owns a one-second header clock"
+        );
+
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.session.phase = SessionPhase::Ready;
+                this.snapshot = Arc::new(snapshot);
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        assert!(
+            window.update(|_, cx| root.read(cx).run_clock_timer.is_none()),
+            "the settled run drops its timer"
         );
 
         shutdown.shutdown_blocking().unwrap();
@@ -21756,6 +22134,88 @@ mod tests {
     }
 
     #[gpui::test]
+    fn panel_dividers_resize_the_rail_and_the_inspector(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1440.), px(900.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.left_visible = true;
+                this.right_visible = true;
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        let rail = window.debug_bounds("session-rail").expect("session rail");
+        let rail_before = rail.size.width;
+        let boundary = window
+            .debug_bounds("rail-divider")
+            .expect("rail divider")
+            .center();
+        window.simulate_mouse_down(
+            boundary,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        window.simulate_mouse_move(
+            boundary + point(px(60.), px(0.)),
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::default(),
+        );
+        window.simulate_mouse_up(
+            boundary + point(px(60.), px(0.)),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        draw(window);
+        let rail_after = window
+            .debug_bounds("session-rail")
+            .expect("session rail after drag")
+            .size
+            .width;
+        assert!(
+            rail_after > rail_before + px(40.),
+            "dragging the left divider must widen the rail: {rail_before:?} -> {rail_after:?}"
+        );
+
+        let inspector = window.debug_bounds("run-inspector").expect("run inspector");
+        let inspector_before = inspector.size.width;
+        let boundary = window
+            .debug_bounds("inspector-divider")
+            .expect("inspector divider")
+            .center();
+        window.simulate_mouse_down(
+            boundary,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        window.simulate_mouse_move(
+            boundary - point(px(60.), px(0.)),
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::default(),
+        );
+        window.simulate_mouse_up(
+            boundary - point(px(60.), px(0.)),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        draw(window);
+        let inspector_after = window
+            .debug_bounds("run-inspector")
+            .expect("run inspector after drag")
+            .size
+            .width;
+        assert!(
+            inspector_after > inspector_before + px(40.),
+            "dragging the right divider must widen the inspector: \
+             {inspector_before:?} -> {inspector_after:?}"
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
     fn composer_controls_live_inside_the_prompt_frame(cx: &mut TestAppContext) {
         let (_root, window, shutdown, data_dir) = probe_root(cx);
         window.update(|window, cx| {
@@ -21803,17 +22263,23 @@ mod tests {
             "the session list should take about a third of the window, got {list:?} of {viewport:?}"
         );
 
-        // Extensions moved to the rail's bottom, below the session list and
-        // the view-all row, so the least-used block stops crowding the list.
-        let extensions = window
-            .debug_bounds("rail-extensions")
-            .expect("rail extensions bounds");
+        // The extensions block no longer competes with the session list; the
+        // rail keeps only the Settings entry at its bottom.
         let view_all = window
             .debug_bounds("view-all-sessions")
             .expect("view all sessions bounds");
         assert!(
-            extensions.origin.y > view_all.origin.y,
-            "extensions belong below the session list: extensions={extensions:?}, view_all={view_all:?}"
+            window.debug_bounds("rail-extensions").is_none(),
+            "extension entries belong to Settings, not the rail"
+        );
+        assert!(
+            view_all.origin.y
+                < window
+                    .debug_bounds("open-settings")
+                    .expect("rail settings row")
+                    .origin
+                    .y,
+            "Settings stays below the session list"
         );
 
         // The duplicate rows are gone for good: a second copy of the
@@ -22910,5 +23376,41 @@ mod tests {
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
         let _ = std::fs::remove_dir_all(project);
+    }
+
+    #[gpui::test]
+    fn informational_toasts_hide_after_three_seconds(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.show_toast(
+                    Toast {
+                        title: "Settings".into(),
+                        body: "Updated".into(),
+                    },
+                    true,
+                    cx,
+                );
+            });
+            window.draw(cx).clear(cx);
+        });
+        assert!(
+            window.debug_bounds("desktop-toast").is_some(),
+            "the notification starts visible"
+        );
+
+        window
+            .cx
+            .background_executor
+            .advance_clock(std::time::Duration::from_secs(4));
+        window.run_until_parked();
+        draw(window);
+
+        assert!(
+            window.debug_bounds("desktop-toast").is_none(),
+            "informational notifications dismiss themselves after three seconds"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
     }
 }

@@ -165,8 +165,8 @@ fn tact_light() -> Palette {
         sidebar_accent_foreground: color(0x1d1d1f),
         sidebar_primary: color(0x007aff),
         sidebar_primary_foreground: color(0xffffff),
-        title_bar: color(0xffffff),
-        title_bar_border: alpha(0x3c3c43, 0.12),
+        title_bar: color(0xf5f5f7),
+        title_bar_border: alpha(0x3c3c43, 0.14),
         link: color(0x007aff),
         link_hover: color(0x0063ce),
         link_active: color(0x004999),
@@ -211,8 +211,8 @@ fn tact_dark() -> Palette {
         sidebar_accent_foreground: color(0xf5f5f7),
         sidebar_primary: color(0x0a84ff),
         sidebar_primary_foreground: color(0xffffff),
-        title_bar: color(0x2c2c2e),
-        title_bar_border: alpha(0xffffff, 0.08),
+        title_bar: color(0x1c1c1e),
+        title_bar_border: alpha(0xffffff, 0.10),
         link: color(0x409cff),
         link_hover: color(0x64b5ff),
         link_active: color(0x0a84ff),
@@ -257,8 +257,8 @@ fn claude_light() -> Palette {
         sidebar_accent_foreground: color(0x1f1e1d),
         sidebar_primary: color(0xb85535),
         sidebar_primary_foreground: color(0xffffff),
-        title_bar: color(0xf0eee6),
-        title_bar_border: color(0xe2ded3),
+        title_bar: color(0xfaf9f5),
+        title_bar_border: color(0xd9d6cc),
         link: color(0xb85535),
         link_hover: color(0xc96442),
         link_active: color(0x9e4529),
@@ -303,8 +303,8 @@ fn claude_dark() -> Palette {
         sidebar_accent_foreground: color(0xf0eee6),
         sidebar_primary: color(0xd97757),
         sidebar_primary_foreground: color(0x1f1e1d),
-        title_bar: color(0x1f1e1d),
-        title_bar_border: color(0x3a3937),
+        title_bar: color(0x262624),
+        title_bar_border: color(0x444340),
         link: color(0xe08a6a),
         link_hover: color(0xe8a184),
         link_active: color(0xd97757),
@@ -349,7 +349,7 @@ fn cursor_light() -> Palette {
         sidebar_accent_foreground: color(0x1f1f1f),
         sidebar_primary: color(0x005fb8),
         sidebar_primary_foreground: color(0xffffff),
-        title_bar: color(0xf8f8f8),
+        title_bar: color(0xffffff),
         title_bar_border: color(0xe5e5e5),
         link: color(0x005fb8),
         link_hover: color(0x0070d8),
@@ -395,7 +395,7 @@ fn cursor_dark() -> Palette {
         sidebar_accent_foreground: color(0xffffff),
         sidebar_primary: color(0x0078d4),
         sidebar_primary_foreground: color(0xffffff),
-        title_bar: color(0x141414),
+        title_bar: color(0x181818),
         title_bar_border: color(0x2b2b2b),
         link: color(0x3794ff),
         link_hover: color(0x58a6ff),
@@ -504,5 +504,26 @@ mod tests {
         assert_eq!(dark.background, color(0x181818));
         assert_eq!(dark.sidebar, color(0x141414));
         assert_eq!(dark.primary, color(0x0078d4));
+    }
+
+    #[test]
+    fn title_bar_shares_the_chat_background() {
+        for theme in [
+            DesktopTheme::Tact,
+            DesktopTheme::Claude,
+            DesktopTheme::Cursor,
+        ] {
+            for appearance in [Appearance::Light, Appearance::Dark] {
+                let palette = palette(theme, appearance);
+                assert_eq!(
+                    palette.title_bar, palette.background,
+                    "{theme:?} {appearance:?} title bar must match the chat background"
+                );
+                assert_eq!(
+                    palette.title_bar_border, palette.border,
+                    "{theme:?} {appearance:?} title bar border must match the shell border"
+                );
+            }
+        }
     }
 }

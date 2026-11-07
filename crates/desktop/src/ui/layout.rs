@@ -9,6 +9,10 @@ pub const INSPECTOR_BREAKPOINT: f32 = 1180.0;
 pub const THREE_COLUMN_BREAKPOINT: f32 = INSPECTOR_BREAKPOINT;
 pub const RAIL_WIDTH: f32 = 250.0;
 pub const INSPECTOR_WIDTH: f32 = 318.0;
+pub const RAIL_MIN_WIDTH: f32 = 180.0;
+pub const RAIL_MAX_WIDTH: f32 = 420.0;
+pub const INSPECTOR_MIN_WIDTH: f32 = 240.0;
+pub const INSPECTOR_MAX_WIDTH: f32 = 520.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ShellLayout {

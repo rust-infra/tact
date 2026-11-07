@@ -657,7 +657,10 @@ user turn，以及下一次 <code>max_tokens</code> 输出）：</p>
 <p>OR 两侧都与同一 <strong>token</strong>
 窗口比较，且两侧都预留了输出预算（<code>max_tokens</code>），确保 LLM
 还有足够的空间生成回复。序列化内容中的 ASCII 按约 4 字符一个 token
-估算，非 ASCII 则保守地按每字符一个 token 计算。</p>
+估算，非 ASCII 则保守地按每字符一个 token 计算。图片块按固定的
+<strong>1,600</strong> vision tokens 估算，绝不把 base64
+编码长度当作文本：一张 1280×1061 的截图约有 125 KB base64，但只是
+约 1.6k 个视觉 token，而不是 30k 个文本 token。</p>
 <ul>
 <li><strong>入口（<code>agent_loop</code>）</strong>：先对<strong>旧历史</strong>
 compact（<code>incoming_turn_tokens = estimate(user_turn)</code>），再
@@ -740,10 +743,16 @@ tokens，重建兜底为 20% = 40,000 tokens。两者都用于吸收估算误差
 序列化开销，以及保守估算与 provider tokenizer
 之间的差异。百分比向上取整，不会向下少留。</p>
 <pre class="rust"><code>pub fn estimate_context_tokens(messages: &amp;[Message]) -&gt; usize {
-    match serde_json::to_string(messages) {
-        Ok(serialized) =&gt; approx_text_tokens(&amp;serialized),
-        Err(_) =&gt; usize::MAX / 2, // 宁可触发 compact，也不低估
-    }
+    messages.iter().map(|message| {
+        let content = match &amp;message.content {
+            Text { content } =&gt; approx_text_tokens(content),
+            Blocks { content } =&gt; content
+                .iter()
+                .map(estimate_block_tokens) // Image =&gt; IMAGE_TOKEN_ESTIMATE
+                .sum(),
+        };
+        MESSAGE_OVERHEAD_TOKENS + content
+    }).sum()
 }</code></pre>
 <pre class="mermaid">graph TD
     mc[micro_compact] --&gt; tok{tokens + incoming ≥ window 的 80%?}
@@ -1572,8 +1581,8 @@ directive；近期文件追踪</td>
 <tr>
 <td>冷启动 / 工具后 token 估算</td>
 <td>ASCII 按约 4 字符/token、非 ASCII 按 1 字符/token
-的保守估算；有实际用量时仍 OR 此估算，以覆盖 tool result
-追加后的膨胀</td>
+的结构化保守估算；图片按 1,600 vision tokens 固定估算，不读 base64
+长度。有实际用量时仍 OR 此估算，以覆盖 tool result 追加后的膨胀</td>
 </tr>
 <tr>
 <td>简易用量百分比</td>

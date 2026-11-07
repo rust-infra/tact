@@ -1,5 +1,7 @@
 //! Selectable Markdown with the application's selection-action surface.
 
+use std::path::PathBuf;
+
 use gpui::{
     Anchor, App, AppContext as _, Context, ElementId, EventEmitter, InteractiveElement as _,
     IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseUpEvent, ParentElement as _,
@@ -20,6 +22,14 @@ fn is_plain_click(click_count: usize, end: Point<Pixels>, start: Option<Point<Pi
         && start.is_some_and(|start| {
             (end.x - start.x).abs() <= px(3.) && (end.y - start.y).abs() <= px(3.)
         })
+}
+
+fn file_url_path(url: &str) -> Option<PathBuf> {
+    let url = url::Url::parse(url).ok()?;
+    if url.scheme() != "file" {
+        return None;
+    }
+    url.to_file_path().ok()
 }
 
 /// One application action offered for selected text.
@@ -236,7 +246,17 @@ impl EventEmitter<SelectionActionsEvent> for SelectionActions {}
 
 impl Render for SelectionActions {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut view = TextView::new(&self.text).selectable(true);
+        let mut view = TextView::new(&self.text)
+            .selectable(true)
+            .on_link_click(|url, _, _, cx| {
+                if let Some(path) = file_url_path(url) {
+                    if path.exists() {
+                        cx.open_with_system(&path);
+                    }
+                } else {
+                    cx.open_url(url);
+                }
+            });
         if let Some(style) = self.text_style.clone() {
             view = view.style(style);
         }
@@ -402,6 +422,50 @@ mod tests {
     use gpui::{Render, Subscription, TestAppContext, div, point, px, size};
 
     use super::*;
+
+    #[test]
+    fn file_urls_resolve_to_local_paths() {
+        let path = std::env::temp_dir().join("tact file link.png");
+        let url = url::Url::from_file_path(&path).expect("absolute path");
+
+        assert_eq!(file_url_path(url.as_str()), Some(path));
+        assert_eq!(file_url_path("https://example.com"), None);
+    }
+
+    #[gpui::test]
+    fn a_code_label_link_receives_the_click(cx: &mut TestAppContext) {
+        struct LinkProbe {
+            selection: gpui::Entity<SelectionActions>,
+        }
+
+        impl Render for LinkProbe {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(420.)).child(self.selection.clone())
+            }
+        }
+
+        cx.update(gpui_component::init);
+        let (_probe, window) = cx.add_window_view(|window, cx| LinkProbe {
+            selection: cx.new(|cx| {
+                SelectionActions::new(
+                    "link-probe",
+                    "[`charts/markets_outlook.svg`](https://example.com)",
+                    window,
+                    cx,
+                )
+            }),
+        });
+        window.simulate_resize(size(px(420.), px(200.)));
+        window.update(|window, cx| window.draw(cx).clear(cx));
+
+        window.simulate_click(point(px(10.), px(10.)), gpui::Modifiers::default());
+
+        assert_eq!(
+            window.opened_url(),
+            Some("https://example.com".to_string()),
+            "a code label inside a Markdown link must still be clickable"
+        );
+    }
 
     struct SelectionProbe {
         selection: gpui::Entity<SelectionActions>,
