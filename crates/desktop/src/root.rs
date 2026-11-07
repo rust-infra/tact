@@ -569,7 +569,6 @@ impl TranscriptScrollerView {
         if rows_changed {
             self.rows = Arc::new(rows);
         }
-        let previous_groups = self.process_groups.clone();
         let (process_roles, process_groups) = build_process_layout(&self.rows, cx);
         let layout_changed = self.process_roles.as_ref() != &process_roles
             || self.process_groups.as_ref() != &process_groups;
@@ -577,15 +576,28 @@ impl TranscriptScrollerView {
         self.process_groups = Arc::new(process_groups);
         if !session_changed {
             let now = chrono::Utc::now();
-            for old in previous_groups.iter().filter(|group| group.active) {
-                let still_active = self
+            // A group that pauses between tool batches is not finished: the
+            // next thinking chunk reopens it. Keep its clock until the run
+            // ends or a newer group takes over.
+            let run_active = matches!(
+                snapshot.session.phase,
+                SessionPhase::Running | SessionPhase::Starting | SessionPhase::Opening
+            );
+            let current_group = self.process_groups.last().map(|group| group.first_row);
+            let mut settled = Vec::new();
+            for (row, started) in &self.group_started {
+                let active = self
                     .process_groups
                     .iter()
-                    .any(|group| group.first_row == old.first_row && group.active);
-                if !still_active && let Some(started) = self.group_started.remove(&old.first_row) {
-                    self.group_elapsed
-                        .insert(old.first_row, format_elapsed(started));
+                    .any(|group| group.first_row == *row && group.active);
+                let live = run_active && current_group == Some(*row);
+                if !active && !live {
+                    settled.push((*row, *started));
                 }
+            }
+            for (row, started) in settled {
+                self.group_started.remove(&row);
+                self.group_elapsed.insert(row, format_elapsed(started));
             }
             for group in self.process_groups.iter().filter(|group| group.active) {
                 self.group_started.entry(group.first_row).or_insert(now);
@@ -621,10 +633,10 @@ impl TranscriptScrollerView {
         changed
     }
 
-    /// Repaints the summary clock once a second while a process group runs.
+    /// Repaints the summary clock once a second while a group's clock runs.
     fn ensure_activity_timer(&mut self, cx: &mut Context<Self>) {
-        let active = self.process_groups.iter().any(|group| group.active);
-        if !active {
+        let live = !self.group_started.is_empty();
+        if !live {
             self.activity_timer = None;
             return;
         }
@@ -637,7 +649,7 @@ impl TranscriptScrollerView {
                 let keep = this
                     .update(cx, |this, cx| {
                         cx.notify();
-                        this.process_groups.iter().any(|group| group.active)
+                        !this.group_started.is_empty()
                     })
                     .unwrap_or(false);
                 if !keep {
@@ -857,13 +869,10 @@ impl Render for TranscriptScrollerView {
                 .filter(|group| group.active)
                 .and_then(|_| live_label.clone());
             let summary_elapsed = process_group.and_then(|group| {
-                if group.active {
-                    group_started
-                        .get(&group.first_row)
-                        .map(|started| format_elapsed(*started))
-                } else {
-                    group_elapsed.get(&group.first_row).cloned()
-                }
+                group_started
+                    .get(&group.first_row)
+                    .map(|started| format_elapsed(*started))
+                    .or_else(|| group_elapsed.get(&group.first_row).cloned())
             });
             if matches!(role, ProcessRowRole::Hidden(_)) && !process_expanded {
                 return div().into_any_element();
@@ -21866,56 +21875,54 @@ mod tests {
         );
     }
 
-    #[gpui::test]
-    fn the_process_summary_shows_the_live_status_and_keeps_its_clock(cx: &mut TestAppContext) {
+    fn summary_row(id: u64, body: RowBody) -> Arc<TranscriptRow> {
+        Arc::new(TranscriptRow {
+            id: RowId::new(id),
+            ordinal: id,
+            loop_id: None,
+            time: None,
+            body,
+        })
+    }
+
+    fn summary_thinking(status: RowStatus) -> RowBody {
+        RowBody::Thinking(tact_desktop_core::transcript::ThinkingRow {
+            markdown: Arc::from("plan"),
+            status,
+            duration_ms: None,
+        })
+    }
+
+    fn summary_tool_group(loop_id: tact_desktop_core::LoopId, status: RowStatus) -> RowBody {
         use tact_desktop_core::{
             ToolBody, ToolGroupItem, ToolGroupRow, ToolMetaView, ToolOutputView, ToolRow,
-            transcript::ThinkingRow,
         };
-
-        fn row(id: u64, body: RowBody) -> Arc<TranscriptRow> {
-            Arc::new(TranscriptRow {
-                id: RowId::new(id),
-                ordinal: id,
-                loop_id: None,
-                time: None,
-                body,
-            })
-        }
-
-        fn thinking(status: RowStatus) -> RowBody {
-            RowBody::Thinking(ThinkingRow {
-                markdown: Arc::from("plan"),
+        RowBody::ToolGroup(ToolGroupRow {
+            loop_id,
+            items: Arc::from([ToolGroupItem::Tool(ToolRow {
+                id: RowId::new(12),
+                tool_id: Arc::from("tool-1"),
+                name: Arc::from("bash"),
+                arg_summary: Arc::from("echo hi"),
+                arg_full: None,
                 status,
+                body: ToolBody::None,
+                output: ToolOutputView::default(),
+                meta: ToolMetaView::default(),
+                subagent: None,
+                expanded: false,
+                keep_live: false,
+                destructive: false,
                 duration_ms: None,
-            })
-        }
+            })]),
+            summary: Arc::from("bash"),
+            collapsed: true,
+            collapse_override: None,
+        })
+    }
 
-        fn tool_group(loop_id: tact_desktop_core::LoopId, status: RowStatus) -> RowBody {
-            RowBody::ToolGroup(ToolGroupRow {
-                loop_id,
-                items: Arc::from([ToolGroupItem::Tool(ToolRow {
-                    id: RowId::new(12),
-                    tool_id: Arc::from("tool-1"),
-                    name: Arc::from("bash"),
-                    arg_summary: Arc::from("echo hi"),
-                    arg_full: None,
-                    status,
-                    body: ToolBody::None,
-                    output: ToolOutputView::default(),
-                    meta: ToolMetaView::default(),
-                    subagent: None,
-                    expanded: false,
-                    keep_live: false,
-                    destructive: false,
-                    duration_ms: None,
-                })]),
-                summary: Arc::from("bash"),
-                collapsed: true,
-                collapse_override: None,
-            })
-        }
-
+    #[gpui::test]
+    fn the_process_summary_shows_the_live_status_and_keeps_its_clock(cx: &mut TestAppContext) {
         let (root, window, shutdown, data_dir) = probe_root(cx);
         window.simulate_resize(size(px(1280.), px(1400.)));
         window.update(|window, cx| {
@@ -21939,8 +21946,8 @@ mod tests {
                     status: RowStatus::Running,
                 });
                 snapshot.transcript = TranscriptView::from_rows(vec![
-                    row(0, thinking(RowStatus::Running)),
-                    row(1, tool_group(loop_id, RowStatus::Pending)),
+                    summary_row(0, summary_thinking(RowStatus::Running)),
+                    summary_row(1, summary_tool_group(loop_id, RowStatus::Pending)),
                 ]);
                 this.set_snapshot_for_capture(Arc::new(snapshot), cx);
             });
@@ -21978,8 +21985,8 @@ mod tests {
                     .expect("demo tool group");
                 let mut snapshot = (*this.snapshot).clone();
                 snapshot.transcript = TranscriptView::from_rows(vec![
-                    row(0, thinking(RowStatus::Success)),
-                    row(1, tool_group(loop_id, RowStatus::Running)),
+                    summary_row(0, summary_thinking(RowStatus::Success)),
+                    summary_row(1, summary_tool_group(loop_id, RowStatus::Running)),
                 ]);
                 this.set_snapshot_for_capture(Arc::new(snapshot), cx);
             });
@@ -22010,8 +22017,8 @@ mod tests {
                 let mut snapshot = (*this.snapshot).clone();
                 snapshot.session.phase = SessionPhase::Ready;
                 snapshot.transcript = TranscriptView::from_rows(vec![
-                    row(0, thinking(RowStatus::Success)),
-                    row(1, tool_group(loop_id, RowStatus::Success)),
+                    summary_row(0, summary_thinking(RowStatus::Success)),
+                    summary_row(1, summary_tool_group(loop_id, RowStatus::Success)),
                 ]);
                 this.set_snapshot_for_capture(Arc::new(snapshot), cx);
             });
@@ -22029,6 +22036,100 @@ mod tests {
         assert!(
             elapsed.is_some_and(|elapsed| !elapsed.is_empty()),
             "the settled summary keeps the elapsed time"
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn the_process_summary_clock_survives_a_tool_batch_boundary(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(1400.)));
+        let loop_id = tact_desktop_core::fixtures::demo_transcript()
+            .iter()
+            .find_map(|row| match &row.body {
+                RowBody::ToolGroup(group) => Some(group.loop_id),
+                _ => None,
+            })
+            .expect("demo tool group");
+
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.session.phase = SessionPhase::Running;
+                snapshot.runtime.current_phase = tact_desktop_core::RunPhase::RunningTools;
+                snapshot.transcript = TranscriptView::from_rows(vec![
+                    summary_row(0, summary_thinking(RowStatus::Running)),
+                    summary_row(1, summary_tool_group(loop_id, RowStatus::Pending)),
+                ]);
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+        let started_at = window
+            .update(|_, cx| {
+                root.read(cx)
+                    .transcript_scroller
+                    .read(cx)
+                    .group_started
+                    .get(&RowId::new(0))
+                    .copied()
+            })
+            .expect("an active group gets a clock");
+
+        // The model is between requests: no row runs until the next thinking
+        // chunk arrives, so the group goes idle for a moment.
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.session.phase = SessionPhase::Running;
+                snapshot.transcript = TranscriptView::from_rows(vec![
+                    summary_row(0, summary_thinking(RowStatus::Success)),
+                    summary_row(1, summary_tool_group(loop_id, RowStatus::Success)),
+                ]);
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+        assert_eq!(
+            window.update(|_, cx| {
+                root.read(cx)
+                    .transcript_scroller
+                    .read(cx)
+                    .group_started
+                    .get(&RowId::new(0))
+                    .copied()
+            }),
+            Some(started_at),
+            "an idle gap must not restart the group's clock"
+        );
+
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.session.phase = SessionPhase::Running;
+                snapshot.runtime.current_phase = tact_desktop_core::RunPhase::Thinking;
+                snapshot.transcript = TranscriptView::from_rows(vec![
+                    summary_row(0, summary_thinking(RowStatus::Success)),
+                    summary_row(1, summary_tool_group(loop_id, RowStatus::Success)),
+                    summary_row(2, summary_thinking(RowStatus::Running)),
+                ]);
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+        assert_eq!(
+            window.update(|_, cx| {
+                root.read(cx)
+                    .transcript_scroller
+                    .read(cx)
+                    .group_started
+                    .get(&RowId::new(0))
+                    .copied()
+            }),
+            Some(started_at),
+            "the clock keeps its original start when the group wakes up again"
         );
 
         shutdown.shutdown_blocking().unwrap();
