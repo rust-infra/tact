@@ -132,7 +132,7 @@ desktop and CLI binaries.
 Via Cargo (coming soon to crates.io):
 
 ```bash
-cargo install --path crates/tact-ui   # or: cargo install -p tact-ui from the repo root
+cargo install --path crates/tact-ui   # from the repo root
 ```
 
 **Binary releases:** push a version tag to publish pre-built binaries for Linux (x86_64 / ARM64), macOS (x86_64 / ARM64), and Windows (x86_64):
