@@ -772,6 +772,7 @@
 <li class="toc-l2"><a href="#58-2026-11-07--desktop-chat-%E9%9D%A2%E6%9D%BF%E9%9A%90%E8%97%8F%E6%BB%9A%E5%8A%A8%E6%9D%A1" title="58. 2026-11-07 — Desktop：chat 面板隐藏滚动条"><span class="toc-label">58. 2026-11-07 — Desktop：chat 面板隐藏滚动条</span></a></li>
 <li class="toc-l2"><a href="#59-2026-11-07--desktop-%E8%BF%87%E7%A8%8B%E6%91%98%E8%A6%81%E8%80%97%E6%97%B6%E4%B8%8D%E5%86%8D%E5%80%92%E9%80%80" title="59. 2026-11-07 — Desktop：过程摘要耗时不再倒退"><span class="toc-label">59. 2026-11-07 — Desktop：过程摘要耗时不再倒退</span></a></li>
 <li class="toc-l2"><a href="#60-2026-11-07--desktop-%E6%9D%83%E9%99%90%E5%8D%A1%E7%82%B9%E5%87%BB%E4%B8%8D%E5%86%8D%E8%A2%AB%E6%9C%AC%E5%9C%B0%E6%BC%82%E7%A7%BB%E5%90%9E%E6%8E%89" title="60. 2026-11-07 — Desktop：权限卡点击不再被本地漂移吞掉"><span class="toc-label">60. 2026-11-07 — Desktop：权限卡点击不再被本地漂移吞掉</span></a></li>
+<li class="toc-l2"><a href="#61-2026-11-07--desktop-%E6%9D%83%E9%99%90%E6%8F%90%E7%A4%BA%E6%9D%A1%E4%B8%8D%E5%86%8D%E6%92%91%E9%AB%98%E5%B9%B6%E5%9C%A8%E5%9B%9E%E7%AD%94%E5%90%8E%E6%94%B6%E8%B5%B7" title="61. 2026-11-07 — Desktop：权限提示条不再撑高并在回答后收起"><span class="toc-label">61. 2026-11-07 — Desktop：权限提示条不再撑高并在回答后收起</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -22859,6 +22860,30 @@ Desktop：权限卡点击不再被本地漂移吞掉</h2>
 <code>crates/desktop_core/src/transcript/reducer.rs</code>、
 <code>DesktopController::host_still_waits</code>、
 <code>TranscriptReducer::confirm_gate_response</code>。</p>
+<h2 id="61-2026-11-07--desktop-权限提示条不再撑高并在回答后收起">61. 2026-11-07 —
+Desktop：权限提示条不再撑高并在回答后收起</h2>
+<p><strong>症状：</strong> 待审批的权限提示条遇到多行命令时整条竖着长到几百像素，
+占掉大半个聊天区，Review 被挤到中间；点完授权后提示条仍然留在那里，也没有
+关闭入口。</p>
+<p><strong>原因：</strong> 宿主给命令权限的 prompt 是
+<code>Run command: &lt;完整多行脚本&gt;</code>。提示条只对文本做了
+<code>truncate()</code>，没有处理换行，文本按行数撑高；内联权限卡的标题也直接
+渲染整段 prompt。另外提示条取的是「第一个 Pending 或 Submitting 的闸门」，用户
+已经回答、工具还在跑时仍然算数，于是一直挂着。</p>
+<p><strong>改后行为：</strong> 提示条、内联卡标题、折叠摘要和只读卡都只取 prompt
+的第一行（例如 <code>Run command: python3 - &lt;&lt;'PY'</code>）；完整命令仍在
+命令预览块和 Review 里，条高不再随命令长度变化。提示条只展示仍在等待决定的
+<code>Pending</code> 闸门，点完授权立即收起，<code>Submitting</code> 状态只在
+转录里的卡片上显示。</p>
+<p><strong>验证：</strong>
+<code>a_multiline_gate_prompt_keeps_the_banner_one_line</code> 先失败于
+<code>108.0px</code>，修复后通过；
+<code>an_answered_gate_leaves_the_sticky_strip</code> 断言已回答的闸门不再被
+提示条选中。桌面端 270 个测试通过，长命令预览的既有上限测试保持通过。</p>
+<p><strong>Pointers：</strong> <code>crates/desktop/src/root.rs</code>、
+<code>gate_prompt_line</code>、<code>render_gate_banner</code>、
+<code>gate_element</code>、<code>crates/desktop/src/ui/sticky.rs</code>、
+<code>pending_gate</code>。</p>
 <h2 id="related-docs">Related Docs</h2>
 <ul>
 <li><a href="./07_chapter_tool_zh.html">工具系统</a></li>

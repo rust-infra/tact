@@ -7892,6 +7892,7 @@ impl DesktopRoot {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         h_flex()
+            .debug_selector(|| "gate-banner".into())
             .w_full()
             .min_w_0()
             .gap_2()
@@ -7907,7 +7908,7 @@ impl DesktopRoot {
                     .min_w_0()
                     .truncate()
                     .text_sm()
-                    .child(gate.prompt.to_string()),
+                    .child(gate_prompt_line(&gate.prompt).to_string()),
             )
             .child(
                 div()
@@ -14967,6 +14968,15 @@ fn gate_tool_preview(
     })
 }
 
+/// The first line of a gate prompt.
+///
+/// Command prompts embed the whole script after the first line; the preview
+/// block and the Review surface carry the rest, so a prompt row never grows
+/// with the command it quotes.
+fn gate_prompt_line(prompt: &str) -> &str {
+    prompt.lines().next().unwrap_or_default().trim()
+}
+
 /// The command a gate prompt quotes in backticks, when the group has no tool
 /// to borrow it from.
 fn gate_prompt_command(prompt: &str) -> Option<SharedString> {
@@ -15480,13 +15490,13 @@ fn gate_element(
         let summary = if gate.status == GateState::Cancelled {
             format!(
                 "{} · {}",
-                gate.prompt,
+                gate_prompt_line(&gate.prompt),
                 i18n::text(locale, TextKey::Cancelled)
             )
         } else if let Some(ref settled) = settled {
-            format!("{} · {settled}", gate.prompt)
+            format!("{} · {settled}", gate_prompt_line(&gate.prompt))
         } else {
-            gate.prompt.to_string()
+            gate_prompt_line(&gate.prompt).to_string()
         };
         let request_id = gate.request_id.0;
         let (mark, tone) = match gate.status {
@@ -15542,7 +15552,7 @@ fn gate_element(
                     .truncate()
                     .text_size(px(10.))
                     .text_color(snapshot_row_muted(snapshot))
-                    .child(gate.prompt.to_string()),
+                    .child(gate_prompt_line(&gate.prompt).to_string()),
             )
             .when_some(settled, |row, outcome| {
                 row.child(
@@ -15578,7 +15588,11 @@ fn gate_element(
                 .rounded_md()
                 .border_1()
                 .border_color(theme::palette(snapshot.theme, snapshot.appearance).border)
-                .child(div().text_sm().child(gate.prompt.to_string()))
+                .child(
+                    div()
+                        .text_sm()
+                        .child(gate_prompt_line(&gate.prompt).to_string()),
+                )
                 .child(
                     div()
                         .text_xs()
@@ -15743,7 +15757,7 @@ fn gate_element(
                     .text_size(px(19.))
                     .font_semibold()
                     .text_color(snapshot_ink(snapshot))
-                    .child(gate.prompt.to_string()),
+                    .child(gate_prompt_line(&gate.prompt).to_string()),
             )
             .when_some(command_description, |card, description| {
                 card.child(
@@ -19650,6 +19664,38 @@ mod tests {
             preview.size.height >= px(100.),
             "the bounded preview still shows the command: {:.1}px",
             preview.size.height.as_f32()
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn a_multiline_gate_prompt_keeps_the_banner_one_line(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        let mut gate = tact_desktop_core::fixtures::demo_gate();
+        gate.prompt = Arc::from("Run command: python3 - <<'PY'\nimport json\nprint('x')\nPY");
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = tact_desktop_core::fixtures::demo_transcript();
+                snapshot.pending_gates = Arc::from([gate.clone()]);
+                this.snapshot = Arc::new(snapshot);
+                this.pending_row_updates
+                    .extend(this.snapshot.transcript.iter().map(|row| row.id));
+                let count = this.snapshot.transcript.len();
+                this.scroller.update(cx, |state, cx| {
+                    state.reset(count, cx);
+                });
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+            window.draw(cx).clear(cx);
+        });
+        let banner = window.debug_bounds("gate-banner").expect("gate banner");
+        assert!(
+            banner.size.height <= px(60.),
+            "a command prompt stays one line in the banner: {:.1}px",
+            banner.size.height.as_f32()
         );
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);

@@ -206,8 +206,15 @@ pub fn card_visible(
             .any(|task| task.status == BackgroundTaskStatusSnapshot::Running)
 }
 
+/// The gate the sticky strip shows: one still awaiting a decision.
+///
+/// A gate the user already answered keeps its transcript card but leaves the
+/// strip, so answering closes the reminder immediately instead of leaving it
+/// on screen until the host settles the tool.
 pub fn pending_gate(inspector_pending: &[GateCard]) -> Option<&GateCard> {
-    inspector_pending.first()
+    inspector_pending
+        .iter()
+        .find(|gate| gate.status == tact_desktop_core::GateState::Pending)
 }
 
 #[cfg(test)]
@@ -461,5 +468,16 @@ mod tests {
             task(9, TaskStatusSnapshot::Completed),
         ]);
         assert!(active_task(&finished).is_none());
+    }
+
+    #[test]
+    fn an_answered_gate_leaves_the_sticky_strip() {
+        let mut answered = tact_desktop_core::fixtures::demo_gate();
+        answered.status = tact_desktop_core::GateState::Submitting;
+        assert!(pending_gate(&[answered]).is_none());
+
+        let mut waiting = tact_desktop_core::fixtures::demo_gate();
+        waiting.status = tact_desktop_core::GateState::Pending;
+        assert!(pending_gate(&[waiting]).is_some());
     }
 }
