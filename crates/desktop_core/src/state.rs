@@ -174,6 +174,10 @@ impl DesktopState {
                 models: models.into(),
                 subagent_model: Arc::from(subagent_model),
                 subagent_models: subagent_models.into(),
+                effort: settings
+                    .as_ref()
+                    .and_then(|settings| settings.agent.reasoning_effort)
+                    .map(|effort| Arc::from(effort.as_str())),
                 permission_mode: config.host.permission_mode,
                 ..ComposerView::default()
             },
@@ -486,7 +490,10 @@ impl DesktopState {
             }
             AgentUpdate::TokenUsage(usage) => self.apply_token_usage(usage),
             AgentUpdate::ModelInfo(model) => {
-                self.runtime.model = Some(Arc::from(model.model.clone()))
+                self.runtime.model = Some(Arc::from(model.model.clone()));
+                self.composer.effort = model
+                    .reasoning_effort
+                    .map(|effort| Arc::from(effort.as_str()));
             }
             AgentUpdate::TaskComplete(_) => {
                 self.runtime.current_phase = RunPhase::Complete;
@@ -952,6 +959,28 @@ mod tests {
             max_turns: None,
         });
         assert_eq!(state.runtime.turn_started_at, Some(second));
+    }
+
+    #[test]
+    fn model_info_syncs_the_reasoning_effort() {
+        let (mut state, _tmp) = state();
+        let info = |effort| {
+            AgentUpdate::ModelInfo(tact_protocol::ModelCallParams {
+                model: "deepseek".into(),
+                max_tokens: 1024,
+                thinking_budget: None,
+                reasoning_effort: effort,
+                extra_body: None,
+            })
+        };
+        state.apply_agent_update(info(Some(tact_protocol::ReasoningEffort::Max)));
+        assert_eq!(state.composer.effort.as_deref(), Some("max"));
+
+        state.apply_agent_update(info(None));
+        assert_eq!(
+            state.composer.effort, None,
+            "a model without an effort must clear the picker"
+        );
     }
 
     #[test]

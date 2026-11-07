@@ -1015,6 +1015,7 @@ pub(crate) struct DesktopRoot {
     slash_overlay: Option<SlashOverlayState>,
     slash_dismissed_for: Option<String>,
     permission_picker_open: bool,
+    effort_picker_open: bool,
     model_picker_cursor: usize,
     /// Quick filter for the model pickers. A provider's index can hold dozens
     /// of ids, so the list is searchable and navigable rather than scrolled
@@ -1534,6 +1535,7 @@ impl DesktopRoot {
             slash_overlay: None,
             slash_dismissed_for: None,
             permission_picker_open: false,
+            effort_picker_open: false,
             model_picker_cursor: 0,
             model_search,
             model_picker_query: String::new(),
@@ -8492,6 +8494,128 @@ impl DesktopRoot {
             .into_any_element()
     }
 
+    /// The composer's live reasoning-effort picker.
+    ///
+    /// Effort belongs beside the model it applies to, not behind the settings
+    /// pane: the same model can want a different tier per task.
+    fn render_effort_picker(&self, cx: &mut Context<Self>) -> AnyElement {
+        let locale = self.snapshot.language;
+        let selected = self.snapshot.composer.effort.as_deref().map(str::to_string);
+        let choices = setting_choices(SettingId::ReasoningEffort, locale);
+        let current_label = selected.as_ref().and_then(|value| {
+            choices
+                .iter()
+                .find(|(_, choice)| choice == value)
+                .map(|(label, _)| label.clone())
+        });
+        let label = i18n::text(locale, TextKey::Reasoning);
+        let aria = match &current_label {
+            Some(value) => format!("{label}: {value}"),
+            None => label.to_string(),
+        };
+        let menu_selected = selected.clone();
+        let weak = cx.weak_entity();
+        let open_weak = weak.clone();
+        Popover::new("effort-picker-popover")
+            // The effort chip sits on the composer's bottom edge, beside the
+            // permission chip; anchor its menu above like that one.
+            .anchor(Anchor::BottomLeft)
+            .open(self.effort_picker_open)
+            .on_open_change(move |open, _, cx| {
+                let _ = open_weak.update(cx, |this, cx| {
+                    this.effort_picker_open = *open;
+                    cx.notify();
+                });
+            })
+            .trigger(
+                gpui_base::Button::new("effort-picker-trigger")
+                    .debug_selector(|| "effort-picker".into())
+                    .role(Role::Button)
+                    .tab_stop(true)
+                    .aria_label(aria)
+                    .selected(false)
+                    .cursor_pointer()
+                    .rounded(px(5.))
+                    .px(px(4.))
+                    .py(px(2.))
+                    .text_size(px(11.))
+                    .text_color(cx.theme().muted_foreground)
+                    .hover(|style| style.bg(cx.theme().muted))
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap(px(5.))
+                            .child(label)
+                            .when_some(current_label, |row, value| {
+                                row.child(
+                                    div()
+                                        .flex_none()
+                                        .text_color(cx.theme().foreground)
+                                        .child(format!("· {value}")),
+                                )
+                            })
+                            .child(
+                                Icon::new(IconName::ChevronDown)
+                                    .xsmall()
+                                    .text_color(cx.theme().muted_foreground),
+                            ),
+                    ),
+            )
+            .content(move |_, _, _| {
+                let weak = weak.clone();
+                let rows = choices
+                    .iter()
+                    .map(|(choice_label, choice_value)| {
+                        let weak = weak.clone();
+                        let value = choice_value.clone();
+                        let option_label = choice_label.clone();
+                        let is_selected = menu_selected.as_deref() == Some(choice_value.as_str());
+                        gpui_base::Button::new(SharedString::from(format!(
+                            "effort-choice-{choice_value}"
+                        )))
+                        .debug_selector({
+                            let value = choice_value.clone();
+                            move || format!("effort-choice-{value}")
+                        })
+                        .role(Role::RadioButton)
+                        .tab_stop(true)
+                        .aria_label(option_label.clone())
+                        .selected(is_selected)
+                        .cursor_pointer()
+                        .w_full()
+                        .rounded_md()
+                        .px_2()
+                        .h(px(24.))
+                        .py_0()
+                        .text_xs()
+                        .when(is_selected, |button| button.bg(gpui::rgba(0x007aff22)))
+                        .child(div().w_full().min_w_0().truncate().child(option_label))
+                        .on_click(move |_, _, cx| {
+                            let value = value.clone();
+                            let _ = weak.update(cx, |this, cx| {
+                                this.effort_picker_open = false;
+                                this.dispatch(DesktopIntent::SetSetting {
+                                    id: SettingId::ReasoningEffort,
+                                    value: SettingValue::Choice(value),
+                                });
+                                cx.notify();
+                            });
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                v_flex()
+                    .id("effort-picker-menu")
+                    .debug_selector(|| "effort-picker-menu".into())
+                    .role(Role::Menu)
+                    .aria_label(label)
+                    .w(px(168.))
+                    .gap(px(2.))
+                    .children(rows)
+                    .into_any_element()
+            })
+            .into_any_element()
+    }
+
     fn render_permission_picker(&self, cx: &mut Context<Self>) -> AnyElement {
         let selected = self.snapshot.composer.permission_mode;
         let choices = [
@@ -8773,7 +8897,10 @@ impl DesktopRoot {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        vec![self.render_permission_picker(cx)]
+        vec![
+            self.render_effort_picker(cx),
+            self.render_permission_picker(cx),
+        ]
     }
 
     fn render_voice_status(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -19558,6 +19685,61 @@ mod tests {
         assert!(
             menu.origin.y >= px(0.0) && menu.origin.y + menu.size.height <= viewport.height,
             "permission menu must fit above the composer trigger: menu={menu:?}, viewport={viewport:?}"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn effort_picker_opens_and_takes_a_choice(cx: &mut TestAppContext) {
+        struct EffortHarness {
+            root: Entity<DesktopRoot>,
+        }
+
+        impl Render for EffortHarness {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                self.root
+                    .update(cx, |root, cx| root.render_effort_picker(cx))
+            }
+        }
+
+        let data_dir = probe_dir("effort-picker");
+        let config = DesktopConfig::load(data_dir.clone()).unwrap();
+        install_test_config(&config);
+        let (controller, _events) = DesktopController::start(config).unwrap();
+        let shutdown = controller.clone();
+        let (_, window) = cx.add_window_view(move |window, cx| {
+            gpui_component::init(cx);
+            crate::theme::apply(DesktopTheme::Tact, Appearance::Light, Some(window), cx);
+            let root = cx.new(|cx| DesktopRoot::new_for_test(controller, window, cx));
+            EffortHarness { root }
+        });
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            window.debug_bounds("effort-picker-menu").is_none(),
+            "the effort choices must start collapsed"
+        );
+        let trigger = window
+            .debug_bounds("effort-picker")
+            .expect("effort picker trigger");
+        window.simulate_click(trigger.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        let menu = window
+            .debug_bounds("effort-picker-menu")
+            .expect("clicking the effort trigger must open the anchored menu");
+        let viewport = window.update(|window, _| window.viewport_size());
+        assert!(
+            menu.origin.y >= px(0.0) && menu.origin.y + menu.size.height <= viewport.height,
+            "effort menu must fit above the composer trigger: menu={menu:?}, viewport={viewport:?}"
+        );
+        let choice = window
+            .debug_bounds("effort-choice-max")
+            .expect("the effort menu offers max");
+        window.simulate_click(choice.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            window.debug_bounds("effort-picker-menu").is_none(),
+            "choosing an effort must close the menu"
         );
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);

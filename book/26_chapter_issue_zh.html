@@ -773,6 +773,7 @@
 <li class="toc-l2"><a href="#59-2026-11-07--desktop-%E8%BF%87%E7%A8%8B%E6%91%98%E8%A6%81%E8%80%97%E6%97%B6%E4%B8%8D%E5%86%8D%E5%80%92%E9%80%80" title="59. 2026-11-07 — Desktop：过程摘要耗时不再倒退"><span class="toc-label">59. 2026-11-07 — Desktop：过程摘要耗时不再倒退</span></a></li>
 <li class="toc-l2"><a href="#60-2026-11-07--desktop-%E6%9D%83%E9%99%90%E5%8D%A1%E7%82%B9%E5%87%BB%E4%B8%8D%E5%86%8D%E8%A2%AB%E6%9C%AC%E5%9C%B0%E6%BC%82%E7%A7%BB%E5%90%9E%E6%8E%89" title="60. 2026-11-07 — Desktop：权限卡点击不再被本地漂移吞掉"><span class="toc-label">60. 2026-11-07 — Desktop：权限卡点击不再被本地漂移吞掉</span></a></li>
 <li class="toc-l2"><a href="#61-2026-11-07--desktop-%E6%9D%83%E9%99%90%E6%8F%90%E7%A4%BA%E6%9D%A1%E4%B8%8D%E5%86%8D%E6%92%91%E9%AB%98%E5%B9%B6%E5%9C%A8%E5%9B%9E%E7%AD%94%E5%90%8E%E6%94%B6%E8%B5%B7" title="61. 2026-11-07 — Desktop：权限提示条不再撑高并在回答后收起"><span class="toc-label">61. 2026-11-07 — Desktop：权限提示条不再撑高并在回答后收起</span></a></li>
+<li class="toc-l2"><a href="#62-2026-11-07--desktop-composer-%E5%8F%AF%E7%9B%B4%E6%8E%A5%E5%88%87%E6%8D%A2%E6%8E%A8%E7%90%86%E5%BC%BA%E5%BA%A6" title="62. 2026-11-07 — Desktop：composer 可直接切换推理强度"><span class="toc-label">62. 2026-11-07 — Desktop：composer 可直接切换推理强度</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -22884,6 +22885,26 @@ Desktop：权限提示条不再撑高并在回答后收起</h2>
 <code>gate_prompt_line</code>、<code>render_gate_banner</code>、
 <code>gate_element</code>、<code>crates/desktop/src/ui/sticky.rs</code>、
 <code>pending_gate</code>。</p>
+<h2 id="62-2026-11-07--desktop-composer-可直接切换推理强度">62. 2026-11-07 —
+Desktop：composer 可直接切换推理强度</h2>
+<p><strong>目标：</strong> composer 底部只能切模型和权限，reasoning effort 只能在
+设置面板里改，任务中途想换档位要多开一层。</p>
+<p><strong>改后行为：</strong> composer 底部、权限选择器左侧新增 Reasoning 选择器。
+未设置档位时只显示 <code>Reasoning</code>，设置后显示
+<code>Reasoning · 高</code> 这样的当前值；点击弹出
+low / medium / high / xhigh / max 五个档位，选择后经
+<code>SetSetting(ReasoningEffort)</code> 立即下发
+<code>SetReasoningEffort</code>，不需要重启会话。composer 的 effort 从配置的
+<code>agent.reasoning_effort</code> 初始化，并跟随宿主
+<code>ModelInfo</code> 同步，切模型后选择器显示实际生效的档位。</p>
+<p><strong>验证：</strong>
+<code>effort_picker_opens_and_takes_a_choice</code> 断言选择器默认收起、点击展开、
+菜单在窗口内、选择后收起；<code>reasoning_effort_updates_composer_state</code>
+覆盖下发后 composer 状态；桌面端 271 个测试通过。</p>
+<p><strong>Pointers：</strong> <code>crates/desktop/src/root.rs</code>、
+<code>render_effort_picker</code>、<code>render_composer_trailing</code>、
+<code>crates/desktop_core/src/state.rs</code>、
+<code>crates/desktop_core/src/controller.rs</code>。</p>
 <h2 id="related-docs">Related Docs</h2>
 <ul>
 <li><a href="./07_chapter_tool_zh.html">工具系统</a></li>
