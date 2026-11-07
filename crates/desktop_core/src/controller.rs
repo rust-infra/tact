@@ -16,8 +16,8 @@ use tokio::sync::{mpsc, oneshot};
 use crate::{
     AccountView, Appearance, CatalogLocale, DesktopConfig, DesktopEffect, DesktopEvent,
     DesktopSnapshot, DesktopTheme, InitialSession, PermissionModeView, ProjectId, ProjectRecord,
-    ProjectRegistry, RequestId, RunPhase, SectionMask, SessionCatalog, SessionId, SessionPhase,
-    SessionSummaryView, StateCommit,
+    ProjectRegistry, RequestId, RunPhase, SectionMask, SessionCatalog, SessionEpoch, SessionId,
+    SessionPhase, SessionSummaryView, StateCommit,
     commands::{CommandRoute, route_command, route_setting},
     error::{DesktopClosed, DesktopShutdownError, DesktopStartError, FailureKind, FailureView},
     intent::{DesktopIntent, GateResponse, ReaderRef, ReaderRequest, SettingValue, Submission},
@@ -1005,6 +1005,15 @@ impl DesktopActor {
                             | GateResponseError::Stale
                             | GateResponseError::AlreadyAnswered
                     ) {
+                        // The host owns the request. A local row that drifted
+                        // must not swallow the answer while the host waits.
+                        if self.host_still_waits(session_epoch, request_id, &response) {
+                            self.send_command(UserCommand::UiResponse(response.clone()))?;
+                            if let Some(row) = self.state.reducer.confirm_gate_response(&response) {
+                                self.publish_rows(vec![row], SectionMask::TRANSCRIPT);
+                            }
+                        }
+                        self.reconcile_gate_snapshot_now();
                         return Ok(());
                     }
                     return Err(format!("gate response rejected: {error:?}"));
@@ -2979,6 +2988,34 @@ impl DesktopActor {
         self.closing.retain(|closing| !closing.task.is_finished());
     }
 
+    /// Whether the host still holds the request a gate click is answering.
+    fn host_still_waits(
+        &self,
+        session_epoch: SessionEpoch,
+        request_id: u64,
+        response: &tact_protocol::UiResponse,
+    ) -> bool {
+        if session_epoch != self.state.session.epoch {
+            return false;
+        }
+        let Some(host) = self.host.as_ref() else {
+            return false;
+        };
+        host.pending_requests().iter().any(|pending| {
+            pending.request_id == request_id
+                && matches!(
+                    (pending.kind, response),
+                    (
+                        tact::ui_responder::PendingUiRequestKind::Select,
+                        tact_protocol::UiResponse::Select { .. }
+                    ) | (
+                        tact::ui_responder::PendingUiRequestKind::MultiSelect,
+                        tact_protocol::UiResponse::MultiSelect { .. }
+                    )
+                )
+        })
+    }
+
     fn send_command(&self, command: UserCommand) -> Result<(), String> {
         match self.host.as_ref() {
             Some(host) => host.send(command).map_err(|error| format!("{error:?}")),
@@ -3276,6 +3313,12 @@ mod tests {
         }
 
         fn send(&self, command: UserCommand) -> Result<(), HostSendError> {
+            if let UserCommand::UiResponse(response) = &command {
+                self.pending
+                    .lock()
+                    .unwrap()
+                    .retain(|pending| pending.request_id != response.request_id());
+            }
             self.commands.lock().unwrap().push(command);
             Ok(())
         }
@@ -4892,6 +4935,65 @@ mod tests {
             .filter(|command| matches!(command, UserCommand::UiResponse(_)))
             .count();
         assert_eq!(responses, 1);
+        assert_eq!(controller.snapshot().failure, None);
+    }
+
+    #[tokio::test]
+    async fn a_click_on_a_withdrawn_gate_row_still_reaches_the_host() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_project(tmp.path());
+        let factory = FakeFactory::new();
+        let (controller, _events) =
+            DesktopController::start_with_factory(config(tmp.path()), factory.clone()).unwrap();
+        wait_ready(&controller).await;
+        factory.pending.lock().unwrap().push(pending_select(1));
+        factory.emit(HostEvent::agent(AgentUpdate::RequestSelect {
+            request_id: 1,
+            prompt: "Allow?".into(),
+            options: vec!["Allow".into()],
+            log_confirm: false,
+            from_subagent: false,
+            purpose: tact_protocol::UiRequestPurpose::Permission,
+            origin: tact_protocol::UiRequestOrigin::main(),
+        }));
+        controller.when_idle().await.unwrap();
+
+        // One host batch misses the request, so the local row reads as
+        // withdrawn while the host is still waiting for the answer.
+        factory.pending.lock().unwrap().clear();
+        factory.emit(HostEvent::agent(AgentUpdate::RequestSelect {
+            request_id: 1,
+            prompt: "Allow?".into(),
+            options: vec!["Allow".into()],
+            log_confirm: false,
+            from_subagent: false,
+            purpose: tact_protocol::UiRequestPurpose::Permission,
+            origin: tact_protocol::UiRequestOrigin::main(),
+        }));
+        controller.when_idle().await.unwrap();
+        factory.pending.lock().unwrap().push(pending_select(1));
+
+        let epoch = controller.snapshot().session.epoch;
+        controller
+            .dispatch(DesktopIntent::RespondGate {
+                session_epoch: epoch,
+                request_id: 1,
+                response: GateResponse::Select(Some(0)),
+            })
+            .unwrap();
+        controller.when_idle().await.unwrap();
+
+        let responses = factory
+            .commands
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|command| matches!(command, UserCommand::UiResponse(_)))
+            .count();
+        assert_eq!(
+            responses, 1,
+            "a drifted gate row must not swallow the click"
+        );
         assert_eq!(controller.snapshot().failure, None);
     }
 

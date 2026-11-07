@@ -1212,6 +1212,37 @@ impl TranscriptReducer {
         Ok(self.top_level_group_for(row).unwrap_or(row))
     }
 
+    /// Marks a gate as submitted for a response the host accepted even though
+    /// the local row had drifted (withdrawn, stale, or already answered).
+    ///
+    /// [`Self::apply_gate_response`] rejects those rows on purpose; this path
+    /// runs only after the host confirmed the request is still pending.
+    pub fn confirm_gate_response(&mut self, response: &UiResponse) -> Option<RowId> {
+        let id = RequestId(response.request_id());
+        let row = *self.gates.get(&id)?;
+        let cancelled = matches!(
+            response,
+            UiResponse::Select { choice: None, .. } | UiResponse::MultiSelect { choices: None, .. }
+        );
+        self.update_gate(id, |gate| {
+            if matches!(gate.status, GateState::Resolved | GateState::Cancelled) {
+                return;
+            }
+            gate.status = if cancelled {
+                GateState::Cancelled
+            } else {
+                GateState::Submitting
+            };
+            gate.selection = match response {
+                UiResponse::Select { choice, .. } => GateSelection::Single(*choice),
+                UiResponse::MultiSelect { choices, .. } => {
+                    GateSelection::Multiple(choices.clone().unwrap_or_default())
+                }
+            };
+        });
+        Some(self.top_level_group_for(row).unwrap_or(row))
+    }
+
     pub fn seed_persisted(
         &mut self,
         messages: &[AgentMessage],
