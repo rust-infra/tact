@@ -145,6 +145,7 @@ fn run_inner(smoke: bool) -> Result<(), DesktopStartError> {
                 eprintln!("failed to register Tact Desktop fonts: {error:#}");
             }
             let initial = controller.snapshot();
+            crate::platform::install_app_identity();
             let close_language = initial.language;
             let system_reduce_motion =
                 cx.reduce_motion() || crate::platform::system_reduced_motion();
@@ -192,6 +193,7 @@ fn run_inner(smoke: bool) -> Result<(), DesktopStartError> {
             #[cfg(target_os = "linux")]
             {
                 window_options.window_decorations = Some(gpui::WindowDecorations::Client);
+                window_options.icon = crate::platform::icon::window_icon();
             }
             window_options.window_bounds = Some(WindowBounds::Windowed(bounds));
             cx.open_window(window_options, move |window, cx| {

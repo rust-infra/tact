@@ -25,7 +25,6 @@ required-features = ["ui-capture"]
 # Screen Recording permission.
 ui-capture = [
     "dep:anyhow",
-    "dep:image",
     "tact_desktop_core/ui-capture",
     "gpui/test-support",
     "gpui_platform/test-support",
@@ -34,7 +33,7 @@ ui-capture = [
 [dependencies]
 anyhow = { workspace = true, optional = true }
 chrono = { workspace = true }
-image = { workspace = true, optional = true }
+image = { workspace = true }
 serde_json = { workspace = true }
 tact_catalog = { version = "2.0.0", path = "../catalog" }
 tact_desktop_core = { version = "2.0.0", path = "../desktop_core" }

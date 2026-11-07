@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+pub mod icon;
 pub mod linux;
 pub mod macos;
 pub mod windows;
@@ -25,6 +26,18 @@ pub const TARGET: Option<PackagingTarget> = if cfg!(target_os = "macos") {
 
 pub fn supported_platform() -> bool {
     TARGET.is_some()
+}
+
+/// Files the process under the icon's identity.
+///
+/// A packaged `Tact Desktop.app` carries its own Dock tile; this covers
+/// development runs and bare binaries. On Windows the AppUserModelID groups
+/// the taskbar button, notifications, and the badge under one app.
+pub fn install_app_identity() {
+    #[cfg(target_os = "macos")]
+    icon::install_dock_icon();
+    #[cfg(target_os = "windows")]
+    windows::set_app_user_model_id(icon::APP_IDENTIFIER);
 }
 
 /// The dock/taskbar badge for `count` pending decisions.

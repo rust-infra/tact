@@ -57,5 +57,18 @@ pub fn set_taskbar_badge(label: Option<String>) {
     }
 }
 
+/// Groups the process's windows, notifications, and taskbar button under
+/// `app_id`.
+///
+/// Without it Windows files a bare executable under its path, so the installed
+/// shortcut's icon never reaches the running window.
+#[cfg(target_os = "windows")]
+pub fn set_app_user_model_id(app_id: &str) {
+    use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
+    use windows::core::HSTRING;
+
+    let _ = unsafe { SetCurrentProcessExplicitAppUserModelID(&HSTRING::from(app_id)) };
+}
+
 #[cfg(not(target_os = "windows"))]
 pub fn set_taskbar_badge(_label: Option<String>) {}

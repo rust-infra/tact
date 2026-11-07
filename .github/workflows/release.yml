@@ -447,17 +447,21 @@ jobs:
             cp crates/desktop/assets/fonts/Lilex-LICENSE.txt .
             cp vendor/gpui-ai/LICENSE gpui-ai-LICENSE-MIT.txt
             cp crates/desktop/assets/app-icon.png .
+            mkdir -p share/icons share/applications
+            cp -R crates/desktop/assets/linux/hicolor share/icons/
+            cp crates/desktop/assets/linux/tact-desktop.desktop share/applications/
             strip tact-desktop || true
             strip tact-ui || true
             python3 scripts/normalize-mtime.py tact-desktop tact-ui LICENSE \
               LICENSE.tact-ui IBM-Plex-LICENSE.txt Lilex-LICENSE.txt \
               THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt \
-              THIRD-PARTY-LICENSES.txt Cargo.lock gpui-ai-LICENSE-MIT.txt app-icon.png
+              THIRD-PARTY-LICENSES.txt Cargo.lock gpui-ai-LICENSE-MIT.txt app-icon.png \
+              share
             tar --sort=name --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 \
               --numeric-owner -cf - tact-desktop tact-ui LICENSE LICENSE.tact-ui \
               IBM-Plex-LICENSE.txt Lilex-LICENSE.txt THIRD-PARTY-NOTICES.md \
               THIRD-PARTY-APACHE-2.0.txt THIRD-PARTY-LICENSES.txt Cargo.lock \
-              gpui-ai-LICENSE-MIT.txt app-icon.png | gzip -n > "${asset}"
+              gpui-ai-LICENSE-MIT.txt app-icon.png share | gzip -n > "${asset}"
           fi
 
           echo "ASSET_PATH=${asset}" >> "${GITHUB_ENV}"
@@ -500,6 +504,8 @@ jobs:
             sidecar="$verify/extracted/tact-ui"
             test -f "$verify/extracted/THIRD-PARTY-LICENSES.txt"
             test -f "$verify/extracted/Cargo.lock"
+            test -f "$verify/extracted/share/applications/tact-desktop.desktop"
+            test -f "$verify/extracted/share/icons/hicolor/256x256/apps/tact-desktop.png"
           fi
 
           if [[ "${{ runner.os }}" == "Windows" ]]; then

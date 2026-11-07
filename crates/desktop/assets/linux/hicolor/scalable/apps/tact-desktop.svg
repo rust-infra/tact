@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!--
+    Tact app icon — the editable source for every platform raster.
+
+    A Tact-blue squircle carrying a white disc, with the `T` cut out of it so
+    the product colour shows through the letter. The disc reads as the agent
+    loop the shell keeps turning; the mark stays legible down to 16px, where
+    the disc and the letter are all that remain.
+
+    The canvas is the macOS icon grid: 824px of artwork inside a 1024px tile,
+    so the same file rasterises for the bundle, the Windows resource, and the
+    Linux hicolor theme.
+
+    Colours follow the shell's primary palette (`#007aff`), so the icon and the
+    running app read as one product. Regenerate every raster with:
+        python3 scripts/app-icon.py
+  -->
+  <defs>
+    <linearGradient id="background" x1="0.08" y1="0" x2="0.92" y2="1">
+      <stop offset="0" stop-color="#6cb4ff"/>
+      <stop offset="0.34" stop-color="#227eff"/>
+      <stop offset="0.72" stop-color="#007aff"/>
+      <stop offset="1" stop-color="#063a86"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.24"/>
+      <stop offset="0.45" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <clipPath id="squircle">
+      <rect x="100" y="100" width="824" height="824" rx="185.4"/>
+    </clipPath>
+    <mask id="mark">
+      <rect x="0" y="0" width="1024" height="1024" fill="#ffffff"/>
+      <path d="M300 330 H724 C750 330 766 346 766 372 V388 C766 414 750 430 724 430 H584 V610
+               C584 636 568 652 542 652 H482 C456 652 440 636 440 610 V430 H300
+               C274 430 258 414 258 388 V372 C258 346 274 330 300 330 Z" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g clip-path="url(#squircle)">
+    <rect x="100" y="100" width="824" height="824" fill="url(#background)"/>
+    <rect x="100" y="100" width="824" height="824" fill="url(#sheen)"/>
+  </g>
+
+  <circle cx="512" cy="512" r="330" fill="#ffffff" mask="url(#mark)"/>
+</svg>
