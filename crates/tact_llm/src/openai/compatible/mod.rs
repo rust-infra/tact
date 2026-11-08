@@ -38,7 +38,7 @@ pub use body::{
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
 pub use multi_model::ChatCompletionsAdapter;
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use secrecy::{ExposeSecret, Secret};
 use serde::{Deserialize, Serialize};
 use tact_agent_api::MessagePhase;
@@ -373,7 +373,10 @@ impl Config for CompatibleConfig {
         }
         // Kimi's coding endpoint whitelists specific coding agents.
         // Without a matching User-Agent it returns 403 access_terminated_error.
-        headers.insert(reqwest::header::USER_AGENT, "Claude Code".parse().unwrap());
+        headers.insert(
+            reqwest::header::USER_AGENT,
+            HeaderValue::from_static("Claude Code"),
+        );
         headers
     }
 

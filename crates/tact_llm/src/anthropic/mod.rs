@@ -15,6 +15,7 @@ use crate::{
     ProviderProgressSink, StopReason, StreamUsage, ThinkingChunk, TokenUsageInfo,
 };
 use futures_util::StreamExt;
+use reqwest::header::HeaderValue;
 use reqwest_eventsource::{Event, RequestBuilderExt};
 use secrecy::ExposeSecret;
 use serde::Deserialize;
@@ -36,7 +37,10 @@ fn is_thinking_content_block(block: Option<&ContentBlock>) -> bool {
 pub struct AnthropicAdapter {
     credentials: Arc<dyn CredentialProvider>,
     base_url: String,
-    api_version: String,
+    /// Held as a validated header rather than a `String`: the value is a
+    /// compile-time constant, so parsing it per request could only ever fail
+    /// on a bug that `from_static` already rules out.
+    api_version: HeaderValue,
     client: reqwest::Client,
 }
 
@@ -57,7 +61,7 @@ impl AnthropicAdapter {
         Self {
             credentials,
             base_url: base_url.into(),
-            api_version: "2023-06-01".to_string(),
+            api_version: HeaderValue::from_static("2023-06-01"),
             client,
         }
     }
@@ -106,10 +110,10 @@ impl AnthropicAdapter {
                 ));
             }
         }
-        headers.insert("anthropic-version", self.api_version.parse().unwrap());
+        headers.insert("anthropic-version", self.api_version.clone());
         headers.insert(
             reqwest::header::CONTENT_TYPE,
-            "application/json".parse().unwrap(),
+            HeaderValue::from_static("application/json"),
         );
         Ok(headers)
     }

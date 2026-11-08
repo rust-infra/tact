@@ -34,7 +34,7 @@ use async_openai_responses::types::responses::ResponseStreamEvent;
 use async_openai_responses::{config::Config, error::OpenAIError};
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
-use reqwest13::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap};
+use reqwest13::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use secrecy::ExposeSecret as LegacyExposeSecret;
 #[cfg(all(test, feature = "legacy-tact"))]
 use secrecy10::ExposeSecret;
@@ -514,10 +514,7 @@ impl OpenAiResponsesAdapter {
     async fn direct_headers(&self) -> Result<HeaderMap, LlmError> {
         let credential = self.credentials.resolve_with_kind().await?;
         let mut headers = HeaderMap::new();
-        headers.insert(
-            CONTENT_TYPE,
-            "application/json".parse().expect("static header"),
-        );
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         let key = match credential {
             LegacyCredential::ApiKey(secret) | LegacyCredential::Bearer(secret)
                 if !secret.expose_secret().is_empty() =>
