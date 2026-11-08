@@ -775,6 +775,7 @@
 <li class="toc-l2"><a href="#61-2026-11-07--desktop-%E6%9D%83%E9%99%90%E6%8F%90%E7%A4%BA%E6%9D%A1%E4%B8%8D%E5%86%8D%E6%92%91%E9%AB%98%E5%B9%B6%E5%9C%A8%E5%9B%9E%E7%AD%94%E5%90%8E%E6%94%B6%E8%B5%B7" title="61. 2026-11-07 — Desktop：权限提示条不再撑高并在回答后收起"><span class="toc-label">61. 2026-11-07 — Desktop：权限提示条不再撑高并在回答后收起</span></a></li>
 <li class="toc-l2"><a href="#62-2026-11-07--desktop-composer-%E5%8F%AF%E7%9B%B4%E6%8E%A5%E5%88%87%E6%8D%A2%E6%8E%A8%E7%90%86%E5%BC%BA%E5%BA%A6" title="62. 2026-11-07 — Desktop：composer 可直接切换推理强度"><span class="toc-label">62. 2026-11-07 — Desktop：composer 可直接切换推理强度</span></a></li>
 <li class="toc-l2"><a href="#63-2026-11-07--desktop-%E5%93%81%E7%89%8C%E5%9B%BE%E6%A0%87%E4%B8%8E%E4%B8%89%E5%B9%B3%E5%8F%B0%E6%8E%A5%E5%85%A5" title="63. 2026-11-07 — Desktop：品牌图标与三平台接入"><span class="toc-label">63. 2026-11-07 — Desktop：品牌图标与三平台接入</span></a></li>
+<li class="toc-l2"><a href="#64-2026-11-08--desktop-trajectory-%E6%97%B6%E9%97%B4%E8%BD%B4%E5%91%BD%E4%B8%AD%E4%B8%8E%E7%BB%9F%E8%AE%A1%E8%BE%B9%E7%95%8C%E6%94%B6%E6%95%9B" title="64. 2026-11-08 — Desktop：Trajectory 时间轴命中与统计边界收敛"><span class="toc-label">64. 2026-11-08 — Desktop：Trajectory 时间轴命中与统计边界收敛</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -22928,6 +22929,27 @@ Linux 通过 hicolor 主题、<code>StartupWMClass</code> 和 X11
 <code>scripts/app-icon.py</code>、<code>crates/desktop/src/platform/icon.rs</code>、
 <code>crates/desktop/src/platform/mod.rs</code>、
 <code>crates/desktop/src/app.rs</code>、<code>.github/workflows/*.yml</code>。</p>
+<h2 id="64-2026-11-08--desktop-trajectory-时间轴命中与统计边界收敛">64. 2026-11-08 —
+Desktop：Trajectory 时间轴命中与统计边界收敛</h2>
+<p><strong>症状：</strong> Trajectory 概览的绘制和点击命中各算一套坐标；窄窗口下
+最小宽度块会互相覆盖，点击靠后的列可能选中前面的记录。Ledger 搜索还会对每条记录
+重复线性扫描匹配列表，大转录下退化为二次复杂度；token 总数用普通加法时，极端会话
+可在 debug 构建中溢出。</p>
+<p><strong>改后行为：</strong> 绘制和点击统一消费
+<code>TimelineLayout</code>，命中按等宽列直接计算，最小块宽度只影响绘制、不再偷走
+后续列的点击；Ledger 过滤先把匹配索引收成集合；输入与输出 token 改用饱和加法。
+活动折叠规则和状态本地化同时移出主壳，分别由
+<code>ui/process.rs</code> 与 <code>ui/status.rs</code> 负责。</p>
+<p><strong>验证：</strong>
+<code>a_narrow_track_keeps_spans_clickable</code> 逐列检查窄时间轴命中；
+<code>token_totals_saturate_instead_of_overflowing</code> 覆盖
+<code>u32::MAX</code>；桌面与 desktop-core 的 466 个库测试通过，
+<code>scripts/check-rust.sh</code> 完整通过。</p>
+<p><strong>Pointers：</strong> <code>crates/desktop/src/ui/trajectory.rs</code>、
+<code>crates/desktop/src/ui/process.rs</code>、
+<code>crates/desktop/src/ui/status.rs</code>、
+<code>crates/desktop/src/root.rs</code>、
+<code>crates/desktop_core/src/controller.rs</code>。</p>
 <h2 id="related-docs">Related Docs</h2>
 <ul>
 <li><a href="./07_chapter_tool_zh.html">工具系统</a></li>

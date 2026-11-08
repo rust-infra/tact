@@ -4,6 +4,8 @@
 //! page's painters and its hit test agree on one projection and a click can
 //! select the block it landed on.
 
+use std::collections::HashSet;
+
 use tact_desktop_core::{
     TrajectoryLane, TrajectoryRecord, TrajectoryRecordId, TrajectorySpan, TrajectorySummary,
     TrajectoryView,
@@ -35,12 +37,6 @@ pub struct SpanBox {
     pub width: f32,
     /// Top edge, in pixels from the track's top edge.
     pub top: f32,
-}
-
-impl SpanBox {
-    pub fn contains_x(&self, x: f32) -> bool {
-        x >= self.left && x <= self.left + self.width
-    }
 }
 
 /// The plot's layout for one track width.
@@ -82,9 +78,11 @@ impl TimelineLayout {
 
     /// The record under a pointer at `x` pixels from the track's left edge.
     pub fn hit(&self, x: f32) -> Option<usize> {
+        if self.slot_width <= 0. || x < 0. || x >= self.width {
+            return None;
+        }
         self.boxes
-            .iter()
-            .find(|span| span.contains_x(x))
+            .get((x / self.slot_width) as usize)
             .map(|span| span.index)
     }
 
@@ -199,10 +197,15 @@ impl LedgerRow {
 /// filtered ledger still groups its records by turn instead of losing every
 /// header the query happened to skip.
 pub fn ledger_rows(view: &TrajectoryView, visible: Option<&[usize]>) -> Vec<LedgerRow> {
+    let visible = visible.map(|indexes| indexes.iter().copied().collect::<HashSet<_>>());
     let mut previous_turn = None;
     view.records()
         .iter()
-        .filter(|record| visible.is_none_or(|visible| visible.contains(&record.index)))
+        .filter(|record| {
+            visible
+                .as_ref()
+                .is_none_or(|visible| visible.contains(&record.index))
+        })
         .map(|record| {
             let starts_turn = previous_turn != Some(record.turn);
             previous_turn = Some(record.turn);
@@ -238,6 +241,7 @@ impl StatsLine {
     /// used count and a window size. Each is omitted rather than fabricated.
     pub fn new(summary: TrajectorySummary, labels: StatsLabels) -> Self {
         let steps: usize = summary.records;
+        let total_tokens = summary.input_tokens.saturating_add(summary.output_tokens);
         let turn_label = if summary.turns == 1 {
             labels.turn
         } else {
@@ -251,17 +255,9 @@ impl StatsLine {
         Self {
             turns: (summary.turns > 0 || steps > 0)
                 .then(|| format!("{} {} {steps} {}", summary.turns, turn_label, step_label)),
-            rate: throughput(
-                summary.input_tokens + summary.output_tokens,
-                summary.measured_ms,
-            ),
-            tokens: (summary.input_tokens + summary.output_tokens > 0).then(|| {
-                format!(
-                    "{} {}",
-                    compact_tokens(summary.input_tokens + summary.output_tokens),
-                    labels.tokens
-                )
-            }),
+            rate: throughput(total_tokens, summary.measured_ms),
+            tokens: (total_tokens > 0)
+                .then(|| format!("{} {}", compact_tokens(total_tokens), labels.tokens)),
             cache: cache_share(summary.cache_hit_tokens, summary.cache_miss_tokens)
                 .map(|percent| format!("{} {percent}%", labels.cache_hit)),
             context: match summary.context_window {
@@ -378,7 +374,14 @@ mod tests {
         let view = view();
         let layout = TimelineLayout::new(&view, 12.);
         assert!(layout.boxes.iter().all(|span| span.width >= MIN_SPAN_WIDTH));
-        assert!(layout.hit(0.).is_some());
+        for index in 0..view.len() {
+            let x = (index as f32 + 0.5) * layout.slot_width;
+            assert_eq!(
+                layout.hit(x),
+                Some(index),
+                "overlapping minimum-width blocks must not steal a later column"
+            );
+        }
     }
 
     #[test]
@@ -583,5 +586,18 @@ mod tests {
         assert_eq!(compact_tokens(374), "374");
         assert_eq!(compact_tokens(8_400), "8.4k");
         assert_eq!(compact_tokens(338_000_000), "338M");
+    }
+
+    #[test]
+    fn token_totals_saturate_instead_of_overflowing() {
+        let line = StatsLine::new(
+            TrajectorySummary {
+                input_tokens: u32::MAX,
+                output_tokens: u32::MAX,
+                ..TrajectorySummary::default()
+            },
+            LABELS,
+        );
+        assert_eq!(line.tokens.as_deref(), Some("4295M tok"));
     }
 }

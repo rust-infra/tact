@@ -743,90 +743,10 @@ impl DesktopActor {
                     .map_err(|error| format!("{error:?}"))?;
             }
             DesktopIntent::CloseProject { project_id } => {
-                if self.project.as_ref().map(|project| &project.id) == Some(&project_id) {
-                    if self.close_host().await.is_err() {
-                        return Ok(());
-                    }
-                    self.close_parked_hosts().await;
-                    let epoch = self.state.begin_session_switch();
-                    self.project = None;
-                    self.catalog = None;
-                    self.prefetched.clear();
-                    self.prefetching.clear();
-                    self.state.set_project(None);
-                    self.state.sessions.items.clear();
-                    self.state.sessions.selected = None;
-                    self.state.session = crate::SessionView {
-                        epoch,
-                        phase: SessionPhase::Empty,
-                        ..crate::SessionView::default()
-                    };
-                    self.publish(true);
-                } else {
-                    self.close_project_parked_hosts(&project_id).await;
-                    self.catalogs.remove(&project_id);
-                    self.prefetched
-                        .retain(|(cached_project, _), _| cached_project != &project_id);
-                    self.prefetching
-                        .retain(|(cached_project, _)| cached_project != &project_id);
-                    self.state
-                        .sessions
-                        .items
-                        .retain(|session| session.project_id != project_id);
-                    self.publish(true);
-                }
+                self.handle_close_project(project_id).await?;
             }
             DesktopIntent::RemoveProject { project_id } => {
-                let active = self.project.as_ref().map(|project| &project.id) == Some(&project_id);
-                if active && self.close_host().await.is_err() {
-                    return Ok(());
-                }
-                self.close_project_parked_hosts(&project_id).await;
-                if !self
-                    .registry
-                    .remove(&project_id)
-                    .map_err(|error| error.to_string())?
-                {
-                    return Ok(());
-                }
-                self.catalogs.remove(&project_id);
-                self.prefetched
-                    .retain(|(cached_project, _), _| cached_project != &project_id);
-                self.prefetching
-                    .retain(|(cached_project, _)| cached_project != &project_id);
-                self.state
-                    .sessions
-                    .items
-                    .retain(|session| session.project_id != project_id);
-                let remaining = self.registry.records().to_vec();
-                self.state.set_projects(&remaining);
-                if active {
-                    let epoch = self.state.begin_session_switch();
-                    self.project = None;
-                    self.catalog = None;
-                    self.state.sessions.selected = None;
-                    self.state.set_project(None);
-                    self.state.session = crate::SessionView {
-                        epoch,
-                        phase: SessionPhase::Empty,
-                        ..crate::SessionView::default()
-                    };
-                    if let Some(next) = remaining.first().cloned() {
-                        let initial = self
-                            .parked
-                            .keys()
-                            .find(|(candidate, _)| candidate == &next.id)
-                            .map(|(_, session)| InitialSession::Resume(session.clone()))
-                            .unwrap_or(InitialSession::ResumeLast);
-                        self.open_project(next.root, initial)
-                            .await
-                            .map_err(|error| format!("{error:?}"))?;
-                    } else {
-                        self.publish(true);
-                    }
-                } else {
-                    self.publish(true);
-                }
+                self.handle_remove_project(project_id).await?;
             }
             DesktopIntent::NewSession => {
                 if self.session_switch_in_flight() {
@@ -916,49 +836,16 @@ impl DesktopActor {
                 self.submit(submission)?;
             }
             DesktopIntent::EditQueued { index, text } => {
-                if let Some(item) = self.queue.get_mut(index) {
-                    item.text = text;
-                }
-                self.sync_queue();
+                self.edit_queued(index, text);
             }
             DesktopIntent::RemoveQueued { index } => {
-                if index < self.queue.len() {
-                    self.queue.remove(index);
-                }
-                self.sync_queue();
+                self.remove_queued(index);
             }
             DesktopIntent::MoveQueued { from, to } => {
-                if from < self.queue.len() && to < self.queue.len() && from != to {
-                    if let Some(item) = self.queue.remove(from) {
-                        self.queue.insert(to, item);
-                    }
-                    self.sync_queue();
-                }
+                self.move_queued(from, to);
             }
             DesktopIntent::SendQueuedNow { index } => {
-                if let Some(item) = self
-                    .queue
-                    .get(index)
-                    .cloned()
-                    .and_then(|_| self.queue.remove(index))
-                {
-                    if self.state.runtime.current_phase == RunPhase::Idle
-                        && matches!(
-                            self.state.session.phase,
-                            SessionPhase::Ready | SessionPhase::Running
-                        )
-                    {
-                        self.state.runtime.queue_paused = false;
-                        if let Err(error) = self.submit_now(item.clone()) {
-                            self.queue.insert(index.min(self.queue.len()), item);
-                            self.sync_queue();
-                            return Err(error);
-                        }
-                    } else {
-                        self.queue.push_front(item);
-                    }
-                    self.sync_queue();
-                }
+                self.send_queued_now(index)?;
             }
             DesktopIntent::CancelRun => {
                 if !matches!(
@@ -1147,6 +1034,141 @@ impl DesktopActor {
             }
             DesktopIntent::Shutdown => {}
         }
+        Ok(())
+    }
+
+    async fn handle_close_project(&mut self, project_id: ProjectId) -> Result<(), String> {
+        if self.project.as_ref().map(|project| &project.id) == Some(&project_id) {
+            if self.close_host().await.is_err() {
+                return Ok(());
+            }
+            self.close_parked_hosts().await;
+            let epoch = self.state.begin_session_switch();
+            self.project = None;
+            self.catalog = None;
+            self.prefetched.clear();
+            self.prefetching.clear();
+            self.state.set_project(None);
+            self.state.sessions.items.clear();
+            self.state.sessions.selected = None;
+            self.state.session = crate::SessionView {
+                epoch,
+                phase: SessionPhase::Empty,
+                ..crate::SessionView::default()
+            };
+            self.publish(true);
+        } else {
+            self.close_project_parked_hosts(&project_id).await;
+            self.forget_project_data(&project_id);
+            self.publish(true);
+        }
+        Ok(())
+    }
+
+    async fn handle_remove_project(&mut self, project_id: ProjectId) -> Result<(), String> {
+        let active = self.project.as_ref().map(|project| &project.id) == Some(&project_id);
+        if active && self.close_host().await.is_err() {
+            return Ok(());
+        }
+        self.close_project_parked_hosts(&project_id).await;
+        if !self
+            .registry
+            .remove(&project_id)
+            .map_err(|error| error.to_string())?
+        {
+            return Ok(());
+        }
+        self.forget_project_data(&project_id);
+        let remaining = self.registry.records().to_vec();
+        self.state.set_projects(&remaining);
+        if active {
+            let epoch = self.state.begin_session_switch();
+            self.project = None;
+            self.catalog = None;
+            self.state.sessions.selected = None;
+            self.state.set_project(None);
+            self.state.session = crate::SessionView {
+                epoch,
+                phase: SessionPhase::Empty,
+                ..crate::SessionView::default()
+            };
+            if let Some(next) = remaining.first().cloned() {
+                let initial = self
+                    .parked
+                    .keys()
+                    .find(|(candidate, _)| candidate == &next.id)
+                    .map(|(_, session)| InitialSession::Resume(session.clone()))
+                    .unwrap_or(InitialSession::ResumeLast);
+                self.open_project(next.root, initial)
+                    .await
+                    .map_err(|error| format!("{error:?}"))?;
+                return Ok(());
+            }
+        }
+        self.publish(true);
+        Ok(())
+    }
+
+    fn forget_project_data(&mut self, project_id: &ProjectId) {
+        self.catalogs.remove(project_id);
+        self.prefetched
+            .retain(|(cached_project, _), _| cached_project != project_id);
+        self.prefetching
+            .retain(|(cached_project, _)| cached_project != project_id);
+        self.state
+            .sessions
+            .items
+            .retain(|session| &session.project_id != project_id);
+    }
+
+    fn edit_queued(&mut self, index: usize, text: String) {
+        if let Some(item) = self.queue.get_mut(index) {
+            item.text = text;
+        }
+        self.sync_queue();
+    }
+
+    fn remove_queued(&mut self, index: usize) {
+        if index < self.queue.len() {
+            self.queue.remove(index);
+        }
+        self.sync_queue();
+    }
+
+    fn move_queued(&mut self, from: usize, to: usize) {
+        if from < self.queue.len() && to < self.queue.len() && from != to {
+            if let Some(item) = self.queue.remove(from) {
+                self.queue.insert(to, item);
+            }
+            self.sync_queue();
+        }
+    }
+
+    fn send_queued_now(&mut self, index: usize) -> Result<(), String> {
+        let Some(item) = self
+            .queue
+            .get(index)
+            .cloned()
+            .and_then(|_| self.queue.remove(index))
+        else {
+            return Ok(());
+        };
+        if self.state.runtime.current_phase == RunPhase::Idle
+            && matches!(
+                self.state.session.phase,
+                SessionPhase::Ready | SessionPhase::Running
+            )
+        {
+            self.state.runtime.queue_paused = false;
+            if let Err(error) = self.submit_now(item.clone()) {
+                self.queue.insert(index.min(self.queue.len()), item);
+                self.sync_queue();
+                return Err(error);
+            }
+        } else {
+            self.queue.push_front(item);
+        }
+        self.sync_queue();
         Ok(())
     }
 

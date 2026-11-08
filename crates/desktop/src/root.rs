@@ -31,10 +31,10 @@ use tact_catalog::{
 use tact_desktop_core::{
     Appearance, ArchiveFilter, CommandAvailability, CommandForm, DesktopController, DesktopEffect,
     DesktopEvent, DesktopIntent, DesktopSnapshot, DesktopTheme, ExtensionsTab, GateCard, GateKind,
-    GateResponse, GateSelection, GateState, InspectorTab, MessagePhase, PermissionModeView,
-    ProjectId, ReaderRef, RowBody, RowId, RowStatus, SectionMask, SessionId, SessionPhase,
-    SettingValue, Submission, SurfaceSnapshot, ToolGroupItem, ToolRow, TrajectoryRecordId,
-    TrajectoryView, TranscriptRow, TranscriptView, is_enabled,
+    GateResponse, GateSelection, GateState, InspectorTab, PermissionModeView, ProjectId, ReaderRef,
+    RowBody, RowId, RowStatus, SectionMask, SessionId, SessionPhase, SettingValue, Submission,
+    SurfaceSnapshot, ToolGroupItem, ToolRow, TrajectoryRecordId, TrajectoryView, TranscriptRow,
+    TranscriptView, is_enabled,
 };
 use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr as _};
 
@@ -57,6 +57,10 @@ use crate::ui::leaf::{
     ToggleShape, ToolChip, ToolStatus, is_image_path,
 };
 use crate::ui::plan_card::{PlanCard, PlanCardLabels, PlanState, PlanStep, PlanStepStatus};
+use crate::ui::process::{
+    ProcessGroup, ProcessRowRole, answers_only_visible, build_process_layout, is_process_row,
+    plan_is_tool_execution, process_summary_text, row_starts_at_message_column,
+};
 use crate::ui::prompt_bar::{
     ProgressState, PromptBar, PromptBarEvent, PromptBarLabels, PromptCommand, PromptMention,
     PromptModel, PromptSubmit,
@@ -73,6 +77,10 @@ use crate::ui::shell::{RunTab, TrajectoryDetailTab};
 use crate::ui::sidebar_nav::{
     SidebarNav, SidebarNavEvent, SidebarNavItem, SidebarNavLabels, SidebarNavPresentation,
     SidebarSection,
+};
+use crate::ui::status::{
+    background_status_label, goal_phase_label, goal_status_label, localized_wait_reason,
+    mcp_status_label, run_phase_label, subagent_status_label,
 };
 use crate::ui::sticky::GroupStatus;
 use crate::ui::surface;
@@ -474,28 +482,6 @@ struct TranscriptScrollerView {
     scroll_task: Rc<RefCell<Option<Task<()>>>>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ProcessRowRole {
-    Normal,
-    Summary(usize),
-    Hidden(usize),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct ProcessGroup {
-    first_index: usize,
-    end_index: usize,
-    first_row: RowId,
-    first_ordinal: u64,
-    commands: usize,
-    files_read: usize,
-    files_changed: usize,
-    skills: usize,
-    other_tools: usize,
-    thoughts: usize,
-    active: bool,
-}
-
 /// Per-frame inputs the root hands the transcript scroller. Bundled so the
 /// setter keeps one argument per concern as the shell grows.
 struct TranscriptViewState {
@@ -569,7 +555,12 @@ impl TranscriptScrollerView {
         if rows_changed {
             self.rows = Arc::new(rows);
         }
-        let (process_roles, process_groups) = build_process_layout(&self.rows, cx);
+        let process_rows = self
+            .rows
+            .iter()
+            .map(|view| view.read(cx).row.clone())
+            .collect::<Vec<_>>();
+        let (process_roles, process_groups) = build_process_layout(&process_rows);
         let layout_changed = self.process_roles.as_ref() != &process_roles
             || self.process_groups.as_ref() != &process_groups;
         self.process_roles = Arc::new(process_roles);
@@ -5569,40 +5560,24 @@ impl DesktopRoot {
             .into_any_element()
     }
 
-    /// The Firefox-Network-style overview: every record as one block in the
-    /// lane its kind belongs to, with a rule at each turn boundary.
-    /// The Chrome-Network-style overview: every record as one block in the
-    /// lane its kind belongs to, with a rule at each turn boundary.
+    /// The network-plot-style overview: every record as one block in the lane
+    /// its kind belongs to, with a rule at each turn boundary.
     ///
     /// The plot is one `canvas`: paints are cheap for a ledger of hundreds of
-    /// records, and a single hit test keeps the click target identical to what
-    /// was drawn.
+    /// records. Paint and click both use `TimelineLayout`, so the visible block
+    /// and its hit target cannot drift apart.
     fn render_trajectory_overview(
         &mut self,
-        view: &TrajectoryView,
+        view: &Arc<TrajectoryView>,
         matches: Option<&[usize]>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let match_set: Option<HashSet<usize>> =
             matches.map(|matches| matches.iter().map(|index| index - 1).collect());
-        let spans: Vec<(usize, bool, bool)> = view
-            .spans()
-            .iter()
-            .map(|span| {
-                (
-                    span.lane.row(),
-                    span.is_error,
-                    match_set
-                        .as_ref()
-                        .is_some_and(|matches| matches.contains(&span.index)),
-                )
-            })
-            .collect();
         let has_filter = match_set.is_some();
-        let boundaries = view.boundaries().to_vec();
-        let count = spans.len();
         let selected = self.trajectory_selected.and_then(|id| view.position_of(id));
         let palette = TrajectoryPalette::new(cx);
+        let layout_view = Arc::clone(view);
         let track = self.trajectory_track.clone();
         let plot = canvas(
             move |bounds, _, _| {
@@ -5612,14 +5587,14 @@ impl DesktopRoot {
             move |bounds, _, window, _| {
                 let track_left = bounds.origin.x + px(trajectory_page::LABELS_WIDTH);
                 let track_width = f32::from(bounds.size.width) - trajectory_page::LABELS_WIDTH;
-                if track_width <= 0. || count == 0 {
+                if track_width <= 0. || layout_view.is_empty() {
                     return;
                 }
-                let slot_width = track_width / count as f32;
+                let layout = trajectory_page::TimelineLayout::new(&layout_view, track_width);
                 // Turn rules sit behind the blocks so a boundary reads as a
                 // divider, not as another record.
-                for boundary in &boundaries {
-                    let left = track_left + px(*boundary as f32 * slot_width);
+                for boundary in &layout.turn_marks {
+                    let left = track_left + px(layout.offset_of(*boundary));
                     window.paint_quad(paint_rect(
                         left,
                         bounds.origin.y,
@@ -5630,44 +5605,38 @@ impl DesktopRoot {
                         None,
                     ));
                 }
-                for (index, (lane, is_error, matched)) in spans.iter().enumerate() {
-                    let color = if *is_error {
+                for span in &layout.boxes {
+                    let Some(source) = layout_view.spans().get(span.index) else {
+                        continue;
+                    };
+                    let matched = match_set
+                        .as_ref()
+                        .is_some_and(|matches| matches.contains(&source.index));
+                    let color = if source.is_error {
                         palette.error
                     } else {
-                        palette.lanes[*lane]
+                        palette.lanes[source.lane.row()]
                     };
-                    let color = if has_filter && !*matched {
+                    let color = if has_filter && !matched {
                         palette.dim(color)
                     } else {
                         color
                     };
-                    let left = track_left
-                        + px(index as f32 * slot_width + trajectory_page::BLOCK_GAP / 2.);
-                    let width = px((slot_width - trajectory_page::BLOCK_GAP)
-                        .max(trajectory_page::MIN_SPAN_WIDTH));
-                    let top = bounds.origin.y
-                        + px(
-                            trajectory_page::LANE_TOP + *lane as f32 * trajectory_page::LANE_HEIGHT
-                        );
                     window.paint_quad(paint_rect(
-                        left,
-                        top,
-                        width,
+                        track_left + px(span.left),
+                        bounds.origin.y + px(span.top),
+                        px(span.width),
                         px(trajectory_page::BLOCK_HEIGHT),
                         color,
                         px(1.),
                         None,
                     ));
                 }
-                if let Some(selected) = selected {
-                    let left = track_left
-                        + px(selected as f32 * slot_width + trajectory_page::BLOCK_GAP / 2.);
-                    let width = px((slot_width - trajectory_page::BLOCK_GAP)
-                        .max(trajectory_page::MIN_SPAN_WIDTH));
+                if let Some(span) = selected.and_then(|index| layout.boxes.get(index)) {
                     window.paint_quad(paint_rect(
-                        left,
+                        track_left + px(span.left),
                         bounds.origin.y,
-                        width,
+                        px(span.width),
                         bounds.size.height,
                         palette.selection,
                         px(1.),
@@ -13497,87 +13466,6 @@ fn metric(label: &'static str, value: &str, cx: &mut Context<DesktopRoot>) -> im
         )
 }
 
-fn run_phase_label(
-    phase: tact_desktop_core::RunPhase,
-    locale: tact_catalog::CatalogLocale,
-) -> &'static str {
-    use tact_desktop_core::RunPhase as P;
-    match phase {
-        P::Idle => i18n::text(locale, TextKey::Ready),
-        P::Waiting => i18n::text(locale, TextKey::Queue),
-        P::Thinking => i18n::text(locale, TextKey::Thinking),
-        P::Streaming => i18n::text(locale, TextKey::Running),
-        P::RunningTools => i18n::text(locale, TextKey::Tool),
-        P::WaitingForGate => i18n::text(locale, TextKey::PermissionOrQuestionGate),
-        P::Cancelling => i18n::text(locale, TextKey::Stopping),
-        P::Complete => i18n::text(locale, TextKey::Completed),
-        P::Failed => i18n::text(locale, TextKey::Failed),
-    }
-}
-
-fn goal_status_label(
-    status: tact_desktop_core::GoalStatusSnapshot,
-    locale: tact_catalog::CatalogLocale,
-) -> &'static str {
-    use tact_desktop_core::GoalStatusSnapshot as S;
-    match status {
-        S::Draft => i18n::text(locale, TextKey::Queue),
-        S::Queued => i18n::text(locale, TextKey::Queue),
-        S::Running => i18n::text(locale, TextKey::Running),
-        S::Paused => i18n::text(locale, TextKey::Pause),
-        S::WaitingUser | S::WaitingPermission => {
-            i18n::text(locale, TextKey::PermissionOrQuestionGate)
-        }
-        S::Verifying => i18n::text(locale, TextKey::Review),
-        S::Succeeded => i18n::text(locale, TextKey::Completed),
-        S::Failed => i18n::text(locale, TextKey::Failed),
-        S::Cancelled => i18n::text(locale, TextKey::Cancelled),
-    }
-}
-
-fn goal_phase_label(
-    phase: tact_desktop_core::GoalPhaseSnapshot,
-    locale: tact_catalog::CatalogLocale,
-) -> &'static str {
-    match phase {
-        tact_desktop_core::GoalPhaseSnapshot::Planning => i18n::text(locale, TextKey::Thinking),
-        tact_desktop_core::GoalPhaseSnapshot::Execution => i18n::text(locale, TextKey::Running),
-        tact_desktop_core::GoalPhaseSnapshot::Verification => i18n::text(locale, TextKey::Review),
-    }
-}
-
-fn subagent_status_label(
-    status: tact_desktop_core::SubagentStatusSnapshot,
-    locale: tact_catalog::CatalogLocale,
-) -> &'static str {
-    match status {
-        tact_desktop_core::SubagentStatusSnapshot::Running => i18n::text(locale, TextKey::Running),
-        tact_desktop_core::SubagentStatusSnapshot::Completed => {
-            i18n::text(locale, TextKey::Completed)
-        }
-        tact_desktop_core::SubagentStatusSnapshot::Failed => i18n::text(locale, TextKey::Failed),
-        tact_desktop_core::SubagentStatusSnapshot::Cancelled => {
-            i18n::text(locale, TextKey::Cancelled)
-        }
-    }
-}
-
-fn localized_wait_reason(reason: &str, locale: tact_catalog::CatalogLocale) -> String {
-    match (reason, locale) {
-        ("paused by user", tact_catalog::CatalogLocale::Zh) => "用户已暂停".into(),
-        ("waiting for user", tact_catalog::CatalogLocale::Zh) => "等待用户".into(),
-        ("waiting for permission", tact_catalog::CatalogLocale::Zh) => "等待权限确认".into(),
-        ("run interrupted: lease holder is gone", tact_catalog::CatalogLocale::Zh) => {
-            "运行中断：租约持有者已消失".into()
-        }
-        ("lease holder is gone", tact_catalog::CatalogLocale::Zh) => "租约持有者已消失".into(),
-        ("needs acceptance", tact_catalog::CatalogLocale::Zh) => "待验收".into(),
-        ("needs explicit acceptance", tact_catalog::CatalogLocale::Zh) => "待明确验收".into(),
-        ("review", tact_catalog::CatalogLocale::Zh) => "待复核".into(),
-        _ => reason.to_string(),
-    }
-}
-
 fn prompt_bar_labels(locale: tact_catalog::CatalogLocale) -> PromptBarLabels {
     match locale {
         tact_catalog::CatalogLocale::En => PromptBarLabels {
@@ -13850,43 +13738,6 @@ fn tool_call_labels(locale: tact_catalog::CatalogLocale) -> ToolCallLabels {
             cancelled: "已取消".into(),
             unknown: "状态未知".into(),
         },
-    }
-}
-
-fn background_status_label(
-    status: tact_desktop_core::BackgroundTaskStatusSnapshot,
-    locale: tact_catalog::CatalogLocale,
-) -> &'static str {
-    match status {
-        tact_desktop_core::BackgroundTaskStatusSnapshot::Running => {
-            i18n::text(locale, TextKey::Running)
-        }
-        tact_desktop_core::BackgroundTaskStatusSnapshot::Completed => {
-            i18n::text(locale, TextKey::Completed)
-        }
-        tact_desktop_core::BackgroundTaskStatusSnapshot::Error => {
-            i18n::text(locale, TextKey::Failed)
-        }
-    }
-}
-
-fn mcp_status_label(
-    status: &tact_desktop_core::McpServerStatusSnapshot,
-    locale: tact_catalog::CatalogLocale,
-) -> String {
-    match status {
-        tact_desktop_core::McpServerStatusSnapshot::Connected { tools } => {
-            format!("{} ({tools})", i18n::text(locale, TextKey::Ready))
-        }
-        tact_desktop_core::McpServerStatusSnapshot::NeedsAuthorization => {
-            i18n::text(locale, TextKey::Authorize).to_string()
-        }
-        tact_desktop_core::McpServerStatusSnapshot::NotConnected => {
-            i18n::text(locale, TextKey::Disconnected).to_string()
-        }
-        tact_desktop_core::McpServerStatusSnapshot::Disabled => {
-            i18n::text(locale, TextKey::Off).to_string()
-        }
     }
 }
 
@@ -16319,57 +16170,6 @@ fn transcript_row_style() -> gpui::StyleRefinement {
     style
 }
 
-/// Whether a plan row only repeats tool calls already visible in this run.
-///
-/// The runtime emits a plan step for every concrete tool call. Drawing that
-/// plan beside the execution group duplicates every command; the tool rows are
-/// the richer surface, so the plan yields when all of its steps have a
-/// `tool_id` present in the same run. A plan with a conceptual step (no tool
-/// id) keeps its card because the tool group cannot represent that step.
-fn plan_is_tool_execution(
-    row: &TranscriptRow,
-    plan: &tact_desktop_core::PlanRow,
-    transcript: &TranscriptView,
-) -> bool {
-    if plan.steps.is_empty() {
-        return false;
-    }
-    let rows: Vec<&TranscriptRow> = transcript.iter().map(|row| row.as_ref()).collect();
-    let Some(index) = rows.iter().position(|candidate| candidate.id == row.id) else {
-        return false;
-    };
-    // One run owns one execution group, and a later turn in that run gets a
-    // fresh loop id while appending to the same group. Compare within the run
-    // (the rows between the user turns that surround the plan) rather than by
-    // loop id, so the group still absorbs its plan.
-    let start = rows[..index]
-        .iter()
-        .rposition(|candidate| matches!(&candidate.body, RowBody::User(_)))
-        .map(|position| position + 1)
-        .unwrap_or(0);
-    let end = rows[index..]
-        .iter()
-        .position(|candidate| matches!(&candidate.body, RowBody::User(_)))
-        .map(|offset| index + offset)
-        .unwrap_or(rows.len());
-    let mut run_tool_ids = std::collections::HashSet::new();
-    for candidate in &rows[start..end] {
-        let RowBody::ToolGroup(group) = &candidate.body else {
-            continue;
-        };
-        for item in group.items.iter() {
-            if let ToolGroupItem::Tool(tool) = item {
-                run_tool_ids.insert(tool.tool_id.as_ref());
-            }
-        }
-    }
-    plan.steps.iter().all(|step| {
-        step.tool_id
-            .as_deref()
-            .is_some_and(|tool_id| run_tool_ids.contains(tool_id))
-    })
-}
-
 /// The rail's quick-filter placeholder, short enough for the 250px rail in
 /// both locales.
 fn rail_search_placeholder(locale: tact_catalog::CatalogLocale) -> &'static str {
@@ -16377,297 +16177,6 @@ fn rail_search_placeholder(locale: tact_catalog::CatalogLocale) -> &'static str 
         tact_catalog::CatalogLocale::En => "Find a session",
         tact_catalog::CatalogLocale::Zh => "查找会话",
     }
-}
-
-/// Whether a row's content starts at the message column rather than at the
-/// transcript's left edge.
-///
-/// The design's row grid gives every row a 31px avatar column and a 12px gap;
-/// user and assistant rows draw a mark there, while plan, thinking, tool,
-/// diff, gate and notice rows are content that belongs beside the message.
-fn row_starts_at_message_column(body: &RowBody) -> bool {
-    !matches!(body, RowBody::User(_) | RowBody::Assistant(_))
-}
-
-/// Rows the answers-only view keeps: the user's words, assistant text that is
-/// not narration, decisions still waiting, and errors.
-fn answers_only_visible(body: &RowBody) -> bool {
-    match body {
-        RowBody::User(_) | RowBody::Error(_) => true,
-        RowBody::Assistant(assistant) => assistant.phase != Some(MessagePhase::Commentary),
-        RowBody::Gate(gate) => matches!(gate.status, GateState::Pending | GateState::Submitting),
-        RowBody::ToolGroup(group) => group.items.iter().any(|item| {
-            matches!(
-                item,
-                ToolGroupItem::Gate(gate)
-                    if matches!(gate.status, GateState::Pending | GateState::Submitting)
-            )
-        }),
-        _ => false,
-    }
-}
-
-fn is_process_row(body: &RowBody) -> bool {
-    match body {
-        RowBody::Thinking(_) | RowBody::ToolGroup(_) => true,
-        RowBody::Assistant(assistant) => assistant.phase == Some(MessagePhase::Commentary),
-        _ => false,
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ProcessToolKind {
-    Command,
-    FileRead,
-    FileChanged,
-    Skill,
-    Other,
-}
-
-fn process_tool_kind(name: &str) -> ProcessToolKind {
-    let name = name.to_ascii_lowercase();
-    if ["bash", "shell", "exec", "command", "terminal", "cmd"]
-        .iter()
-        .any(|kind| name.contains(kind))
-    {
-        ProcessToolKind::Command
-    } else if [
-        "read",
-        "cat",
-        "view",
-        "open_file",
-        "list_file",
-        "ls",
-        "glob",
-    ]
-    .iter()
-    .any(|kind| name.contains(kind))
-    {
-        ProcessToolKind::FileRead
-    } else if [
-        "edit", "write", "patch", "create", "delete", "move", "rename", "replace",
-    ]
-    .iter()
-    .any(|kind| name.contains(kind))
-    {
-        ProcessToolKind::FileChanged
-    } else if name.contains("skill") {
-        ProcessToolKind::Skill
-    } else {
-        ProcessToolKind::Other
-    }
-}
-
-fn process_row_groupable(body: &RowBody) -> bool {
-    match body {
-        RowBody::Thinking(_) => true,
-        RowBody::Assistant(assistant) => assistant.phase == Some(MessagePhase::Commentary),
-        RowBody::ToolGroup(_) => true,
-        _ => false,
-    }
-}
-
-/// A pending decision stays outside the fold so it can be answered. It is
-/// still part of the activity group: its tools count toward the summary and
-/// its gate keeps the group's clock running.
-fn process_row_visible_when_folded(body: &RowBody) -> bool {
-    matches!(
-        body,
-        RowBody::ToolGroup(group)
-            if group.items.iter().any(|item| {
-                matches!(
-                    item,
-                    ToolGroupItem::Gate(gate)
-                        if matches!(gate.status, GateState::Pending | GateState::Submitting)
-                )
-            })
-    )
-}
-
-fn build_process_layout(
-    rows: &[Entity<TranscriptRowView>],
-    cx: &gpui::App,
-) -> (Vec<ProcessRowRole>, Vec<ProcessGroup>) {
-    let transcript =
-        TranscriptView::from_rows(rows.iter().map(|row| row.read(cx).row.clone()).collect());
-    let mut roles = vec![ProcessRowRole::Normal; rows.len()];
-    let mut groups = Vec::new();
-    let mut index = 0;
-    while index < rows.len() {
-        if !process_row_groupable(&rows[index].read(cx).row.body) {
-            index += 1;
-            continue;
-        }
-        let start = index;
-        let mut commands = 0;
-        let mut files_read = 0;
-        let mut files_changed = 0;
-        let mut skills = 0;
-        let mut other_tools = 0;
-        let mut thoughts = 0;
-        let mut active = false;
-        while index < rows.len() {
-            let row = &rows[index].read(cx).row;
-            if !process_row_groupable(&row.body) {
-                if process_row_transparent(row, &transcript) {
-                    index += 1;
-                    continue;
-                }
-                break;
-            }
-            match &row.body {
-                RowBody::Thinking(thinking) => {
-                    thoughts += 1;
-                    active |= matches!(thinking.status, RowStatus::Running | RowStatus::Pending);
-                }
-                RowBody::ToolGroup(group) => {
-                    active |= matches!(group.status(), RowStatus::Running | RowStatus::Pending)
-                        || group.items.iter().any(|item| {
-                            matches!(
-                                item,
-                                ToolGroupItem::Gate(gate)
-                                    if matches!(
-                                        gate.status,
-                                        GateState::Pending | GateState::Submitting
-                                    )
-                            )
-                        });
-                    for item in group.items.iter() {
-                        let ToolGroupItem::Tool(tool) = item else {
-                            continue;
-                        };
-                        match process_tool_kind(&tool.name) {
-                            ProcessToolKind::Command => commands += 1,
-                            ProcessToolKind::FileRead => files_read += 1,
-                            ProcessToolKind::FileChanged => files_changed += 1,
-                            ProcessToolKind::Skill => skills += 1,
-                            ProcessToolKind::Other => other_tools += 1,
-                        }
-                    }
-                }
-                // Narration is part of the same process region and adds no count.
-                RowBody::Assistant(_) => {}
-                _ => break,
-            }
-            index += 1;
-        }
-        if index - start >= 2 {
-            let group_index = groups.len();
-            let first = &rows[start].read(cx).row;
-            roles[start] = ProcessRowRole::Summary(group_index);
-            for (offset, role) in roles[start + 1..index].iter_mut().enumerate() {
-                let body = &rows[start + 1 + offset].read(cx).row.body;
-                if !process_row_visible_when_folded(body) {
-                    *role = ProcessRowRole::Hidden(group_index);
-                }
-            }
-            groups.push(ProcessGroup {
-                first_index: start,
-                end_index: index,
-                first_row: first.id,
-                first_ordinal: first.ordinal,
-                commands,
-                files_read,
-                files_changed,
-                skills,
-                other_tools,
-                thoughts,
-                active,
-            });
-        }
-    }
-    (roles, groups)
-}
-
-/// Rows the renderer already drops must not split an activity group.
-///
-/// The runtime emits a tool-only plan row for every concrete step. The plan
-/// card yields to its tool group, so treating it as a boundary would turn one
-/// reasoning region into one summary per tool call.
-fn process_row_transparent(row: &TranscriptRow, transcript: &TranscriptView) -> bool {
-    matches!(&row.body, RowBody::Plan(plan) if plan_is_tool_execution(row, plan, transcript))
-}
-
-fn process_summary_text(group: &ProcessGroup, language: tact_catalog::CatalogLocale) -> String {
-    let mut parts = Vec::new();
-    if group.thoughts > 0 {
-        parts.push(match language {
-            tact_catalog::CatalogLocale::En if group.thoughts == 1 => "Thoughts".to_string(),
-            tact_catalog::CatalogLocale::En => format!("{} thoughts", group.thoughts),
-            tact_catalog::CatalogLocale::Zh => format!("{} 段思考", group.thoughts),
-        });
-    }
-    match language {
-        tact_catalog::CatalogLocale::En => {
-            if group.commands > 0 {
-                parts.push(if group.commands == 1 {
-                    "ran 1 command".to_string()
-                } else {
-                    format!("ran {} commands", group.commands)
-                });
-            }
-            if group.files_read > 0 {
-                parts.push(if group.files_read == 1 {
-                    "read 1 file".to_string()
-                } else {
-                    format!("read {} files", group.files_read)
-                });
-            }
-            if group.files_changed > 0 {
-                parts.push(if group.files_changed == 1 {
-                    "edited 1 file".to_string()
-                } else {
-                    format!("edited {} files", group.files_changed)
-                });
-            }
-            if group.skills > 0 {
-                parts.push(if group.skills == 1 {
-                    "ran 1 skill".to_string()
-                } else {
-                    format!("ran {} skills", group.skills)
-                });
-            }
-            if group.other_tools > 0 {
-                parts.push(if group.other_tools == 1 {
-                    "1 tool call".to_string()
-                } else {
-                    format!("{} tool calls", group.other_tools)
-                });
-            }
-        }
-        tact_catalog::CatalogLocale::Zh => {
-            if group.commands > 0 {
-                parts.push(format!("运行了 {} 条命令", group.commands));
-            }
-            if group.files_read > 0 {
-                parts.push(format!("读取了 {} 个文件", group.files_read));
-            }
-            if group.files_changed > 0 {
-                parts.push(format!("修改了 {} 个文件", group.files_changed));
-            }
-            if group.skills > 0 {
-                parts.push(format!("运行了 {} 个 skill", group.skills));
-            }
-            if group.other_tools > 0 {
-                parts.push(format!("{} 次工具调用", group.other_tools));
-            }
-        }
-    }
-    if parts.is_empty() {
-        return match language {
-            tact_catalog::CatalogLocale::En => "Activity".into(),
-            tact_catalog::CatalogLocale::Zh => "活动".into(),
-        };
-    }
-    let summary = parts.join(match language {
-        tact_catalog::CatalogLocale::En => ", ",
-        tact_catalog::CatalogLocale::Zh => "，",
-    });
-    let mut chars = summary.chars();
-    let Some(first) = chars.next() else {
-        return summary;
-    };
-    first.to_uppercase().chain(chars).collect()
 }
 
 /// The plan card's status pill.
@@ -17205,9 +16714,11 @@ mod tests {
     use gpui::{Element as _, Focusable as _, TestAppContext, VisualTestContext, px, size};
     use gpui_component::Root;
     use tact_desktop_core::{
-        DesktopConfig, LatestToolView, SessionEpoch, StateCommit, ToolBody, ToolMetaView,
-        ToolOutputView,
+        DesktopConfig, LatestToolView, MessagePhase, SessionEpoch, StateCommit, ToolBody,
+        ToolMetaView, ToolOutputView,
     };
+
+    use crate::ui::process::process_row_groupable;
 
     use super::*;
 
