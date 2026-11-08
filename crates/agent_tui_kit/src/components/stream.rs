@@ -10,7 +10,7 @@ use crossterm::event::KeyEvent;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span},
     widgets::Paragraph,
     widgets::Widget,
@@ -112,11 +112,6 @@ impl Component for StreamComponent {
         self
     }
 }
-
-/// Silence the unused-Color import warning on platforms where the compiler
-/// cannot prove the theme default; kept for parity with other components.
-#[allow(dead_code)]
-const _: Option<(Color, Messages)> = None;
 
 #[cfg(test)]
 mod tests {

@@ -18,7 +18,7 @@ use ratatui::{
 };
 
 use crate::{
-    Component, Ctx, InputMode, LogCoordinator,
+    Component, Ctx, LogCoordinator,
     i18n::Messages,
     protocol::{AgentUpdate, ThinkingChunk},
     state::{ActiveThinkingBlock, LogItemKind, ThinkingBlock, ThinkingState},
@@ -184,14 +184,10 @@ impl Component for ThinkingComponent {
     }
 }
 
-/// The component's `InputMode`/`LogCoordinator` imports are unused by the
-/// default trait methods; this const keeps the intent explicit for hosts.
-#[allow(dead_code)]
-const _: Option<(InputMode, LogCoordinator)> = None;
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::InputMode;
     use crate::PendingQueue;
     use crate::components::tool::ToolEvent;
 

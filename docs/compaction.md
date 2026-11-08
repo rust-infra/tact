@@ -110,7 +110,7 @@ Short results stay (high density, low cost). Assistant / thinking / user text ar
 
 ### Recent files
 
-`CompactState.recent_files`: last 5 paths from successful `read_file`, `write_file`, `edit_file`, and non-dry-run `apply_patch` calls (dedupe, LRU). Injected into the summarizer prompt and final summary.
+`CompactState.recent_files`: last 5 paths from successful `read_file`, `write_file`, and `edit_file` calls (dedupe, LRU). Injected into the summarizer prompt and final summary.
 
 ---
 

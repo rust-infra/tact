@@ -71,7 +71,7 @@ tool-name table.
 | `SharedState { scope }` | `writes = ["__tact_<scope>__"]` (synthetic marker) | `task_create` / `task_update` (`task`); `spawn_teammate` / `send_message` / `broadcast` / `plan_approval` / `shutdown_request` / `shutdown_response` (`team`) |
 | `Independent` | empty set — never conflicts | `sleep`, `save_memory`, `check_background`, `wait_background`, `check_subagent`, `wait_subagent`, `cancel_subagent`, `load_skill`, `task_get`, `task_list`, `list_teammates`, `read_inbox`, `worktree_list` / `worktree_status` / `worktree_events` |
 | `Barrier` | `barrier = true` | `bash`, `ask_user`, `compact`, `background_run`, `worktree_run`, `worktree_create` / `worktree_remove`, `spawn_subagent` (without `worktree`) |
-| `PatchFiles { … }` | target paths parsed from the patch headers | `apply_patch` (no toolset registers it today) |
+| `PatchFiles { … }` | target paths parsed from the patch headers | none today (the `apply_patch` tool was removed) |
 
 MCP tools bypass the metadata path entirely: `mcp_server_resources(server)`
 synthesizes a `__mcp__<server>` write marker at scheduling time, so tools on the

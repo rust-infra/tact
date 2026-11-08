@@ -14,8 +14,8 @@ ensure consistent and efficient tool usage in this project.
   already part of the arguments, no extra cost). The user can click the card to
   run `git diff` for the full comparison.
 - Avoid running auto-diff on every edit — it impacts performance.
-- For multi-line or structured changes, prefer `apply_patch`. For new files or
-  complete rewrites, use `write_file`.
+- For multi-line or structured changes, prefer `edit_file` with a larger
+  `new_text`. For new files or complete rewrites, use `write_file`.
 
 ### bash and the workspace path space
 

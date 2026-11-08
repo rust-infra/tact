@@ -89,14 +89,11 @@ impl PermissionDecision {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
-#[allow(dead_code)]
 enum UserPermissionChoice {
     #[strum(serialize = "allow once")]
     AllowOnce,
     #[strum(serialize = "deny")]
     Deny,
-    #[strum(serialize = "always allow this tool")]
-    AlwaysAllow,
 }
 
 #[derive(Debug)]
@@ -384,7 +381,7 @@ impl PermissionManager {
                 UserPermissionChoice::AllowOnce
             }
         };
-        let approved = self.apply_user_choice(choice, tool_name);
+        let approved = self.apply_user_choice(choice);
         if !approved && self.should_suggest_plan_mode() {
             eprintln!(
                 "[{} consecutive denials -- consider switching to plan mode]",
@@ -394,7 +391,7 @@ impl PermissionManager {
         Ok(approved)
     }
 
-    fn apply_user_choice(&mut self, choice: UserPermissionChoice, tool_name: &str) -> bool {
+    fn apply_user_choice(&mut self, choice: UserPermissionChoice) -> bool {
         match choice {
             UserPermissionChoice::AllowOnce => {
                 self.consecutive_denials = 0;
@@ -403,11 +400,6 @@ impl PermissionManager {
             UserPermissionChoice::Deny => {
                 self.consecutive_denials += 1;
                 false
-            }
-            UserPermissionChoice::AlwaysAllow => {
-                self.allow_tool(tool_name);
-                self.consecutive_denials = 0;
-                true
             }
         }
     }
@@ -616,17 +608,17 @@ mod tests {
     #[test]
     fn deny_increments_consecutive_count() {
         let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
-        mgr.apply_user_choice(UserPermissionChoice::Deny, "bash");
+        mgr.apply_user_choice(UserPermissionChoice::Deny);
         assert_eq!(mgr.consecutive_denials, 1);
-        mgr.apply_user_choice(UserPermissionChoice::Deny, "bash");
+        mgr.apply_user_choice(UserPermissionChoice::Deny);
         assert_eq!(mgr.consecutive_denials, 2);
     }
 
     #[test]
     fn allow_resets_consecutive_count() {
         let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
-        mgr.apply_user_choice(UserPermissionChoice::Deny, "bash");
-        mgr.apply_user_choice(UserPermissionChoice::AllowOnce, "bash");
+        mgr.apply_user_choice(UserPermissionChoice::Deny);
+        mgr.apply_user_choice(UserPermissionChoice::AllowOnce);
         assert_eq!(mgr.consecutive_denials, 0);
     }
 
@@ -1526,8 +1518,8 @@ mod tests {
     fn from_snapshot_resets_denial_counters() {
         let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
         // Push the denial counter past zero, then snapshot + restore.
-        mgr.apply_user_choice(UserPermissionChoice::Deny, "bash");
-        mgr.apply_user_choice(UserPermissionChoice::Deny, "bash");
+        mgr.apply_user_choice(UserPermissionChoice::Deny);
+        mgr.apply_user_choice(UserPermissionChoice::Deny);
         assert_eq!(mgr.consecutive_denials, 2);
 
         let restored = PermissionManager::from_snapshot(mgr.snapshot());

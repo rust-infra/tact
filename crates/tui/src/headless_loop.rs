@@ -1,22 +1,8 @@
-//! Headless agent-update loop (mirrors `run_tui` drain logic, no terminal).
+//! Headless `App` helpers: build an app without a terminal and auto-confirm selects.
 
-use std::time::Duration;
-
-use tact_protocol::{UiResponse, UpdateReceiver, UserCommand};
+use tact_protocol::{UiResponse, UpdateReceiver};
 
 use crate::widgets::state::{App, InputMode, SelectKind};
-
-/// Drain pending updates from `agent_rx`, optionally auto-confirm permission selects.
-pub fn drain_agent_updates(app: &mut App, auto_select: Option<usize>) {
-    while let Ok(update) = app.agent_rx.try_recv() {
-        app.handle_agent_update(update);
-        if matches!(app.input_mode, InputMode::Select)
-            && let Some(choice) = auto_select
-        {
-            auto_confirm_select(app, choice);
-        }
-    }
-}
 
 /// Build the response for auto-confirming the current select popup.
 ///
@@ -49,28 +35,6 @@ pub fn build_auto_confirm_response(app: &mut App, choice: usize) -> Option<UiRes
     app.select_kind = SelectKind::Agent;
     app.input_mode = InputMode::Normal;
     response
-}
-
-/// Confirm the current select popup programmatically, sending the response on
-/// the App's command channel (headless substitute for Enter).
-pub fn auto_confirm_select(app: &mut App, choice: usize) {
-    if let Some(response) = build_auto_confirm_response(app, choice) {
-        let _ = app.user_cmd_tx.send(UserCommand::UiResponse(response));
-    }
-}
-
-/// Poll until `should_continue` returns false, draining updates each tick.
-#[allow(dead_code)]
-pub async fn run_until<F>(mut app: App, mut should_continue: F, auto_select: Option<usize>) -> App
-where
-    F: FnMut(&App) -> bool,
-{
-    while should_continue(&app) {
-        drain_agent_updates(&mut app, auto_select);
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-    drain_agent_updates(&mut app, auto_select);
-    app
 }
 
 /// Build an `App` wired to the given agent channel (no startup logo/messages).

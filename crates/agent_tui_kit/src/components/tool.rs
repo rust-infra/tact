@@ -18,7 +18,7 @@ use ratatui::{buffer::Buffer, layout::Rect};
 use crate::{
     Component, Ctx,
     i18n::Messages,
-    protocol::{AgentUpdate, PlanStep, StepResult, TokenUsageInfo, ToolOutputChunk},
+    protocol::{AgentUpdate, PlanStep, StepResult},
     state::{ActiveToolBlock, ToolBlock, ToolState},
     widgets::tool_widget::{ToolPhase, ToolRenderOutput, ToolWidget},
 };
@@ -786,9 +786,6 @@ impl Component for ToolComponent {
         self
     }
 }
-
-#[allow(dead_code)]
-fn _type_markers(_: Option<(ToolOutputChunk, TokenUsageInfo)>) {}
 
 /// Extracts the child id from `spawn_subagent`'s `async_launched { <id> }`
 /// result message. Returns `None` for anything else (sync results, errors).

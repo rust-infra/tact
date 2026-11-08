@@ -50,20 +50,6 @@ impl ToolPhase {
     }
 }
 
-/// Visual strategy inferred from the tool name (legacy — replaced by ToolVisualKind).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-pub enum ToolDisplayKind {
-    FileWrite,
-    FileRead,
-    FileEdit,
-    Command,
-    Task,
-    Subagent,
-    Sleep,
-    Generic,
-}
-
 fn kind_from_presentation(
     presentation: &ToolPresentationInfo,
     tool_name: &str,
@@ -825,19 +811,6 @@ impl ToolWidget {
         self
     }
 
-    #[allow(dead_code)]
-    pub fn with_permission_label(mut self, label: impl Into<String>) -> Self {
-        self.permission_label = Some(label.into());
-        self
-    }
-
-    #[allow(dead_code)]
-    pub fn with_permission_label_opt(mut self, label: Option<String>) -> Self {
-        self.permission_label = label;
-        self
-    }
-
-    #[allow(dead_code)]
     pub fn with_message(mut self, message: impl Into<String>) -> Self {
         self.error_message = Some(message.into());
         self

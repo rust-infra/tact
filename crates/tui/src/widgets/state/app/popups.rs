@@ -1182,7 +1182,7 @@ impl App {
     /// Opens on the rendered diagram (re-laid out at the popup's wider width);
     /// `Tab` switches to the raw fence body.
     /// Compatibility wrapper for callers that still hold a physical index.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn open_mermaid_popup_at_physical_index(&mut self, block_idx: usize) {
         let block_id = self
             .mermaid_blocks

@@ -185,7 +185,7 @@ Shown only when **phase is Success** and tool kind is:
 | `FileWrite` | `write_file` | **No card** — collapsed, see below; the popup shows the written content |
 | `FileRead` | `read_file`, `read_image` | **No card** — collapsed, see below; the popup shows the file body / image envelope |
 | `Command` | `bash`, `shell`, `run_command` | **No card** — collapsed, see below |
-| `FileEdit` | `edit_file`, `apply_patch` | **No card** — collapsed, see below; the popup renders the git diff |
+| `FileEdit` | `edit_file` | **No card** — collapsed, see below; the popup renders the git diff |
 | `Subagent` | `spawn_subagent` | Child summary; the card is the transcript popup's entry point |
 | `Task` / `Sleep` / `Generic` | others | No card by default; a **multi-line** result collapses so it stays reachable (see below) |
 
@@ -207,7 +207,7 @@ is removed and carriage return replaces the current logical line.
 
 | Kind | Collapses? | Why |
 |---|---|---|
-| `Command`, `FileRead`, `FileEdit`, `FileWrite` | always (when there is detail) | They drew a card, so collapsing **saves** rows; the hint explains where the content went, whatever its size. `background_run` / `worktree_run` (`Command`) and `apply_patch` (`FileEdit`) follow for free. |
+| `Command`, `FileRead`, `FileEdit`, `FileWrite` | always (when there is detail) | They drew a card, so collapsing **saves** rows; the hint explains where the content went, whatever its size. `background_run` / `worktree_run` (`Command`) follow for free. |
 | `Subagent` | never | It is the entry point of the transcript popup and the line it retains is the child's result summary. |
 | `Task`, `Sleep`, `Generic` | when the result has **more than one line** | These never drew a card, so their result was *unreachable* rather than collapsed — no card, no popup, no click target (`detail_full` stayed `None`). Collapsing costs no extra row and makes a multi-line readout (`task_list`, `read_inbox`, `worktree_status`, `load_skill`, `check_background`, `wait_background` with its output tail, and every MCP/plugin tool, which arrives as `Generic`) one stable-ID popup open affordance. |
 
