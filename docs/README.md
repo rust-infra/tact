@@ -56,13 +56,6 @@ questions and the book chapter explains the design and its history.
 - [`design/tact-desktop/visual-verification.md`](design/tact-desktop/visual-verification.md):
   capture and live-window verification.
 
-## Historical records
-
-[`superpowers/`](superpowers/README.md) contains dated design and
-implementation records. These files explain why a feature was built. They are
-not the source of truth for current behavior. Use the code, `ARCHITECTURE.md`,
-and the book for current contracts.
-
 Delete a document when it is unreferenced, describes a removed implementation,
-or repeats a current document without adding evidence. Keep a dated design or
-plan only when it records a decision that the current docs still need.
+or repeats a current document without adding evidence. Keep decisions only in
+the current architecture or book chapter that still depends on them.

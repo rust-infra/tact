@@ -32,9 +32,8 @@
 //!   loadable by name: the switch hides from automatic discovery, it does not
 //!   disable the capability.
 //!
-//! See `docs/superpowers/specs/2026-10-11-skill-catalog-budget-design.md` for
-//! why the catalog is bounded and why the path rides the body rather than the
-//! catalog.
+//! See `book/02_chapter_skill_zh.html` for why the catalog is bounded and why
+//! the path rides the body rather than the catalog.
 
 use std::{
     collections::{HashMap, HashSet},

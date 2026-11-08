@@ -74,7 +74,7 @@ through `TestBackend`, and prints the frame.
 **Widgets** (`widgets/`): `ToolWidget` (builder → `ToolRenderOutput`),
 `HelpWidget`, `PopupWidget`, `ListPopup` (the shared list popup: geometry,
 chrome, scroll window, focused-row style, empty hint — see
-`docs/superpowers/specs/2026-10-04-list-popup-component-design.md`),
+[`docs/tui_rendering.md`](../../docs/tui_rendering.md)),
 `SelectPopupWidget` (a `ListPopup` with a prompt header).
 
 **Theme / i18n:** `Theme` + `ThemeName` (14 schemes), `Messages` by

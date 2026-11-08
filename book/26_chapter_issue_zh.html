@@ -784,9 +784,11 @@
 <h1 id="工程问题与优化日志">工程问题与优化日志</h1>
 <p>本章是一份<strong>按时间倒序的优化与
 bugfix日志</strong>，记录有用户可见或 API
-可见行为变化的改动。它不是教程：每条写清问题、决策与代码 /
-设计文档位置，避免后续重复踩坑。</p>
-<p>相关流程：<code>AGENTS.md</code>（何时追加条目）、<code>docs/superpowers/specs/</code>（设计）、<code>docs/superpowers/plans/</code>（实现计划）。</p>
+可见行为变化的改动。它不是教程：每条写清问题、决策与代码位置，避免后续重复踩坑。</p>
+<p>相关流程：<code>AGENTS.md</code>（何时追加条目）；当前契约见
+<a href="../ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> 和对应章节，
+更早的设计与实施记录保存在 Git 历史中。正文中出现的旧 spec / plan
+文件名只用于标识当时的修订，文件本身已删除。</p>
 <h2 id="2026-10-22--headless-日志只看到一半事件一个-sink-统一分发">2026-10-22 — headless 日志只看到一半事件：一个 sink 统一分发</h2>
 <table>
 <thead>
@@ -3232,12 +3234,9 @@ criteria version 的证据验证。</p>
 <p><strong>Verification：</strong> Goal domain 33 个、Goal store 15
 个、Task 关联 19 个、Agent 196 个、Runner 15 个、driver 23 个、protocol
 27 个、<code>agent_tui_kit</code> 412 个，以及 TUI sticky/mouse
-聚焦测试通过；完整串行验证见实现计划。</p>
+聚焦测试通过；完整串行验证见第 26 章。</p>
 <p><strong>Pointers:</strong> <a href="./28_chapter_goal_zh.html">Agent
-Goal</a>、<a
-href="../docs/superpowers/specs/2026-10-14-agent-goal-design.md">设计
-spec</a>、<a
-href="../docs/superpowers/plans/2026-10-14-agent-goal.md">实现计划</a>、<code>GoalStatus</code>、<code>GoalRunner::run_once</code>、<code>AgentUpdate::GoalsChanged</code>、<code>GoalPanelState</code>。</p>
+Goal</a>、<code>GoalStatus</code>、<code>GoalRunner::run_once</code>、<code>AgentUpdate::GoalsChanged</code>、<code>GoalPanelState</code>。</p>
 <h2 id="1-2026-10-14--日志虚拟卡片支持跨块拖选与顺序复制">1. 2026-10-14
 — 日志虚拟卡片支持跨块拖选与顺序复制</h2>
 <table>
@@ -10731,9 +10730,7 @@ href="./22_chapter_llm_zh.html">Ch 22</a> §6.2。</p>
 开关）；<a href="./07_chapter_tool_zh.html">Ch 7</a> §7.1；<a
 href="./10_chapter_permission_zh.html">Ch 10</a>；<a
 href="./21_chapter_config_zh.html">Ch 21</a>；<a
-href="./27_chapter_sandbox_zh.html">Ch 27</a>；<a
-href="../docs/superpowers/specs/2026-09-15-bwrap-sandbox-design.md">设计</a>；<a
-href="../docs/superpowers/plans/2026-09-15-bwrap-sandbox.md">实施计划</a></td>
+href="./27_chapter_sandbox_zh.html">Ch 27</a></td>
 </tr>
 </tbody>
 </table>
