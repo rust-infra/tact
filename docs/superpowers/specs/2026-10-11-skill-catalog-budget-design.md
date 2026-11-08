@@ -1,7 +1,8 @@
 # A bounded skill catalog — capped descriptions, a context budget, and a per-skill switch
 
-Status: **implemented** (2026-10-11), uncommitted; `./scripts/check-rust.sh` green.
-The measurements are from the author's machine, taken 2026-10-11.
+Status: **implemented** (2026-10-11). Current behavior is in
+[`book/02_chapter_skill_zh.html`](../../../book/02_chapter_skill_zh.html).
+The measurements are from the author's machine on 2026-10-11.
 
 ## Problem
 

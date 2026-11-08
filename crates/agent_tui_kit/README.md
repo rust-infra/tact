@@ -5,7 +5,7 @@ cards, tool cards, the streaming markdown log, the popup family, the task/plan
 panels, the input box, and the status/bottom bars — wired together by one
 contract:
 
-- **In:** a stream of [`AgentUpdate`](crates/protocol/src/agent.rs) events
+- **In:** a stream of [`AgentUpdate`](../protocol/src/agent.rs) events
   from the host's agent.
 - **Out:** [`Command`] values sent through the host's [`AgentBridge`]
   implementation.
@@ -14,8 +14,7 @@ The kit depends only on `tact_protocol` (the types-only wire contract) and the
 ratatui/crossterm family. It **never** depends on a concrete agent — `cargo
 tree -p agent_tui_kit` shows no `tact` / `tact_llm`.
 
-Design: `docs/superpowers/specs/2026-08-18-tui-component-library-design.md` ·
-Plan: `docs/superpowers/plans/2026-08-18-tui-component-library.md`
+Rendering architecture: [`docs/tui_rendering.md`](../../docs/tui_rendering.md).
 
 ## Quick start
 
@@ -78,7 +77,7 @@ chrome, scroll window, focused-row style, empty hint — see
 `docs/superpowers/specs/2026-10-04-list-popup-component-design.md`),
 `SelectPopupWidget` (a `ListPopup` with a prompt header).
 
-**Theme / i18n:** `Theme` + `ThemeName` (12 schemes), `Messages` by
+**Theme / i18n:** `Theme` + `ThemeName` (14 schemes), `Messages` by
 `Language` (EN/ZH).
 
 ## Host responsibilities (the `crates/tui` app layer in Tact)

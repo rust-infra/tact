@@ -1,6 +1,6 @@
 # `/hooks` — review command hooks where they fire
 
-Status: **approved** (one of the remaining TODOs after the Codex hook-parity work).
+Status: **implemented**. Current behavior is in [`book/09_chapter_hook_zh.html`](../../../book/09_chapter_hook_zh.html).
 
 ## Problem
 

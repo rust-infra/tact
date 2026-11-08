@@ -21,7 +21,7 @@ Keep the frontend-specific pieces separate:
 tact_host
   -> tact_protocol::UpdateReceiver / UserCommand
   -> TUI adapter (tact-ui)
-  -> desktop adapter (Tauri / egui / native)
+  -> desktop adapter (Tact Desktop with GPUI)
 ```
 
 `session_bootstrap::Frontend::Interactive` is the claim that the frontend can

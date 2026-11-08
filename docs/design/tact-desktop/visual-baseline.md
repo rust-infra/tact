@@ -242,8 +242,8 @@ These remain visible in a pixel comparison but are product decisions, not
 unfinished work:
 
 - The permission card and the sticky warning banner can both be visible while
-  the card is on screen; the PRD requires the banner to persist until the
-  decision.
+  the card is on screen; the reviewed design requires the banner to persist
+  until the decision.
 - Windows taskbar badges are an overlay icon, not a number: the platform has
   no numeric badge API, so the gate banner and notification carry the count.
 
@@ -278,7 +278,7 @@ record them:
 | Session rail | Titles truncate without ellipsis; one UUID fallback observed | Fixed: `truncate()` on the row label |
 | Composer | Permission picker is a separate full-width row; `@`/`/` are a separate button row; no single composer bar | Fixed: one footer row inside `PromptBar` |
 | Sticky strip | One-line text bar; no task card, Goals/Agents counts, or background entry | Fixed: task card with header, counts, progress, rows |
-| Title bar | No branch/worktree or account avatar (PRD §title bar) | Fixed: branch pill from `.git/HEAD` (avatar is tracked separately) |
+| Title bar | No branch/worktree or account avatar in the reviewed design | Fixed: branch pill from `.git/HEAD` (avatar is tracked separately) |
 | Inspector | Fixed 318px; values were clipped under the scrollbar (now padded, still cramped) | Fixed: scrollbar padding + truncation |
 | Command Center | Flat list; no groups, icons, recent section, or per-row shortcut hints | Fixed: group subtitle, group icon, `/command` hint, count caption |
 | Session Manager | No project grouping/chips, archive badge, or keyboard hints | Fixed: project chips include All projects; archived rows carry a badge |

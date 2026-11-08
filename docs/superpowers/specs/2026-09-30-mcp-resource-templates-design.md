@@ -1,7 +1,7 @@
 # Design: `resources/templates/list`
 
 Date: 2026-09-30
-Status: approved for implementation
+Status: implemented. Current behavior is in [`book/08_chapter_mcp_zh.html`](../../../book/08_chapter_mcp_zh.html).
 
 Closes the remaining half of the gap in [Ch 8 §10](../../../book/08_chapter_mcp_zh.html): *"Resource templates
 / prompts | Resources are wired (`list_mcp_resources` / `read_mcp_resource`); `resources/templates/list`
@@ -61,9 +61,9 @@ from "the server publishes none", which is the one distinction the resources wor
 
 ## 3. Non-goals
 
-- **Prompts** (`prompts/list`, `prompts/get`). Still unimplemented, and the reason stands: a prompt
-  template has no consumer in Tact's turn structure — it is a server-authored message sequence, not a
-  tool call. The gap row keeps saying so, now naming Prompts alone.
+- **Prompts** (`prompts/list`, `prompts/get`). This design left them out.
+  [`2026-10-02-mcp-prompts-design.md`](./2026-10-02-mcp-prompts-design.md)
+  later added them as explicit tools.
 - Resource *subscriptions* (`resources/subscribe` + `notifications/resources/updated`).
 - Any change to `read_mcp_resource`, including the `{…}` substitution itself: Tact reports the
   template, the model performs the substitution. That keeps the read path byte-exact and avoids

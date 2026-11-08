@@ -1,184 +1,154 @@
-# State Machines
+# State machines
 
-This document describes the state machines used across the `tact` codebase. Most are plain Rust enums with explicit transitions driven by `AgentUpdate` messages, user input, or tool results.
+Tact keeps state transitions in typed Rust enums. The runtime owns execution
+state, each frontend projects that state into its own view model, and durable
+stores own lifecycle records. This page lists the current enums and the code
+that advances them.
 
-The state diagrams are plain text on purpose. These machines are **cyclic**, and neither renderer in this repo can draw a labelled cyclic machine correctly: Tact's TUI state-diagram parser folds a transition's `: label` into the node name, and its flowchart layout needs an acyclic graph (a back edge pins every node of the cycle into one row). Plain-text edge lists render identically in the TUI, on GitHub, and in an editor — see [book/26](../book/26_chapter_issue_zh.html) for the renderer details.
+## Runtime events
 
----
+`tact_agent_api::AgentEvent` is the ordered kernel event stream. It is defined
+in `crates/agent_api/src/event.rs`.
 
-## 0. Agent–TUI Protocol
+| Event group | Events |
+|---|---|
+| Run and turn | `RunStarted`, `TurnStarted`, `TurnFinished`, `RunFinished`, `RunFailed` |
+| Model and message | `ModelCallStarted`, `MessageStarted`, `MessageDelta`, `MessageFinished` |
+| Tool lifecycle | `ToolQueued`, `ToolStarted`, `ToolProgress`, `ToolFinished` |
+| Accounting | `Usage`, `ContextCompacted`, `Notice` |
 
-Full documentation: **[book/25_chapter_protocol_zh.html](../book/25_chapter_protocol_zh.html)**.
+`AgentEvent::delivery()` separates advisory progress from reliable terminal
+events. `MessageDelta` and `ToolProgress` are progress events. Every lifecycle,
+result, usage, and failure event is terminal and must remain ordered.
 
-Covers `AgentUpdate` / `UserCommand` / `AccountUpdate` channels, plan step lifecycle, TUI `Status` / `InputMode` state diagrams, message categories, and typical ordering (incl. sequence diagram).
+`crates/tact/src/runtime/event_adapter.rs` converts `AgentEvent` into the
+host-facing `tact_protocol::AgentUpdate`. The desktop controller consumes the
+same product events and updates `DesktopSnapshot`.
 
-Interactive TUI mode adds a pull side-channel: the shared `UiResponder` exposes an ordered pending snapshot, and `App::reconcile_pending_ui()` derives `InputMode::Select` from it. `RequestSelect` remains a wake-up hint; the legacy event-driven path is used when no broker is attached.
+## Tool dispatch
 
-Files: `crates/protocol/src/agent.rs`, `crates/tui/src/widgets/state/app/agent.rs`, `crates/tact/src/runtime/event_adapter.rs`, `crates/tact/src/runtime/gate_adapter.rs`
+The kernel owns the transition from queued to started:
 
----
+```text
+model emits ToolUse
+  -> ToolQueued
+  -> permission gate
+  -> ToolStarted when the tool's wave begins
+  -> ToolProgress while output arrives
+  -> ToolFinished
+```
 
-## 1. TUI Execution Status
+A denied call still emits `ToolStarted` followed by `ToolFinished`, so every
+queued card reaches a terminal state. `ToolQueued` means accepted for this
+turn. It does not mean the call is running.
 
-File: `crates/tui/src/widgets/state/mod.rs`
+The scheduler and resource conflict rules are in
+[`parallel_tool_execution.md`](parallel_tool_execution.md).
 
-This is the highest-level UI state. It drives the status bar, the internal plan step store (`app.plan.steps`), and whether the user is being asked for approval.
+## TUI status and input
+
+`crates/agent_tui_kit/src/state/ui_types.rs` defines the reusable TUI states.
 
 ```rust
-pub(crate) enum Status {
+pub enum Status {
     Idle,
     Planning,
     Executing { current_step: usize, total: usize },
     Done,
 }
-```
 
-A pending select switches `InputMode` to `Select` while `Status` stays `Executing`. In interactive mode the popup is derived from the shared pending snapshot; in legacy/headless mode `AgentUpdate::RequestSelect` is the activation edge. Full diagrams: [book/25_chapter_protocol_zh.html](../book/25_chapter_protocol_zh.html) §4.
-
-### State transitions
-
-```text
-start      ──startup──▶ Idle
-Idle       ──user submits task · Enter in Insert mode──▶ Planning
-Planning   ──AgentUpdate::StepAdded · first tool step──▶ Executing
-Executing  ──AgentUpdate::StepStarted · current_step updated──▶ Executing
-Executing  ──AgentUpdate::TaskComplete──▶ Done
-Executing  ──AgentUpdate::StepFailed / Error(Other)──▶ Idle
-Done       ──after 2s timeout──▶ Idle
-Idle       ──user quits──▶ end
-```
-
-`UserCommand::Cancel` is not a transition: it is info only (no `TaskComplete`), and `Status` is unchanged.
-
-### Transition triggers
-
-| From | To | Trigger | Notes |
-|---|---|---|---|
-| `Idle` | `Planning` | User presses `Enter` in Insert mode with non-empty input. | Old approval (if any) is rejected; `app.plan.steps` is cleared. |
-| `Planning` | `Executing` | `AgentUpdate::StepAdded` (first step). | `ensure_executing_status` sets `total` from plan length. |
-| `Executing` | `Executing` | `AgentUpdate::StepStarted { idx, tool_id, … }`. | `current_step` updated; TUI pushes `ActiveToolBlock` (supports concurrent tools). |
-| `Executing` | `Done` | `AgentUpdate::TaskComplete`. | `task_done_time` is recorded for the 2s highlight. Emitted by the driver only when `agent_loop` returns `Ok(())` and `agent.is_cancelled()` is false. |
-| `Executing` | `Idle` | `AgentUpdate::StepFailed` or fatal `AgentUpdate::Error(Other)`. | Cost timer frozen; `task_start_time` cleared into `last_prompt_elapsed_secs`. |
-| *(unchanged)* | *(unchanged)* | `UserCommand::Cancel`. | Calls `Agent::cancel()`; emits `Info("Cancelling…")`; loop returns `Ok(())` without `TaskComplete`. |
-| `Done` | `Idle` | 2-second auto-timeout elapses. | Implemented in the main TUI loop. Cost timer is frozen via `last_prompt_elapsed_secs` and kept until the next prompt. |
-
----
-
-## 2. TUI Input Mode
-
-File: `crates/tui/src/widgets/state/mod.rs`
-
-Determines how keyboard input is interpreted.
-
-```rust
-pub(crate) enum InputMode {
-    Normal,     // navigation, shortcuts
-    Insert,     // typing a task
-    Palette,    // command palette
-    Select,     // option selection popup
-    FilePicker, // @ file attachment picker
+pub enum InputMode {
+    Normal,
+    Insert,
+    Palette,
+    Select,
+    FilePicker,
 }
 ```
 
-### State transitions
+The TUI app in `crates/tui/src/widgets/state/app/` owns the transitions.
+`InputMode::Select` is derived from the shared `UiResponder` snapshot in
+interactive sessions. Headless sessions do not enter the popup state.
+
+## Desktop session and run
+
+The desktop uses two separate state axes:
+
+| Enum | File | Purpose |
+|---|---|---|
+| `SessionPhase` | `crates/desktop_core/src/snapshot.rs` | Session ownership and host lifecycle |
+| `RunPhase` | `crates/desktop_core/src/snapshot.rs` | Current activation phase |
+
+`SessionPhase` values are `Empty`, `Opening`, `Starting`, `Ready`, `Running`,
+`Switching`, `Closing`, `Disconnected`, and `Failed`.
+
+`RunPhase` values are `Idle`, `Waiting`, `Thinking`, `Streaming`,
+`RunningTools`, `WaitingForGate`, `Cancelling`, `Complete`, and `Failed`.
+
+`crates/desktop_core/src/controller.rs` owns the transitions. The UI reads the
+phase from `DesktopSnapshot`; it does not infer host state from individual
+events.
+
+## Desktop transcript rows
+
+`crates/desktop_core/src/transcript/row.rs` defines row identity and status.
+
+| Enum | Meaning |
+|---|---|
+| `RowBody` | The row kind: user, assistant, thinking, plan, tool group, diff, gate, notice, hook context, hook status, or error |
+| `RowStatus` | `Pending`, `Running`, `Success`, `Failed`, `Cancelled`, `Unknown`, or `Resolved` |
+| `GateState` | `Pending`, `Submitting`, `Resolved`, `Cancelled`, `Withdrawn`, or `Stale` |
+| `GateKind` | `Select` or `MultiSelect` |
+
+`crates/desktop_core/src/transcript/reducer.rs` validates stale sessions and
+gate responses before it changes a row. A late event cannot move a terminal row
+back to running.
+
+## Tasks and background jobs
+
+Persistent tasks live in `crates/tact/src/task/mod.rs`:
 
 ```text
-start      ──startup──▶ Normal
-Normal     ──i / Enter──▶ Insert
-Insert     ──Esc──▶ Normal
-Insert     ──Enter · submits task──▶ Normal
-Normal     ──/──▶ Palette
-Palette    ──Enter / Esc──▶ Normal
-Insert     ──@──▶ FilePicker
-FilePicker ──Enter / Esc──▶ Insert
-Normal     ──pending != empty · RequestSelect hint──▶ Select
-Select     ──Enter / Esc──▶ Normal
+Pending -> InProgress -> Completed
+Pending -> Deleted
+InProgress -> Deleted
 ```
 
-`Select` is an `InputMode`, not a `Status`: entering it leaves `Status` at `Executing`, and in interactive mode the broker snapshot is authoritative over the `RequestSelect` hint.
+Completing a task removes its id from other tasks' `blocked_by` lists.
 
-### Mode-specific behavior
-
-| Mode | Purpose | Confirm key | Cancel key |
-|---|---|---|---|
-| `Normal` | Navigate panels, run shortcuts, approve/deny. | — | — |
-| `Insert` | Type a natural-language task. | `Enter` | `Esc` |
-| `Palette` | Run commands (`theme`, `quit`, `balance`, `save`, …). Opened with `/` in Normal. | `Enter` | `Esc` |
-| `Select` | Pick one option from a popup. | `Enter` | `Esc` |
-| `FilePicker` | Attach a workspace file via `@`. | `Enter` | `Esc` |
-
----
-
-## 3. Persistent Task Lifecycle
-
-File: `crates/tact/src/task/mod.rs`
-
-Tasks are durable work items with dependency tracking.
-
-```rust
-pub enum TaskStatus {
-    Pending,
-    InProgress,
-    Completed,
-    Deleted,
-}
-```
-
-### State transitions
+Background commands live in `crates/tact/src/background.rs`:
 
 ```text
-start      ──task_create──▶ Pending
-Pending    ──task_update status=in_progress──▶ InProgress
-Pending    ──task_update status=completed──▶ Completed
-Pending    ──task_update status=deleted──▶ Deleted
-InProgress ──task_update status=completed──▶ Completed
-InProgress ──task_update status=deleted──▶ Deleted
-Completed  ──▶ end
-Deleted    ──▶ end
+Running -> Completed
+Running -> Error
 ```
 
-### Dependency rules
+`WaitOutcome` adds the caller-facing result `Finished`, `TimedOut`, or
+`Cancelled`. It does not change the stored task status.
 
-- `blocked_by`: list of task IDs that must be completed before this task is unblocked.
-- `blocks`: list of task IDs that this task blocks.
-- When a task is marked `Completed`, its ID is removed from all other tasks' `blocked_by` lists (`clear_dependency`).
-- Rendering markers: `[ ]` Pending, `[>]` InProgress, `[x]` Completed, `[-]` Deleted.
+## Goals
 
----
+`crates/tact/src/goal/mod.rs` defines the durable Goal lifecycle.
 
-## 4. Background Task Lifecycle
+| State | Meaning |
+|---|---|
+| `Draft` | Created locally, not queued |
+| `Queued` | Waiting for a runner |
+| `Running` | An activation is active or can resume |
+| `WaitingUser` | A Goal tool requested user input |
+| `WaitingPermission` | Reserved state; no producer writes it today |
+| `Paused` | Explicitly paused and resumable |
+| `Verifying` | Completion was proposed and verification is running |
+| `Succeeded`, `Failed`, `Cancelled` | Terminal states |
 
-File: `crates/tact/src/background.rs`
+`GoalPhase` is orthogonal: `Planning`, `Execution`, or `Verification`.
+`GoalRunOutcome` records why one bounded activation ended. The Goal runner and
+store enforce lease ownership and write transitions through the SQLite Goal
+store.
 
-Background tasks are asynchronous shell commands spawned via `tokio::spawn`.
+## Permissions and hooks
 
-```rust
-pub enum BackgroundTaskStatus {
-    Running,
-    Completed,
-    Error,
-}
-```
-
-### State transitions
-
-```text
-start     ──background_run(command)──▶ Running
-Running   ──command exits with success──▶ Completed
-Running   ──command exits with failure / spawn fails──▶ Error
-Completed ──▶ end
-Error     ──▶ end
-```
-
-Each transition is persisted to the `background_tasks` table in `<workdir>/.tact/tact.db` so the task can be inspected later with `check_background` — or waited on with `wait_background` — even if the agent restarts.
-
----
-
-## 5. Permission Decision
-
-File: `crates/tact/src/permission/mod.rs`
-
-Every tool call is classified and checked against the active permission mode and the loaded permission settings.
+`crates/tact/src/permission/mod.rs` defines:
 
 ```rust
 pub enum PermissionBehavior {
@@ -188,221 +158,20 @@ pub enum PermissionBehavior {
 }
 ```
 
-### Settings paths
+The decision order is `deny`, then `ask`, then `allow`, followed by the active
+permission mode. Rules live in the global and project `settings.json` files,
+not in `config.toml`.
 
-Dynamic allow/ask/deny rules are stored in JSON settings files — not in `config.toml`. Two scopes are loaded at startup:
+`crates/tact/src/hook/mod.rs` defines `HookControl::Continue` and
+`HookControl::Block(reason)`. A block ends the hook chain and fails the guarded
+operation with the supplied reason.
 
-| Scope | Path |
-|-------|------|
-| Global | `$HOME/.tact/settings.json` |
-| Project | `<workdir>/.tact/settings.json` |
+## Where to read next
 
-### Settings format
-
-```json
-{
-  "permissions": {
-    "allow": [
-      "bash(command:cargo test *)",
-      "edit_file(path:src/**)"
-    ],
-    "ask": [
-      "bash(command:git push *)"
-    ],
-    "deny": [
-      "bash(command:rm -rf *)"
-    ]
-  }
-}
-```
-
-Rules are strings in a Claude-like tool-and-argument form. A bare tool rule (`read_file`) matches any invocation of that tool. An argument rule (`bash(command:…)`) matches the named JSON input field using glob semantics (`*` / `**`). Unknown top-level and permission fields are preserved when updating the file.
-
-### Decision flow
-
-See [`ARCHITECTURE.md`](../ARCHITECTURE.md#3-permission-system) for the full diagram. In short:
-
-1. `normalize_capability(tool, input)` computes `CapabilityRisk` (`Read`, `Write`, `High`).
-2. Rules from global and project settings are merged into one effective policy (project loaded second; both scopes participate equally).
-3. `PermissionManager::check(tool_name, risk, input)` evaluates settings rules with `deny > ask > allow` precedence, then applies the mode.
-4. If `Ask`, the TUI reconciles a select popup from the broker snapshot (or legacy `RequestSelect`) for the user; the headless runtime denies.
-5. User choice transitions the in-memory allowlist and, when **Always allow this tool** is selected, persists the generated parameter-aware rule to the project settings file.
-
-### Scope merge and soft failure
-
-- Global rules are loaded first, project rules second. Both scopes participate in one effective rule set.
-- Missing settings files are treated as empty rule sets.
-- Malformed JSON or invalid individual rules are soft failures: a warning is emitted, the invalid layer is skipped, and normal prompting is preserved.
-
-### Persistence behavior
-
-- **Always allow this tool** writes the narrowest supported rule (e.g. `bash(command:cargo test *)` for a command tool, or `edit_file(path:src/main.rs)`) to `<workdir>/.tact/settings.json` under `permissions.allow`.
-- Writes are atomic (temporary file + rename). Duplicate rules are not added.
-- Unknown JSON fields are preserved. Persistence failures are logged as warnings and must not turn an already-approved invocation into a denial.
-
-### Mode-specific state machine
-
-```text
-start          ──tool call──▶ ClassifyRisk
-ClassifyRisk   ──Read · all modes──▶ Allow
-ClassifyRisk   ──Plan mode + Write──▶ Deny
-ClassifyRisk   ──High risk──▶ Ask
-ClassifyRisk   ──Auto mode · all Write/High──▶ Allow
-ClassifyRisk   ──Default mode + Write──▶ CheckSettings
-CheckSettings  ──settings allow · non-high risk──▶ Allow
-CheckSettings  ──settings deny──▶ Deny
-CheckSettings  ──settings ask──▶ Ask
-Ask            ──user chooses allow once / always allow──▶ Allow
-Ask            ──user chooses deny──▶ Deny
-```
-
-The settings check applies after mode classification for Default-mode prompted capabilities. A matching settings deny always blocks execution. A matching ask displays the prompt. A matching allow skips the prompt at **every** risk, high risk included. High risk is otherwise asked the first time and allowed afterwards only when an in-session allow covers that exact tool and input — a grant relaxes the prompt, never the mode. Existing Plan and Auto mode semantics are unchanged.
-
----
-
-## 6. Hook Control
-
-File: `crates/tact/src/hook/mod.rs`
-
-Hooks can permit or veto operations at three lifecycle points.
-
-```rust
-pub enum HookControl {
-    Continue,
-    Block(String),
-}
-```
-
-### Behavior
-
-- `Continue`: proceed to the next hook or to the next operation.
-- `Block(reason)`: stop the chain and treat the tool call as failed with `reason`.
-
-Hooks are invoked in this order during a tool call:
-
-1. `PreToolUse` hooks — can mutate `ToolUse` input.
-2. If all return `Continue`, permission check and tool execution run.
-3. `PostToolUse` hooks — can mutate `ToolResult` content.
-
----
-
-## 7. Step Execution Status
-
-File: `crates/protocol/src/agent.rs`
-
-A small enum attached to `StepResult` for TUI display.
-
-```rust
-pub enum StepStatus {
-    Success,
-    Failed,
-}
-```
-
-This is not a lifecycle state machine by itself; it is the outcome of a single tool execution recorded in `StepResult`. The per-step lifecycle is driven by `StepAdded` → `StepStarted` → `StepFinished` / `StepFailed` (see section 0).
-
----
-
-## 7.5 Tool Block State (concurrent active tools)
-
-Files: `crates/tui/src/widgets/state/tool_state.rs`, `crates/tui/src/widgets/state/app/visibility.rs`
-
-Each running tool call gets an `ActiveToolBlock` entry in `ToolState.active: Vec<ActiveToolBlock>`. Multiple tools can be active at once (e.g. parallel tool uses in one assistant turn).
-
-```rust
-pub(crate) struct ActiveToolBlock {
-    pub phys_idx: usize,           // first placeholder row in messages[]
-    pub tool_id: String,           // LLM tool_use id
-    pub output: ToolRenderOutput,
-    pub started_at: Instant,       // live elapsed in meta row while Running
-}
-```
-
-Transitions:
-
-| Event | Action |
+| Topic | Document |
 |---|---|
-| `StepStarted { tool_id, arg_full, … }` | `cancel_active_tool(tool_id)` if restarting; push new `ActiveToolBlock` + placeholder rows |
-| `StepFinished { tool_id, result }` | `finalize_tool_block()` — replace placeholders with final `ToolRenderOutput`, remove from `active` |
-| `StepFailed { tool_id, error }` | Same finalize path, or fallback system message if no active block |
-| New task (`SubmitTask`) | `cancel_all_active_tools()` removed; stale blocks cleared per `StepStarted` restart |
-
-`StepResult` (from runtime) includes `permission_label` (e.g. `"Allow once"`, `"Always allow this tool"`) shown in the tool meta row.
-
-See [`tool_rendering.md`](./tool_rendering.md) for the full tool UI design.
-
----
-
-## 8. Select Popup State
-
-File: `crates/agent_tui_kit/src/state/select_popup.rs`
-
-The select popup has an implicit state machine. In interactive mode it is derived from `UiResponder::snapshot()`; the broker's `respond()` removes the pending entry. In legacy/headless mode it is driven by the `RequestSelect` event and the `respond` oneshot channel.
-
-```text
-start     ──new()──▶ Inactive
-Inactive  ──pending snapshot contains request──▶ Active
-Active    ──confirm() sends Some(idx)──▶ Confirmed
-Active    ──cancel() sends None──▶ Cancelled
-Confirmed ──broker respond / channel consumed──▶ Inactive
-Cancelled ──broker respond / channel consumed──▶ Inactive
-```
-
-A pending request activates the popup (broker snapshot in interactive mode, `RequestSelect` in legacy mode); `Enter` confirms and `Esc` cancels, both returning the UI to `InputMode::Normal`.
-
----
-
-## 9. Streaming / Parsing State
-
-File: `crates/tui/src/widgets/state/stream_state.rs` and `crates/tui/src/widgets/state/thinking_state.rs`
-
-The TUI maintains mutable streaming parsers for assistant output:
-
-- `StreamState` tracks whether the stream is inside a code block, a table, or a plain paragraph.
-- `ThinkingState` buffers thinking content until a complete line or the end of the thinking block is detected.
-
-These are not formal enums but are stateful machines with guarded transitions (e.g., ` ``` ` toggles code-block mode, blank lines flush paragraph mode).
-
-Key transitions:
-
-| Event | StreamState change |
-|---|---|
-| `AgentUpdate::ThinkingChunk(ThinkingChunk::Started)` | Open thinking title / region. |
-| `AgentUpdate::ThinkingChunk(ThinkingChunk::Delta)` | Buffer thinking text; flush on newline. |
-| `AgentUpdate::ThinkingChunk(ThinkingChunk::Finished)` | Flush buffer and collapse the active thinking block. |
-| `AgentUpdate::StreamChunk` with ` ```lang ` | Enter code-block mode, remember start index. |
-| `AgentUpdate::StreamChunk` with ` ``` ` | Close code block, replace placeholders with a `CodeBlock` overlay. |
-| `AgentUpdate::StreamChunk` blank line | Flush paragraph and table buffers. |
-
----
-
-## 10. Agent Runtime Recovery State
-
-File: `crates/tact/src/agent/mod.rs` (via `AgentRuntime.recovery_state`)
-
-The agent loop keeps counters for automatic recovery:
-
-- `transport_attempts`: transient network errors → exponential backoff retry.
-- `compact_attempts`: prompt-too-large errors → retry after `compact_history()`.
-- `continuation_attempts`: `max_tokens` truncation → continue with a continuation prompt.
-
-All three are reset to zero when the corresponding recovery path succeeds or when the loop moves on to a fresh LLM call.
-
----
-
-## Summary Table
-
-| State machine | File | Driven by | Purpose |
-|---|---|---|---|
-| **Agent–TUI protocol** | `crates/protocol/src/agent.rs` | `AgentUpdate` / `UserCommand` | Message-driven plan step and task lifecycle. |
-| `Status` | `crates/tui/src/widgets/state/mod.rs` | `AgentUpdate` + user input | Top-level TUI execution state. |
-| `InputMode` | `crates/tui/src/widgets/state/mod.rs` | Keyboard events | Keyboard input interpretation. |
-| `ToolState` | `crates/tui/src/widgets/state/tool_state.rs` | `StepStarted` / `StepFinished` | Concurrent running tool blocks + diff popup. |
-| `TaskStatus` | `crates/tact/src/task/mod.rs` | `task_*` tools | Persistent task lifecycle. |
-| `BackgroundTaskStatus` | `crates/tact/src/background.rs` | `background_run` / completion | Async shell task lifecycle. |
-| `PermissionBehavior` | `crates/tact/src/permission/mod.rs` | Risk classification + mode | Approve/deny/ask for each tool call. |
-| `HookControl` | `crates/tact/src/hook/mod.rs` | Hook return value | Permit or veto agent operations. |
-| `StepStatus` | `crates/protocol/src/agent.rs` | Tool execution result | Per-step success/failure display. |
-| `SelectPopup` | `crates/agent_tui_kit/src/state/select_popup.rs` | pending snapshot / `RequestSelect` + keys | User option selection popup. |
-| `StreamState` / `ThinkingState` | `crates/tui/src/widgets/state/stream_state.rs` / `thinking_state.rs` | Stream chunks | Parse Markdown/code/thinking output. |
-| `RecoveryState` | `crates/tact/src/recovery.rs` | LLM errors | Auto-recovery from transport/context errors. |
+| Protocol and gate sequencing | [`book/25_chapter_protocol_zh.html`](../book/25_chapter_protocol_zh.html) |
+| TUI rendering | [`tui_rendering.md`](tui_rendering.md) |
+| Tool cards | [`tool_rendering.md`](tool_rendering.md) |
+| Parallel tool scheduling | [`parallel_tool_execution.md`](parallel_tool_execution.md) |
+| Goal lifecycle | [`book/28_chapter_goal_zh.html`](../book/28_chapter_goal_zh.html) |

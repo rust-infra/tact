@@ -20,7 +20,7 @@ ensure consistent and efficient tool usage in this project.
 ### bash and the workspace path space
 
 - By default `bash` runs on the host and `pwd` is the project directory, so host
-  absolute paths from `read_file` / `grep` results can be used as-is.
+  absolute paths from file reads and workspace searches can be used as-is.
 - When the session has the opt-in sandbox enabled (`[tools] sandbox = true`,
   Linux only), the `bash` tool description says so. Then the shell sees the workspace at
   `/workspace` (the host path is *not* mounted) and the

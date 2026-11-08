@@ -1,7 +1,7 @@
 # Design: `notifications/tools/list_changed`
 
 Date: 2026-09-30
-Status: approved for implementation
+Status: implemented. Current behavior is in [`book/08_chapter_mcp_zh.html`](../../../book/08_chapter_mcp_zh.html).
 
 Closes the gap recorded in [Ch 8 §10](../../../book/08_chapter_mcp_zh.html): *"No `tools/list_changed`
 handling — Tool list fixed at connect; no `ClientHandler` or loop refresh."*

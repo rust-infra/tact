@@ -1,7 +1,7 @@
 # Design: inline `[hooks]` tables in `config.toml`
 
 Date: 2026-09-30
-Status: approved for implementation
+Status: implemented for the file-based `[hooks]` format. Current behavior is in [`book/09_chapter_hook_zh.html`](../../../book/09_chapter_hook_zh.html).
 
 Closes the second of the three items in [Ch 9 §13](../../../book/09_chapter_hook_zh.html): *"Inline `[hooks]`
 tables in `config.toml` | Codex accepts a third spelling; Tact deliberately has one, because the file

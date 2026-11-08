@@ -10,18 +10,17 @@ The LLM may return several tool calls in one response. Two facts shape the desig
 1. **Within one response, tool-call arguments are fixed.** The model emits all
    of a turn's `ToolUse` blocks at once; none of them can wait for another's
    output. So tools in the *same* turn carry no data dependency on each other.
-2. **Real dependencies are cross-turn.** The agent loop (`agent_loop` in
-   `crates/tact/src/agent/mod.rs`) feeds each turn's tool results back into the next
-   request. If the model needs `search_code`'s result to decide what to
-   `read_file`, it issues `search_code` in turn *N* and `read_file` in turn
-   *N+1*. The loop already serialises turns, so cross-turn dependencies are
+2. **Real dependencies are cross-turn.** `AgentKernel::run` feeds each turn's
+   tool results back into the next request. If the model needs a search result
+   to decide which file to read, it searches in turn *N* and calls `read_file`
+   in turn *N+1*. The loop serializes turns, so cross-turn dependencies are
    handled for free.
 
 The only intra-turn ordering we must preserve is a **resource conflict**: a
 read/write or write/write on the same workspace file. Everything else in a turn
 can overlap.
 
-## The three-phase pipeline (`Agent::execute_tool_call`)
+## The three-phase pipeline (`AgentKernel::execute_tool_calls`)
 
 ```
 content (assistant ToolUse blocks)
@@ -44,7 +43,7 @@ content (assistant ToolUse blocks)
         │
         ▼
 ┌──────────────────────────────────────────────────────────────┐
-| Phase 3 — post-processing (sequential, &mut self)              │
+│ Phase 3 — post-processing (sequential, &mut self)              │
 │   PostToolUse hook · StepFinished · bookkeeping (recent files, │
 │   compact) — fired per-completion inside Phase 2; the final    │
 │   ToolResult blocks are rebuilt in the model's original order  │
@@ -94,10 +93,11 @@ wave actually begins (a gate refusal emits `ToolStarted` immediately before
 card instead of claiming a tool is running while an earlier wave is still
 executing.
 
-Paths are normalised to absolute (lexically, rooted at `work_dir`). Two paths
-**overlap** when they are equal or one is an ancestor of the other (so a write
-to `src/foo.rs` conflicts with a search scoped to `src/`). `Path::starts_with`
-compares path *components*, so `src/foo` and `src/foobar` do not overlap.
+Paths are normalized to absolute paths rooted at `work_dir`, then converted to
+`ResourceScope` values. Two scopes overlap when their `ResourceKey` components
+are equal or one scope covers the other's descendants. A write to
+`src/foo.rs` therefore conflicts with a scope that covers `src`, while
+`src/foo` and `src/foobar` do not overlap.
 
 **Conflict:** two tools conflict if either is a barrier, or one writes a path
 the other reads or writes. Two pure reads never conflict.
@@ -156,22 +156,20 @@ observed issuing `git add` + `git commit` in parallel and racing
 waves, so that race cannot occur — at the cost of not (yet) parallelising
 `bash`/subagent calls.
 
-## Persistence for analysis
+## Persistence
 
-After scheduling, `execute_tool_call` records a `ToolScheduleSummary` (tool
-count, wave count, max parallelism, per-wave tool names + barrier flag) into the
-**same `token_usages` row** as that LLM call's token usage, keyed by
-`last_message_id` on that row (set at `persist_llm_call` from
-`llm_call_last_message_id`). This links scheduling strategy to token cost for later
-performance/troubleshooting analysis. See the
-[`tool_schedule` column](token_usage_schema.md#tool_schedule-column) for the
-JSON shape and example queries.
+The current kernel does not write a per-wave schedule summary. The
+`token_usages.tool_schedule` column and
+`SessionStore::record_tool_schedule` remain as a compatibility surface for
+older databases and tools. New runtime code schedules in memory and persists
+the resulting tool results and token usage, not a second schedule record.
 
 ## Code locations
 
 | File | Role |
 |------|------|
-| `crates/tact/src/agent/tool_schedule.rs` | Resource model, conflict detection, wave scheduler, `ToolScheduleSummary`. |
-| `crates/agent_core/src/kernel.rs` | `AgentKernel::execute_tool_calls` (three phases), wave execution, result assembly. |
+| `crates/agent_core/src/scheduling.rs` | Conflict detection and wave assignment over `ResourceAccess`. |
+| `crates/agent_core/src/kernel.rs` | `AgentKernel::execute_tool_calls`: gate phase, wave execution, event emission, and result assembly. |
 | `crates/tact/src/runtime/tool_adapter.rs` | Native/MCP dispatch and product resource mapping. |
-| `crates/tact/src/store/session_store/` | `record_tool_schedule` — UPDATE the call's `token_usages` row. |
+| `crates/tact/src/agent/tool_schedule.rs` | Product `ToolResources` contract used to build `ResourceAccess`. |
+| `crates/tact/src/store/session_store/` | Legacy `record_tool_schedule` compatibility method. |

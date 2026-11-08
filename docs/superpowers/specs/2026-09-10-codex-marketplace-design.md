@@ -1,7 +1,7 @@
 # Codex Local Marketplace Discovery
 
 Date: 2026-09-10
-Status: approved / implemented
+Status: implemented
 
 ## Problem
 

@@ -1,7 +1,7 @@
 # Design: declare the risk of Tact's own resource tools
 
 Date: 2026-09-30
-Status: approved for implementation
+Status: implemented. Current behavior is in [`book/08_chapter_mcp_zh.html`](../../../book/08_chapter_mcp_zh.html).
 
 Closes the row the resource work left in [Ch 8 §10](../../../book/08_chapter_mcp_zh.html): *"The two
 router-served resource tools (`list_mcp_resources`, `read_mcp_resource`) are **not** addressable this

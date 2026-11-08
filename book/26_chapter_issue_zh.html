@@ -845,7 +845,7 @@ bugfix日志</strong>，记录有用户可见或 API
 </tr>
 <tr>
 <td><strong>Decision</strong></td>
-<td>(1) 把「已确认存活后如何裁决身份」抽成 <code>alive_holder_matches(actual, expected)</code>，<code>holder_is_alive</code> 只负责先判存活。(2) <code>a_process_we_may_not_describe_is_alive</code> 只保留真正可移植的那半——<code>is_process_alive(1)</code> 为真（<code>EPERM</code> 即存在），不依赖身份是否可读。(3) 新增 <code>an_unreadable_identity_for_a_live_pid_is_alive</code>，直接对 <code>alive_holder_matches</code> 断言三条：<code>None</code> ⇒ 活、读得到但不匹配 ⇒ 死、读得到且匹配 ⇒ 活。回归覆盖没有减少，只是不再借内核权限来表达。(4) 同步修正 <code>process_identity</code> 的模块文档与 <code>docs/reviews/2026-10-17-lease-holder-liveness-review.md</code> 的 EACCES 说法。</td>
+<td>(1) 把「已确认存活后如何裁决身份」抽成 <code>alive_holder_matches(actual, expected)</code>，<code>holder_is_alive</code> 只负责先判存活。(2) <code>a_process_we_may_not_describe_is_alive</code> 只保留真正可移植的那半——<code>is_process_alive(1)</code> 为真（<code>EPERM</code> 即存在），不依赖身份是否可读。(3) 新增 <code>an_unreadable_identity_for_a_live_pid_is_alive</code>，直接对 <code>alive_holder_matches</code> 断言三条：<code>None</code> ⇒ 活、读得到但不匹配 ⇒ 死、读得到且匹配 ⇒ 活。回归覆盖没有减少，只是不再借内核权限来表达。(4) 同步修正 <code>process_identity</code> 的模块文档与历史 EACCES 结论。</td>
 </tr>
 <tr>
 <td><strong>Changed behaviour</strong></td>
@@ -853,7 +853,7 @@ bugfix日志</strong>，记录有用户可见或 API
 </tr>
 <tr>
 <td><strong>Pointers</strong></td>
-<td><code>crates/tact/src/store/process_identity.rs</code>（<code>alive_holder_matches</code>、<code>holder_is_alive</code>、<code>is_process_alive</code>）；测试 <code>a_process_we_may_not_describe_is_alive</code>、<code>an_unreadable_identity_for_a_live_pid_is_alive</code>；评审记录 <code>docs/reviews/2026-10-17-lease-holder-liveness-review.md</code> 的 Correction 段</td>
+<td><code>crates/tact/src/store/process_identity.rs</code>（<code>alive_holder_matches</code>、<code>holder_is_alive</code>、<code>is_process_alive</code>）；测试 <code>a_process_we_may_not_describe_is_alive</code>、<code>an_unreadable_identity_for_a_live_pid_is_alive</code>；评审结论已并入本条</td>
 </tr>
 </tbody>
 </table>
@@ -1387,7 +1387,7 @@ checkpoint、以及 Goal 是否 idle；重载会话不再出现
 <code>MockClient::with_responder</code>。</p>
 <p><strong>Pointers:</strong>
 <code>build_goal_context</code>（<code>&lt;checkpoint-protocol&gt;</code>）、<code>GoalRunner::run_with_lease</code>（结束行）、<code>GoalRunner::run_activation_cycles</code>（<code>with_kind</code>）、<code>tact::goal::{GOAL_CONTEXT_OPEN_TAG, is_goal_context_text}</code>、<code>MessageKind::GoalContext</code>、<code>compact::is_real_user_message</code>、<code>tui::widgets::state::app::messages::is_goal_context_cell</code>；评审记录
-<code>docs/reviews/2026-10-18-goal-context-and-checkpoint-review.md</code>。</p>
+本条和 <a href="./28_chapter_goal_zh.html">第 28 章</a>。</p>
 <h2
 id="1-2026-10-17--活着的持有者不再被当成死的lease-按-errno-判定存活">1.
 2026-10-17 — 活着的持有者不再被当成死的：lease 按 errno 判定存活</h2>
@@ -1480,7 +1480,7 @@ TTL」，方向是安全的：误判「死」会破坏互斥，误判「活」�
 语义本就不同，不能只按「同一个谓词」合并。</p>
 <p><strong>Pointers:</strong>
 <code>store::process_identity::{is_process_alive, holder_is_alive, process_identity}</code>、<code>SqliteGoalStore::{migrate_goal_leases_holder, add_lease_column, lease_has_column}</code>、<code>session_store::sqlite::is_active_lock_holder</code>；评审记录
-<code>docs/reviews/2026-10-17-lease-holder-liveness-review.md</code>。</p>
+历史修复记录已并入本条。</p>
 <h2 id="1-2026-10-18--模型自述检查入库cli-可用----声明-human-标准">1.
 2026-10-18 — 模型自述检查入库；CLI 可用 <code>--</code> 声明 Human
 标准</h2>
@@ -2342,7 +2342,7 @@ id="1-2026-11-02--tact-desktop-工具卡生命周期收口队列实时输出取�
 </tr>
 <tr>
 <td><strong>Related</strong></td>
-<td><code>crates/desktop_core/src/transcript/{reducer,row}.rs</code>、<code>crates/desktop_core/src/{snapshot,state,controller}.rs</code>、<code>crates/desktop/src/{root,capture,i18n}.rs</code>、<code>crates/protocol/src/agent.rs</code>、<code>crates/agent_api/src/message.rs</code>、<code>crates/agent_core/src/kernel.rs</code>、<code>crates/tact/src/store/session_store/sqlite.rs</code>、<code>vendor/gpui-ai/src/{stream,status,tool_call,chip}.rs</code>；<a href="../docs/superpowers/specs/2026-10-30-tact-desktop-design.md">Desktop 设计稿</a> §Desktop state / Transcript projection</td>
+<td><code>crates/desktop_core/src/transcript/{reducer,row}.rs</code>、<code>crates/desktop_core/src/{snapshot,state,controller}.rs</code>、<code>crates/desktop/src/{root,capture,i18n}.rs</code>、<code>crates/protocol/src/agent.rs</code>、<code>crates/agent_api/src/message.rs</code>、<code>crates/agent_core/src/kernel.rs</code>、<code>crates/tact/src/store/session_store/sqlite.rs</code>；<a href="../docs/design/tact-desktop/README.md">Desktop 设计说明</a>、<a href="../ARCHITECTURE.md">ARCHITECTURE.md</a></td>
 </tr>
 </tbody>
 </table>
@@ -2504,7 +2504,7 @@ Run、事件读取全部有界</h2>
 </tbody>
 </table>
 <p><strong>现象 / 动机：</strong> 2026-10-15
-的两份评审（<code>docs/reviews/2026-10-15-*</code>）修掉了三个
+的两轮历史评审修掉了三个
 HIGH，但留下几处残余：预算判定先于 stop
 映射（取消与超预算同时发生时，用户的取消被改记成
 <code>budget_exhausted</code>/<code>paused</code>）；agent 循环的终局
@@ -3057,8 +3057,7 @@ activation 24 turn 上限，Run 累计 24 turns / 60 次工具调用 / 600
 <p><strong>Pointers:</strong> <a href="./28_chapter_goal_zh.html">Agent
 Goal</a>
 §3/§5/§7/§12、<code>GoalRunner::run_with_lease</code>、<code>GoalLimits::permit_activation</code>、<code>AgentLoopStop::MaxTurns</code>、<code>Agent::turns_taken</code>、<a
-href="../docs/reviews/2026-10-15-goal-runner-chain-review.md">链路
-review</a>。</p>
+href="./28_chapter_goal_zh.html">第 28 章</a>。</p>
 <h2
 id="1-2026-10-15--goal-域标识符从完整-uuid-换成-8-位短-idgoal--标准--run--event">1.
 2026-10-15 — Goal 域标识符从完整 UUID 换成 8 位短 ID（Goal / 标准 / Run
@@ -3839,8 +3838,8 @@ id="1-2026-10-11--subagent-从弹窗改成视图主区域整块换面包屑退�
 /
 <code>subagent_block_toggles</code>）、<code>crates/agent_tui_kit/src/i18n.rs</code>；设计稿
 <code>docs/design/subagent-presentation.html</code> /
-<code>subagent-oss-comparison.html</code>、spec
-<code>docs/superpowers/specs/2026-10-10-subagent-popup-redesign-design.md</code></td>
+<code>subagent-oss-comparison.html</code>、当前说明见
+<a href="./12_chapter_subagent_zh.html">第 12 章</a></td>
 </tr>
 </tbody>
 </table>
@@ -4003,8 +4002,8 @@ Idle）不会自己转，只在新 transcript
 </ul>
 <p><strong>Pointers:</strong>
 <code>docs/design/subagent-presentation.html</code>（三种容器的取舍 +
-已落地的块形态）、<code>subagent-oss-comparison.html</code>（四家对照）、spec
-§8 / §9、Ch 12 §1「TUI 通道」行、Ch 23 组件表。</p>
+已落地的块形态）、<code>subagent-oss-comparison.html</code>（四家对照）、
+Ch 12 §1「TUI 通道」行、Ch 23 组件表。</p>
 <hr />
 <h2
 id="1-2026-10-10--subagent-弹窗重绘结构由子-agent-的结构化更新驱动与主日志共用渲染单元">1.
@@ -4025,9 +4024,9 @@ id="1-2026-10-10--subagent-弹窗重绘结构由子-agent-的结构化更新驱�
 </tr>
 <tr>
 <td><strong>Related</strong></td>
-<td><code>crates/protocol/src/subagent_transcript.rs</code>（新）、<code>crates/protocol/src/agent.rs</code>（<code>AgentUpdate::ToolTranscript</code>）、<code>crates/tact/src/tool/subagent_ui.rs</code>、<code>crates/agent_tui_kit/src/components/tool.rs</code>、<code>crates/agent_tui_kit/src/state/tool_state.rs</code>、<code>crates/agent_tui_kit/src/render/popups/subagent_popup.rs</code>、<code>crates/tui/src/render/popups/subagent_popup.rs</code>、<code>crates/tui/src/widgets/state/app/popups.rs</code>；设计稿
-<code>docs/design/subagent-popup.html</code>、spec
-<code>docs/superpowers/specs/2026-10-10-subagent-popup-redesign-design.md</code></td>
+<td><code>crates/protocol/src/subagent_transcript.rs</code>（新）、<code>crates/protocol/src/agent.rs</code>（<code>AgentUpdate::ToolTranscript</code>）、<code>crates/tact/src/tool/subagent_ui.rs</code>、<code>crates/agent_tui_kit/src/components/tool.rs</code>、<code>crates/agent_tui_kit/src/state/tool_state.rs</code>、<code>crates/agent_tui_kit/src/render/popups/subagent_popup.rs</code>、<code>crates/tui/src/render/popups/subagent_popup.rs</code>、<code>crates/tui/src/widgets/state/app/popups.rs</code>；当前设计见
+<code>docs/design/subagent-presentation.html</code> 和
+<a href="./12_chapter_subagent_zh.html">第 12 章</a></td>
 </tr>
 </tbody>
 </table>
@@ -4150,9 +4149,8 @@ match（无通配）</strong>，加 variant
 目前渲染出来但<strong>没接路由</strong>（点击无反应）——嵌套详情弹窗需要弹窗自己返回命中矩形并让
 host 路由，留作下一步。spec 里已列为阶段 2。</p>
 <p><strong>Pointers:</strong>
-<code>docs/design/subagent-popup.html</code>（可视稿：现状 vs
-重绘、消息→渲染单元对照表）、<code>docs/superpowers/specs/2026-10-10-subagent-popup-redesign-design.md</code>、Ch
-12 §1「TUI 通道」行、Ch 25 <code>AgentUpdate</code> 枚举。</p>
+<code>docs/design/subagent-presentation.html</code>、Ch 12 §1「TUI 通道」
+行、Ch 25 <code>AgentUpdate</code> 枚举。</p>
 <hr />
 <h2
 id="1-2026-10-10--发版-v1138清单版本-1137--1138与本次的权限弹窗改动一起进-pr">1.
@@ -15617,9 +15615,8 @@ Tact 解耦）</h2>
 </tr>
 <tr>
 <td><strong>相关</strong></td>
-<td>设计：<code>docs/superpowers/specs/2026-08-18-tui-component-library-design.md</code>（+
-<code>-ctx-design.md</code>）；计划：<code>docs/superpowers/plans/2026-08-18-tui-component-library.md</code>；Ch
-23</td>
+<td>当前架构：<a href="../docs/tui_rendering.md"><code>docs/tui_rendering.md</code></a>；
+<a href="./23_chapter_tui_zh.html">Ch 23</a></td>
 </tr>
 </tbody>
 </table>
@@ -15682,9 +15679,8 @@ id="2-2026-08-23--tui-app-切换到-kit-的-componentregistrywhole-app-重构任
 </tr>
 <tr>
 <td><strong>相关</strong></td>
-<td>计划：<code>docs/superpowers/plans/2026-08-18-tui-component-library.md</code>（步骤
-9）；设计：<code>docs/superpowers/specs/2026-08-18-tui-component-library-design.md</code>；Ch
-23</td>
+<td>当前架构：<a href="../docs/tui_rendering.md"><code>docs/tui_rendering.md</code></a>；
+<a href="./23_chapter_tui_zh.html">Ch 23</a></td>
 </tr>
 </tbody>
 </table>
@@ -21935,7 +21931,7 @@ Desktop 视觉对齐与组件补丁</h2>
 可选项（P11–P14：<code>SidebarNav</code> 紧凑行、<code>SelectionActions</code>
 无框模式、<code>PromptSubmit::Plane</code>、<code>ToolCall::grouped</code> /
 <code>ToolGroup::compact</code>），默认行为不变，补丁清单记录在
-<code>component-reproducibility-audit.md</code>。行标签显示 shell 收到该行时的
+桌面组件的当前归属见 <code>crates/desktop/src/ui/</code>。行标签显示 shell 收到该行时的
 本地时间（<code>You 10:42</code>），持久化历史没有逐消息时间，种子行留空；
 思考行的 <code>∴</code>、工具组的竖轨与闸门的警示标记由行首装饰列绘制。
 单步计划如果唯一一步就是同一 loop 里的工具调用，不再单独绘制计划卡，只保留
@@ -22290,7 +22286,7 @@ Desktop：叶子组件开始脱离 gpui-ai</h2>
 <code>crates/desktop/src/ui/command_search.rs</code>、
 <code>crates/desktop/src/ui/reader_components.rs</code>、
 <code>crates/desktop/src/root.rs</code>、
-<code>docs/design/tact-desktop/component-coverage-matrix.md</code>。</p>
+<code>crates/desktop/src/ui/</code>。</p>
 <h2 id="35-2026-11-04--desktop-转录三件套脱离-gpui-ai">35. 2026-11-04 —
 Desktop：转录三件套脱离 gpui-ai</h2>
 <p><strong>目标：</strong> 继续第 3 步，把 transcript 里最常更新的
@@ -22314,7 +22310,7 @@ debug selector 保持不变。流式回答继续用 Markdown 渲染，运行中�
 <p><strong>Pointers：</strong>
 <code>crates/desktop/src/ui/transcript_components.rs</code>、
 <code>crates/desktop/src/root.rs</code>、
-<code>docs/design/tact-desktop/component-coverage-matrix.md</code>。</p>
+<code>crates/desktop/src/ui/</code>。</p>
 <h2 id="36-2026-11-05--desktop-输入器与侧栏脱离-gpui-ai">36. 2026-11-05 —
 Desktop：输入器与侧栏脱离 gpui-ai</h2>
 <p><strong>目标：</strong> 继续第 4 步，把 <code>PromptBar</code> 和
@@ -22340,7 +22336,7 @@ composer 布局；mention 建议与模型列表各自持有滚动偏移，滚轮
 <code>crates/desktop/src/ui/prompt_bar.rs</code>、
 <code>crates/desktop/src/ui/sidebar_nav.rs</code>、
 <code>crates/desktop/src/root.rs</code>、
-<code>docs/design/tact-desktop/component-coverage-matrix.md</code>。</p>
+<code>crates/desktop/src/ui/</code>。</p>
 <h2 id="37-2026-11-05--desktop-彻底移除-gpui-ai">37. 2026-11-05 —
 Desktop：彻底移除 gpui-ai</h2>
 <p><strong>目标：</strong> 完成剩余迁移，删除 <code>gpui-ai</code> 依赖、

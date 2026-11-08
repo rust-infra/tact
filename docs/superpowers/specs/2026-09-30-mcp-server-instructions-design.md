@@ -1,7 +1,8 @@
 # MCP server instructions — stop discarding `InitializeResult.instructions`
 
-Status: **approved** (user asked for the remaining TODOs; this is the first, and the one with the
-largest effect on the Basic Memory integration).
+Status: **implemented**. Server instructions now participate in MCP context,
+including the Basic Memory integration. Current behavior is in
+[`book/08_chapter_mcp_zh.html`](../../../book/08_chapter_mcp_zh.html).
 
 ## Problem
 

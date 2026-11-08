@@ -1,6 +1,6 @@
 # BwrapSandbox for Linux Tool Execution
 
-Status: proposed — revised 2026-09-15 after empirical verification against bubblewrap 0.12; sandbox is opt-in (`[tools] sandbox`, default off) and degrades to off on failure; all open decisions are resolved  
+Status: implemented. The sandbox remains opt-in through `[tools] sandbox` and degrades to unsandboxed execution when a Linux sandbox cannot start. Current behavior is in [`book/27_chapter_sandbox_zh.html`](../../../book/27_chapter_sandbox_zh.html).
 Date: 2026-09-15  
 Scope: `crates/tact` + docs
 

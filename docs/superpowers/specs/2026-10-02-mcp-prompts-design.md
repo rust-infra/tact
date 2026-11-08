@@ -1,7 +1,7 @@
 # Design: `prompts/list` and `prompts/get`
 
 Date: 2026-10-02
-Status: approved for implementation
+Status: implemented. Current behavior is in [`book/08_chapter_mcp_zh.html`](../../../book/08_chapter_mcp_zh.html).
 
 Closes the last row of [Ch 8 §10](../../../book/08_chapter_mcp_zh.html). The predecessor spec
 ([`2026-09-30-mcp-resource-templates-design.md`](./2026-09-30-mcp-resource-templates-design.md) §3)

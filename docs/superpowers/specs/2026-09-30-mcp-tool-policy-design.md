@@ -1,7 +1,8 @@
 # MCP server tool policy — honour Codex's per-entry fields
 
-Status: **approved** (user asked for A+B: fix the local config, then implement the Codex
-per-server fields Tact currently only reports as unmodelled).
+Status: **implemented**. This work covered both the local config fix and the
+Codex per-server policy fields. Current behavior is in
+[`book/08_chapter_mcp_zh.html`](../../../book/08_chapter_mcp_zh.html).
 
 ## Problem
 

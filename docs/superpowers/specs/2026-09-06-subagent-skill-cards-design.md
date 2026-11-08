@@ -1,6 +1,6 @@
 # 子代理技能卡（Subagent Skill Cards）设计
 
-> 日期：2026-09-06 · 状态：草稿待批准（先写设计文档）
+> 日期：2026-09-06 · 状态：已实现；当前行为见 [`book/12_chapter_subagent_zh.html`](../../../book/12_chapter_subagent_zh.html)
 > 关联：`crates/tact/src/tool/subagent.rs`、`crates/tact/src/consts.rs`（`TactPath`）、`book/12_chapter_subagent_zh.html`、`book/26_chapter_issue_zh.html`
 > 背景提交：`8c74f4e`（移除声明式 agent definitions，分支 `feat/plugin-compat`）
 

@@ -2,7 +2,8 @@
 
 Spec: [2026-10-11-skill-catalog-budget-design.md](../specs/2026-10-11-skill-catalog-budget-design.md)
 
-Done 2026-10-11; `./scripts/check-rust.sh` green. Uncommitted.
+Done 2026-10-11; `./scripts/check-rust.sh` passed and the work is included in
+the repository.
 
 ## 1. Bound the catalog (`crates/tact/src/skill/mod.rs`)
 

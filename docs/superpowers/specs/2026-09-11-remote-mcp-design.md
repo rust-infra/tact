@@ -1,6 +1,6 @@
 # Remote MCP (Streamable HTTP + OAuth 2.0) 设计
 
-> 日期：2026-09-11 · 状态：**已批准 / 已实现**（用户确认：本地回环自动回调 + 启动不阻塞 + `/mcp auth` 补做 + 关键点加日志）
+> 日期：2026-09-11 · 状态：**已实现**（本地回环自动回调、启动不阻塞、`/mcp auth`、关键点日志）
 > 关联：`crates/tact/src/mcp/`、`crates/tact/Cargo.toml`、`crates/tact/src/agent/mod.rs`、`crates/protocol/src/agent.rs`、`crates/tact-ui/src/driver.rs`、`crates/tui/src/handlers/`、`book/08_chapter_mcp_zh.html`、`book/21_chapter_config_zh.html`、`book/26_chapter_issue_zh.html`
 
 ## 1. 背景与动机

@@ -86,7 +86,7 @@ pub enum MessageKind {
     /// not a real user turn.
     HookContext,
     /// Goal runner context injected at the start of an activation
-    /// (`crates/tact-ui/src/goal_runner.rs`), not a real user turn.
+    /// (`crates/tact_host/src/goal_runner.rs`), not a real user turn.
     GoalContext,
 }
 

@@ -481,7 +481,7 @@ worker 与 TUI task：</p>
 <code>tact::plugin</code>；<code>tact-ui</code> 启动 worker，TUI
 在渲染前 drain plugin event。</p>
 <p><strong>分层（2026-08）：</strong> 可复用渲染面位于
-<code>crates/agent_tui_kit</code>（设计：<code>docs/superpowers/specs/2026-08-18-tui-component-library-design.md</code>）。kit
+<code>crates/agent_tui_kit</code>（当前架构：<a href="../docs/tui_rendering.md"><code>docs/tui_rendering.md</code></a>）。kit
 只依赖 <code>tact_protocol</code> +
 ratatui；它拥有纯渲染函数（<code>render::bar</code> / <code>input</code>
 / <code>log</code> / <code>popups</code> / <code>task_panel</code> /
@@ -2721,7 +2721,7 @@ vs interactive）</td>
 <td>Log wrap/scroll 管线、三种坐标空间</td>
 </tr>
 <tr>
-<td><code>crates/tui/src/render/log_column.rs</code></td>
+<td><code>crates/agent_tui_kit/src/render/log_column.rs</code></td>
 <td>Viewport 裁剪 <code>Renderable</code> 合成器</td>
 </tr>
 <tr>
@@ -2737,14 +2737,14 @@ vs interactive）</td>
 <td><code>AgentUpdate</code> → UI 状态</td>
 </tr>
 <tr>
-<td><code>crates/tui/src/theme.rs</code></td>
-<td>配色方案（从 kit re-export）</td>
+<td><code>crates/agent_tui_kit/src/theme.rs</code></td>
+<td>配色方案</td>
 </tr>
 <tr>
 <td><code>crates/agent_tui_kit</code></td>
 <td>可复用 agent-TUI kit：纯渲染面板、状态模型、widgets、bridge
 契约（设计
-<code>docs/superpowers/specs/2026-08-18-tui-component-library-design.md</code>）</td>
+<code>docs/tui_rendering.md</code>）</td>
 </tr>
 <tr>
 <td><code>crates/agent_tui_kit/examples/mock_agent.rs</code></td>

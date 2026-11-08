@@ -1,6 +1,6 @@
 # Claude Marketplace 插件全功能兼容设计
 
-> 日期：2026-08-29 · 状态：已批准（用户选择"全部做"，先写设计文档）
+> 日期：2026-08-29 · 状态：已实现；当前行为见 [`book/02_chapter_skill_zh.html`](../../../book/02_chapter_skill_zh.html) 和 [`book/08_chapter_mcp_zh.html`](../../../book/08_chapter_mcp_zh.html)
 > 关联：`crates/tact/src/plugin/`、`crates/tact/src/skill/mod.rs`、`crates/tact/src/hook/`、`crates/tact/src/mcp/mod.rs`、`crates/tact/src/tool/subagent.rs`、`crates/tact-ui/src/{interactive,headless}.rs`
 
 ## 1. 背景与动机

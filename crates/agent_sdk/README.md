@@ -15,30 +15,31 @@ MCP, a TUI, or a runtime plugin registry, and it does not re-export `tact_llm`.
 
 ## Install
 
-The SDK requires Rust 1.88 or newer. Once the workspace crates are published,
+The SDK requires Rust 1.99 or newer. Once the workspace crates are published,
 the host needs the SDK plus one provider adapter:
 
 ```toml
 [dependencies]
-tact_agent_sdk = "2.0.0"
-tact_llm = { version = "2.0.0", default-features = false, features = ["openai-chat"] }
+tact_agent_sdk = "2.0.4"
+tact_llm = { version = "2.0.4", default-features = false, features = ["openai-chat"] }
 ```
 
-Until the registry release is available, pin the same repository tag:
+Until the registry release is available, pin the tag that matches the Tact
+checkout:
 
 ```toml
 [dependencies]
-tact_agent_sdk = { git = "https://github.com/rust-infra/tact", branch = "codex/agent-kernel-design" }
+tact_agent_sdk = { git = "https://github.com/rust-infra/tact", tag = "v2.0.4" }
 tact_llm = {
   git = "https://github.com/rust-infra/tact",
-  branch = "codex/agent-kernel-design",
+  tag = "v2.0.4",
   default-features = false,
   features = ["openai-chat"]
 }
 ```
 
-Use the `v2.0.0` tag after that release is published; the branch form above is
-the pre-release path for this tree.
+Use the same tag or commit as the host application so the API and adapter stay
+in lockstep.
 
 ## Minimal agent
 

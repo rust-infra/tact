@@ -1,6 +1,6 @@
 # Subagent Sticky Tab（重新实现）设计
 
-> 日期：2026-09-07 · 状态：草稿待批准
+> 日期：2026-09-07 · 状态：已实现；当前行为见 [`book/12_chapter_subagent_zh.html`](../../../book/12_chapter_subagent_zh.html)
 > 关联：`crates/protocol/src/agent.rs`、`crates/tact/src/subagent.rs`、`crates/tact/src/tool/subagent.rs`、
 > `crates/agent_tui_kit/src/{components,state,render}/task_panel.rs`、`crates/tui/src/render/task_panel.rs`
 > 背景：2026-07-26 提交 `98a133f` 删除了旧的 Subagent sticky pane；本设计在**当前组件化架构**

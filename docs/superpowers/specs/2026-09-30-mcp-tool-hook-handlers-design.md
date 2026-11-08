@@ -1,7 +1,7 @@
 # Design: `mcp_tool` hook handlers
 
 Date: 2026-09-30
-Status: approved for implementation
+Status: implemented. Current behavior is in [`book/09_chapter_hook_zh.html`](../../../book/09_chapter_hook_zh.html).
 
 Closes one of the three items in [Ch 9 §13](../../../book/09_chapter_hook_zh.html): *"`mcp_tool` hook
 handlers | Codex hooks can invoke an MCP tool; Tact runs commands only."*

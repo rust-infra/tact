@@ -1,7 +1,7 @@
 # 「回到最新」悬浮药丸 — 设计
 
 **日期：** 2026-10-10
-**状态：** 设计（未实现）
+**状态：** 已实现。当前行为见 [`book/23_chapter_tui_zh.html`](../../../book/23_chapter_tui_zh.html)。
 **参考：** Codex CLI 的 `New activity · ↓ Back to bottom · esc`（截图见 `docs/design/scroll-back-to-bottom.html`）
 
 ## 问题

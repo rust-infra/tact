@@ -11,8 +11,7 @@
 //! The kit depends only on `tact_protocol` (the types-only wire contract) and
 //! the ratatui/crossterm family. It never depends on a concrete agent.
 //!
-//! Design doc: `docs/superpowers/specs/2026-08-18-tui-component-library-design.md`.
-//! Execution plan: `docs/superpowers/plans/2026-08-18-tui-component-library.md`.
+//! Rendering architecture: `docs/tui_rendering.md`.
 //!
 //! # Status
 //!

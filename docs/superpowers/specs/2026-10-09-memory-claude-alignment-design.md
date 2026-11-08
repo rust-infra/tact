@@ -1,7 +1,6 @@
 # Memory aligned with Claude Code's auto-memory model
 
-Status: **implemented in the working tree** as of 2026-10-09, branch `main`.
-Written alongside the code.
+Status: **implemented** on `main`. Current behavior is in [`book/03_chapter_memory_zh.html`](../../../book/03_chapter_memory_zh.html).
 
 ## Problem
 

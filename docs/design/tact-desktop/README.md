@@ -1,24 +1,23 @@
-# Tact Desktop Prototype
+# Tact Desktop design and prototype
 
-> Historical: `gpui-ai` was removed from the desktop on 2026-11-05. The
-> prototype's `data-gpui-ai` labels name the original reference components, not
-> live dependencies.
+The prototype records the reviewed desktop layout. The implementation uses
+Tact-owned `gpui-component` surfaces in `crates/desktop/src/ui/`; the
+`data-gpui-ai` labels in the prototype are historical names from the reference
+component review.
 
 Open `prototype.html` directly in a browser. The prototype uses a native macOS
 visual language, local font fallbacks, and no build step.
 
-## gpui-ai Contract
+## Implementation contract
 
-The macOS window chrome, mixed transcript container, Goal panel, Subagent panel,
-project-grouped Session Manager, nested slash overlay, Mermaid/ANSI renderers and
-session persistence are Tact-owned. AI-specific surfaces instantiate real
-`gpui-ai` components: `PlanCard`, `Thinking`, `ToolGroup`, `ApprovalCard`,
-`StreamingText`, `PromptBar`, `CommandSearch`, `ContextMeter`, `MessageQueue`,
-`AttachmentStrip` and the `gpui-component` popovers they compose. Voice input
-is implemented end to end (recording, transcription, transcript insertion) and
-the microphone appears only when the provider is configured. `PromptBar` is composed with a Tact-owned slash overlay because its
-upstream commands are flat. HTML nodes carry `data-gpui-ai` attributes naming
-the actual mapping.
+The macOS window chrome, transcript, inspectors, session navigation, slash
+overlay, Markdown, Mermaid, ANSI and multi-file diff surfaces are Tact-owned.
+They live under `crates/desktop/src/` and `crates/desktop_core/src/`, and depend
+on `gpui-component` rather than `gpui-ai`.
+
+Voice input runs through the configured voice worker. The microphone appears
+only when that worker is available. The composer owns its model, permission,
+reasoning, attachment, mention, queue and slash controls.
 
 ## App icon
 
@@ -165,8 +164,8 @@ set `CFBundleIconFile`, and ship the PNG in the archives.
 - Thinking and assistant answers render Markdown through `Thinking` and
   `StreamingText`: headings, lists, blockquotes, inline code, fenced code and
   tables are selectable.
-- Transcript, composer, command search and popovers use the gpui-ai typography
-  and component grammar; macOS system type is reserved for the native shell.
+- Transcript, composer, command search and popovers use Tact's reviewed desktop
+  typography; macOS system type is reserved for the native shell.
 - `Esc` closes the topmost overlay.
 - Inspector tabs slide and crossfade, the tab indicator tracks the active pane,
   tool bodies expand by measured height, permission cards settle into their
@@ -221,10 +220,8 @@ set `CFBundleIconFile`, and ship the PNG in the archives.
 - `previews/composer-mentions.png` - filtered `@` file mention popup.
 - `previews/composer-model-menu.png` - composer model picker.
 
-The PRD is at `docs/superpowers/specs/2026-10-30-tact-desktop-prd.md`.
-The slash-command parity matrix is at
-`docs/design/tact-desktop/slash-command-audit.md`.
-The `gpui-ai` reproducibility audit is at
-`docs/design/tact-desktop/component-reproducibility-audit.md`.
-The 37-component disposition is at
-`docs/design/tact-desktop/component-coverage-matrix.md`.
+The current desktop architecture is in
+[`ARCHITECTURE.md`](../../../ARCHITECTURE.md). The slash-command parity matrix
+is in [`slash-command-audit.md`](slash-command-audit.md). The reviewed layout
+baseline and capture procedure are in [`visual-baseline.md`](visual-baseline.md)
+and [`visual-verification.md`](visual-verification.md).

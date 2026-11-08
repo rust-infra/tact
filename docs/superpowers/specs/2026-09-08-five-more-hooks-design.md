@@ -1,7 +1,7 @@
 # Design: five more lifecycle hooks — Codex-aligned (SubagentStop · Stop · SessionEnd · PreCompact · PostCompact)
 
 - **Date:** 2026-09-08
-- **Status:** draft — awaiting approval before implementation
+- **Status:** implemented; the current hook contract is in [`book/09_chapter_hook_zh.html`](../../../book/09_chapter_hook_zh.html)
 - **Reference:** OpenAI Codex hooks source
   (`codex-rs/hooks/src/events/{stop,compact,session_end}.rs`, `schema.rs`, `engine/output_parser.rs`).
   Tact's hook framework is Claude-Code-compatible; this design follows **Codex's** event semantics

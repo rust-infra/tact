@@ -1,6 +1,6 @@
 # MCP `env_vars` and `tool_timeout_sec` — two more Codex fields honoured
 
-Status: **approved** (remaining TODO; both fields were previously parsed only to be reported).
+Status: **implemented**. The current MCP contract is in [`book/08_chapter_mcp_zh.html`](../../../book/08_chapter_mcp_zh.html).
 
 ## Problem
 

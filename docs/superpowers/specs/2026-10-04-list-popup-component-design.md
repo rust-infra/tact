@@ -1,7 +1,6 @@
 # List popups — one component instead of four renderers
 
-Status: **implemented in the working tree** as of 2026-10-04, branch
-`feat/codex-hook-and-mcp-parity`. Written alongside the code.
+Status: **implemented** on `main`. Current behavior is in [`book/23_chapter_tui_zh.html`](../../../book/23_chapter_tui_zh.html).
 
 ## Problem
 

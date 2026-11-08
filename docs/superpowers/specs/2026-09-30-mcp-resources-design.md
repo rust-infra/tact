@@ -1,6 +1,6 @@
 # MCP resources — `list_mcp_resources` / `read_mcp_resource`
 
-Status: **approved** (remaining TODO; pairs with the server-instructions change).
+Status: **implemented**. Current behavior is in [`book/08_chapter_mcp_zh.html`](../../../book/08_chapter_mcp_zh.html).
 
 ## Problem
 

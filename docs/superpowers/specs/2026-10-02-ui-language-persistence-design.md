@@ -1,7 +1,6 @@
 # `/lang` — the UI language becomes a persisted `[ui]` preference
 
-Status: **implemented in the working tree**, branch `feat/codex-hook-and-mcp-parity`, not yet
-committed as of 2026-10-02. Written alongside the code.
+Status: **implemented** on `main`. Current behavior is in [`book/21_chapter_config_zh.html`](../../../book/21_chapter_config_zh.html).
 
 ## Problem
 

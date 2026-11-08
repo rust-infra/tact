@@ -1,7 +1,7 @@
 # Design: MCP tool risk granularity
 
 Date: 2026-09-30
-Status: approved for implementation
+Status: implemented. Current behavior is in [`book/08_chapter_mcp_zh.html`](../../../book/08_chapter_mcp_zh.html).
 
 Closes the gap recorded in [Ch 8 §10](../../../book/08_chapter_mcp_zh.html): *"Every MCP tool resolves to
 `CapabilityRisk::High`; `normalize_mcp_capability` ignores both server and tool. An entry can skip

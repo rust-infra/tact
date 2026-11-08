@@ -1,6 +1,6 @@
 # Hook layer, Codex parity part 2: file sources, review, and the block contract
 
-Status: **approved** (user asked to continue the C items from the hook-parity review).
+Status: **implemented**. Current behavior is in [`book/09_chapter_hook_zh.html`](../../../book/09_chapter_hook_zh.html).
 
 Follows `2026-09-30-mcp-tool-policy-design.md` in shape: land the compatibility
 surface Tact is missing, keep every new capability reported rather than silent.
