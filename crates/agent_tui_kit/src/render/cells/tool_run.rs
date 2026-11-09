@@ -24,6 +24,7 @@ use crate::{
     render::{renderable::Renderable, util::LOG_TOOL_BLOCK_INDENT},
     state::tool_group::{self, ToolRun},
     theme::Theme,
+    widgets::tool_widget::format_duration_us,
 };
 
 /// A run of adjacent tool blocks rendered as one summary row, or as its
@@ -36,10 +37,15 @@ pub struct ToolRunCell {
     folded: bool,
     /// Rows the summary itself occupies (always 1 when folded).
     folded_rows: usize,
+    /// Wall clock of the whole run, as [`tool_group::total_span`] measured it.
+    /// `None` when no member carried a clock — a fabricated zero would read as
+    /// "instantaneous".
+    elapsed: Option<std::time::Duration>,
     fg: ratatui::style::Color,
     bg: ratatui::style::Color,
     accent: ratatui::style::Color,
     error: ratatui::style::Color,
+    muted: ratatui::style::Color,
 }
 
 impl ToolRunCell {
@@ -47,10 +53,12 @@ impl ToolRunCell {
     ///
     /// `members` are the members' phases and title rows: the phases decide
     /// whether the summary reports failures, the titles say *what* ran.
-    /// `folded` comes from the run's current expansion state.
+    /// `elapsed` is the run's wall clock. `folded` comes from the run's current
+    /// expansion state.
     pub fn new(
         run: &ToolRun,
         members: Vec<(crate::widgets::tool_widget::ToolPhase, String)>,
+        elapsed: Option<std::time::Duration>,
         folded: bool,
         theme: &Theme,
         _msgs: &Messages,
@@ -60,10 +68,12 @@ impl ToolRunCell {
             expanded_rows: run.expanded_rows,
             folded,
             folded_rows: run.folded_rows,
+            elapsed,
             fg: theme.fg,
             bg: theme.bg,
             accent: theme.accent,
             error: theme.error,
+            muted: theme.muted,
         }
     }
 
@@ -78,7 +88,7 @@ impl ToolRunCell {
             .iter()
             .map(|(phase, title)| (*phase, title.as_str()))
             .collect();
-        let summary = tool_group::summarize(&members);
+        let summary = tool_group::summarize(&members, self.elapsed);
         // A failure keeps its color after folding: `⚠` plus the error hue is
         // what tells the reader that one of these calls went wrong, without
         // making them count the tool labels.
@@ -87,13 +97,25 @@ impl ToolRunCell {
         } else {
             ("⏵ ", self.accent)
         };
-        Line::from(vec![
+        // The total comes last, after the tool labels: it answers "how long did
+        // this cost me", which a reader asks after "what ran".
+        let mut spans = vec![
             Span::styled(glyph, Style::default().fg(color)),
             Span::styled(
                 summary.text,
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
             ),
-        ])
+        ];
+        if let Some(elapsed) = self.elapsed {
+            spans.push(Span::styled(
+                format!(
+                    " · {}",
+                    format_duration_us(elapsed.as_micros().try_into().unwrap_or(u64::MAX))
+                ),
+                Style::default().fg(self.muted),
+            ));
+        }
+        Line::from(spans)
     }
 }
 
