@@ -13,7 +13,7 @@
 
 use std::time::Duration;
 
-use crate::state::{ToolBlock, ToolSpan};
+use crate::state::{ToolBlock, ToolSpan, ToolState};
 use crate::widgets::tool_widget::ToolPhase;
 
 /// One run of adjacent tool blocks that the log can fold.
@@ -215,6 +215,223 @@ pub fn is_foldable(blocks: &[ToolBlock], run: &ToolRun) -> bool {
             .get(index)
             .is_some_and(|block| !block.output.phase.is_live())
     })
+}
+
+/// Whether this run is currently drawn as one summary row.
+///
+/// Three inputs, in order:
+/// 1. A run that cannot fold yet is always open.
+/// 2. A reader's explicit choice wins over the default, which is what keeps an
+///    expanded run from snapping shut when the next tool settles.
+/// 3. Otherwise a foldable run starts folded.
+///
+/// Step 3 is why a run nobody has touched is already folded: the point of the
+/// feature is to get a turn's tool noise out of the way, and a reader who wants
+/// the detail has a click and a key to say so.
+pub fn is_folded(blocks: &[ToolBlock], run: &ToolRun, state: &ToolState) -> bool {
+    is_folded_by(blocks, run, &state.folded, &state.unfolded)
+}
+
+/// [`is_folded`] over the two sets alone, so callers that already hold the
+/// fields split can ask without a whole `ToolState`.
+pub fn is_folded_by(
+    blocks: &[ToolBlock],
+    run: &ToolRun,
+    folded: &std::collections::BTreeSet<String>,
+    unfolded: &std::collections::BTreeSet<String>,
+) -> bool {
+    if !is_foldable(blocks, run) {
+        return false;
+    }
+    let Some(key) = run_key(blocks, run) else {
+        return false;
+    };
+    if folded.contains(key) {
+        return true;
+    }
+    if unfolded.contains(key) {
+        return false;
+    }
+    true
+}
+
+/// The stable identity of a run: its first member's tool id.
+///
+/// Used as the fold-state key. `None` when the run is empty, which callers treat
+/// as "not foldable" rather than inventing a key.
+pub fn run_key<'a>(blocks: &'a [ToolBlock], run: &ToolRun) -> Option<&'a str> {
+    let index = *run.members.first()?;
+    blocks.get(index).map(|block| block.tool_id.as_str())
+}
+
+/// Flip one run's fold state, recording it as the reader's explicit choice.
+///
+/// Records an override in the set that *differs* from the new state, so the
+/// default (folded) never has to be stored: an unfolded run stores itself in
+/// `unfolded`, a folded one drops out of `unfolded` and lands in `folded` only
+/// when the default would have kept it open.
+pub fn toggle(
+    blocks: &[ToolBlock],
+    run: &ToolRun,
+    folded: &mut std::collections::BTreeSet<String>,
+    unfolded: &mut std::collections::BTreeSet<String>,
+    fold_rev: &mut u64,
+) {
+    let Some(key) = run_key(blocks, run).map(str::to_string) else {
+        return;
+    };
+    let now_folded = is_folded_by(blocks, run, folded, unfolded);
+    if now_folded {
+        folded.remove(&key);
+        unfolded.insert(key);
+    } else {
+        unfolded.remove(&key);
+        folded.insert(key);
+    }
+    *fold_rev = fold_rev.wrapping_add(1);
+}
+
+/// The run containing `phys_idx`, if any.
+pub fn run_at_phys(_blocks: &[ToolBlock], runs: &[ToolRun], phys_idx: usize) -> Option<usize> {
+    runs.iter()
+        .position(|run| phys_idx >= run.phys_idx && phys_idx < run.phys_idx + run.expanded_rows)
+}
+
+impl ToolState {
+    /// The folded summary cell for the run starting at `phys_idx`, if that run
+    /// is folded right now.
+    ///
+    /// Lives here, beside the fold rules, so the pure log renderer can ask
+    /// without a second copy of them. The desktop-side cache build asks the same
+    /// [`is_folded`].
+    /// The common case is "this row is not a folded run", which has to be
+    /// answered for **every** logical row on every frame. Checking the cheap
+    /// case first keeps a fold from turning the render loop quadratic: `runs`
+    /// walks every block, and the log redraws each line.
+    pub fn fold_summary(
+        &self,
+        phys_idx: usize,
+        theme: &crate::theme::Theme,
+        msgs: &crate::i18n::Messages,
+    ) -> Option<crate::render::cells::tool_run::ToolRunCell> {
+        if !self.blocks.iter().any(|block| block.phys_idx == phys_idx) {
+            return None;
+        }
+        let found = runs(&self.blocks);
+        let run = found
+            .into_iter()
+            .find(|run| run.phys_idx == phys_idx && is_folded(&self.blocks, run, self))?;
+        let key = run_key(&self.blocks, &run)?.to_string();
+        let members = run
+            .members
+            .iter()
+            .filter_map(|&index| self.blocks.get(index))
+            .map(|block| (block.output.phase, block.output.title_raw.clone()))
+            .collect();
+        let elapsed = total_span(&self.blocks, &run);
+        Some(
+            crate::render::cells::tool_run::ToolRunCell::new(
+                &run, members, elapsed, true, theme, msgs,
+            )
+            .with_identity(key),
+        )
+    }
+
+    /// Flip the run that owns `phys_idx`, if any.
+    pub fn toggle_run_at(&mut self, phys_idx: usize) -> bool {
+        let found = runs(&self.blocks);
+        let Some(index) = run_at_phys(&self.blocks, &found, phys_idx) else {
+            return false;
+        };
+        // Field-split: `toggle` needs `blocks` and the fold sets at once, and
+        // both live on `self`.
+        let Self {
+            blocks,
+            folded,
+            unfolded,
+            fold_rev,
+            ..
+        } = self;
+        toggle(blocks, &found[index], folded, unfolded, fold_rev);
+        true
+    }
+
+    /// Flip the run whose stable identity is `run_id`.
+    pub fn toggle_run_by_id(&mut self, run_id: &str) -> bool {
+        let found = runs(&self.blocks);
+        let Some(run) = found
+            .into_iter()
+            .find(|run| run_key(&self.blocks, run) == Some(run_id))
+        else {
+            return false;
+        };
+        let Self {
+            blocks,
+            folded,
+            unfolded,
+            fold_rev,
+            ..
+        } = self;
+        toggle(blocks, &run, folded, unfolded, fold_rev);
+        true
+    }
+
+    /// The row bounds of the run whose identity is `run_id`, plus the rows it
+    /// hides while folded.
+    ///
+    /// Used to compensate the scroll position after a fold: the caller needs to
+    /// know how much disappeared and whether it all sat above the viewport.
+    pub fn run_bounds_by_id(&self, run_id: &str) -> Option<(usize, usize, usize)> {
+        let found = runs(&self.blocks);
+        let run = found
+            .into_iter()
+            .find(|run| run_key(&self.blocks, run) == Some(run_id))?;
+        if !is_folded(&self.blocks, &run, self) {
+            return None;
+        }
+        Some((
+            run.phys_idx,
+            run.phys_idx + run.expanded_rows,
+            run.saved_rows(),
+        ))
+    }
+
+    /// The bounds of a run that is currently **unfolded**, plus the rows it
+    /// would hide if folded.
+    ///
+    /// The mirror of [`Self::run_bounds_by_id`]: a caller about to fold needs
+    /// the geometry before the toggle, and the fold state it will leave.
+    pub fn run_bounds_if_unfolded(&self, run_id: &str) -> Option<(usize, usize, usize)> {
+        let found = runs(&self.blocks);
+        let run = found
+            .into_iter()
+            .find(|run| run_key(&self.blocks, run) == Some(run_id))?;
+        if is_folded(&self.blocks, &run, self) || !is_foldable(&self.blocks, &run) {
+            return None;
+        }
+        Some((
+            run.phys_idx,
+            run.phys_idx + run.expanded_rows,
+            run.saved_rows(),
+        ))
+    }
+
+    /// The stable identity of the run owning `phys_idx`, if any.
+    pub fn run_identity_at(&self, phys_idx: usize) -> Option<String> {
+        let found = runs(&self.blocks);
+        let index = run_at_phys(&self.blocks, &found, phys_idx)?;
+        run_key(&self.blocks, &found[index]).map(str::to_string)
+    }
+
+    /// Is `phys_idx` hidden by a folded run?
+    pub fn is_hidden_by_fold(&self, phys_idx: usize) -> bool {
+        let found = runs(&self.blocks);
+        found.iter().any(|run| {
+            is_folded(&self.blocks, run, self)
+                && phys_idx > run.phys_idx
+                && phys_idx < run.phys_idx + run.expanded_rows
+        })
+    }
 }
 
 #[cfg(test)]

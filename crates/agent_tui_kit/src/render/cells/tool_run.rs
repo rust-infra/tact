@@ -46,6 +46,9 @@ pub struct ToolRunCell {
     accent: ratatui::style::Color,
     error: ratatui::style::Color,
     muted: ratatui::style::Color,
+    /// The run's stable identity, so a click on the summary row can name what
+    /// it is toggling.
+    identity: String,
 }
 
 impl ToolRunCell {
@@ -74,7 +77,19 @@ impl ToolRunCell {
             accent: theme.accent,
             error: theme.error,
             muted: theme.muted,
+            identity: String::new(),
         }
+    }
+
+    /// Attach the run identity the click path reports back.
+    pub fn with_identity(mut self, identity: impl Into<String>) -> Self {
+        self.identity = identity.into();
+        self
+    }
+
+    /// The run this summary stands for.
+    pub fn identity(&self) -> &str {
+        &self.identity
     }
 
     /// The folded summary line: an expander glyph, the count, then the tools.

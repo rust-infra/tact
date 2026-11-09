@@ -85,9 +85,19 @@ pub struct SubagentCancelButton {
 /// Target opened by a rendered `[Open]` affordance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OpenTarget {
-    Thinking { block_id: String },
-    Subagent { tool_id: String },
-    Tool { tool_id: String },
+    Thinking {
+        block_id: String,
+    },
+    Subagent {
+        tool_id: String,
+    },
+    Tool {
+        tool_id: String,
+    },
+    /// A folded run's summary row. Activating it toggles that run.
+    ToolRun {
+        run_id: String,
+    },
 }
 
 impl OpenTarget {
@@ -109,6 +119,13 @@ impl OpenTarget {
     pub fn tool(tool_id: impl Into<String>) -> Self {
         Self::Tool {
             tool_id: tool_id.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn tool_run(run_id: impl Into<String>) -> Self {
+        Self::ToolRun {
+            run_id: run_id.into(),
         }
     }
 }
@@ -257,6 +274,25 @@ pub fn render_log_panel_pure(
                 renderer.push(vs_cache[logical_i], separator);
             }
             prev_category = Some(category);
+        }
+
+        // A folded run paints one summary row where its first member sat. Its
+        // other rows are not in `visible_indices` at all, so they never reach
+        // this loop.
+        if let Some(phys) = phys_idx
+            && let Some(cell) = ctx.tools.fold_summary(phys, ctx.theme, &ctx.messages)
+        {
+            let identity = cell.identity().to_string();
+            if let Some((cell_area, _skip)) = renderer.cell_slice(
+                vs_cache[logical_i],
+                cell.height(inner.width) as usize,
+                inner,
+            ) {
+                open_actions.push(OpenAction::new(OpenTarget::tool_run(identity), cell_area));
+            }
+            renderer.push(vs_cache[logical_i], cell);
+            logical_i += 1;
+            continue;
         }
 
         // Tool block: replace the summary TextCell + placeholder rows with a

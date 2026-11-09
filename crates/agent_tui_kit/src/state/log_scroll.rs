@@ -50,10 +50,20 @@ pub struct LogScroll {
     pub visual_cache_width: u16,
     /// `log_items.len()` when cache was last built; invalidated on change.
     pub visual_cache_ver: usize,
+    /// `ToolState::fold_rev` when cache was last built; see
+    /// [`Self::visible_indices_fold_rev`].
+    pub visual_cache_fold_rev: u64,
     /// Theme active when cache was last built.
     pub visual_cache_theme: ThemeName,
     /// `log_items.len()` when visible_indices was last built.
     pub visible_indices_ver: usize,
+    /// `ToolState::fold_rev` when visible_indices was last built.
+    ///
+    /// Folding changes how many logical rows exist without changing how many
+    /// physical rows there are, so `log_items.len()` alone cannot invalidate
+    /// this cache — a toggle would leave the old mapping and paint a stale
+    /// frame.
+    pub visible_indices_fold_rev: u64,
     /// Visible index cache: logical line → physical msg index.
     pub visible_indices: Vec<usize>,
     /// physical → logical reverse mapping cache (uses Option for invisible lines).
@@ -76,8 +86,10 @@ impl LogScroll {
             visual_start_cache: Vec::new(),
             visual_cache_width: 0,
             visual_cache_ver: 0,
+            visual_cache_fold_rev: 0,
             visual_cache_theme: ThemeName::Retro,
             visible_indices_ver: 0,
+            visible_indices_fold_rev: 0,
             phys_to_logical_cache: Vec::new(),
         }
     }

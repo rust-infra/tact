@@ -279,7 +279,38 @@ Mouse hit-testing uses `find_tool_at_logical()` so concurrent tool rows map corr
 
 Full design (data flow, state model, extension guide): [`docs/tool_rendering.md`](./tool_rendering.md).
 
-### 6.5 Scrollbar
+### 6.6 Folded Tool Runs
+
+Adjacent finished tool calls fold into one summary row. `tool_group::runs`
+derives the runs from the log itself: two blocks belong together when the second
+starts exactly where the first ends, so a gap row or a thinking card breaks the
+run and membership can never go stale.
+
+A folded run is **one logical row**, not a run of zero-height rows. Its members
+are left out of `visible_indices` and `phys_to_logical_cache` entirely. Giving
+them zero height instead would deadlock `visual_step_up`, which returns
+`row_top` unchanged for a zero-height row, so upward scroll would stop at the
+fold and never pass it.
+
+Folding changes how many logical rows exist without changing how many physical
+rows there are, so `log.items.len()` cannot invalidate the layout caches. Both
+cache keys carry `ToolState::fold_rev`, bumped on every toggle.
+
+Three inputs decide whether a run is folded, in order: a run with a live member
+never folds; a reader's explicit choice wins over the default; otherwise a
+settled run folds. Fold state keys on the run's first member's `tool_id`, never
+on `phys_idx`, which every row insert rewrites.
+
+Failures fold like any other finished member. The summary counts them
+(`4 tools · 1 failed · …`) and paints the row in the error color, so a failure
+stays visible while costing one row instead of the six to seven a collapsed
+`✗ Failed` detail card occupies.
+
+The summary reports one wall-clock total for the run, computed as the **union**
+of the members' spans rather than the sum of their durations: tools in one turn
+run concurrently by wave, so four parallel one-second calls took one second.
+
+### 6.7 Scrollbar
 
 - Position is computed from the **total visual line count**.
 - Custom symbols: `▲` / `▼` / `│` / `█`

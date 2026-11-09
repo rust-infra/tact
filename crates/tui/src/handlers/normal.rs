@@ -159,6 +159,13 @@ pub(crate) fn handle_normal_mode(
                 app.open_thinking_popup_at_physical_index(phys_idx);
             }
         }
+        KeyCode::Char('z') => {
+            // Fold or unfold the tool run at the top of the viewport. `z` is
+            // the fold verb in every editor this keymap borrows from, and the
+            // viewport top is the only row the reader is unambiguously looking
+            // at: the log carries no per-row cursor to hang a fold target on.
+            app.toggle_fold_at_viewport_top();
+        }
         KeyCode::Char('q') => {
             app.should_quit = true;
         }
@@ -183,12 +190,86 @@ mod tests {
 
     use super::*;
     use crate::{
-        render::test_harness::make_app,
+        render::test_harness::{make_app, render_log_panel_text},
+        test_fixtures::StepCall,
         widgets::state::{LogSelection, TextPosition},
     };
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::empty())
+    }
+
+    /// Seed one finished tool call at `idx`.
+    fn settled_tool(app: &mut App, idx: usize, id: &str, arg: &str) {
+        use std::collections::HashMap;
+
+        use tact_protocol::{AgentUpdate, PlanStep, StepStatus};
+
+        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+            format!("step {id}"),
+            "read_file",
+            id,
+            HashMap::from([("arg".to_string(), arg.to_string())]),
+        )));
+        app.handle_agent_update(StepCall::new(idx, id, "read_file", arg).started());
+        app.handle_agent_update(
+            StepCall::new(idx, id, "read_file", arg)
+                .detail("out")
+                .status(StepStatus::Success)
+                .duration_us(1_200)
+                .finished(),
+        );
+    }
+
+    /// `z` is the reader's only keyboard route into a fold, so it has to reach
+    /// the run under the viewport top and nothing else.
+    #[test]
+    fn z_folds_and_unfolds_the_run_at_the_viewport_top() {
+        let mut app = make_app();
+        let (tx, _rx) = unbounded_channel();
+        settled_tool(&mut app, 0, "r1", "a.rs");
+        settled_tool(&mut app, 1, "r2", "b.rs");
+        settled_tool(&mut app, 2, "r3", "c.rs");
+        app.input_mode = InputMode::Normal;
+
+        let folded = render_log_panel_text(&mut app, 80, 20);
+        assert!(folded.contains("3 tools"), "starts folded: {folded}");
+
+        handle_normal_mode(&mut app, key(KeyCode::Char('z')), &tx);
+        let open = render_log_panel_text(&mut app, 80, 20);
+        assert!(
+            open.contains("b.rs") && open.contains("c.rs"),
+            "`z` at the run head must reveal every member: {open}"
+        );
+
+        handle_normal_mode(&mut app, key(KeyCode::Char('z')), &tx);
+        let again = render_log_panel_text(&mut app, 80, 20);
+        assert!(
+            again.contains("3 tools") && !again.contains("b.rs"),
+            "`z` is a toggle, so a second press folds it back: {again}"
+        );
+    }
+
+    /// The key resolves through the viewport top, so a viewport parked on plain
+    /// markdown must fold nothing at all.
+    #[test]
+    fn z_does_nothing_when_the_viewport_top_is_not_a_tool_run() {
+        let mut app = make_app();
+        let (tx, _rx) = unbounded_channel();
+        app.handle_agent_update(tact_protocol::AgentUpdate::StreamChunk(
+            "just prose.\n".into(),
+        ));
+        settled_tool(&mut app, 0, "r1", "a.rs");
+        settled_tool(&mut app, 1, "r2", "b.rs");
+        app.input_mode = InputMode::Normal;
+
+        let before = app.tools().state().fold_rev;
+        handle_normal_mode(&mut app, key(KeyCode::Char('z')), &tx);
+        assert_eq!(
+            before,
+            app.tools().state().fold_rev,
+            "a row that is not in a run must not bump the fold generation"
+        );
     }
 
     /// The user-visible half of the keyboard-focus fix: after opening the view,

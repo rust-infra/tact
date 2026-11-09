@@ -15,6 +15,29 @@ pub struct ToolState {
     pub active: Vec<ActiveToolBlock>,
     /// Completed tool blocks rendered as title + meta + optional detail cards.
     pub blocks: Vec<ToolBlock>,
+    /// Runs the reader folded shut, keyed by the run's **first member's
+    /// `tool_id`**.
+    ///
+    /// Not `phys_idx`: a physical row index is rewritten by every insert above
+    /// it (`shift_phys_indices_from`), so a fold would silently jump to another
+    /// run. A tool id survives the whole session.
+    ///
+    /// Only an explicit reader action lands here. A run nobody touched folds by
+    /// default when it settles, which is why the absence of a key is not the
+    /// same as "expanded".
+    pub folded: std::collections::BTreeSet<String>,
+    /// Expanded runs the reader opened, overriding the default.
+    ///
+    /// The desktop transcript keeps one `Option<bool>` per group for this; the
+    /// TUI keeps two sets because it has no per-group row to hang a field on.
+    /// A run in neither set follows the default.
+    pub unfolded: std::collections::BTreeSet<String>,
+    /// Bumped on every fold toggle.
+    ///
+    /// The render caches are keyed on `log.items.len()`, and folding changes
+    /// how many *logical* rows exist without changing how many physical rows
+    /// there are. This counter is what tells them the mapping moved.
+    pub fold_rev: u64,
     /// Popup preview state for file write/read content.
     pub popup: Option<DiffPopup>,
     /// Subagent conversations, keyed by the parent `spawn_subagent` tool id.

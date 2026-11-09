@@ -63,6 +63,11 @@ pub(crate) fn render_log_panel_with_borders(
         borders,
         app.task_start_time.is_some(),
     );
+    // Fold decisions are copied out before `log_scroll` is borrowed mutably:
+    // the two live in different fields of `App`, and the renderer cannot read
+    // one while holding a `&mut` to the other.
+    let fold =
+        crate::render::fold::FoldLayout::capture(&app.tools().state().blocks, app.tools().state());
     prepare_log_frame(
         &mut app.log_scroll,
         &app.log,
@@ -73,6 +78,7 @@ pub(crate) fn render_log_panel_with_borders(
         area,
         borders,
         reserve,
+        &fold,
     );
     let ctx = app.render_ctx();
     let output = render_log_panel_pure(frame, area, &ctx, borders);
@@ -105,6 +111,7 @@ fn prepare_log_frame(
     area: Rect,
     borders: Borders,
     reserve: u16,
+    fold: &crate::render::fold::FoldLayout,
 ) {
     let top = u16::from(borders.contains(Borders::TOP));
     let bottom = u16::from(borders.contains(Borders::BOTTOM));
@@ -139,7 +146,8 @@ fn prepare_log_frame(
     log_scroll.width = wrap_width as u16;
 
     // `visible_indices_ver` is the **dirty marker**. It stores the previous `log_items.len()`; a change invalidates the cache:
-    let indices_stale = log_scroll.visible_indices_ver != log.items.len();
+    let indices_stale = log_scroll.visible_indices_ver != log.items.len()
+        || log_scroll.visible_indices_fold_rev != fold.rev;
     if indices_stale {
         log_scroll.visible_indices.clear();
         log_scroll.phys_to_logical_cache.clear();
@@ -149,14 +157,21 @@ fn prepare_log_frame(
         let mut total_logical = 0;
         // 遍历所有消息，将可见的物理索引添加到 visible_indices 中，并更新缓存
         for phys in 0..log.items.len() {
-            if phys < log.items.len() {
-                log_scroll.visible_indices.push(phys);
-                log_scroll.phys_to_logical_cache[phys] = Some(total_logical);
-                total_logical += 1;
+            // A folded run is one logical row: its first physical row carries
+            // the summary and the members after it are not rows at all. They
+            // are left out of the mapping rather than given zero height,
+            // because a zero-height row deadlocks `visual_step_up` (it returns
+            // `row_top` unchanged and the reader can never scroll past it).
+            if fold.hides(phys) {
+                continue;
             }
+            log_scroll.visible_indices.push(phys);
+            log_scroll.phys_to_logical_cache[phys] = Some(total_logical);
+            total_logical += 1;
         }
         // update visible_indices_ver to mark cache valid
         log_scroll.visible_indices_ver = log.items.len();
+        log_scroll.visible_indices_fold_rev = fold.rev;
     }
     // total_logical: 可见的逻辑行数量
     let mut total_logical = log_scroll.visible_indices.len();
@@ -183,7 +198,8 @@ fn prepare_log_frame(
     // Rebuild when message count, panel width, or theme changes.
     let cache_valid = log_scroll.visual_cache_ver == log.items.len()
         && log_scroll.visual_cache_width == wrap_width as u16
-        && log_scroll.visual_cache_theme == theme.name;
+        && log_scroll.visual_cache_theme == theme.name
+        && log_scroll.visual_cache_fold_rev == fold.rev;
 
     if !cache_valid {
         log_scroll.visual_cache.clear();
@@ -291,7 +307,21 @@ fn prepare_log_frame(
                 let indent = (super::util::LOG_THINKING_INDENT + 1) as usize;
                 wrap_line(&line, wrap_width.saturating_sub(indent).max(1))
             };
-            log_scroll.visual_cache.extend(wrapped);
+            // A folded run is one logical row: the summary cell paints over
+            // the row it starts at, exactly like a tool cell paints over its
+            // placeholder rows. Reserve its height here so the prefix sum
+            // matches what will be drawn.
+            let wrapped_rows = wrapped.len();
+            if let Some(&phys_idx) = log_scroll.visible_indices.get(logical_i)
+                && let Some(run) = fold.folded_run_at(phys_idx)
+            {
+                log_scroll
+                    .visual_cache
+                    .extend(std::iter::repeat_n(Line::default(), run.folded_rows));
+            } else {
+                let _ = wrapped_rows;
+                log_scroll.visual_cache.extend(wrapped);
+            }
             log_scroll
                 .visual_start_cache
                 .push(log_scroll.visual_cache.len());
@@ -299,6 +329,7 @@ fn prepare_log_frame(
         log_scroll.visual_cache_width = wrap_width as u16;
         log_scroll.visual_cache_ver = log.items.len();
         log_scroll.visual_cache_theme = theme.name;
+        log_scroll.visual_cache_fold_rev = fold.rev;
     }
 
     // Phase 2: map logical scroll offset to a visual viewport.
