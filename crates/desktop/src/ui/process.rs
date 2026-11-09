@@ -4,26 +4,32 @@
 //! rows into one summary. These decisions do not need GPUI entities, which
 //! keeps the grouping rules independent from the shell that paints them.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use tact_catalog::CatalogLocale;
 use tact_desktop_core::{
-    GateState, MessagePhase, PlanRow, RowBody, RowStatus, ToolGroupItem, TranscriptRow,
+    GateState, MessagePhase, PlanRow, RowBody, RowId, RowStatus, ToolGroupItem, TranscriptRow,
     TranscriptView,
 };
 
+/// How one row participates in an activity fold.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessRowRole {
+    /// Painted as-is; no group owns this row.
     Normal,
+    /// Painted as the group's collapsed summary line.
     Summary(usize),
+    /// Folded away behind the group's summary.
     Hidden(usize),
 }
 
+/// One run of thinking, narration and tool rows, collapsed behind a summary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProcessGroup {
     pub first_index: usize,
     pub end_index: usize,
-    pub first_row: tact_desktop_core::RowId,
+    pub first_row: RowId,
     pub first_ordinal: u64,
     pub commands: usize,
     pub files_read: usize,
@@ -52,6 +58,8 @@ pub fn answers_only_visible(body: &RowBody) -> bool {
     }
 }
 
+/// Whether a row belongs to an activity group: thinking, tool calls, and
+/// narration that sits between them.
 pub fn is_process_row(body: &RowBody) -> bool {
     match body {
         RowBody::Thinking(_) | RowBody::ToolGroup(_) => true,
@@ -77,60 +85,84 @@ pub fn row_starts_at_message_column(body: &RowBody) -> bool {
 /// the richer surface, so the plan yields when all of its steps have a
 /// `tool_id` present in the same run. A plan with a conceptual step (no tool
 /// id) keeps its card because the tool group cannot represent that step.
-pub fn plan_is_tool_execution(
-    row: &TranscriptRow,
-    plan: &PlanRow,
-    transcript: &TranscriptView,
-) -> bool {
-    if plan.steps.is_empty() {
-        return false;
-    }
-    let rows: Vec<&TranscriptRow> = transcript.iter().map(|row| row.as_ref()).collect();
-    let Some(index) = rows.iter().position(|candidate| candidate.id == row.id) else {
-        return false;
-    };
-    // One run owns one execution group, and a later turn in that run gets a
-    // fresh loop id while appending to the same group. Compare within the run
-    // (the rows between the user turns that surround the plan) rather than by
-    // loop id, so the group still absorbs its plan.
-    let start = rows[..index]
-        .iter()
-        .rposition(|candidate| matches!(&candidate.body, RowBody::User(_)))
-        .map(|position| position + 1)
-        .unwrap_or(0);
-    let end = rows[index..]
-        .iter()
-        .position(|candidate| matches!(&candidate.body, RowBody::User(_)))
-        .map(|offset| index + offset)
-        .unwrap_or(rows.len());
-    let mut run_tool_ids = std::collections::HashSet::new();
-    for candidate in &rows[start..end] {
-        let RowBody::ToolGroup(group) = &candidate.body else {
+///
+/// `run_tool_ids` is the set of tool ids in the run that contains `plan`, as
+/// returned by [`run_tool_ids`]. Keeping the scan out of this predicate lets
+/// the caller pay for it once per layout instead of once per painted row.
+pub fn plan_is_tool_execution(plan: &PlanRow, run_tool_ids: &HashSet<&str>) -> bool {
+    !plan.steps.is_empty()
+        && plan.steps.iter().all(|step| {
+            step.tool_id
+                .as_deref()
+                .is_some_and(|tool_id| run_tool_ids.contains(tool_id))
+        })
+}
+
+/// The tool ids inside one run, as a set of borrowed names.
+fn run_tool_ids(run: &[Arc<TranscriptRow>]) -> HashSet<&str> {
+    let mut tool_ids = HashSet::new();
+    for row in run {
+        let RowBody::ToolGroup(group) = &row.body else {
             continue;
         };
         for item in group.items.iter() {
             if let ToolGroupItem::Tool(tool) = item {
-                run_tool_ids.insert(tool.tool_id.as_ref());
+                tool_ids.insert(tool.tool_id.as_ref());
             }
         }
     }
-    plan.steps.iter().all(|step| {
-        step.tool_id
-            .as_deref()
-            .is_some_and(|tool_id| run_tool_ids.contains(tool_id))
-    })
+    tool_ids
+}
+
+/// Plan rows whose card yields to the run's tool group, keyed by row id.
+///
+/// The transcript is split into runs at its user turns, each run's tool ids are
+/// collected once, and every plan in that run is tested against them — so this
+/// is one pass over the rows. The renderer and the fold both read the result
+/// instead of rescanning the transcript for every plan they meet.
+///
+/// One run owns one execution group, and a later turn in that run gets a fresh
+/// loop id while appending to the same group. Runs are therefore delimited by
+/// user turns rather than by loop id, so a group still absorbs its plan.
+pub fn yielded_plans(rows: &[Arc<TranscriptRow>]) -> HashSet<RowId> {
+    let mut yielded = HashSet::new();
+    let mut run_start = 0;
+    while run_start < rows.len() {
+        let run_end = rows[run_start..]
+            .iter()
+            .position(|row| matches!(&row.body, RowBody::User(_)))
+            .map(|offset| run_start + offset)
+            .unwrap_or(rows.len());
+        let run = &rows[run_start..run_end];
+        let tool_ids = run_tool_ids(run);
+        for row in run {
+            let RowBody::Plan(plan) = &row.body else {
+                continue;
+            };
+            if plan_is_tool_execution(plan, &tool_ids) {
+                yielded.insert(row.id);
+            }
+        }
+        // The user row at `run_end` opens the next run; step past it.
+        run_start = run_end + 1;
+    }
+    yielded
+}
+
+/// [`yielded_plans`] for a transcript view, collecting its rows once.
+pub fn yielded_plans_of(view: &TranscriptView) -> HashSet<RowId> {
+    let rows = view.iter().cloned().collect::<Vec<_>>();
+    yielded_plans(&rows)
 }
 
 /// Build one fold layout for the transcript's current row sequence.
-pub fn build_process_layout(
-    rows: &[Arc<TranscriptRow>],
-) -> (Vec<ProcessRowRole>, Vec<ProcessGroup>) {
-    let transcript = TranscriptView::from_rows(rows.to_vec());
+pub fn build_process_layout(rows: &[Arc<TranscriptRow>]) -> ProcessLayout {
+    let yielded = yielded_plans(rows);
     let mut roles = vec![ProcessRowRole::Normal; rows.len()];
     let mut groups = Vec::new();
     let mut index = 0;
     while index < rows.len() {
-        if !process_row_groupable(&rows[index].body) {
+        if !is_process_row(&rows[index].body) {
             index += 1;
             continue;
         }
@@ -144,8 +176,8 @@ pub fn build_process_layout(
         let mut active = false;
         while index < rows.len() {
             let row = &rows[index];
-            if !process_row_groupable(&row.body) {
-                if process_row_transparent(row, &transcript) {
+            if !is_process_row(&row.body) {
+                if process_row_transparent(row, &yielded) {
                     index += 1;
                     continue;
                 }
@@ -212,7 +244,22 @@ pub fn build_process_layout(
             });
         }
     }
-    (roles, groups)
+    ProcessLayout {
+        roles,
+        groups,
+        yielded_plans: yielded,
+    }
+}
+
+/// One layout pass over the transcript's rows.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProcessLayout {
+    /// How each row participates in the fold, in row order.
+    pub roles: Vec<ProcessRowRole>,
+    /// The activity groups, in row order.
+    pub groups: Vec<ProcessGroup>,
+    /// Plan rows whose card yields to the run's tool group.
+    pub yielded_plans: HashSet<RowId>,
 }
 
 pub fn process_summary_text(group: &ProcessGroup, language: CatalogLocale) -> String {
@@ -306,14 +353,6 @@ enum ProcessToolKind {
     Other,
 }
 
-pub fn process_row_groupable(body: &RowBody) -> bool {
-    match body {
-        RowBody::Thinking(_) | RowBody::ToolGroup(_) => true,
-        RowBody::Assistant(assistant) => assistant.phase == Some(MessagePhase::Commentary),
-        _ => false,
-    }
-}
-
 /// A pending decision stays outside the fold so it can be answered. It is
 /// still part of the activity group: its tools count toward the summary and
 /// its gate keeps the group's clock running.
@@ -336,8 +375,8 @@ fn process_row_visible_when_folded(body: &RowBody) -> bool {
 /// The runtime emits a tool-only plan row for every concrete step. The plan
 /// card yields to its tool group, so treating it as a boundary would turn one
 /// reasoning region into one summary per tool call.
-fn process_row_transparent(row: &TranscriptRow, transcript: &TranscriptView) -> bool {
-    matches!(&row.body, RowBody::Plan(plan) if plan_is_tool_execution(row, plan, transcript))
+fn process_row_transparent(row: &TranscriptRow, yielded_plans: &HashSet<RowId>) -> bool {
+    matches!(&row.body, RowBody::Plan(_)) && yielded_plans.contains(&row.id)
 }
 
 fn process_tool_kind(name: &str) -> ProcessToolKind {
@@ -388,6 +427,49 @@ mod tests {
         );
         assert_eq!(process_tool_kind("load_skill"), ProcessToolKind::Skill);
         assert_eq!(process_tool_kind("web_search"), ProcessToolKind::Other);
+    }
+
+    /// Paired with `reducer::settle_final_answer`: a trailing answer the
+    /// provider labeled `Commentary` is promoted to `FinalAnswer`, so the fold
+    /// keeps it visible. This pins the fold side of that contract.
+    #[test]
+    fn an_answer_after_the_tool_group_stays_out_of_the_fold() {
+        use tact_desktop_core::transcript::AssistantRow;
+        let demo = tact_desktop_core::fixtures::demo_transcript();
+        let group = demo
+            .iter()
+            .find(|row| matches!(&row.body, RowBody::ToolGroup(_)))
+            .cloned()
+            .expect("demo tool group");
+        let mut answer = (*demo
+            .iter()
+            .find(|row| matches!(&row.body, RowBody::Assistant(_)))
+            .cloned()
+            .expect("demo assistant"))
+        .clone();
+        let set = |row: &mut TranscriptRow, phase: Option<MessagePhase>| {
+            row.body = RowBody::Assistant(AssistantRow {
+                markdown: Arc::from("checked it, all tests pass"),
+                status: RowStatus::Success,
+                suggestions: Arc::from([]),
+                phase,
+            });
+        };
+        set(&mut answer, Some(MessagePhase::FinalAnswer));
+        let settled = [group.clone(), Arc::new(answer.clone())];
+        assert_eq!(
+            build_process_layout(&settled).roles[1],
+            ProcessRowRole::Normal,
+            "the settled answer stands on its own"
+        );
+
+        set(&mut answer, Some(MessagePhase::Commentary));
+        let stale = [group, Arc::new(answer)];
+        assert_eq!(
+            build_process_layout(&stale).roles[1],
+            ProcessRowRole::Hidden(0),
+            "an unsettled label would hide it, which is why the reducer settles first"
+        );
     }
 
     #[test]

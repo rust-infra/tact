@@ -58,8 +58,8 @@ use crate::ui::leaf::{
 };
 use crate::ui::plan_card::{PlanCard, PlanCardLabels, PlanState, PlanStep, PlanStepStatus};
 use crate::ui::process::{
-    ProcessGroup, ProcessRowRole, answers_only_visible, build_process_layout, is_process_row,
-    plan_is_tool_execution, process_summary_text, row_starts_at_message_column,
+    ProcessGroup, ProcessLayout, ProcessRowRole, answers_only_visible, build_process_layout,
+    is_process_row, process_summary_text, row_starts_at_message_column, yielded_plans_of,
 };
 use crate::ui::prompt_bar::{
     ProgressState, PromptBar, PromptBarEvent, PromptBarLabels, PromptCommand, PromptMention,
@@ -251,6 +251,8 @@ struct TranscriptRowView {
     assistant_selection: Option<Entity<SelectionActions>>,
     /// Inline expansion state for a thinking row.
     thinking_open: bool,
+    /// This row is a plan card that yields to the run's tool group.
+    plan_yields: bool,
     /// The first action of a pending gate tracks this handle, so Review can
     /// move focus onto the primary allow option without selecting it.
     gate_focus: gpui::FocusHandle,
@@ -275,9 +277,12 @@ impl Render for TranscriptRowView {
             &self.snapshot,
             self.root.clone(),
             self.assistant_selection.clone(),
-            false,
-            Some(&self.gate_focus),
-            self.thinking_open,
+            RowViewState {
+                read_only: false,
+                gate_focus: Some(&self.gate_focus),
+                thinking_open: self.thinking_open,
+                plan_yields: self.plan_yields,
+            },
         )
     }
 }
@@ -474,8 +479,8 @@ struct TranscriptScrollerView {
     /// Elapsed time retained for a settled process group.
     group_elapsed: HashMap<RowId, String>,
     activity_timer: Option<Task<()>>,
-    process_roles: Arc<Vec<ProcessRowRole>>,
-    process_groups: Arc<Vec<ProcessGroup>>,
+    /// One layout pass: fold roles, groups, and the plans that yield to them.
+    process_layout: Arc<ProcessLayout>,
     expanded_process_groups: HashSet<RowId>,
     pending_scroll: Rc<Cell<f32>>,
     scroll_scheduled: Rc<Cell<bool>>,
@@ -486,6 +491,8 @@ struct TranscriptScrollerView {
 /// setter keeps one argument per concern as the shell grows.
 struct TranscriptViewState {
     rows: Vec<Entity<TranscriptRowView>>,
+    /// The fold layout for `rows`, computed once while building them.
+    process_layout: Arc<ProcessLayout>,
     new_activity: bool,
     wheel_enabled: bool,
     answers_only: bool,
@@ -514,8 +521,7 @@ impl TranscriptScrollerView {
             group_started: HashMap::new(),
             group_elapsed: HashMap::new(),
             activity_timer: None,
-            process_roles: Arc::new(Vec::new()),
-            process_groups: Arc::new(Vec::new()),
+            process_layout: Arc::new(ProcessLayout::default()),
             expanded_process_groups: HashSet::new(),
             pending_scroll: Rc::new(Cell::new(0.)),
             scroll_scheduled: Rc::new(Cell::new(false)),
@@ -532,6 +538,7 @@ impl TranscriptScrollerView {
     ) -> bool {
         let TranscriptViewState {
             rows,
+            process_layout,
             new_activity,
             wheel_enabled,
             answers_only,
@@ -555,16 +562,8 @@ impl TranscriptScrollerView {
         if rows_changed {
             self.rows = Arc::new(rows);
         }
-        let process_rows = self
-            .rows
-            .iter()
-            .map(|view| view.read(cx).row.clone())
-            .collect::<Vec<_>>();
-        let (process_roles, process_groups) = build_process_layout(&process_rows);
-        let layout_changed = self.process_roles.as_ref() != &process_roles
-            || self.process_groups.as_ref() != &process_groups;
-        self.process_roles = Arc::new(process_roles);
-        self.process_groups = Arc::new(process_groups);
+        let layout_changed = self.process_layout.as_ref() != process_layout.as_ref();
+        self.process_layout = process_layout;
         if !session_changed {
             let now = chrono::Utc::now();
             // A group that pauses between tool batches is not finished: the
@@ -574,11 +573,16 @@ impl TranscriptScrollerView {
                 snapshot.session.phase,
                 SessionPhase::Running | SessionPhase::Starting | SessionPhase::Opening
             );
-            let current_group = self.process_groups.last().map(|group| group.first_row);
+            let current_group = self
+                .process_layout
+                .groups
+                .last()
+                .map(|group| group.first_row);
             let mut settled = Vec::new();
             for (row, started) in &self.group_started {
                 let active = self
-                    .process_groups
+                    .process_layout
+                    .groups
                     .iter()
                     .any(|group| group.first_row == *row && group.active);
                 let live = run_active && current_group == Some(*row);
@@ -590,13 +594,19 @@ impl TranscriptScrollerView {
                 self.group_started.remove(&row);
                 self.group_elapsed.insert(row, format_elapsed(started));
             }
-            for group in self.process_groups.iter().filter(|group| group.active) {
+            for group in self
+                .process_layout
+                .groups
+                .iter()
+                .filter(|group| group.active)
+            {
                 self.group_started.entry(group.first_row).or_insert(now);
             }
         }
         self.ensure_activity_timer(cx);
         self.expanded_process_groups.retain(|row| {
-            self.process_groups
+            self.process_layout
+                .groups
                 .iter()
                 .any(|group| &group.first_row == row)
         });
@@ -652,7 +662,8 @@ impl TranscriptScrollerView {
 
     fn toggle_process_group(&mut self, first_row: RowId, cx: &mut Context<Self>) {
         let Some(group) = self
-            .process_groups
+            .process_layout
+            .groups
             .iter()
             .find(|group| group.first_row == first_row)
             .cloned()
@@ -829,8 +840,7 @@ impl Render for TranscriptScrollerView {
         let live_label = self.live_label.clone();
         let group_started = self.group_started.clone();
         let group_elapsed = self.group_elapsed.clone();
-        let process_roles = self.process_roles.clone();
-        let process_groups = self.process_groups.clone();
+        let process_layout = self.process_layout.clone();
         let expanded_process_groups = self.expanded_process_groups.clone();
         let language = self.language;
         let process_weak = cx.weak_entity();
@@ -844,13 +854,14 @@ impl Render for TranscriptScrollerView {
             {
                 return div().into_any_element();
             }
-            let role = process_roles
+            let role = process_layout
+                .roles
                 .get(index)
                 .copied()
                 .unwrap_or(ProcessRowRole::Normal);
             let process_group = match role {
                 ProcessRowRole::Summary(group) | ProcessRowRole::Hidden(group) => {
-                    process_groups.get(group)
+                    process_layout.groups.get(group)
                 }
                 ProcessRowRole::Normal => None,
             };
@@ -873,7 +884,8 @@ impl Render for TranscriptScrollerView {
             // those invisible items pay the prose gap opened a blank band
             // between consecutive thinking and tool rows.
             let tight_process_gap = !matches!(role, ProcessRowRole::Normal)
-                || process_roles
+                || process_layout
+                    .roles
                     .get(index + 1)
                     .is_some_and(|next| !matches!(next, ProcessRowRole::Normal))
                 || (rows
@@ -6284,6 +6296,8 @@ impl DesktopRoot {
         }
         let session_id = self.transcript_session_id();
         self.touch_transcript_session_cache(&session_id);
+        let process_rows = transcript.iter().cloned().collect::<Vec<_>>();
+        let process_layout = Arc::new(build_process_layout(&process_rows));
         let assistant_selections =
             self.sync_assistant_selections(&transcript, "main", &session_id, window, cx);
         let row_views = self.sync_transcript_row_views(
@@ -6291,6 +6305,7 @@ impl DesktopRoot {
             &session_id,
             snapshot.clone(),
             &assistant_selections,
+            &process_layout.yielded_plans,
             cx,
         );
         let new_activity = self.new_activity;
@@ -6300,6 +6315,7 @@ impl DesktopRoot {
         let scroller_changed = self.transcript_scroller.update(cx, |view, cx| {
             view.set_state(
                 TranscriptViewState {
+                    process_layout,
                     rows: row_views,
                     new_activity,
                     wheel_enabled,
@@ -6455,6 +6471,7 @@ impl DesktopRoot {
         session_id: &SessionId,
         snapshot: Arc<DesktopSnapshot>,
         assistant_selections: &HashMap<(String, SessionId, RowId), Entity<SelectionActions>>,
+        yielded_plans: &HashSet<RowId>,
         cx: &mut Context<Self>,
     ) -> Vec<Entity<TranscriptRowView>> {
         let live = transcript.iter().map(|row| row.id).collect::<HashSet<_>>();
@@ -6470,6 +6487,7 @@ impl DesktopRoot {
             let thinking_open = self
                 .expanded_thinking
                 .contains(&(session_id.clone(), row.id));
+            let plan_yields = yielded_plans.contains(&row.id);
             let cached_view = self.transcript_rows.get(&key).cloned();
             let needs_update = self.pending_row_updates.contains(&row.id)
                 || cached_view
@@ -6482,13 +6500,15 @@ impl DesktopRoot {
                     || cached.snapshot.language != snapshot.language
                     || cached.snapshot.show_hook_output != snapshot.show_hook_output
                     || (needs_update && cached.snapshot.session.epoch != snapshot.session.epoch)
-                    || cached.thinking_open != thinking_open;
+                    || cached.thinking_open != thinking_open
+                    || cached.plan_yields != plan_yields;
                 if needs_update || context_changed || snapshot_changed {
                     view.update(cx, |view, cx| {
                         view.row = row.clone();
                         view.snapshot = snapshot.clone();
                         view.assistant_selection = selection;
                         view.thinking_open = thinking_open;
+                        view.plan_yields = plan_yields;
                         if needs_update || context_changed {
                             cx.notify();
                         }
@@ -6503,6 +6523,7 @@ impl DesktopRoot {
                     root,
                     assistant_selection: selection,
                     thinking_open,
+                    plan_yields,
                     gate_focus: cx.focus_handle(),
                 });
                 self.transcript_rows.insert(key, view.clone());
@@ -9953,6 +9974,10 @@ impl DesktopRoot {
             })
         });
         let session_id = self.transcript_session_id();
+        let yielded_plans = transcript
+            .as_ref()
+            .map(yielded_plans_of)
+            .unwrap_or_default();
         let selections = transcript
             .as_ref()
             .map(|transcript| {
@@ -9973,9 +9998,12 @@ impl DesktopRoot {
                             &self.snapshot,
                             weak.clone(),
                             selection,
-                            true,
-                            None,
-                            false,
+                            RowViewState {
+                                read_only: true,
+                                gate_focus: None,
+                                thinking_open: false,
+                                plan_yields: yielded_plans.contains(&row.id),
+                            },
                         )
                     })
                     .collect::<Vec<_>>()
@@ -14062,15 +14090,34 @@ impl LedgerPalette {
     }
 }
 
+/// Per-row rendering context that the row's own data cannot answer.
+///
+/// Grouped so the element builder keeps one argument per independent decision
+/// instead of growing a boolean tail (`read_only`, focus, expansion, yield).
+#[derive(Clone, Copy)]
+struct RowViewState<'a> {
+    read_only: bool,
+    /// Focus handle for the first action of this row's pending gate.
+    gate_focus: Option<&'a gpui::FocusHandle>,
+    /// Inline expansion state for a thinking row.
+    thinking_open: bool,
+    /// This row is a plan card that yields to the run's tool group.
+    plan_yields: bool,
+}
+
 fn transcript_row_element(
     row: &TranscriptRow,
     snapshot: &DesktopSnapshot,
     weak: WeakEntity<DesktopRoot>,
     assistant_selection: Option<Entity<SelectionActions>>,
-    read_only: bool,
-    gate_focus: Option<&gpui::FocusHandle>,
-    thinking_open: bool,
+    state: RowViewState<'_>,
 ) -> AnyElement {
+    let RowViewState {
+        read_only,
+        gate_focus,
+        thinking_open,
+        plan_yields,
+    } = state;
     let session_id = snapshot
         .session
         .id
@@ -14338,8 +14385,9 @@ fn transcript_row_element(
             // A plan made only of tool calls would draw every command twice:
             // once here and once in the execution group below. The tool rows
             // carry the status, output and disclosure, so the plan card yields
-            // when every step is already represented in this run.
-            if plan_is_tool_execution(row, plan, &snapshot.transcript) {
+            // when every step is already represented in this run. The layout
+            // pass decides that once per row instead of rescanning here.
+            if plan_yields {
                 return div().into_any_element();
             }
             let steps = plan.steps.iter().enumerate().map(|(index, step)| {
@@ -16718,9 +16766,9 @@ mod tests {
         ToolMetaView, ToolOutputView,
     };
 
-    use crate::ui::process::process_row_groupable;
-
     use super::*;
+
+    use crate::ui::process::yielded_plans;
 
     fn install_test_config(config: &DesktopConfig) {
         static INSTALL: std::sync::Once = std::sync::Once::new();
@@ -17615,18 +17663,65 @@ mod tests {
                 detail: Some(Arc::from("shell")),
             }]);
         }
-        let RowBody::Plan(plan_body) = &plan_row.body else {
-            unreachable!("the row stays a plan");
-        };
-        let same_run = TranscriptView::from_rows(vec![group.clone(), Arc::new(plan_row.clone())]);
+        let same_run = [group.clone(), Arc::new(plan_row.clone())];
         assert!(
-            plan_is_tool_execution(&plan_row, plan_body, &same_run),
+            yielded_plans(&same_run).contains(&plan_row.id),
             "a later turn's plan belongs to the run's existing group"
         );
-        let next_run = TranscriptView::from_rows(vec![group, user, Arc::new(plan_row.clone())]);
+        let next_run = [group, user, Arc::new(plan_row.clone())];
         assert!(
-            !plan_is_tool_execution(&plan_row, plan_body, &next_run),
+            !yielded_plans(&next_run).contains(&plan_row.id),
             "a group from an earlier run must not hide a new run's plan"
+        );
+    }
+
+    /// The layout classifies each run independently: a plan that only repeats
+    /// its own run's tools yields, while an identical plan in the next run —
+    /// whose tools do not exist yet — keeps its card.
+    #[test]
+    fn only_the_run_that_owns_the_tools_yields_its_plan() {
+        let demo = tact_desktop_core::fixtures::demo_transcript();
+        let group = demo
+            .iter()
+            .find(|row| matches!(&row.body, RowBody::ToolGroup(_)))
+            .cloned()
+            .expect("tool group");
+        let user = demo
+            .iter()
+            .find(|row| matches!(&row.body, RowBody::User(_)))
+            .cloned()
+            .expect("user turn");
+        let plan = demo
+            .iter()
+            .find(|row| matches!(&row.body, RowBody::Plan(_)))
+            .cloned()
+            .expect("plan");
+        let mut first = (*plan).clone();
+        first.body = RowBody::Plan(tact_desktop_core::PlanRow {
+            title: Arc::from("Execution plan"),
+            steps: Arc::from([tact_desktop_core::PlanStep {
+                tool_id: Some(Arc::from("tool-4")),
+                label: Arc::from("run the tests"),
+                status: RowStatus::Pending,
+                detail: Some(Arc::from("shell")),
+            }]),
+        });
+        let mut second = first.clone();
+        second.id = tact_desktop_core::RowId::new(second.id.value() + 1);
+        let rows = [
+            group,
+            Arc::new(first.clone()),
+            user,
+            Arc::new(second.clone()),
+        ];
+        let yielded = yielded_plans(&rows);
+        assert!(
+            yielded.contains(&first.id),
+            "the plan whose tools this run already has yields its card"
+        );
+        assert!(
+            !yielded.contains(&second.id),
+            "the same plan in the next run has no tool group yet and keeps its card"
         );
     }
 
@@ -18604,13 +18699,14 @@ mod tests {
                 .is_some(),
             "the thinking and tool rows share one timed summary"
         );
-        let (groups, roles) = window.update(|_, cx| {
-            let scroller = root.read(cx).transcript_scroller.read(cx);
-            (
-                scroller.process_groups.clone(),
-                scroller.process_roles.clone(),
-            )
+        let layout = window.update(|_, cx| {
+            root.read(cx)
+                .transcript_scroller
+                .read(cx)
+                .process_layout
+                .clone()
         });
+        let (groups, roles) = (&layout.groups, &layout.roles);
         assert_eq!(groups.len(), 1);
         assert!(
             groups[0].active,
@@ -19549,7 +19645,18 @@ mod tests {
                     .filter_map(|index| transcript.iter().find(|row| row.ordinal == index).cloned())
                     .collect::<Vec<_>>();
                 v_flex().size_full().children(rows.into_iter().map(|row| {
-                    transcript_row_element(&row, &snapshot, weak.clone(), None, true, None, false)
+                    transcript_row_element(
+                        &row,
+                        &snapshot,
+                        weak.clone(),
+                        None,
+                        RowViewState {
+                            read_only: true,
+                            gate_focus: None,
+                            thinking_open: false,
+                            plan_yields: false,
+                        },
+                    )
                 }))
             }
         }
@@ -21030,86 +21137,50 @@ mod tests {
     #[test]
     fn tool_only_plans_yield_to_the_tool_rows() {
         let base = tact_desktop_core::fixtures::demo_transcript();
-        let rows = base
-            .iter()
-            .map(|row| {
-                let mut row = (**row).clone();
-                if matches!(row.body, RowBody::Plan(_)) {
-                    row.body = RowBody::Plan(tact_desktop_core::PlanRow {
-                        title: Arc::from("Execution plan"),
-                        steps: Arc::from([tact_desktop_core::PlanStep {
-                            tool_id: Some(Arc::from("tool-4")),
-                            label: Arc::from("cargo test -p tact store::session_store"),
-                            status: RowStatus::Success,
-                            detail: Some(Arc::from("shell")),
-                        }]),
-                    });
-                }
-                Arc::new(row)
-            })
-            .collect::<Vec<_>>();
-        let transcript = TranscriptView::from_rows(rows);
-        let plan_row = transcript
-            .iter()
-            .find(|row| matches!(row.body, RowBody::Plan(_)))
-            .expect("plan row");
-        let RowBody::Plan(plan) = &plan_row.body else {
-            unreachable!()
+        // Rewrite the demo plan with `steps` and report whether its card yields
+        // to the run's tool group, all else unchanged.
+        let plan_yields = |steps: [tact_desktop_core::PlanStep; 2]| {
+            let rows = base
+                .iter()
+                .map(|row| {
+                    let mut row = (**row).clone();
+                    if matches!(row.body, RowBody::Plan(_)) {
+                        row.body = RowBody::Plan(tact_desktop_core::PlanRow {
+                            title: Arc::from("Execution plan"),
+                            steps: Arc::from(steps.clone()),
+                        });
+                    }
+                    Arc::new(row)
+                })
+                .collect::<Vec<_>>();
+            let plan_id = rows
+                .iter()
+                .find(|row| matches!(row.body, RowBody::Plan(_)))
+                .expect("plan row")
+                .id;
+            let yielded = yielded_plans(&rows);
+            yielded.contains(&plan_id)
         };
-        assert!(
-            plan_is_tool_execution(plan_row, plan, &transcript),
-            "a one-step plan that is the tool call must not draw a second card"
-        );
+        let step =
+            |tool_id: Option<&str>, label: &str, status: RowStatus| tact_desktop_core::PlanStep {
+                tool_id: tool_id.map(Arc::from),
+                label: Arc::from(label),
+                status,
+                detail: Some(Arc::from("shell")),
+            };
 
-        let mut multi = (**plan_row).clone();
-        multi.body = RowBody::Plan(tact_desktop_core::PlanRow {
-            title: Arc::from("Execution plan"),
-            steps: Arc::from([
-                tact_desktop_core::PlanStep {
-                    tool_id: Some(Arc::from("tool-4")),
-                    label: Arc::from("Run the store tests"),
-                    status: RowStatus::Success,
-                    detail: Some(Arc::from("shell")),
-                },
-                tact_desktop_core::PlanStep {
-                    tool_id: Some(Arc::from("tool-5")),
-                    label: Arc::from("Edit the store"),
-                    status: RowStatus::Running,
-                    detail: Some(Arc::from("edit")),
-                },
-            ]),
-        });
-        let RowBody::Plan(multi_plan) = &multi.body else {
-            unreachable!()
-        };
         assert!(
-            plan_is_tool_execution(&multi, multi_plan, &transcript),
+            plan_yields([
+                step(Some("tool-4"), "Run the store tests", RowStatus::Success),
+                step(Some("tool-5"), "Edit the store", RowStatus::Running),
+            ]),
             "a multi-step plan that only repeats tool rows must not draw a second card"
         );
-
-        let mut conceptual = (**plan_row).clone();
-        conceptual.body = RowBody::Plan(tact_desktop_core::PlanRow {
-            title: Arc::from("Execution plan"),
-            steps: Arc::from([
-                tact_desktop_core::PlanStep {
-                    tool_id: None,
-                    label: Arc::from("Inspect the store"),
-                    status: RowStatus::Success,
-                    detail: None,
-                },
-                tact_desktop_core::PlanStep {
-                    tool_id: Some(Arc::from("tool-4")),
-                    label: Arc::from("Run the tests"),
-                    status: RowStatus::Running,
-                    detail: Some(Arc::from("shell")),
-                },
-            ]),
-        });
-        let RowBody::Plan(conceptual_plan) = &conceptual.body else {
-            unreachable!()
-        };
         assert!(
-            !plan_is_tool_execution(&conceptual, conceptual_plan, &transcript),
+            !plan_yields([
+                step(None, "Inspect the store", RowStatus::Success),
+                step(Some("tool-4"), "Run the tests", RowStatus::Running),
+            ]),
             "a conceptual step keeps the plan card"
         );
     }
@@ -21199,14 +21270,9 @@ mod tests {
                 phase,
             })
         };
-        assert!(process_row_groupable(&assistant(Some(
-            MessagePhase::Commentary
-        ))));
         assert!(is_process_row(&assistant(Some(MessagePhase::Commentary))));
-        assert!(!process_row_groupable(&assistant(Some(
-            MessagePhase::FinalAnswer
-        ))));
-        assert!(!process_row_groupable(&assistant(None)));
+        assert!(!is_process_row(&assistant(Some(MessagePhase::FinalAnswer))));
+        assert!(!is_process_row(&assistant(None)));
     }
 
     #[test]
@@ -21338,18 +21404,19 @@ mod tests {
             window.draw(cx).clear(cx);
         });
 
-        let groups = window.update(|_, cx| {
+        let layout = window.update(|_, cx| {
             root.read(cx)
                 .transcript_scroller
                 .read(cx)
-                .process_groups
+                .process_layout
                 .clone()
         });
         assert_eq!(
-            groups.len(),
+            layout.groups.len(),
             1,
             "hidden tool plans must not split the activity group"
         );
+        let groups = &layout.groups;
         assert_eq!(groups[0].thoughts, 2);
         assert_eq!(groups[0].commands, 2);
 
@@ -21437,13 +21504,14 @@ mod tests {
             window.draw(cx).clear(cx);
         });
 
-        let (groups, roles) = window.update(|_, cx| {
-            let scroller = root.read(cx).transcript_scroller.read(cx);
-            (
-                scroller.process_groups.clone(),
-                scroller.process_roles.clone(),
-            )
+        let layout = window.update(|_, cx| {
+            root.read(cx)
+                .transcript_scroller
+                .read(cx)
+                .process_layout
+                .clone()
         });
+        let (groups, roles) = (&layout.groups, &layout.roles);
         assert_eq!(groups.len(), 1, "commentary must stay in one process group");
         assert_eq!(groups[0].thoughts, 1);
         assert_eq!(groups[0].commands, 1);
