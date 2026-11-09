@@ -5,7 +5,6 @@
 //! interaction, so the component is self-contained.
 
 use crossterm::event::KeyEvent;
-use ratatui::{buffer::Buffer, layout::Rect};
 
 use crate::{Component, Ctx, protocol::AgentUpdate, state::StatusBarState};
 
@@ -79,10 +78,6 @@ impl Component for StatusBarComponent {
 
     fn on_key(&mut self, _key: KeyEvent, _ctx: &mut Ctx<'_>) -> bool {
         false
-    }
-
-    fn render(&self, _area: Rect, _buf: &mut Buffer, _ctx: &Ctx<'_>) -> u16 {
-        0
     }
 
     fn priority(&self) -> u8 {

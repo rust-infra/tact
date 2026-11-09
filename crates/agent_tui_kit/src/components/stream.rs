@@ -7,31 +7,20 @@
 //! so the component stays free of host rendering concerns.
 
 use crossterm::event::KeyEvent;
-use ratatui::{
-    buffer::Buffer,
-    layout::Rect,
-    style::{Color, Style},
-    text::{Line, Span},
-    widgets::Paragraph,
-    widgets::Widget,
-};
+use ratatui::style::Color;
 
-use crate::{
-    Component, Ctx, i18n::Messages, protocol::AgentUpdate, state::StreamState, theme::Theme,
-};
+use crate::{Component, Ctx, i18n::Messages, protocol::AgentUpdate, state::StreamState};
 
 /// Streams assistant output text into the log.
 pub struct StreamComponent {
     state: StreamState,
-    theme: Theme,
     messages: Messages,
 }
 
 impl StreamComponent {
-    pub fn new(theme: Theme, messages: Messages) -> Self {
+    pub fn new(messages: Messages) -> Self {
         Self {
             state: StreamState::default(),
-            theme,
             messages,
         }
     }
@@ -85,21 +74,6 @@ impl Component for StreamComponent {
         false
     }
 
-    fn render(&self, area: Rect, buf: &mut Buffer, _ctx: &Ctx<'_>) -> u16 {
-        if self.state.buffer.is_empty() {
-            return 0;
-        }
-        let _ = &self.messages;
-        // The in-flight (unterminated) line — the same text the log panel
-        // shows as its live stream row.
-        let line = Line::from(Span::styled(
-            self.state.buffer.clone(),
-            Style::default().fg(self.theme.fg),
-        ));
-        Paragraph::new(line).render(area, buf);
-        1
-    }
-
     fn priority(&self) -> u8 {
         20
     }
@@ -126,7 +100,6 @@ mod tests {
         InputMode, PendingQueue,
         i18n::Language,
         state::{LogCoordinator, StreamEvent},
-        theme::ThemeName,
     };
     fn setup() -> (
         StreamComponent,
@@ -135,10 +108,7 @@ mod tests {
         Vec<StreamEvent>,
     ) {
         (
-            StreamComponent::new(
-                crate::theme::Theme::from(ThemeName::Ink),
-                Messages::by_language(Language::English),
-            ),
+            StreamComponent::new(Messages::by_language(Language::English)),
             LogCoordinator::default(),
             PendingQueue::default(),
             Vec::new(),
@@ -180,8 +150,10 @@ mod tests {
         assert!(comp.state().buffer.is_empty());
     }
 
+    /// An in-flight line lives in the component state, which is what the host
+    /// paints from. The component draws nothing itself.
     #[test]
-    fn unfinished_line_stays_in_state_for_render() {
+    fn unfinished_line_stays_in_state_for_the_host_to_paint() {
         let (mut comp, mut log, mut pending, mut events) = setup();
         comp.on_update(
             &AgentUpdate::StreamChunk("partial".into()),
@@ -189,16 +161,6 @@ mod tests {
         );
         assert!(events.is_empty());
         assert_eq!(comp.state().buffer, "partial");
-
-        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 1));
-        let used = comp.render(
-            Rect::new(0, 0, 40, 1),
-            &mut buf,
-            &ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
-        );
-        assert_eq!(used, 1);
-        let text: String = (0..40).map(|x| buf[(x, 0)].symbol().to_string()).collect();
-        assert!(text.contains("partial"), "in-flight line renders: {text:?}");
     }
 
     #[test]
