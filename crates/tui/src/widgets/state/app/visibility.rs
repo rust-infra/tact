@@ -53,9 +53,6 @@ impl App {
             .log_indent()
     }
 
-    /// Map a logical line number to the physical index in messages.
-    /// Returns None if the logical line number exceeds the fixed message range
-    /// (meaning it's an incomplete streaming line).
     /// The physical row sitting at the top of the viewport, when the cache can
     /// say so.
     ///
@@ -112,6 +109,9 @@ impl App {
         true
     }
 
+    /// Map a logical line number to the physical index in messages.
+    /// Returns None if the logical line number exceeds the fixed message range
+    /// (meaning it's an incomplete streaming line).
     pub(crate) fn visible_message_index(&self, logical_idx: usize) -> Option<usize> {
         // Prefer the per-frame cache built by render_log_panel (O(1)).
         if self.log_scroll.visible_indices_ver == self.log.items.len()

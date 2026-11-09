@@ -292,7 +292,7 @@ pub fn toggle(
 }
 
 /// The run containing `phys_idx`, if any.
-pub fn run_at_phys(_blocks: &[ToolBlock], runs: &[ToolRun], phys_idx: usize) -> Option<usize> {
+pub fn run_at_phys(runs: &[ToolRun], phys_idx: usize) -> Option<usize> {
     runs.iter()
         .position(|run| phys_idx >= run.phys_idx && phys_idx < run.phys_idx + run.expanded_rows)
 }
@@ -340,7 +340,7 @@ impl ToolState {
     /// Flip the run that owns `phys_idx`, if any.
     pub fn toggle_run_at(&mut self, phys_idx: usize) -> bool {
         let found = runs(&self.blocks);
-        let Some(index) = run_at_phys(&self.blocks, &found, phys_idx) else {
+        let Some(index) = run_at_phys(&found, phys_idx) else {
             return false;
         };
         // Field-split: `toggle` needs `blocks` and the fold sets at once, and
@@ -419,18 +419,8 @@ impl ToolState {
     /// The stable identity of the run owning `phys_idx`, if any.
     pub fn run_identity_at(&self, phys_idx: usize) -> Option<String> {
         let found = runs(&self.blocks);
-        let index = run_at_phys(&self.blocks, &found, phys_idx)?;
+        let index = run_at_phys(&found, phys_idx)?;
         run_key(&self.blocks, &found[index]).map(str::to_string)
-    }
-
-    /// Is `phys_idx` hidden by a folded run?
-    pub fn is_hidden_by_fold(&self, phys_idx: usize) -> bool {
-        let found = runs(&self.blocks);
-        found.iter().any(|run| {
-            is_folded(&self.blocks, run, self)
-                && phys_idx > run.phys_idx
-                && phys_idx < run.phys_idx + run.expanded_rows
-        })
     }
 }
 
