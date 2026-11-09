@@ -743,7 +743,7 @@ impl DesktopActor {
                     .map_err(|error| format!("{error:?}"))?;
             }
             DesktopIntent::CloseProject { project_id } => {
-                self.handle_close_project(project_id).await?;
+                self.handle_close_project(project_id).await;
             }
             DesktopIntent::RemoveProject { project_id } => {
                 self.handle_remove_project(project_id).await?;
@@ -1037,10 +1037,12 @@ impl DesktopActor {
         Ok(())
     }
 
-    async fn handle_close_project(&mut self, project_id: ProjectId) -> Result<(), String> {
+    /// Closing a project cannot fail: it drops in-memory state and best-effort
+    /// closes hosts, so it returns no error to report.
+    async fn handle_close_project(&mut self, project_id: ProjectId) {
         if self.project.as_ref().map(|project| &project.id) == Some(&project_id) {
             if self.close_host().await.is_err() {
-                return Ok(());
+                return;
             }
             self.close_parked_hosts().await;
             let epoch = self.state.begin_session_switch();
@@ -1062,7 +1064,6 @@ impl DesktopActor {
             self.forget_project_data(&project_id);
             self.publish(true);
         }
-        Ok(())
     }
 
     async fn handle_remove_project(&mut self, project_id: ProjectId) -> Result<(), String> {
@@ -1129,9 +1130,7 @@ impl DesktopActor {
     }
 
     fn remove_queued(&mut self, index: usize) {
-        if index < self.queue.len() {
-            self.queue.remove(index);
-        }
+        self.queue.remove(index);
         self.sync_queue();
     }
 

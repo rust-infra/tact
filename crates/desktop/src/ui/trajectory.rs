@@ -77,13 +77,15 @@ impl TimelineLayout {
     }
 
     /// The record under a pointer at `x` pixels from the track's left edge.
+    ///
+    /// The track is one equal-width column per record, so the column index is
+    /// the answer — a span narrower than its column (`MIN_SPAN_WIDTH`) still
+    /// owns the whole column and cannot steal its neighbour's click.
     pub fn hit(&self, x: f32) -> Option<usize> {
-        if self.slot_width <= 0. || x < 0. || x >= self.width {
+        if !(0. ..self.width).contains(&x) {
             return None;
         }
-        self.boxes
-            .get((x / self.slot_width) as usize)
-            .map(|span| span.index)
+        self.boxes.get(self.column_at(x)).map(|span| span.index)
     }
 
     /// The left edge of the record at `index`, in pixels.
@@ -91,18 +93,13 @@ impl TimelineLayout {
         index as f32 * self.slot_width
     }
 
-    /// The first record whose column starts at or after `x`.
-    pub fn nearest(&self, x: f32) -> Option<usize> {
-        if self.boxes.is_empty() {
-            return None;
+    /// The column `x` falls in, clamped into the track.
+    fn column_at(&self, x: f32) -> usize {
+        if self.slot_width <= 0. {
+            return 0;
         }
-        let last = self.boxes.len() - 1;
-        let index = if self.slot_width > 0. {
-            ((x / self.slot_width).round() as isize).clamp(0, last as isize) as usize
-        } else {
-            0
-        };
-        Some(index)
+        let column = (x / self.slot_width) as usize;
+        column.min(self.boxes.len().saturating_sub(1))
     }
 }
 
@@ -373,7 +370,10 @@ mod tests {
     fn a_narrow_track_keeps_spans_clickable() {
         let view = view();
         let layout = TimelineLayout::new(&view, 12.);
-        assert!(layout.boxes.iter().all(|span| span.width >= MIN_SPAN_WIDTH));
+        assert!(
+            layout.boxes.iter().all(|span| span.width >= MIN_SPAN_WIDTH),
+            "every block keeps the minimum width so a one-record track stays clickable"
+        );
         for index in 0..view.len() {
             let x = (index as f32 + 0.5) * layout.slot_width;
             assert_eq!(
@@ -390,15 +390,6 @@ mod tests {
         let layout = TimelineLayout::new(&empty, 400.);
         assert!(layout.boxes.is_empty());
         assert_eq!(layout.hit(10.), None);
-        assert_eq!(layout.nearest(10.), None);
-    }
-
-    #[test]
-    fn nearest_clamps_outside_the_track() {
-        let view = view();
-        let layout = TimelineLayout::new(&view, 400.);
-        assert_eq!(layout.nearest(-50.), Some(0));
-        assert_eq!(layout.nearest(10_000.), Some(view.len() - 1));
     }
 
     #[test]
