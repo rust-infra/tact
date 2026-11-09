@@ -777,6 +777,8 @@
 <li class="toc-l2"><a href="#63-2026-11-07--desktop-%E5%93%81%E7%89%8C%E5%9B%BE%E6%A0%87%E4%B8%8E%E4%B8%89%E5%B9%B3%E5%8F%B0%E6%8E%A5%E5%85%A5" title="63. 2026-11-07 — Desktop：品牌图标与三平台接入"><span class="toc-label">63. 2026-11-07 — Desktop：品牌图标与三平台接入</span></a></li>
 <li class="toc-l2"><a href="#64-2026-11-08--desktop-trajectory-%E6%97%B6%E9%97%B4%E8%BD%B4%E5%91%BD%E4%B8%AD%E4%B8%8E%E7%BB%9F%E8%AE%A1%E8%BE%B9%E7%95%8C%E6%94%B6%E6%95%9B" title="64. 2026-11-08 — Desktop：Trajectory 时间轴命中与统计边界收敛"><span class="toc-label">64. 2026-11-08 — Desktop：Trajectory 时间轴命中与统计边界收敛</span></a></li>
 <li class="toc-l2"><a href="#65-2026-11-09--desktop-%E9%98%9F%E5%88%97%E6%9D%83%E9%99%90%E6%9D%A1%E4%B8%8E%E4%BB%BB%E5%8A%A1%E5%8D%A1%E5%AF%B9%E9%BD%90%E5%88%B0-composer-%E7%9A%84%E8%BD%B4" title="65. 2026-11-09 — Desktop：队列、权限条与任务卡对齐到 composer 的轴"><span class="toc-label">65. 2026-11-09 — Desktop：队列、权限条与任务卡对齐到 composer 的轴</span></a></li>
+<li class="toc-l2"><a href="#66-2026-11-09--desktop-skill-%E4%BA%A4%E4%BA%92%E6%8C%89-launcher-%E4%B8%8E-manager-%E5%88%86%E5%B7%A5" title="66. 2026-11-09 — Desktop：skill 交互按 launcher 与 manager 分工"><span class="toc-label">66. 2026-11-09 — Desktop：skill 交互按 launcher 与 manager 分工</span></a></li>
+<li class="toc-l3"><a href="#66-1-truncated-turn-is-not-a-completed-task" title="66.1 截断的回答不再伪装成「已完成」"><span class="toc-label">66.1 截断的回答不再伪装成「已完成」</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -23015,6 +23017,102 @@ deviations 下。</p>
 <code>crates/desktop/src/root.rs</code> 的 <code>render_sticky</code>、
 <code>render_composer</code>、<code>render_queue_accessory</code>、
 <code>render_gate_banner</code>。</p>
+<h2 id="66-2026-11-09--desktop-skill-交互按-launcher-与-manager-分工">66. 2026-11-09 —
+Desktop：skill 交互按 launcher 与 manager 分工</h2>
+<p><strong>症状：</strong> Skills 弹层里点击 skill 行没有任何反应，只有右侧的
+Enable/Disable 文本可点；在 Extensions Manager 的搜索框里输入过滤词后按 Enter，
+会把第一个匹配的 skill 插入 composer 并关闭整个 manager；manager 内 Enter/Open
+又是插入，Space 才是开关，同一个列表出现两套手势。真实窗口里长描述会把
+Enable/Disable 挤出弹层右侧，搜索框为空时按 Enter 还会插入列表第一个随机
+skill，列表顺序也随 HashMap 迭代变化。</p>
+<p><strong>原因：</strong> 插入行为只绑在 <code>ActivationRequested</code> 的
+Enter/Open 路径和弹层搜索的 Enter 上，行本身没有 click handler；manager 与
+popover 共用同一套 activation，search Enter 也没有区分
+<code>extension_manage</code>。开关 handler 还在渲染时捕获
+<code>enabled</code>，连续点击会用旧值重复下发。skill 行没有宽度约束，左侧
+描述按内容撑开，右侧开关被布局推到弹层边界外；空查询也走了
+<code>insert_first_matching_skill</code>；空查询的排序键全为 0，保留了
+<code>HashMap</code> 的任意顺序。</p>
+<p><strong>改后行为：</strong> popover 是 launcher：点击行插入
+<code>/skill &lt;name&gt; </code> 并关闭弹层；搜索框有查询时，Enter 插入第一个
+匹配项；行内 Enable/Disable 只切换目录可见性。
+Manager 只做管理：Toggle、Enter、Space、双击都只切换 enabled，搜索 Enter 只过滤，
+不动 composer。搜索框为空时 Enter 不插入，输入查询后 Enter 才插入第一个匹配项。
+行宽固定为弹层宽度，左侧描述省略，右侧开关始终可见。空查询按名称排序，
+同一分数再按名称排序，列表顺序稳定。两处开关都按当前 snapshot 计算下一次状态。
+composer 的 <code>/</code> 菜单在输入片段时也按名字匹配已安装 skill，例如
+<code>/rust</code> 直接给出 <code>rust-skills</code>。</p>
+<p><strong>验证：</strong>
+<code>clicking_a_skill_row_inserts_it_into_the_composer</code>
+先失败于空 draft，修复后通过；
+<code>manager_search_enter_keeps_the_manager_open</code> 先失败于
+<code>/skill rust-skills </code>，修复后通过；
+<code>manager_skill_activation_toggles_instead_of_inserting</code> 与
+<code>popover_skill_toggle_does_not_insert</code> 覆盖两条互不串线的动作；
+<code>popover_skill_toggle_stays_inside_the_popover_with_a_long_description</code>
+先失败于 toggle 位于 x=1597、弹层右边界只有 x=1220，修复后通过；
+<code>popover_search_enter_with_no_query_does_not_insert_a_skill</code> 先失败于
+<code>/skill rust-skills </code>，修复后通过；
+<code>popover_skills_sort_alphabetically_without_a_query</code> 先失败于
+<code>zeta</code> 排在 <code>alpha</code> 前，修复后通过；
+<code>root_fragment_finds_installed_skills</code>、
+<code>empty_root_query_keeps_the_slash_menu_to_builtins</code>、
+<code>a_builtin_name_wins_over_an_installed_skill_with_the_same_name</code>
+覆盖斜杠菜单；
+<code>no_installed_skills_means_no_dynamic_skill_entries</code> 覆盖
+<code>has_installed_skill</code> 门控。第一轮修复后复查又发现四处漏洞，各自带一条
+先失败后通过的测试：<code>enter_inserts_only_a_skill_the_list_shows</code>
+先失败于 query=<code>guidelines</code> 时行已渲染却仍插入
+<code>rust-skills</code>（渲染只按名字过滤，插入却按名字或描述），
+修复方式是让列表与 Enter 共用 <code>visible_skills</code>；
+<code>an_unmatched_query_shows_the_empty_state_and_inserts_nothing</code>
+先失败于空态没有 <code>debug_selector</code> 而无法断言、且 Enter 会插入被隐藏的
+skill；<code>reopening_the_popover_drops_the_previous_filter</code> 先失败于
+<code>left: "zeta", right: ""</code>，重开弹层仍带着上次的过滤词；
+<code>inserting_a_skill_never_toggles_it</code> 钉住插入不动 enabled。
+同时删掉只写不读的 <code>ActivationSource</code>（manager 已不再按来源分叉），
+manager 的 <code>mcp</code> 排序列补齐与 skills/plugins/hooks 一致的
+tiebreaker。桌面端 299 个测试通过。</p>
+<h3 id="66-1-truncated-turn-is-not-a-completed-task">66.1 截断的回答不再伪装成「已完成」</h3>
+<p><strong>症状：</strong> 一次回复在句子中间被截断，但界面显示「本次 prompt
+已处理完毕」，没有任何提示，只能靠肉眼发现答案断了。</p>
+<p><strong>原因：</strong> driver 用 <code>agent.agent_loop()</code>，它把
+<code>AgentLoopOutcome</code> 丢弃成 <code>Result&lt;()&gt;</code>，于是
+<code>AgentLoopStop::MaxTokens</code>（输出上限用尽、续写预算耗尽）与
+<code>Completed</code> 走进同一个 <code>Ok(())</code> 分支，都发
+<code>TaskComplete</code>。<code>TaskComplete</code> 是两侧 UI 判定「完成」的唯一
+信号：TUI 冻结本轮并写任务统计，桌面把 <code>RunPhase</code> 置为
+<code>Complete</code>。所以被截断的答案被当成正常结束。</p>
+<p><strong>改后行为：</strong> driver 改用 <code>agent_loop_detailed()</code>，
+在发 <code>TaskComplete</code> 之前先看 <code>outcome.stop</code>：
+<code>MaxTokens</code> 改发 <code>AgentUpdate::Error</code>，文案点明「输出 token
+上限、续写重试已用尽、答案后半段没有产生」，并给出下一步（调高 Max tokens / 收窄
+请求 / 回一句 continue 续写）。两侧 UI 在 <code>Error</code> 时都会离开忙碌态
+（TUI <code>Status::Idle</code>，桌面 <code>RunPhase::Failed</code>），因此不会用
+「卡住」换掉「虚假完成」。文案不写死重试次数——预算在 kernel 里，抄一遍会漂移。</p>
+<p><strong>验证：</strong>
+<code>a_truncated_turn_reports_an_error_instead_of_a_completed_task</code>
+用一个恒定返回 <code>MaxTokens</code> 的 mock，先失败于收到
+<code>TaskComplete("half an answer that stops mid-")</code>——被截在半句的文本被当作
+完成，修复后通过；<code>a_completed_turn_still_reports_a_completed_task</code>
+保证正常回合仍发 <code>TaskComplete</code>，即修复没有靠破坏普通路径实现。
+<code>docs/state_machines.md</code> 补记 <code>RunPhase::Complete</code> 只由
+<code>TaskComplete</code> 到达。</p>
+<p><strong>Pointers：</strong> <code>crates/tact_host/src/driver.rs</code>、
+<code>handle_user_command_with_account</code>、
+<code>truncated_turn_message</code>、
+<code>crates/tact/src/agent/outcome.rs</code>、
+<code>crates/agent_core/src/kernel.rs</code>（<code>RunStop::MaxTokens</code>）、
+<code>crates/tact/src/runtime/event_adapter.rs</code>
+（<code>AgentNotice::Continuation</code>）。</p>
+<p><strong>Pointers：</strong> <code>crates/desktop/src/root.rs</code>、
+<code>activate_extension_search_result</code>、<code>visible_skills</code>、
+<code>toggle_skill</code>、<code>render_extensions_overlay</code>、
+<code>crates/desktop/src/ui/extensions.rs</code>、<code>matches_skill</code>、
+<code>crates/desktop/src/ui/slash_overlay.rs</code>、
+<code>command_candidates</code>、
+<code>crates/desktop/src/ui/filter_table.rs</code>、
+<code>crates/desktop/examples/skill_review.rs</code>。</p>
 <h2 id="related-docs">Related Docs</h2>
 <ul>
 <li><a href="./07_chapter_tool_zh.html">工具系统</a></li>
