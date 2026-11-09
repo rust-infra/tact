@@ -15,6 +15,13 @@ impl App {
             OpenTarget::Tool { tool_id } => self.open_diff_popup_by_id(&tool_id),
             OpenTarget::Subagent { tool_id } => self.open_subagent_popup_by_id(&tool_id),
             OpenTarget::Thinking { block_id } => self.open_thinking_popup_by_id(&block_id),
+            // A folded run's summary is a control, not a popup: activating it
+            // flips the fold. `toggle_fold_by_run_id` owns the scroll
+            // compensation and the repaint, because a fold changes the content
+            // without appending a row.
+            OpenTarget::ToolRun { run_id } => {
+                self.toggle_fold_by_run_id(&run_id);
+            }
         }
     }
 

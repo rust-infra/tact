@@ -168,6 +168,27 @@ impl App {
         }
     }
 
+    /// Keep the reader's eye on the same content after rows disappear above it.
+    ///
+    /// Folding a run removes `rows_removed` visual rows. When all of them sit at
+    /// or above the viewport top, everything the reader is looking at slides up
+    /// by that much, and without this the line they were reading jumps off the
+    /// top of the screen (measured: screen row 6 became row -1).
+    ///
+    /// A run that is only partly above the top is left alone on purpose. The
+    /// reader can see it collapsing, and moving the content under their eyes
+    /// while they watch would be the stranger of the two behaviours.
+    ///
+    /// Only the non-following case needs this: a following viewport is already
+    /// pinned to the tail, which `render_log_panel` recomputes from `usize::MAX`.
+    pub(crate) fn compensate_for_removed_rows(&mut self, rows_removed: usize, above_top: bool) {
+        if rows_removed == 0 || !above_top || self.log_scroll.follow {
+            return;
+        }
+        self.log_scroll.visual_top = self.log_scroll.visual_top.saturating_sub(rows_removed);
+        self.sync_log_offset_mirror();
+    }
+
     /// Scroll up by `step` visual lines inside a tall cell (row-boundary
     /// jumps otherwise). `key_cell_step` / `WHEEL_CELL_STEP` pick `step`.
     pub(crate) fn scroll_log_up(&mut self, step: usize) {

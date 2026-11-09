@@ -56,9 +56,67 @@ impl App {
     /// Map a logical line number to the physical index in messages.
     /// Returns None if the logical line number exceeds the fixed message range
     /// (meaning it's an incomplete streaming line).
+    /// The physical row sitting at the top of the viewport, when the cache can
+    /// say so.
+    ///
+    /// Used by `z` to fold the run the reader is looking at. Falls back to the
+    /// cached logical offset, which `render_log_panel` keeps in sync.
+    pub(crate) fn log_row_at_viewport_top(&self) -> Option<usize> {
+        let logical = self.log_scroll.offset as usize;
+        self.visible_message_index(logical)
+    }
+
+    /// Fold or unfold the run the reader is looking at.
+    ///
+    /// Returns true when a run was actually flipped, so a caller can tell "this
+    /// row is not a run" from "the reader just folded something".
+    pub(crate) fn toggle_fold_at_viewport_top(&mut self) -> bool {
+        let Some(run_id) = self
+            .log_row_at_viewport_top()
+            .and_then(|phys| self.tools().run_identity_at(phys))
+        else {
+            return false;
+        };
+        self.toggle_fold_by_run_id(&run_id)
+    }
+
+    /// Fold or unfold the run whose stable identity is `run_id`, keeping the
+    /// reader's eye on the line it was on.
+    ///
+    /// The single place that pairs the toggle with the scroll compensation. The
+    /// `z` key and a click on the summary row both land here; a second copy
+    /// would drift on the one question that matters, namely which rows
+    /// disappear and where they sat.
+    pub(crate) fn toggle_fold_by_run_id(&mut self, run_id: &str) -> bool {
+        // `run_bounds_by_id` only answers for a *folded* run, so an answer here
+        // means rows are about to come back; `None` means the run is about to
+        // fold. Only disappearing rows can pull the content under the eye.
+        let viewport = self.log_viewport_top();
+        let restoring = self.tools().run_bounds_by_id(run_id);
+        let folding = if restoring.is_none() {
+            self.tools().run_bounds_if_unfolded(run_id)
+        } else {
+            None
+        };
+        if !self.tools_mut().toggle_run_by_id(run_id) {
+            return false;
+        }
+        if let Some((_, end, rows)) = folding
+            && rows > 0
+        {
+            self.compensate_for_removed_rows(rows, end <= viewport);
+        }
+        // A fold changes the content without appending a row, so nothing else
+        // would ask for the repaint that shows it.
+        self.dirty = true;
+        true
+    }
+
     pub(crate) fn visible_message_index(&self, logical_idx: usize) -> Option<usize> {
         // Prefer the per-frame cache built by render_log_panel (O(1)).
-        if self.log_scroll.visible_indices_ver == self.log.items.len() {
+        if self.log_scroll.visible_indices_ver == self.log.items.len()
+            && self.log_scroll.visible_indices_fold_rev == self.tools().state().fold_rev
+        {
             return self.log_scroll.visible_indices.get(logical_idx).copied();
         }
         let mut visible_count = 0;
