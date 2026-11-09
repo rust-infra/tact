@@ -14,17 +14,19 @@ pub const RAIL_MAX_WIDTH: f32 = 420.0;
 pub const INSPECTOR_MIN_WIDTH: f32 = 240.0;
 pub const INSPECTOR_MAX_WIDTH: f32 = 520.0;
 
-/// The composer's frame width, and the width of every column that stacks with
-/// it (the transcript, the sticky strip). The prototype's `min(900px, …)`.
+/// The composer frame's width, and the width of the column every surface
+/// stacked with it centers inside: the transcript, the sticky card's column,
+/// the queue accessory's column. The prototype's `min(900px, …)`.
 pub const COMPOSER_WIDTH: f32 = 900.0;
 
-/// The width of a composer accessory: the queue, the sticky task card.
+/// The width of a composer accessory: the queue, the gate banner, the sticky
+/// task card.
 ///
 /// Deliberately narrower than [`COMPOSER_WIDTH`]: an accessory reads as
 /// something the composer owns, and a full-width one looks like a second input
-/// box. Both accessories used `mx_auto` on their own, which made them narrower
-/// *and* offset from the composer they belong to; the accessory column aligns
-/// them to the composer's left gutter instead.
+/// box. An accessory that centers itself instead of sharing the composer's
+/// column is narrower *and* offset from the frame it belongs to; `items_start`
+/// pins it to the frame's left gutter instead.
 pub const ACCESSORY_WIDTH: f32 = 780.0;
 
 /// The horizontal padding of the composer area.

@@ -22194,15 +22194,15 @@ mod tests {
         // The strip itself is the full-width band above the composer; the
         // column it centers is the composer's own column, which is what makes
         // the card share the input's gutter at every window width.
-        let sticky = window.debug_bounds("sticky-column").expect("sticky column");
+        let column = window.debug_bounds("sticky-column").expect("sticky column");
         assert_eq!(
-            sticky.size.width,
+            column.size.width,
             px(crate::ui::layout::COMPOSER_WIDTH),
-            "sticky width matches the composer column"
+            "the sticky column matches the composer column"
         );
         assert_eq!(
-            sticky.origin.x, composer.origin.x,
-            "sticky shares the composer gutter"
+            column.origin.x, composer.origin.x,
+            "the sticky column shares the composer gutter"
         );
 
         shutdown.shutdown_blocking().unwrap();
