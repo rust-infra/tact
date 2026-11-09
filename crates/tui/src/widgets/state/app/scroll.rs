@@ -11,6 +11,12 @@
 //! - for rows no taller than the viewport this degenerates to the old
 //!   one-logical-row-per-step behavior.
 //!
+//! The log passes one line as `step` ([`LOG_LINE_STEP`]), so `j` and `k` move
+//! by a line everywhere and the row-boundary jumps above only decide where a
+//! step lands within the row it entered. The wheel passes three. Half-screen
+//! steps remain available for bounded views that want them, such as the
+//! subagent transcript.
+//!
 //! `vs` is the visual start prefix-sum cache (`visual_start_cache`), whose
 //! last entry is the total visual line count.
 
@@ -80,7 +86,21 @@ pub(crate) fn visual_step_up(vs: &[usize], viewport_height: usize, v: usize, ste
     }
 }
 
+/// Keyboard step in the log: one visual line, every press.
+///
+/// The log used to step half a screen inside a cell taller than the viewport,
+/// on the theory that a tall cell needs fast transit. A long table is the only
+/// shape that qualifies, and there the rule backfired: a 121-row table crossed
+/// in 16 presses, and each press moved the line under the reader's eye by
+/// seven, which reads as a jump rather than a scroll. One line per press keeps
+/// the reading position predictable. `G` and `g` are the fast routes to the
+/// ends, and the wheel steps three lines for a reader who wants speed.
+pub(crate) const LOG_LINE_STEP: usize = 1;
+
 /// Keyboard step inside a cell taller than the viewport: half a screen.
+///
+/// Still used by the subagent view, whose transcript is one bounded card rather
+/// than a column the reader scans line by line.
 pub(crate) fn key_cell_step(viewport_height: usize) -> usize {
     (viewport_height / 2).max(1)
 }

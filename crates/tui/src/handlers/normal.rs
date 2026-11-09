@@ -53,20 +53,14 @@ pub(crate) fn handle_normal_mode(
             if app.mouse.in_task_panel && sticky_scrollable(app) {
                 scroll_active_sticky(app, 1);
             } else {
-                let step = crate::widgets::state::app::scroll::key_cell_step(
-                    app.log_scroll.height as usize,
-                );
-                app.scroll_log_down(step);
+                app.scroll_log_down(crate::widgets::state::app::scroll::LOG_LINE_STEP);
             }
         }
         KeyCode::Char('k') => {
             if app.mouse.in_task_panel && sticky_scrollable(app) {
                 scroll_active_sticky(app, -1);
             } else {
-                let step = crate::widgets::state::app::scroll::key_cell_step(
-                    app.log_scroll.height as usize,
-                );
-                app.scroll_log_up(step);
+                app.scroll_log_up(crate::widgets::state::app::scroll::LOG_LINE_STEP);
             }
         }
         KeyCode::Char('g') => {

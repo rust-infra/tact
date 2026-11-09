@@ -146,6 +146,68 @@ fn log_scroll_offset_hides_early_lines() {
     );
 }
 
+/// A tall table is the one cell the log steps inside rather than over. It used
+/// to step half a screen there, which moved the line under the reader's eye by
+/// seven and crossed a 121-row table in 16 presses. One `j` is one line.
+#[test]
+fn a_press_moves_one_line_inside_a_tall_table() {
+    let mut app = make_app();
+    let mut md = String::from("| Name | Description |\n| --- | --- |\n");
+    for i in 0..40 {
+        md.push_str(&format!(
+            "| row-{i:02} | a long description that must wrap inside the table cell |\n"
+        ));
+    }
+    app.append_markdown(md);
+
+    let (width, height) = (56u16, 16u16);
+    let _ = render_log_panel_text(&mut app, width, height);
+    app.scroll_log_to_top();
+    let _ = render_log_panel_text(&mut app, width, height);
+
+    // Fixture: the table must be taller than the viewport, or it is a short
+    // row and this test would be about the wrong branch.
+    let total = *app.log_scroll.visual_start.last().expect("cache built");
+    let viewport = app.log_scroll.height as usize;
+    assert!(
+        total > viewport,
+        "fixture: the table must be a tall cell, got {total} rows in {viewport}"
+    );
+
+    // Drive the real key, not the step constant: the bug was what `j` did, and
+    // a test that calls `scroll_log_down` cannot see the key handler change.
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    app.input_mode = crate::widgets::state::InputMode::Normal;
+    let mut prev = app.log_viewport_top();
+    let mut deltas = Vec::new();
+    for _ in 0..20 {
+        crate::handlers::handle_normal_mode(
+            &mut app,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('j'),
+                crossterm::event::KeyModifiers::empty(),
+            ),
+            &tx,
+        );
+        let _ = render_log_panel_text(&mut app, width, height);
+        let v = app.log_viewport_top();
+        if v == prev {
+            break;
+        }
+        deltas.push(v - prev);
+        prev = v;
+    }
+    assert!(
+        deltas.iter().all(|&d| d == 1),
+        "every press inside the table must move one line, got {deltas:?}"
+    );
+    assert!(
+        deltas.len() >= 15,
+        "a table of {total} rows needs many presses at one line each, got {}",
+        deltas.len()
+    );
+}
+
 #[test]
 fn tall_markdown_cell_is_fully_traversable() {
     // Regression: a whole-Markdown message taller than the viewport (a long
