@@ -310,9 +310,31 @@ The basic log rendering unit, supporting:
 
 ### Card Cells
 
-- `thinking.rs`: direct card separated from adjacent log content by one blank row on each side, with a 1→3 line streaming tail and one-line completed summary; its title and footer use the full line count
+- `thinking.rs`: borderless direct card of one row per reasoning line plus one footer row carrying the title, elapsed time, line count and open button; a finished card is its summary plus that footer
 - `diff.rs`: green `+` prefix, shows file path and line numbers
 - `code.rs`: dark blue-gray background, shows language tag and code preview
+
+### Thinking Card Rows
+
+A thinking card draws one row per reasoning line, then a footer row. A finished
+card is two rows: its summary, and a footer carrying the title, the elapsed time,
+the line count and the open button. A live card grows to four while its tail
+streams.
+
+The card has no border and no blank rows of its own. It used to spend five rows
+on a one-line summary, and four of those five were a border and two blank rows.
+On a measured corpus of 35 sessions that made thinking the single largest
+consumer of log rows, at 38 percent of them, while 80 percent of each card
+showed nothing.
+
+The footer keeps a row to itself rather than joining the summary. One row cannot
+hold the summary, the elapsed time, the line count and the button at any width a
+reader uses: measured, the button is clipped at every panel width below 120
+columns, and a clipped button has no hit target at all.
+
+Reasoning text starts at `LOG_THINKING_INDENT + 1`, the same column assistant
+prose lands in, so a reasoning line and the reply under it share a vertical. The
+border used to provide that column; `CONTENT_PAD` now does.
 
 ---
 

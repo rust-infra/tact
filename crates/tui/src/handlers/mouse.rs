@@ -1858,10 +1858,10 @@ mod tests {
         app
     }
 
-    /// A Thinking card has one target: the `[󰜼 Open]` button on its bottom
-    /// border. It draws text on rows that do not map to that text, so — like a
+    /// A Thinking card has one target: the `[󰜼 Open]` button on its footer.
+    /// It draws text on rows that do not map to that text, so — like a
     /// whole-Markdown row — nothing else about it answers a click, not its
-    /// summary, not its title, not the blank rows around it.
+    /// summary and not its title.
     ///
     /// The probe reads the rendered frame: the hit rects are recorded from the
     /// geometry the frame drew, and this proves they land on the glyphs.
@@ -1890,9 +1890,9 @@ mod tests {
                 "]",
                 "{ctx}: the measured width must land on the drawn button's last glyph"
             );
-            // The card is a blank row, title, one body row, the footer, a blank
-            // row — so the title sits two rows above the footer.
-            let title_row = row - 2;
+            // The card is its summary row then its footer, and the title now
+            // leads the footer — on the same row as the button.
+            let title_row = row;
             let title: String = (0..buf.area.width)
                 .map(|x| buf[(x, title_row)].symbol())
                 .collect();
@@ -1919,10 +1919,15 @@ mod tests {
             );
             assert!(
                 !double_click_opens_thinking(&mut app, start, row - 1),
-                "{ctx}: the card's own text must stay inert"
+                "{ctx}: the card's reasoning must stay inert"
             );
+            // The title shares the footer row with the button, so the title's
+            // own columns are what must stay inert — not the whole row.
+            let title_glyph = (0..buf.area.width)
+                .find(|&x| buf[(x, title_row)].symbol() == "🧠")
+                .expect("the title is drawn");
             assert!(
-                !double_click_opens_thinking(&mut app, start, title_row),
+                !double_click_opens_thinking(&mut app, title_glyph, title_row),
                 "{ctx}: the card's title must stay inert"
             );
         }
