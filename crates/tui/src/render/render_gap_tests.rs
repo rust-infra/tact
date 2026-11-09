@@ -1223,3 +1223,209 @@ fn mermaid_popup_paints_theme_bg_across_its_area() {
         "popup area must be fully painted with theme bg"
     );
 }
+
+// --- Block spacing: a card is a block, and blocks stay one blank row apart ---
+
+/// Rows of a rendered log, trimmed, for asserting on the gaps *between* blocks
+/// rather than on any one block's glyphs.
+fn rendered_rows(app: &mut App, width: u16, height: u16) -> Vec<String> {
+    render_log_panel_text(app, width, height)
+        .lines()
+        .map(|line| line.trim_end().to_string())
+        .collect()
+}
+
+/// The row index of the `nth` line containing `needle`.
+fn row_nth(rows: &[String], needle: &str, nth: usize) -> usize {
+    rows.iter()
+        .enumerate()
+        .filter(|(_, row)| row.contains(needle))
+        .map(|(index, _)| index)
+        .nth(nth)
+        .unwrap_or_else(|| panic!("{needle:?} #{nth} is not on screen:\n{}", rows.join("\n")))
+}
+
+/// The row carries no text: only the panel's own chrome stays on a blank row.
+fn assert_blank(rows: &[String], index: usize, why: &str) {
+    let row = &rows[index];
+    let rest: String = row.chars().filter(|c| !"│ ▐▲▼┌┐└┘─".contains(*c)).collect();
+    assert!(
+        rest.trim().is_empty(),
+        "row {index} must be blank ({why}), got {row:?}:\n{}",
+        rows.join("\n")
+    );
+}
+
+/// A thinking card no longer draws a border or a leading blank row, so the gap
+/// between it and the tool block above has to be a row of the log. Without it
+/// the tool's meta row, the card's header and its body stack with nothing
+/// between them and read as one table.
+#[test]
+fn a_thinking_card_keeps_one_blank_row_from_the_tool_block_above_it() {
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StreamChunk("Checking.\n\n".into()));
+    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+        "status",
+        "bash",
+        "b1",
+        HashMap::from([("command".to_string(), "git status".to_string())]),
+    )));
+    app.handle_agent_update(StepCall::new(0, "b1", "bash", "git status").started());
+    app.handle_agent_update(
+        StepCall::new(0, "b1", "bash", "git status")
+            .detail("clean")
+            .duration_us(60_610)
+            .finished(),
+    );
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+        "Working tree clean.\n".into(),
+    )));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+
+    let rows = rendered_rows(&mut app, 100, 24);
+
+    let meta = row_nth(&rows, "Success", 0);
+    let header = row_nth(&rows, "Thought", 0);
+    assert_eq!(
+        header,
+        meta + 2,
+        "the tool's meta row and the card's header must be one blank row apart:\n{}",
+        rows.join("\n")
+    );
+    assert_blank(&rows, meta + 1, "between the tool block and the card");
+    // And the card's own header leads its body, with no gap inside it.
+    assert!(
+        rows[header + 1].contains("Working tree clean."),
+        "the body follows the header directly:\n{}",
+        rows.join("\n")
+    );
+}
+
+/// The same rule on the other side: the reply that answers the reasoning is
+/// not glued to the card's last body row.
+#[test]
+fn the_reply_after_a_thinking_card_keeps_one_blank_row() {
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+        "Considering the options.\n".into(),
+    )));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+    app.handle_agent_update(AgentUpdate::StreamChunk("Here is the answer.\n\n".into()));
+
+    let rows = rendered_rows(&mut app, 100, 20);
+
+    let body = row_nth(&rows, "Considering the options.", 0);
+    let reply = row_nth(&rows, "Here is the answer.", 0);
+    assert_eq!(
+        reply,
+        body + 2,
+        "the card's body and the reply must be one blank row apart:\n{}",
+        rows.join("\n")
+    );
+    assert_blank(&rows, body + 1, "between the card and the reply");
+}
+
+/// A thinking card that never received content leaves no rows at all — and no
+/// gap either. The gap belongs to the card, so it goes when the card goes;
+/// otherwise every empty thinking turn would leave a blank row behind.
+#[test]
+fn a_blank_thinking_card_removes_the_gap_it_opened() {
+    let mut app = make_app();
+    // Real content last, so the card's own gap is the only blank row in play:
+    // a trailing blank row would satisfy `ensure_gap_before_thinking` on its
+    // own and the test would pass without removing anything.
+    app.add_system_message("Answer.".into());
+    let before: Vec<String> = app.log.items.iter().map(|item| item.raw.clone()).collect();
+    assert_eq!(
+        before.last().map(String::as_str),
+        Some("Answer."),
+        "the log must end on content, not on a blank row"
+    );
+
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+
+    let after: Vec<String> = app.log.items.iter().map(|item| item.raw.clone()).collect();
+    assert_eq!(
+        after, before,
+        "an empty thinking card must leave the log exactly as it found it"
+    );
+    assert!(
+        app.thinking().active.is_none() && app.thinking().blocks.is_empty(),
+        "the card must not survive as a block either"
+    );
+}
+
+/// Two settled thinking cards in a row are still two blocks: folding is about
+/// tool runs, not about cards, so each keeps its own gap.
+#[test]
+fn two_thinking_cards_keep_a_blank_row_between_them() {
+    let mut app = make_app();
+    for delta in ["first card\n", "second card\n"] {
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+            delta.into(),
+        )));
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+    }
+
+    let rows = rendered_rows(&mut app, 100, 20);
+
+    let first_body = row_nth(&rows, "first card", 0);
+    let second_header = row_nth(&rows, "Thought", 1);
+    assert_eq!(
+        second_header,
+        first_body + 2,
+        "two cards are two blocks and stay one blank row apart:\n{}",
+        rows.join("\n")
+    );
+    assert_blank(&rows, first_body + 1, "between the two cards");
+}
+
+/// The same rule above and below a tool block: a settled run is one row, and a
+/// paragraph in front of it and behind it are separate blocks.
+#[test]
+fn a_folded_tool_run_keeps_one_blank_row_on_both_sides() {
+    let mut app = make_app();
+    app.add_user_message("Check the tree.".into());
+    app.handle_agent_update(AgentUpdate::StreamChunk("On it.\n\n".into()));
+    for (idx, id) in [(0, "r1"), (1, "r2")] {
+        let arg = if idx == 0 { "src/a.rs" } else { "src/b.rs" };
+        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+            format!("read {arg}"),
+            "read_file",
+            id,
+            HashMap::from([("path".to_string(), arg.to_string())]),
+        )));
+        app.handle_agent_update(StepCall::new(idx, id, "read_file", arg).started());
+        app.handle_agent_update(
+            StepCall::new(idx, id, "read_file", arg)
+                .detail("out-1\nout-2")
+                .duration_us(1_000)
+                .finished(),
+        );
+    }
+    app.handle_agent_update(AgentUpdate::StreamChunk("Both read.\n\n".into()));
+
+    let rows = rendered_rows(&mut app, 100, 24);
+
+    let summary = row_nth(&rows, "2 tools", 0);
+    let before = row_nth(&rows, "On it.", 0);
+    let after = row_nth(&rows, "Both read.", 0);
+    assert_eq!(
+        summary,
+        before + 2,
+        "the paragraph and the run are one blank row apart:\n{}",
+        rows.join("\n")
+    );
+    assert_blank(&rows, before + 1, "between the paragraph and the run");
+    assert_eq!(
+        after,
+        summary + 2,
+        "the run and the reply are one blank row apart:\n{}",
+        rows.join("\n")
+    );
+    assert_blank(&rows, summary + 1, "between the run and the reply");
+}

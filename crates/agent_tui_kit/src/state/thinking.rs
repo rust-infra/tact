@@ -23,6 +23,15 @@ pub struct ActiveThinkingBlock {
     pending_line: String,
     completed_tail: VecDeque<String>,
     pub started_at: Instant,
+    /// Whether the app inserted a blank row between the previous block and
+    /// this card's placeholder rows.
+    ///
+    /// The gap belongs to the card, not to the log: a card that finishes blank
+    /// is removed, and so is the gap it opened, or the blank line would be left
+    /// separating nothing. Tracked as a flag rather than inferred at removal
+    /// time because the row in front is a placeholder too — its empty `raw`
+    /// cannot tell a gap from a card row.
+    pub preceded_by_gap: bool,
 }
 
 impl ActiveThinkingBlock {
@@ -36,6 +45,7 @@ impl ActiveThinkingBlock {
             pending_line: String::new(),
             completed_tail: VecDeque::new(),
             started_at,
+            preceded_by_gap: false,
         }
     }
 

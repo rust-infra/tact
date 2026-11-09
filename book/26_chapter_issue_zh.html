@@ -738,6 +738,7 @@
 <li class="toc-l2"><a href="#30-2026-11-02--desktop-%E6%BB%9A%E5%8A%A8%E5%90%88%E5%B9%B6%E4%B8%8E%E5%BC%B9%E7%AA%97%E5%8D%A1%E6%AD%BB" title="30. 2026-11-02 — Desktop 滚动合并与弹窗卡死"><span class="toc-label">30. 2026-11-02 — Desktop 滚动合并与弹窗卡死</span></a></li>
 <li class="toc-l2"><a href="#31-2026-11-04--desktop-%E4%BB%BB%E5%8A%A1%E6%9D%A1%E6%B7%B7%E5%85%A5%E5%85%B6%E5%AE%83-session-%E7%9A%84%E4%BB%BB%E5%8A%A1" title="31. 2026-11-04 — Desktop 任务条混入其它 session 的任务"><span class="toc-label">31. 2026-11-04 — Desktop 任务条混入其它 session 的任务</span></a></li>
 <li class="toc-l2"><a href="#32-2026-11-04--desktop-%E4%BB%BB%E5%8A%A1%E5%85%A8%E9%83%A8%E5%AE%8C%E6%88%90%E5%90%8E%E9%9A%90%E8%97%8F%E4%BB%BB%E5%8A%A1%E5%8D%A1trajectory-%E6%90%9C%E7%B4%A2%E6%A1%86%E6%94%B9%E4%B8%BA%E5%8D%95%E5%B1%82" title="32. 2026-11-04 — Desktop：任务全部完成后隐藏任务卡；Trajectory 搜索框改为单层"><span class="toc-label">32. 2026-11-04 — Desktop：任务全部完成后隐藏任务卡；Trajectory 搜索框改为单层</span></a></li>
+<li class="toc-l2"><a href="#33-2026-11-10--thinking-%E5%8D%A1%E7%89%87%E5%8E%8B%E7%BC%A9%E5%90%8E%E5%9D%97%E9%97%B4%E6%8C%A4%E6%88%90%E4%B8%80%E7%89%87" title="33. 2026-11-10 — thinking 卡片压缩后，块与块挤成一片"><span class="toc-label">33. 2026-11-10 — thinking 卡片压缩后，块与块挤成一片</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -21966,6 +21967,43 @@ sticky 卡片整条消失，恢复干净对话区；有任一域活跃时卡片�
 <code>crates/desktop/src/ui/sticky.rs</code>（<code>card_visible</code>）、
 <code>crates/desktop/src/root.rs</code>（<code>render_sticky</code>、
 <code>render_trajectory_summary</code>）。</p>
+<hr />
+<h2 id="33-2026-11-10--thinking-卡片压缩后块间挤成一片">33. 2026-11-10 — thinking 卡片压缩后，块与块挤成一片</h2>
+<p><strong>现象：</strong> 把 thinking 卡片从「空行 + 边框 + 正文 + 边框」压成
+「头行 + 正文」之后，日志里出现三行贴死的连续文字：工具块的状态行
+（<code>✓ Success · 60.61ms · 8 lines · [Open]</code>）、<code>🧠 Thought</code>
+头行、紧接着的推理正文，中间一个空行都没有；卡片下面的回答同样直接贴在正文上。
+三行紧挨着读起来像一张三行表格，而不像三个独立的东西。</p>
+<p><strong>根因：</strong> 卡片以前的间距是它自己的 chrome。五行的卡片开头就是一个空行、
+一道上边框，删掉之后没有任何东西补回这个间距。间距规则本身也只认
+<code>raw.is_empty()</code>：卡片的占位行 <code>raw</code> 同样是空串，
+和块间空行无法区分，所以「上一行是空行 → 已有间距」的判断在卡片前面永远为真，
+工具块与卡片之间、卡片与回答之间的空行都补不上。</p>
+<p><strong>决策：</strong> 把「每个块之间恰好一个空行」写成一条规则，放在
+<code>widgets/state/app/visibility.rs</code>：卡片打开时
+<code>ensure_gap_before_thinking</code> 插入自己的空行，回答流开始时
+<code>ensure_gap_after_thinking</code> 补卡片后面的空行。区分「空行」与「卡片的空占位行」交给
+<code>phys_idx_is_separator</code>——先排除被卡片占用的行
+（<code>phys_idx_owned_by_card</code>）再判断。空行属于卡片本身
+（<code>ActiveThinkingBlock::preceded_by_gap</code>）：卡片收尾时如果没有内容，
+连自己那行空行一起删掉，一次空的 thinking 不会在日志里留下孤立的空行。</p>
+<p><strong>改后行为：</strong> 工具块、thinking 卡片、回答、折叠后的工具摘要行
+之间都恰好隔一个空行；卡片内部头行与正文仍然紧贴（那是同一块的两行）。
+空 thinking 不改变日志的任何一行。</p>
+<p><strong>验证：</strong> <code>a_thinking_card_keeps_one_blank_row_from_the_tool_block_above_it</code>、
+<code>the_reply_after_a_thinking_card_keeps_one_blank_row</code>、
+<code>a_blank_thinking_card_removes_the_gap_it_opened</code>、
+<code>two_thinking_cards_keep_a_blank_row_between_them</code>、
+<code>a_folded_tool_run_keeps_one_blank_row_on_both_sides</code>
+（均读真实帧的行号，不是读状态字段）；逐条把对应的修复移走后确认会失败。
+<code>cargo test -p agent_tui_kit --lib</code> 452、<code>cargo test -p tui --lib</code>
+774 全绿，clippy <code>-D warnings</code> 与 fmt 干净。</p>
+<p><strong>Pointers：</strong>
+<code>crates/tui/src/widgets/state/app/visibility.rs</code>（<code>ensure_gap_before_thinking</code>、
+<code>ensure_gap_after_thinking</code>、<code>phys_idx_is_separator</code>）、
+<code>crates/agent_tui_kit/src/state/thinking.rs</code>（<code>preceded_by_gap</code>）、
+<code>crates/tui/src/render/render_gap_tests.rs</code>、
+<a href="../docs/tui_rendering.md">docs/tui_rendering.md</a> §6.5.1。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>

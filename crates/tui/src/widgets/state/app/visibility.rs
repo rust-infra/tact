@@ -464,10 +464,18 @@ impl App {
         let old_rows =
             crate::render::cells::thinking::thinking_visual_rows(active.body_line_count());
         if active.is_blank() {
-            let end = active.phys_idx.saturating_add(old_rows);
-            if active.phys_idx < self.log.items.len() && end <= self.log.items.len() {
-                self.drain_msgs(active.phys_idx..end);
+            let start = active.phys_idx;
+            let end = start.saturating_add(old_rows);
+            if start < self.log.items.len() && end <= self.log.items.len() {
+                self.drain_msgs(start..end);
                 self.shift_phys_indices_from(end, -(old_rows as isize));
+                // A card that never received content also never earns the gap
+                // it opened with; leaving the gap behind would put a blank line
+                // in the middle of whatever surrounds it.
+                if active.preceded_by_gap && start > 0 {
+                    self.drain_msgs(start - 1..start);
+                    self.shift_phys_indices_from(start, -1);
+                }
             }
             return;
         }
@@ -497,11 +505,11 @@ impl App {
         if self.thinking_mut().active.is_some() {
             return;
         }
+        let gap = self.ensure_gap_before_thinking();
         let phys_idx = self.push_thinking_placeholder_rows(1);
-        self.thinking_mut().active = Some(ActiveThinkingBlock::new(
-            phys_idx,
-            std::time::Instant::now(),
-        ));
+        let mut active = ActiveThinkingBlock::new(phys_idx, std::time::Instant::now());
+        active.preceded_by_gap = gap;
+        self.thinking_mut().active = Some(active);
     }
 
     /// Append a thinking delta without creating source rows in the shared log.
@@ -547,12 +555,63 @@ impl App {
         })
     }
 
+    /// Whether `phys` is one of the rows a thinking card draws.
+    fn phys_idx_in_thinking_card(&self, phys: usize) -> bool {
+        let rows_for =
+            |body_lines: usize| crate::render::cells::thinking::thinking_visual_rows(body_lines);
+        if let Some(active) = self.thinking().active.as_ref()
+            && phys >= active.phys_idx
+            && phys < active.phys_idx + rows_for(active.body_line_count())
+        {
+            return true;
+        }
+        self.thinking()
+            .blocks
+            .iter()
+            .any(|block| phys >= block.phys_idx && phys < block.phys_idx + rows_for(1))
+    }
+
+    /// Whether `phys` is a row some card paints, rather than a plain text row.
+    ///
+    /// Cards sit on placeholder rows whose `raw` text is empty, exactly like
+    /// the blank line that separates two blocks. So "the last row is blank"
+    /// cannot tell the two apart, and the spacing rules have to ask this
+    /// instead — otherwise the blank line after a card reads as "already
+    /// spaced" and the next block butts against the card.
+    fn phys_idx_owned_by_card(&self, phys: usize) -> bool {
+        self.phys_idx_in_tool_block(phys) || self.phys_idx_in_thinking_card(phys)
+    }
+
+    /// Whether `phys` is the blank line between two blocks.
+    fn phys_idx_is_separator(&self, phys: usize) -> bool {
+        self.log
+            .items
+            .get(phys)
+            .is_some_and(|item| item.raw.is_empty())
+            && !self.phys_idx_owned_by_card(phys)
+    }
+
     /// Blank line before assistant stream content when it follows a tool card.
     pub(crate) fn ensure_gap_after_tools(&mut self) {
         let Some(phys) = self.last_visible_phys_idx() else {
             return;
         };
         if !self.phys_idx_in_tool_block(phys) {
+            return;
+        }
+        self.append_blank(LogItemKind::AssistantMarkdown);
+    }
+
+    /// Blank line before assistant stream content when it follows a thinking
+    /// card.
+    ///
+    /// The card no longer has a border or a blank row of its own, so nothing
+    /// else separates its last reasoning line from the reply that answers it.
+    pub(crate) fn ensure_gap_after_thinking(&mut self) {
+        let Some(phys) = self.last_visible_phys_idx() else {
+            return;
+        };
+        if !self.phys_idx_in_thinking_card(phys) {
             return;
         }
         self.append_blank(LogItemKind::AssistantMarkdown);
@@ -578,18 +637,30 @@ impl App {
         let Some(phys) = self.last_visible_phys_idx() else {
             return;
         };
-        if self.phys_idx_in_tool_block(phys) {
-            return;
-        }
-        if self
-            .log
-            .items
-            .get(phys)
-            .is_some_and(|item| item.raw.is_empty())
-        {
+        if self.phys_idx_in_tool_block(phys) || self.phys_idx_is_separator(phys) {
             return;
         }
         self.append_blank(LogItemKind::SystemTool);
+    }
+
+    /// Blank line before a thinking card when it follows any other block.
+    ///
+    /// A tool block is exactly where this matters most: a card used to open
+    /// with a blank row and a border, so the tool's meta row and the card's
+    /// header never touched. Without the chrome they would, and a header, a
+    /// meta row and a body line stacked with no gap read as one table.
+    ///
+    /// Returns whether it inserted the gap, so the card can remove it again if
+    /// the card itself turns out to be empty.
+    pub(crate) fn ensure_gap_before_thinking(&mut self) -> bool {
+        let Some(phys) = self.last_visible_phys_idx() else {
+            return false;
+        };
+        if self.phys_idx_is_separator(phys) {
+            return false;
+        }
+        self.append_blank(LogItemKind::Thinking);
+        true
     }
 
     /// Flush residual content from the streaming buffer into the message list.
