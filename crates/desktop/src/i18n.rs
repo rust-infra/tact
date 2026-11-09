@@ -39,6 +39,9 @@ pub enum TextKey {
     StopRun,
     KeepRunning,
     Review,
+    /// A Goal under acceptance review (`Verifying`), distinct from the
+    /// review action on a gate prompt.
+    Verifying,
     CopyMessage,
     Cancel,
     Confirm,
@@ -334,6 +337,7 @@ pub const ALL: &[TextKey] = &[
     TextKey::StopRun,
     TextKey::KeepRunning,
     TextKey::Review,
+    TextKey::Verifying,
     TextKey::CopyMessage,
     TextKey::Cancel,
     TextKey::Confirm,
@@ -669,6 +673,8 @@ pub fn text(locale: CatalogLocale, key: TextKey) -> &'static str {
         (CatalogLocale::Zh, TextKey::KeepRunning) => "继续运行",
         (CatalogLocale::En, TextKey::Review) => "Review",
         (CatalogLocale::Zh, TextKey::Review) => "查看",
+        (CatalogLocale::En, TextKey::Verifying) => "Verifying",
+        (CatalogLocale::Zh, TextKey::Verifying) => "验收中",
         (CatalogLocale::En, TextKey::CopyMessage) => "Copy message",
         (CatalogLocale::Zh, TextKey::CopyMessage) => "复制消息",
         (CatalogLocale::En, TextKey::Cancel) => "Cancel",
