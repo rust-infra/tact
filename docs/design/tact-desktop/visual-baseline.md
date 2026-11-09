@@ -120,7 +120,12 @@ A pair that was generated but never opened is not a review.
 These tests fail when the reviewed geometry regresses:
 
 - `chrome_matches_prototype_metrics` — titlebar 58px, rail 250px, composer and
-  sticky 900px centered.
+  sticky column 900px centered.
+- `the_queue_badge_is_a_narrow_accessory_above_the_composer`,
+  `the_sticky_card_is_a_narrow_accessory_above_the_composer` and
+  `a_narrow_window_clamps_the_accessories_to_the_composer` — a composer
+  accessory is narrower than the frame, shares its left gutter, and clamps to
+  it instead of overflowing on a narrow window.
 - `overlays_match_prototype_sizes` — command palette 700px, session manager
   1040x720.
 - `scripts/ui-check.py` runs for both Light and Dark in `check-ui.sh`.
@@ -244,6 +249,10 @@ unfinished work:
 - The permission card and the sticky warning banner can both be visible while
   the card is on screen; the reviewed design requires the banner to persist
   until the decision.
+- Composer accessories are 780px and pinned to the composer's left gutter. The
+  prototype draws the queue strip and the sticky host at the composer's own
+  900px, but a full-width accessory above the input reads as a second input box;
+  the narrower card shares the frame's left edge and settles against its top.
 - Windows taskbar badges are an overlay icon, not a number: the platform has
   no numeric badge API, so the gate banner and notification carry the count.
 

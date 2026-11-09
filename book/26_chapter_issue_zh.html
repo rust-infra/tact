@@ -776,6 +776,7 @@
 <li class="toc-l2"><a href="#62-2026-11-07--desktop-composer-%E5%8F%AF%E7%9B%B4%E6%8E%A5%E5%88%87%E6%8D%A2%E6%8E%A8%E7%90%86%E5%BC%BA%E5%BA%A6" title="62. 2026-11-07 — Desktop：composer 可直接切换推理强度"><span class="toc-label">62. 2026-11-07 — Desktop：composer 可直接切换推理强度</span></a></li>
 <li class="toc-l2"><a href="#63-2026-11-07--desktop-%E5%93%81%E7%89%8C%E5%9B%BE%E6%A0%87%E4%B8%8E%E4%B8%89%E5%B9%B3%E5%8F%B0%E6%8E%A5%E5%85%A5" title="63. 2026-11-07 — Desktop：品牌图标与三平台接入"><span class="toc-label">63. 2026-11-07 — Desktop：品牌图标与三平台接入</span></a></li>
 <li class="toc-l2"><a href="#64-2026-11-08--desktop-trajectory-%E6%97%B6%E9%97%B4%E8%BD%B4%E5%91%BD%E4%B8%AD%E4%B8%8E%E7%BB%9F%E8%AE%A1%E8%BE%B9%E7%95%8C%E6%94%B6%E6%95%9B" title="64. 2026-11-08 — Desktop：Trajectory 时间轴命中与统计边界收敛"><span class="toc-label">64. 2026-11-08 — Desktop：Trajectory 时间轴命中与统计边界收敛</span></a></li>
+<li class="toc-l2"><a href="#65-2026-11-09--desktop-%E9%98%9F%E5%88%97%E6%9D%83%E9%99%90%E6%9D%A1%E4%B8%8E%E4%BB%BB%E5%8A%A1%E5%8D%A1%E5%AF%B9%E9%BD%90%E5%88%B0-composer-%E7%9A%84%E8%BD%B4" title="65. 2026-11-09 — Desktop：队列、权限条与任务卡对齐到 composer 的轴"><span class="toc-label">65. 2026-11-09 — Desktop：队列、权限条与任务卡对齐到 composer 的轴</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -22971,6 +22972,48 @@ Ledger 过滤先把匹配索引收成集合；输入与输出 token 改用饱和
 <code>crates/desktop_core/src/controller.rs</code>、
 <code>crates/agent_tui_kit/src/lib.rs</code>、
 <code>crates/tact/src/mcp/remote.rs</code>。</p>
+<h2 id="65-2026-11-09--desktop-队列权限条与任务卡对齐到-composer-的轴">65. 2026-11-09 —
+Desktop：队列、权限条与任务卡对齐到 composer 的轴</h2>
+<p><strong>症状：</strong> composer 上方的三块表面没有和输入框排在同一条轴上。
+排队徽标是 <code>composer-area</code> 的直接子元素，没有宽度上限，被 flex
+拉成和 composer 一样宽的胶囊；权限条与粘性任务卡各自 <code>mx_auto</code>
+居中，窗口宽时恰好与 composer 同轴（<code>22 + (W-44-900)/2</code> 等于
+<code>(W-900)/2</code>），一旦窄到 900px 收不满，粘性条从 0 起而 composer
+从 22px 起，整体错开一个 gutter；展开的队列列表又按 820px 单独居中，于是同一块
+区域出现三条轴。</p>
+<p><strong>改后行为：</strong> <code>crates/desktop/src/ui/layout.rs</code> 收齐
+四个常量：<code>COMPOSER_WIDTH</code>（900）、<code>ACCESSORY_WIDTH</code>
+（780）、<code>COMPOSER_PADDING_X</code>（22）、<code>ACCESSORY_GAP</code>
+（4）。composer 区先铺同一个 22px gutter，再放一条 900px 居中的
+<code>composer-stack</code> 列（<code>items_start</code>、4px gap），
+<code>composer-frame</code> 只是填满该列，不再自己居中。排队提示成为
+<code>composer-queue-accessory</code>（≤780、左对齐），徽标外面套一行
+<code>h_flex</code> 以保住自己的文本宽度，展开的列表仍限高 240px 内部滚动。
+粘性条同样改成 <code>sticky-strip</code>（22px gutter）+
+<code>sticky-column</code>（900px 居中、<code>items_start</code>），权限条与
+任务卡 ≤780、左沿与 composer 对齐，卡底与 composer 顶之间正是
+<code>ACCESSORY_GAP</code>。窄窗口时三者都按 <code>max_w</code> 收敛在 composer
+列内，不再越界。</p>
+<p><strong>与原型的有意偏差：</strong> 原型里队列条与 sticky 宿主都是
+<code>min(900px, …)</code>、与 composer 同宽；这里把附件收到 780px 并贴左。
+理由是附件属于输入框、不该读作第二个输入框，代价是右边缘比 composer 短
+120px。该偏差记在
+<code>docs/design/tact-desktop/visual-baseline.md</code> 的 deliberate
+deviations 下。</p>
+<p><strong>验证：</strong>
+<code>the_queue_badge_is_a_narrow_accessory_above_the_composer</code> 断言徽标
+不到 composer 一半宽、左沿与 composer 对齐、与 composer 之间恰好一个
+<code>ACCESSORY_GAP</code>；
+<code>the_sticky_card_is_a_narrow_accessory_above_the_composer</code> 对任务卡
+固定同一契约；<code>a_narrow_window_clamps_the_accessories_to_the_composer</code>
+在 900px 宽窗口上断言徽标与任务卡都收在 composer 列内、右沿不越界；
+<code>chrome_matches_prototype_metrics</code> 改为断言
+<code>sticky-column</code> 与 composer 同宽同 x。桌面端 284 个测试通过，
+<code>scripts/check-rust.sh</code> 完整通过。</p>
+<p><strong>Pointers：</strong> <code>crates/desktop/src/ui/layout.rs</code>、
+<code>crates/desktop/src/root.rs</code> 的 <code>render_sticky</code>、
+<code>render_composer</code>、<code>render_queue_accessory</code>、
+<code>render_gate_banner</code>。</p>
 <h2 id="related-docs">Related Docs</h2>
 <ul>
 <li><a href="./07_chapter_tool_zh.html">工具系统</a></li>
