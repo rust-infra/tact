@@ -249,7 +249,7 @@ Completed code cards remain overlays; thinking and tool cards are direct log cel
 
 | Card Type | File | Description |
 |---|---|---|
-| Thinking card | `cells/thinking.rs` | Direct live card with one blank row before and after: 1→3 line tail, then one-line completion summary; title and footer report the full line count |
+| Thinking card | `cells/thinking.rs` | Direct live card of one row per reasoning line (1→3 tail), then a footer row carrying the title, elapsed time, line count and open button; a finished card is its summary plus that footer |
 | Code card | `cells/code.rs` | Completed code block card with syntax highlighting; plain language label in title (no side emoji icons) |
 
 ### 6.5 Tool Blocks (`cells/tool.rs`)
@@ -322,15 +322,21 @@ the line count and the open button. A live card grows to four while its tail
 streams.
 
 The card has no border and no blank rows of its own. It used to spend five rows
-on a one-line summary, and four of those five were a border and two blank rows.
-On a measured corpus of 35 sessions that made thinking the single largest
-consumer of log rows, at 38 percent of them, while 80 percent of each card
-showed nothing.
+on a one-line summary, and four of those five were two borders and two blank rows.
 
-The footer keeps a row to itself rather than joining the summary. One row cannot
-hold the summary, the elapsed time, the line count and the button at any width a
-reader uses: measured, the button is clipped at every panel width below 120
-columns, and a clipped button has no hit target at all.
+A local measurement over the 35 session transcripts in `.tact/transcripts` (3784
+thinking cards, 9081 tool calls) put thinking at 38 percent of all log rows, the
+largest single source, against 36 percent for tool calls. That number is an
+observation about one machine's history, not a property of this code; re-measure
+before quoting it.
+
+The footer keeps a row to itself rather than joining the summary. A single row
+would have to carry the title, the summary and the footer at once. At an 80
+column panel that leaves the summary 30 columns; two rows leave it the full 75.
+
+The button does survive on one row at ordinary widths, so the extra row does not
+buy a working click target. What it buys is summary width: a one-row card spends
+a third of the panel on chrome before the summary starts.
 
 Reasoning text starts at `LOG_THINKING_INDENT + 1`, the same column assistant
 prose lands in, so a reasoning line and the reply under it share a vertical. The

@@ -1859,8 +1859,8 @@ mod tests {
     }
 
     /// A Thinking card has one target: the `[󰜼 Open]` button on its footer.
-    /// It draws text on rows that do not map to that text, so — like a
-    /// whole-Markdown row — nothing else about it answers a click, not its
+    /// Its reasoning and title arm card selection instead of opening the popup,
+    /// so — like a whole-Markdown row — only the button answers an open: not its
     /// summary and not its title.
     ///
     /// The probe reads the rendered frame: the hit rects are recorded from the

@@ -19,18 +19,6 @@ use crate::{
     widgets::button::{Button, ButtonChrome, ButtonTheme},
 };
 
-/// Rows a thinking card occupies: one per body line, plus the footer.
-///
-/// A finished card passes one body line (its summary) and takes two rows. A
-/// live card passes the size of its reasoning tail, so it grows to four.
-///
-/// The card draws no border and no blank rows of its own. Before, five rows
-/// carried one line of summary; the four rows around it were chrome, and four
-/// of every five rows a thinking card spent showed nothing. The footer stays a
-/// separate row rather than joining the summary, because one row cannot hold
-/// the summary, the elapsed time, the line count and the open button at any
-/// terminal width a reader actually uses: measured, the button is clipped below
-/// 120 columns.
 /// The column the card's text starts in, one right of the cell's own indent.
 ///
 /// That is where assistant prose lands (`LOG_THINKING_INDENT + 1`), so a
@@ -42,6 +30,18 @@ const CONTENT_PAD: u16 = 1;
 /// [`CONTENT_PAD`] as the prose prefix, so the glyphs and the hit rect agree.
 const PAD: &str = " ";
 
+/// Rows a thinking card occupies: one per body line, plus the footer.
+///
+/// A finished card passes one body line (its summary) and takes two rows. A
+/// live card passes the size of its reasoning tail, so it grows to four.
+///
+/// The card draws no border and no blank rows of its own. It used to spend five
+/// rows on a one-line summary, and the other four were two borders and two blank
+/// rows.
+///
+/// The footer keeps a row of its own rather than joining the summary. One row
+/// would have to hold the title, the summary and the footer at once, and at 80
+/// columns that leaves the summary 30 columns; two rows leave it 75.
 pub fn thinking_visual_rows(body_lines: usize) -> usize {
     body_lines.clamp(1, 3) + 1
 }
@@ -172,7 +172,7 @@ impl ThinkingCell {
     /// No title prefix: the title moves to the footer, so a summary sits in the
     /// same column as an assistant reply and the reasoning reads as prose rather
     /// than as a caption beside a glyph. Prefixing the title would push every
-    /// line 14 columns right, which is a sixth of an 80-column panel.
+    /// line 12 to 16 columns right, a fifth of an 80-column panel.
     fn body_rows(&self, width: u16) -> Vec<Line<'static>> {
         let style = Style::default().fg(self.fg).bg(self.bg);
         let mut lines = self.lines.clone();
@@ -223,11 +223,9 @@ impl ThinkingCell {
     pub fn footer_button_rect(&self, area: Rect, skip_lines: usize) -> Option<Rect> {
         let label = self.bottom_action?;
         let (rect, skipped) = self.visible_geometry(area, skip_lines)?;
-        // The footer is the cell's last row; the clip may have eaten it.
+        // `visible_geometry` already rejected a clip past the cell's last row,
+        // and the footer is that row, so it is on screen from here on.
         let footer_row = self.body_lines();
-        if skipped > footer_row {
-            return None;
-        }
         let y = rect.y + (footer_row - skipped) as u16;
         if y >= rect.bottom() {
             return None;
@@ -412,7 +410,7 @@ mod tests {
 
     /// Every row the card occupies carries something: a finished card is its
     /// summary and its footer, nothing else. Before, five rows carried one line
-    /// of summary and the four around it were a border and two blank rows.
+    /// of summary and the four around it were two borders and two blank rows.
     #[test]
     fn a_finished_card_spends_no_row_on_chrome() {
         let theme = Theme::from(crate::theme::ThemeName::Dark);
@@ -452,7 +450,7 @@ mod tests {
         }
         // One column of reasoning: `two` starts in the same terminal column
         // `one` does. Read the column off the buffer rather than off a joined
-        // string: the header glyph is one character but two cells, so a
+        // string: the title glyph is one character but two cells, so a
         // character index and a cell index disagree exactly where this matters.
         let area = Rect::new(0, 0, 80, cell.height(80));
         let backend = TestBackend::new(area.width, area.height);
@@ -669,7 +667,7 @@ mod tests {
         }
     }
 
-    /// The footer reaches the frame as a `title_bottom` line, so pin the drawn
+    /// The footer reaches the frame as an ordinary drawn line, so pin the drawn
     /// glyphs *and their color* in a real buffer: a title that dropped the
     /// button's spans would still read as text.
     #[test]
