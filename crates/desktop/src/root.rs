@@ -48,8 +48,7 @@ use crate::ui::diff_table::{
 };
 use crate::ui::file_links;
 use crate::ui::filter_table::{
-    ActivationSource, FilterCell, FilterColumn, FilterDefinition, FilterRow, FilterTable,
-    FilterTableEvent,
+    FilterCell, FilterColumn, FilterDefinition, FilterRow, FilterTable, FilterTableEvent,
 };
 use crate::ui::leaf::{
     AttachmentItem, AttachmentStrip, ContextCard, ContextCardEvent, ContextMeter, ContextUsage,
@@ -1065,6 +1064,7 @@ pub(crate) struct DesktopRoot {
     session_project_filter: Option<ProjectId>,
     collapsed_session_projects: HashSet<ProjectId>,
     reset_session_search_on_open: bool,
+    reset_extension_search_on_open: bool,
     toast: Option<Toast>,
     toast_epoch: u64,
     rail_width: f32,
@@ -1384,7 +1384,7 @@ impl DesktopRoot {
                         table.set_selected_row(row_id.clone(), window, cx);
                     });
                 }
-                FilterTableEvent::ActivationRequested { row_id, source, .. } => {
+                FilterTableEvent::ActivationRequested { row_id, .. } => {
                     let mut parts = row_id.splitn(3, '|');
                     let kind = parts.next().unwrap_or_default();
                     let action = parts.next().unwrap_or_default();
@@ -1402,20 +1402,7 @@ impl DesktopRoot {
                             });
                         }
                         ("skill", "toggle") => {
-                            if matches!(source, ActivationSource::Space) {
-                                this.dispatch(DesktopIntent::SetSkillEnabled {
-                                    name: target.to_string(),
-                                    enabled: !this
-                                        .snapshot
-                                        .extensions
-                                        .snapshot
-                                        .skills
-                                        .iter()
-                                        .any(|skill| skill.name == target && skill.enabled),
-                                });
-                            } else {
-                                this.insert_skill(target, window, cx);
-                            }
+                            this.toggle_skill(target);
                         }
                         ("plugin", "update") => {
                             this.dispatch(DesktopIntent::InvokeCommand {
@@ -1562,6 +1549,7 @@ impl DesktopRoot {
             session_project_filter: None,
             collapsed_session_projects: HashSet::new(),
             reset_session_search_on_open: false,
+            reset_extension_search_on_open: false,
             toast: None,
             toast_epoch: 0,
             rail_width: crate::ui::layout::RAIL_WIDTH,
@@ -1891,6 +1879,9 @@ impl DesktopRoot {
     }
 
     fn activate_extension_search_result(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.extension_manage {
+            return;
+        }
         if matches!(
             self.overlay.as_ref(),
             Some(Overlay::Extensions(ExtensionsTab::Skills))
@@ -1899,7 +1890,12 @@ impl DesktopRoot {
         }
     }
 
-    fn insert_first_matching_skill(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// The skills the Extensions popover lists for the current query, best
+    /// match first.
+    ///
+    /// The list and the popover's `Enter` both start here, so a skill the
+    /// popover hides is exactly a skill `Enter` will not insert.
+    fn visible_skills(&self) -> Vec<&tact_host::SkillSnapshot> {
         let query = self.extension_query.trim().to_string();
         let mut matched = self
             .snapshot
@@ -1908,17 +1904,49 @@ impl DesktopRoot {
             .skills
             .iter()
             .filter(|skill| {
-                query.is_empty()
-                    || crate::ui::extensions::matches_extension(&query, &skill.name)
-                    || crate::ui::extensions::matches_extension(&query, &skill.description)
+                crate::ui::extensions::matches_skill(&query, &skill.name, &skill.description)
             })
             .collect::<Vec<_>>();
         matched.sort_by_key(|skill| {
-            -crate::ui::extensions::score_extension(&query, &[&skill.name, &skill.description])
+            (
+                std::cmp::Reverse(crate::ui::extensions::score_extension(
+                    &query,
+                    &[&skill.name, &skill.description],
+                )),
+                skill.name.to_lowercase(),
+            )
         });
-        if let Some(name) = matched.first().map(|skill| skill.name.clone()) {
+        matched
+    }
+
+    fn insert_first_matching_skill(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // An empty query lists every skill, so "the first match" would be an
+        // arbitrary alphabetically-first pick rather than a choice the reader
+        // made. Clicking a row is the way to insert without typing.
+        if self.extension_query.trim().is_empty() {
+            return;
+        }
+        let first = self
+            .visible_skills()
+            .first()
+            .map(|skill| skill.name.clone());
+        if let Some(name) = first {
             self.insert_skill(&name, window, cx);
         }
+    }
+
+    fn toggle_skill(&mut self, name: &str) {
+        let enabled = self
+            .snapshot
+            .extensions
+            .snapshot
+            .skills
+            .iter()
+            .any(|skill| skill.name == name && skill.enabled);
+        self.dispatch(DesktopIntent::SetSkillEnabled {
+            name: name.to_string(),
+            enabled: !enabled,
+        });
     }
 
     fn insert_skill(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -2031,10 +2059,10 @@ impl DesktopRoot {
             }
             best
         };
-        mcp.sort_by_key(|row| -score(row));
-        skills.sort_by_key(|row| -score(row));
-        plugins.sort_by_key(|row| -score(row));
-        hooks.sort_by_key(|row| -score(row));
+        mcp.sort_by_key(|row| (std::cmp::Reverse(score(row)), row.label().to_lowercase()));
+        skills.sort_by_key(|row| (std::cmp::Reverse(score(row)), row.label().to_lowercase()));
+        plugins.sort_by_key(|row| (std::cmp::Reverse(score(row)), row.label().to_lowercase()));
+        hooks.sort_by_key(|row| (std::cmp::Reverse(score(row)), row.label().to_lowercase()));
         let filters = [
             FilterDefinition::new("mcp", self.text(TextKey::Mcp), mcp.len())
                 .active(tab == ExtensionsTab::Mcp),
@@ -2059,8 +2087,8 @@ impl DesktopRoot {
         };
         let open_label = if tab == ExtensionsTab::Skills {
             match self.snapshot.language {
-                tact_catalog::CatalogLocale::En => "Insert",
-                tact_catalog::CatalogLocale::Zh => "插入",
+                tact_catalog::CatalogLocale::En => "Toggle",
+                tact_catalog::CatalogLocale::Zh => "切换",
             }
         } else {
             self.text(TextKey::Open)
@@ -2114,6 +2142,12 @@ impl DesktopRoot {
     fn open_overlay(&mut self, overlay: Overlay) {
         if matches!(overlay, Overlay::Extensions(_)) {
             self.extension_manage = false;
+            // The filter belongs to the popover, not to the app: reopening it
+            // must not show a list silently narrowed by a query the reader
+            // typed last time, where `Enter` would insert the only visible
+            // row. The manager carries its query in through `Manage` instead.
+            self.extension_query.clear();
+            self.reset_extension_search_on_open = true;
         }
         if let Some(current) = self.overlay.take() {
             self.overlay_stack.push(current);
@@ -2561,6 +2595,45 @@ impl DesktopRoot {
     pub(crate) fn capture_open_extensions_manager(&mut self, tab: ExtensionsTab) {
         self.open_overlay(Overlay::Extensions(tab));
         self.extension_manage = true;
+    }
+
+    #[cfg(feature = "ui-capture")]
+    pub(crate) fn capture_insert_skill(
+        &mut self,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.insert_skill(name, window, cx);
+    }
+
+    #[cfg(feature = "ui-capture")]
+    pub(crate) fn capture_filter_extensions(
+        &mut self,
+        query: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.extension_query = query.to_string();
+        self.extension_search.update(cx, |input, cx| {
+            input.set_value(query, window, cx);
+            input.focus(window, cx);
+        });
+    }
+
+    #[cfg(feature = "ui-capture")]
+    pub(crate) fn capture_prompt_draft(&self, cx: &gpui::App) -> String {
+        self.prompt.read(cx).draft(cx).to_string()
+    }
+
+    #[cfg(feature = "ui-capture")]
+    pub(crate) fn capture_overlay_open(&self) -> bool {
+        self.overlay.is_some()
+    }
+
+    #[cfg(feature = "ui-capture")]
+    pub(crate) fn capture_extension_manage(&self) -> bool {
+        self.extension_manage
     }
 
     #[cfg(feature = "ui-capture")]
@@ -11044,36 +11117,54 @@ impl DesktopRoot {
                 );
             }
             ExtensionsTab::Skills => {
-                let mut matched = self
-                    .snapshot
-                    .extensions
-                    .snapshot
-                    .skills
-                    .iter()
-                    .filter(|skill| matches(&skill.name))
-                    .collect::<Vec<_>>();
-                matched.sort_by_key(|skill| {
-                    -crate::ui::extensions::score_extension(
-                        &query,
-                        &[&skill.name, &skill.description],
-                    )
-                });
-                for skill in matched {
+                for skill in self.visible_skills() {
                     let name = skill.name.clone();
                     let enabled = skill.enabled;
+                    let row_selector = format!("skill-row-{name}");
+                    let row_name = name.clone();
+                    let row_key_name = name.clone();
+                    let toggle_name = name.clone();
+                    let toggle_key_name = name.clone();
+                    let toggle_selector = format!("skill-toggle-{name}");
                     rows.push(
                         h_flex()
+                            .id(SharedString::from(row_selector.clone()))
+                            .debug_selector(move || row_selector.clone())
+                            .role(Role::ListItem)
+                            .aria_label(name.clone())
+                            .focusable()
+                            .tab_stop(true)
+                            .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
+                            .cursor_pointer()
+                            .hover(|style| style.bg(cx.theme().muted))
                             .justify_between()
+                            .w_full()
                             .rounded_md()
                             .border_1()
                             .border_color(cx.theme().border)
                             .p_2()
+                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                this.insert_skill(&row_name, window, cx);
+                                cx.stop_propagation();
+                            }))
+                            .on_key_down(cx.listener(
+                                move |this, event: &KeyDownEvent, window, cx| {
+                                    if event.keystroke.key.as_str() != "enter" {
+                                        return;
+                                    }
+                                    this.insert_skill(&row_key_name, window, cx);
+                                    cx.stop_propagation();
+                                },
+                            ))
                             .child(
                                 v_flex()
+                                    .flex_1()
+                                    .min_w_0()
                                     .gap_0p5()
-                                    .child(div().text_sm().child(skill.name.clone()))
+                                    .child(div().truncate().text_sm().child(skill.name.clone()))
                                     .child(
                                         div()
+                                            .truncate()
                                             .text_xs()
                                             .text_color(cx.theme().muted_foreground)
                                             .child(skill.description.clone()),
@@ -11081,11 +11172,15 @@ impl DesktopRoot {
                             )
                             .child(
                                 div()
-                                    .id(SharedString::from(format!("skill-toggle-{name}")))
-                                    .role(Role::Button)
+                                    .id(SharedString::from(toggle_selector.clone()))
+                                    .debug_selector(move || toggle_selector.clone())
+                                    .role(Role::Switch)
+                                    .aria_toggled(enabled.into())
                                     .focusable()
                                     .tab_stop(true)
                                     .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
+                                    .flex_none()
+                                    .pl_2()
                                     .aria_label(if enabled {
                                         self.text(TextKey::DisableSkill)
                                     } else {
@@ -11098,12 +11193,21 @@ impl DesktopRoot {
                                     } else {
                                         self.text(TextKey::Enable)
                                     })
-                                    .on_click(cx.listener(move |this, _: &ClickEvent, _, _| {
-                                        this.dispatch(DesktopIntent::SetSkillEnabled {
-                                            name: name.clone(),
-                                            enabled: !enabled,
-                                        });
-                                    })),
+                                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                        this.toggle_skill(&toggle_name);
+                                        cx.stop_propagation();
+                                    }))
+                                    .on_key_down(cx.listener(
+                                        move |this, event: &KeyDownEvent, _, cx| {
+                                            if matches!(
+                                                event.keystroke.key.as_str(),
+                                                "enter" | "space"
+                                            ) {
+                                                this.toggle_skill(&toggle_key_name);
+                                                cx.stop_propagation();
+                                            }
+                                        },
+                                    )),
                             )
                             .into_any_element(),
                     );
@@ -11502,6 +11606,7 @@ impl DesktopRoot {
                 } else {
                     div()
                         .id("extensions-empty")
+                        .debug_selector(|| "extensions-empty".into())
                         .role(Role::Status)
                         .min_h(px(120.))
                         .items_center()
@@ -11523,6 +11628,7 @@ impl DesktopRoot {
             } else if rows.is_empty() {
                 div()
                     .id("extensions-empty")
+                    .debug_selector(|| "extensions-empty".into())
                     .role(Role::Status)
                     .min_h(px(96.))
                     .flex()
@@ -11557,15 +11663,26 @@ impl DesktopRoot {
                                 if tab == ExtensionsTab::Skills {
                                     match self.snapshot.language {
                                         tact_catalog::CatalogLocale::En => {
-                                            "Enter inserts · Space toggles"
+                                            "Enter or Space toggles · hidden skills stay runnable"
                                         }
                                         tact_catalog::CatalogLocale::Zh => {
-                                            "Enter 插入 · Space 开关"
+                                            "Enter 或 Space 切换 · 隐藏后仍可运行"
                                         }
                                     }
                                     .to_string()
                                 } else {
                                     self.text(TextKey::ChangesApply).to_string()
+                                }
+                            } else if tab == ExtensionsTab::Skills {
+                                match self.snapshot.language {
+                                    tact_catalog::CatalogLocale::En => {
+                                        format!("{enabled_count} enabled · Type to filter, Enter inserts the first match")
+                                    }
+                                    tact_catalog::CatalogLocale::Zh => {
+                                        format!(
+                                            "{enabled_count} 已启用 · 输入筛选，Enter 插入第一个匹配项"
+                                        )
+                                    }
                                 }
                             } else {
                                 format!(
@@ -12614,6 +12731,11 @@ impl Render for DesktopRoot {
         if self.overlay_focus_pending && self.overlay.is_some() {
             self.overlay_focus_pending = false;
             if matches!(self.overlay, Some(Overlay::Extensions(_))) {
+                if self.reset_extension_search_on_open {
+                    self.extension_search
+                        .update(cx, |input, cx| input.set_value(String::new(), window, cx));
+                    self.reset_extension_search_on_open = false;
+                }
                 self.extension_search
                     .update(cx, |input, cx| input.focus(window, cx));
             } else if matches!(self.overlay, Some(Overlay::ModelPicker(_))) {
@@ -20012,9 +20134,11 @@ mod tests {
                     },
                 ]));
                 this.snapshot = Arc::new(snapshot);
-                this.extension_query = "filesystem".into();
                 this.open_overlay(Overlay::Extensions(ExtensionsTab::Mcp));
                 this.extension_manage = true;
+                // Opening resets the popover filter, so a test that wants a
+                // filtered manager must type into it after it opens.
+                this.extension_query = "filesystem".into();
                 cx.notify();
             });
             window.draw(cx).clear(cx);
@@ -20774,6 +20898,471 @@ mod tests {
         });
         assert_eq!(draft, "/skill rust-skills ");
         assert!(!overlay, "inserting a skill closes the extensions popover");
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn popover_search_enter_with_no_query_does_not_insert_a_skill(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                let mut snapshot = (*root.snapshot).clone();
+                snapshot.extensions.snapshot.skills = vec![tact_host::SkillSnapshot {
+                    name: "rust-skills".into(),
+                    description: "Comprehensive Rust coding guidelines".into(),
+                    enabled: true,
+                    path: "/skills/rust-skills/SKILL.md".into(),
+                }];
+                root.snapshot = Arc::new(snapshot);
+                root.open_overlay(Overlay::Extensions(ExtensionsTab::Skills));
+                root.extension_manage = false;
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                root.extension_search
+                    .update(cx, |input, cx| input.focus(window, cx));
+            });
+        });
+
+        window.simulate_keystrokes("enter");
+
+        let (draft, overlay) = window.update(|_, cx| {
+            let root = root.read(cx);
+            (
+                root.prompt.read(cx).draft(cx).to_string(),
+                root.overlay.is_some(),
+            )
+        });
+        assert_eq!(draft, "", "an empty search must not insert a skill");
+        assert!(overlay, "an empty search Enter keeps the popover open");
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn enter_inserts_only_a_skill_the_list_shows(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                let mut snapshot = (*root.snapshot).clone();
+                snapshot.extensions.snapshot.skills = vec![tact_host::SkillSnapshot {
+                    name: "rust-skills".into(),
+                    description: "Comprehensive Rust coding guidelines".into(),
+                    enabled: true,
+                    path: "/skills/rust-skills/SKILL.md".into(),
+                }];
+                root.snapshot = Arc::new(snapshot);
+                root.open_overlay(Overlay::Extensions(ExtensionsTab::Skills));
+                root.extension_manage = false;
+                root.extension_query = "guidelines".into();
+                root.extension_search.update(cx, |input, cx| {
+                    input.set_value("guidelines", window, cx);
+                    input.focus(window, cx);
+                });
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        assert!(
+            window.debug_bounds("skill-row-rust-skills").is_some(),
+            "a description match must still render its row"
+        );
+
+        window.simulate_keystrokes("enter");
+        window.run_until_parked();
+        let draft = window.update(|_, cx| root.read(cx).prompt.read(cx).draft(cx).to_string());
+        assert_eq!(draft, "/skill rust-skills ");
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn inserting_a_skill_never_toggles_it(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                let mut snapshot = (*root.snapshot).clone();
+                snapshot.extensions.snapshot.skills = vec![tact_host::SkillSnapshot {
+                    name: "rust-skills".into(),
+                    description: "Comprehensive Rust coding guidelines".into(),
+                    enabled: true,
+                    path: "/skills/rust-skills/SKILL.md".into(),
+                }];
+                root.snapshot = Arc::new(snapshot);
+                root.open_overlay(Overlay::Extensions(ExtensionsTab::Skills));
+                root.extension_manage = false;
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        let row = window
+            .debug_bounds("skill-row-rust-skills")
+            .expect("skill row");
+        window.simulate_click(row.center(), gpui::Modifiers::default());
+        window.run_until_parked();
+
+        let (draft, enabled) = window.update(|_, cx| {
+            let root = root.read(cx);
+            (
+                root.prompt.read(cx).draft(cx).to_string(),
+                root.snapshot
+                    .extensions
+                    .snapshot
+                    .skills
+                    .first()
+                    .map(|skill| skill.enabled)
+                    .unwrap_or(false),
+            )
+        });
+        assert_eq!(draft, "/skill rust-skills ");
+        assert!(enabled, "inserting a skill must not disable it");
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn reopening_the_popover_drops_the_previous_filter(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                let mut snapshot = (*root.snapshot).clone();
+                snapshot.extensions.snapshot.skills = ["alpha", "zeta"]
+                    .into_iter()
+                    .map(|name| tact_host::SkillSnapshot {
+                        name: name.into(),
+                        description: format!("{name} skill"),
+                        enabled: true,
+                        path: format!("/skills/{name}/SKILL.md"),
+                    })
+                    .collect();
+                root.snapshot = Arc::new(snapshot);
+                root.open_overlay(Overlay::Extensions(ExtensionsTab::Skills));
+                root.extension_query = "zeta".into();
+                root.extension_search.update(cx, |input, cx| {
+                    input.set_value("zeta", window, cx);
+                });
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| root.insert_skill("zeta", window, cx));
+        });
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                root.open_overlay(Overlay::Extensions(ExtensionsTab::Skills));
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        let (query, input_value) = window.update(|_, cx| {
+            let root = root.read(cx);
+            (
+                root.extension_query.clone(),
+                root.extension_search.read(cx).value().to_string(),
+            )
+        });
+        assert_eq!(query, "", "reopening must not keep the old query");
+        assert_eq!(input_value, "", "reopening must clear the search field");
+        assert!(
+            window.debug_bounds("skill-row-alpha").is_some(),
+            "an unfiltered popover lists every skill"
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn an_unmatched_query_shows_the_empty_state_and_inserts_nothing(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                let mut snapshot = (*root.snapshot).clone();
+                snapshot.extensions.snapshot.skills = vec![tact_host::SkillSnapshot {
+                    name: "rust-skills".into(),
+                    description: "Comprehensive Rust coding guidelines".into(),
+                    enabled: true,
+                    path: "/skills/rust-skills/SKILL.md".into(),
+                }];
+                root.snapshot = Arc::new(snapshot);
+                root.open_overlay(Overlay::Extensions(ExtensionsTab::Skills));
+                root.extension_query = "kubernetes".into();
+                root.extension_search.update(cx, |input, cx| {
+                    input.set_value("kubernetes", window, cx);
+                    input.focus(window, cx);
+                });
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        assert!(
+            window.debug_bounds("extensions-empty").is_some(),
+            "an unmatched query shows the empty state"
+        );
+        assert!(window.debug_bounds("skill-row-rust-skills").is_none());
+
+        window.simulate_keystrokes("enter");
+        window.run_until_parked();
+        let draft = window.update(|_, cx| root.read(cx).prompt.read(cx).draft(cx).to_string());
+        assert_eq!(draft, "", "Enter must not insert a hidden skill");
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn popover_skills_sort_alphabetically_without_a_query(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                let mut snapshot = (*root.snapshot).clone();
+                snapshot.extensions.snapshot.skills = ["zeta", "alpha"]
+                    .into_iter()
+                    .map(|name| tact_host::SkillSnapshot {
+                        name: name.into(),
+                        description: format!("{name} description"),
+                        enabled: true,
+                        path: format!("/skills/{name}/SKILL.md"),
+                    })
+                    .collect();
+                root.snapshot = Arc::new(snapshot);
+                root.open_overlay(Overlay::Extensions(ExtensionsTab::Skills));
+                root.extension_manage = false;
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        let alpha = window
+            .debug_bounds("skill-row-alpha")
+            .expect("alpha skill row");
+        let zeta = window
+            .debug_bounds("skill-row-zeta")
+            .expect("zeta skill row");
+        assert!(
+            alpha.origin.y < zeta.origin.y,
+            "alpha {alpha:?} must render before zeta {zeta:?}"
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn clicking_a_skill_row_inserts_it_into_the_composer(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                let mut snapshot = (*root.snapshot).clone();
+                snapshot.extensions.snapshot.skills = vec![tact_host::SkillSnapshot {
+                    name: "rust-skills".into(),
+                    description: "Comprehensive Rust coding guidelines".into(),
+                    enabled: true,
+                    path: "/skills/rust-skills/SKILL.md".into(),
+                }];
+                root.snapshot = Arc::new(snapshot);
+                root.open_overlay(Overlay::Extensions(ExtensionsTab::Skills));
+                root.extension_manage = false;
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        let row = window
+            .debug_bounds("skill-row-rust-skills")
+            .expect("skill row");
+        window.simulate_click(row.center(), gpui::Modifiers::default());
+        window.run_until_parked();
+
+        let (draft, overlay) = window.update(|_, cx| {
+            let root = root.read(cx);
+            (
+                root.prompt.read(cx).draft(cx).to_string(),
+                root.overlay.is_some(),
+            )
+        });
+        assert_eq!(draft, "/skill rust-skills ");
+        assert!(!overlay, "inserting a skill closes the extensions popover");
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn manager_search_enter_keeps_the_manager_open(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                let mut snapshot = (*root.snapshot).clone();
+                snapshot.extensions.snapshot.skills = vec![tact_host::SkillSnapshot {
+                    name: "rust-skills".into(),
+                    description: "Comprehensive Rust coding guidelines".into(),
+                    enabled: true,
+                    path: "/skills/rust-skills/SKILL.md".into(),
+                }];
+                root.snapshot = Arc::new(snapshot);
+                root.open_overlay(Overlay::Extensions(ExtensionsTab::Skills));
+                root.extension_manage = true;
+                root.extension_query = "rust".into();
+                root.extension_search.update(cx, |input, cx| {
+                    input.set_value("rust", window, cx);
+                    input.focus(window, cx);
+                });
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        window.simulate_keystrokes("enter");
+        window.run_until_parked();
+
+        let (draft, overlay, manage) = window.update(|_, cx| {
+            let root = root.read(cx);
+            (
+                root.prompt.read(cx).draft(cx).to_string(),
+                root.overlay.is_some(),
+                root.extension_manage,
+            )
+        });
+        assert_eq!(draft, "", "manager search must not insert a skill");
+        assert!(overlay, "manager search must keep the manager open");
+        assert!(manage, "manager search must keep manager mode");
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn manager_skill_activation_toggles_instead_of_inserting(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                let mut snapshot = (*root.snapshot).clone();
+                snapshot.extensions.snapshot.skills = vec![tact_host::SkillSnapshot {
+                    name: "rust-skills".into(),
+                    description: "Comprehensive Rust coding guidelines".into(),
+                    enabled: true,
+                    path: "/skills/rust-skills/SKILL.md".into(),
+                }];
+                root.snapshot = Arc::new(snapshot);
+                root.open_overlay(Overlay::Extensions(ExtensionsTab::Skills));
+                root.extension_manage = true;
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        let action = window
+            .debug_bounds("filter-table-open-skill|toggle|rust-skills")
+            .expect("skill toggle action");
+        window.simulate_click(action.center(), gpui::Modifiers::default());
+        window.run_until_parked();
+
+        let (draft, overlay, manage) = window.update(|_, cx| {
+            let root = root.read(cx);
+            (
+                root.prompt.read(cx).draft(cx).to_string(),
+                root.overlay.is_some(),
+                root.extension_manage,
+            )
+        });
+        assert_eq!(draft, "", "the manager must not insert a skill");
+        assert!(overlay, "the manager must stay open");
+        assert!(manage, "the manager must stay in manager mode");
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn popover_skill_toggle_does_not_insert(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                let mut snapshot = (*root.snapshot).clone();
+                snapshot.extensions.snapshot.skills = vec![tact_host::SkillSnapshot {
+                    name: "rust-skills".into(),
+                    description: "Comprehensive Rust coding guidelines".into(),
+                    enabled: true,
+                    path: "/skills/rust-skills/SKILL.md".into(),
+                }];
+                root.snapshot = Arc::new(snapshot);
+                root.open_overlay(Overlay::Extensions(ExtensionsTab::Skills));
+                root.extension_manage = false;
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        let toggle = window
+            .debug_bounds("skill-toggle-rust-skills")
+            .expect("skill toggle");
+        window.simulate_click(toggle.center(), gpui::Modifiers::default());
+        window.run_until_parked();
+
+        let (draft, overlay) = window.update(|_, cx| {
+            let root = root.read(cx);
+            (
+                root.prompt.read(cx).draft(cx).to_string(),
+                root.overlay.is_some(),
+            )
+        });
+        assert_eq!(draft, "", "the inline toggle must not insert the skill");
+        assert!(overlay, "toggling keeps the popover open");
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn popover_skill_toggle_stays_inside_the_popover_with_a_long_description(
+        cx: &mut TestAppContext,
+    ) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                let mut snapshot = (*root.snapshot).clone();
+                snapshot.extensions.snapshot.skills = vec![tact_host::SkillSnapshot {
+                    name: "rust-skills".into(),
+                    description:
+                        "Comprehensive Rust coding guidelines with a deliberately long tail that used to push the inline toggle out of the popover"
+                            .into(),
+                    enabled: true,
+                    path: "/skills/rust-skills/SKILL.md".into(),
+                }];
+                root.snapshot = Arc::new(snapshot);
+                root.open_overlay(Overlay::Extensions(ExtensionsTab::Skills));
+                root.extension_manage = false;
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        let popover = window
+            .debug_bounds("extensions-overlay")
+            .expect("extensions popover");
+        let toggle = window
+            .debug_bounds("skill-toggle-rust-skills")
+            .expect("skill toggle");
+        assert!(
+            toggle.origin.x + toggle.size.width <= popover.origin.x + popover.size.width,
+            "skill toggle {:?} must stay inside popover {:?}",
+            toggle,
+            popover
+        );
 
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);

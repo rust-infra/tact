@@ -896,6 +896,69 @@ PY";
     Ok(shots)
 }
 
+/// Renders the skill launcher and manager interactions for visual review.
+pub fn capture_skill_review(out: &Path) -> Result<Vec<PathBuf>> {
+    std::fs::create_dir_all(out)?;
+    let mut harness = Harness::open(Appearance::Light, 1.0)?;
+    let mut snapshot = harness.snapshot();
+    snapshot.extensions.snapshot.skills = vec![
+        tact_host::SkillSnapshot {
+            name: "rust-skills".into(),
+            description: "Comprehensive Rust coding guidelines".into(),
+            enabled: true,
+            path: "/skills/rust-skills/SKILL.md".into(),
+        },
+        tact_host::SkillSnapshot {
+            name: "brainstorming".into(),
+            description: "Explore requirements before building".into(),
+            enabled: false,
+            path: "/skills/brainstorming/SKILL.md".into(),
+        },
+    ];
+    harness.set_snapshot(snapshot);
+
+    let mut shots = Vec::new();
+    harness.with_root(|root, _, _| {
+        root.capture_open_extensions(ExtensionsTab::Skills);
+    });
+    shots.push(harness.capture(out, "01-popover")?);
+
+    harness.with_root(|root, window, cx| {
+        root.capture_insert_skill("rust-skills", window, cx);
+    });
+    shots.push(harness.capture(out, "02-after-insert")?);
+    let draft = harness.with_root(|root, _, cx| root.capture_prompt_draft(cx));
+    anyhow::ensure!(draft == "/skill rust-skills ", "insert draft was {draft:?}");
+
+    harness.with_root(|root, window, cx| root.capture_reset_composer(window, cx));
+    harness.with_root(|root, _, _| {
+        root.capture_open_extensions_manager(ExtensionsTab::Skills);
+    });
+    shots.push(harness.capture(out, "03-manager")?);
+
+    harness.with_root(|root, window, cx| {
+        root.capture_filter_extensions("rust", window, cx);
+    });
+    anyhow::ensure!(
+        harness.with_root(|root, _, _| root.capture_extension_manage()),
+        "skill review lost manager mode before pressing Enter"
+    );
+    harness.simulate_keystrokes("enter");
+    shots.push(harness.capture(out, "04-manager-after-search-enter")?);
+    let (draft, open, manage) = harness.with_root(|root, _, cx| {
+        (
+            root.capture_prompt_draft(cx),
+            root.capture_overlay_open(),
+            root.capture_extension_manage(),
+        )
+    });
+    anyhow::ensure!(draft.is_empty(), "manager search inserted {draft:?}");
+    anyhow::ensure!(open && manage, "manager search closed the manager");
+
+    harness.finish();
+    Ok(shots)
+}
+
 impl Drop for Harness {
     fn drop(&mut self) {
         let _ = self.controller.shutdown_blocking();

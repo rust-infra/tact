@@ -68,6 +68,9 @@ set `CFBundleIconFile`, and ship the PNG in the archives.
   autocomplete. `Enter` opens a subcommand or executes it; `Tab` completes
   without executing. Nested paths, argument value pickers and free-form command
   forms follow the `tact-ui` command tree.
+- A `/` fragment also matches installed skills by name, so `/rust` offers
+  `rust-skills` alongside the built-in commands. Selecting it inserts
+  `/skill rust-skills `.
 - Typing `@` opens the workspace mention popup with files and images.
 - The composer model and permission controls open native-style selection menus.
 - The quick model menu, full model picker and `@` mention list render fixed
@@ -132,10 +135,25 @@ set `CFBundleIconFile`, and ship the PNG in the archives.
   lists and actions; outside click, the close button and `Esc` dismiss it. The
   popover uses a roomy 520px surface with its own fuzzy search and a scrollable
   list.
+- In the Skills popover, a row click inserts `/skill <name> ` into the
+  composer and closes the popover. `Enter` in the search field inserts the
+  first match only when the field has a query; an empty query leaves the
+  popover open. `Enter` and the row act on the same list the popover renders,
+  so a skill hidden by the filter is a skill `Enter` cannot insert. Reopening
+  the popover starts from an unfiltered list. The inline Enable/Disable control
+  toggles catalog visibility without inserting, and long descriptions truncate
+  so the control stays inside the popover. Skills sort alphabetically when the
+  query is empty, and by score then name once there is one.
+- Both surfaces keep one gesture set per surface. The popover is a launcher:
+  its row click and `Enter` insert, and the inline switch is the only place a
+  skill changes visibility. The manager is a manager: its Toggle action,
+  `Enter` and `Space` only change visibility, and its search field filters
+  without touching the composer.
 - `Manage` opens the full Extensions Manager at the current tab. It supports
   fuzzy search, MCP/Skills/Plugins switching, enable/disable switches,
   authorization, update and reload actions, and returns focus to the originating
-  rail entry. The popover search query carries into the manager.
+  rail entry. The popover's query carries into the manager on that one handoff;
+  closing and reopening the popover starts unfiltered.
 - Session, extension, command-palette, Slash-command and mention lists all use
   the same fuzzy matcher. Results are relevance-ranked, so abbreviated queries
   such as `tsd` find `test-driven-development` without paging through the list.
