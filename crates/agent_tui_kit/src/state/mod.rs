@@ -46,7 +46,7 @@ pub use thinking::{
 };
 pub use tool_group::{ToolRun, is_foldable as run_is_foldable, runs as tool_runs};
 pub use tool_state::{
-    ActiveToolBlock, DiffPopup, SubagentPopup, SubagentTranscript, ToolBlock, ToolState,
+    ActiveToolBlock, DiffPopup, SubagentPopup, SubagentTranscript, ToolBlock, ToolSpan, ToolState,
 };
 pub use ui_types::{
     CodeBlock, CodePopup, FocusedPanel, HistoryEntry, InputMode, MermaidBlock, MermaidPopup,

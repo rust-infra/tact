@@ -95,6 +95,25 @@ pub struct ToolBlock {
     pub phys_idx: usize,
     pub tool_id: String,
     pub output: ToolRenderOutput,
+    /// When the call started and how long it ran, kept after finalization so a
+    /// folded run can report its wall clock.
+    ///
+    /// `None` for a block rebuilt from history or by a popup fixture, where no
+    /// live clock ever existed — a total that guessed at those would be a
+    /// number the reader could not trust.
+    pub span: Option<ToolSpan>,
+}
+
+/// When one call started and ended.
+///
+/// Wall clock, not a duration, because tools in one turn run concurrently
+/// ([`docs/parallel_tool_execution.md`]): summing per-call durations would
+/// report four parallel 1s calls as 4s. Overlapping spans have to be unioned to
+/// answer "how long did this run take".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolSpan {
+    pub started_at: std::time::Instant,
+    pub finished_at: std::time::Instant,
 }
 
 impl DiffPopup {

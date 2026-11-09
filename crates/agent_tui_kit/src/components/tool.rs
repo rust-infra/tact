@@ -565,6 +565,10 @@ impl ToolComponent {
                 phys_idx: active.phys_idx,
                 tool_id: tool_id.to_string(),
                 output,
+                span: Some(crate::state::ToolSpan {
+                    started_at: active.started_at,
+                    finished_at: std::time::Instant::now(),
+                }),
             });
             events.push(ToolEvent::Finalized {
                 tool_id: tool_id.to_string(),
@@ -577,6 +581,9 @@ impl ToolComponent {
                 phys_idx: 0, // shell fallback backfills via set_blocks_phys_idx
                 tool_id: tool_id.to_string(),
                 output,
+                // No live card was found, so there is no start time to measure
+                // from; reporting one would invent a duration.
+                span: None,
             });
             events.push(ToolEvent::Finalized {
                 tool_id: tool_id.to_string(),
