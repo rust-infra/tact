@@ -739,6 +739,7 @@
 <li class="toc-l2"><a href="#31-2026-11-04--desktop-%E4%BB%BB%E5%8A%A1%E6%9D%A1%E6%B7%B7%E5%85%A5%E5%85%B6%E5%AE%83-session-%E7%9A%84%E4%BB%BB%E5%8A%A1" title="31. 2026-11-04 — Desktop 任务条混入其它 session 的任务"><span class="toc-label">31. 2026-11-04 — Desktop 任务条混入其它 session 的任务</span></a></li>
 <li class="toc-l2"><a href="#32-2026-11-04--desktop-%E4%BB%BB%E5%8A%A1%E5%85%A8%E9%83%A8%E5%AE%8C%E6%88%90%E5%90%8E%E9%9A%90%E8%97%8F%E4%BB%BB%E5%8A%A1%E5%8D%A1trajectory-%E6%90%9C%E7%B4%A2%E6%A1%86%E6%94%B9%E4%B8%BA%E5%8D%95%E5%B1%82" title="32. 2026-11-04 — Desktop：任务全部完成后隐藏任务卡；Trajectory 搜索框改为单层"><span class="toc-label">32. 2026-11-04 — Desktop：任务全部完成后隐藏任务卡；Trajectory 搜索框改为单层</span></a></li>
 <li class="toc-l2"><a href="#33-2026-11-10--thinking-%E5%8D%A1%E7%89%87%E5%8E%8B%E7%BC%A9%E5%90%8E%E5%9D%97%E9%97%B4%E6%8C%A4%E6%88%90%E4%B8%80%E7%89%87" title="33. 2026-11-10 — thinking 卡片压缩后，块与块挤成一片"><span class="toc-label">33. 2026-11-10 — thinking 卡片压缩后，块与块挤成一片</span></a></li>
+<li class="toc-l2"><a href="#34-2026-11-10--%E5%B7%A5%E5%85%B7%E7%BB%84%E5%B1%95%E5%BC%80%E5%90%8E%E6%97%A0%E6%B3%95%E5%86%8D%E6%8A%98%E5%8F%A0" title="34. 2026-11-10 — 工具组展开后无法再折叠"><span class="toc-label">34. 2026-11-10 — 工具组展开后无法再折叠</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -22004,6 +22005,54 @@ sticky 卡片整条消失，恢复干净对话区；有任一域活跃时卡片�
 <code>crates/agent_tui_kit/src/state/thinking.rs</code>（<code>preceded_by_gap</code>）、
 <code>crates/tui/src/render/render_gap_tests.rs</code>、
 <a href="../docs/tui_rendering.md">docs/tui_rendering.md</a> §6.5.1。</p>
+<hr />
+<h2 id="34-2026-11-10--工具组展开后无法再折叠">34. 2026-11-10 — 工具组展开后无法再折叠</h2>
+<p><strong>现象：</strong> 相邻工具调用折叠成一行摘要之后，点开或按 <code>z</code>
+展开，就再也收不回去了。展开状态下再按 <code>z</code> 没有任何反应，摘要行也已经不在了，
+鼠标也没有别的可点的地方——一组工具只能单向地越开越大。</p>
+<p><strong>根因：</strong> 两个入口各自断在不同的地方。
+<code>z</code> 解析的是「视口顶部那一行」，而真实日志里那一行是正文或块间空行，
+所以 <code>run_identity_at</code> 返回 <code>None</code>，按键静默失效；
+更关键的是展开之后摘要行被成员行取代、离开了视口顶部，第二下按 <code>z</code>
+就再找不到这组工具了。旧测试之所以通过，是因为它没有用户消息和正文，
+工具组恰好从第一行开始，视口顶部正好就是它。
+鼠标则是因为 <code>OpenTarget::ToolRun</code> 只在折叠分支里登记：
+摘要行是唯一的点击目标，展开后它消失，hitbox 随之消失。</p>
+<p><strong>决策：</strong> 两个入口都改成「工具组在哪里就指向哪里」。
+<code>z</code> 改为取<strong>视口内第一个有行落在其中的工具组</strong>
+（<code>toggle_fold_in_view</code> / <code>first_run_in_view</code>），
+与顶部那一行无关；首帧之前缓存还没建立（<code>offset</code> 仍是
+<code>u16::MAX</code> 哨兵、<code>visual_start</code> 为空），此时退化为全日志搜索，
+而不是当作「视口为空」。鼠标则在展开态把<strong>第一个成员的标题行</strong>
+登记为折叠目标——它正是摘要行原来的位置，因此同一个位置既能展开也能收起。
+标题行在缩进 gutter 里画 <code>⏷</code>，与摘要行的 <code>⏵</code> 同列；
+不用前缀把字形塞进标题，否则这一组的第一行会比下面的成员右一列，读起来像阶梯。
+同一时刻一组工具只有一个折叠控件（折叠时是摘要行，展开时是标题行），
+点击不依赖 hitbox 的枚举顺序。</p>
+<p><strong>改后行为：</strong> <code>z</code> 在真实日志（前面有正文、有用户消息）
+里能折叠、也能再展开回来；鼠标点摘要展开、点展开后的标题行收起，两个方向都通。
+展开态标题行左侧显示 <code>⏷</code>，提示这里可以点击。</p>
+<p><strong>验证：</strong> <code>z_refolds_a_run_it_unfolded</code>、
+<code>z_folds_a_run_that_does_not_start_at_the_viewport_top</code>、
+<code>clicking_an_expanded_run_head_folds_it_again</code>、
+<code>an_expanded_run_head_draws_the_collapse_glyph</code>、
+<code>only_the_state_that_is_drawn_registers_a_fold_control</code>；
+逐条把对应的修复移走后确认会失败。原先断言旧行为的
+<code>z_does_nothing_when_the_viewport_top_is_not_a_tool_run</code>
+已改写为 <code>z_does_nothing_when_there_is_no_run_to_fold</code>
+（日志里根本没有工具组才不响应）并新增
+<code>z_folds_the_first_run_below_plain_markdown</code>。
+<code>cargo test -p agent_tui_kit --lib</code> 452、<code>cargo test -p tui --lib</code>
+780 全绿，clippy <code>-D warnings</code> 与 fmt 干净。</p>
+<p><strong>Pointers：</strong>
+<code>crates/tui/src/widgets/state/app/visibility.rs</code>（<code>toggle_fold_in_view</code>、
+<code>first_run_in_view</code>）、
+<code>crates/agent_tui_kit/src/state/tool_group.rs</code>（<code>expanded_run_head_at</code>）、
+<code>crates/agent_tui_kit/src/render/cells/tool.rs</code>（<code>run_toggle_rect</code>、
+<code>run_toggle_glyph_rect</code>）、
+<code>crates/agent_tui_kit/src/render/log.rs</code>、
+<code>crates/tui/src/render/tool_fold_tests.rs</code>、
+<a href="../docs/tui_rendering.md">docs/tui_rendering.md</a> §6.6。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>

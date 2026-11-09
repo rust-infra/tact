@@ -53,28 +53,58 @@ impl App {
             .log_indent()
     }
 
-    /// The physical row sitting at the top of the viewport, when the cache can
-    /// say so.
+    /// Fold or unfold the first tool run the reader can see.
     ///
-    /// Used by `z` to fold the run the reader is looking at. Falls back to the
-    /// cached logical offset, which `render_log_panel` keeps in sync.
-    pub(crate) fn log_row_at_viewport_top(&self) -> Option<usize> {
-        let logical = self.log_scroll.offset as usize;
-        self.visible_message_index(logical)
-    }
-
-    /// Fold or unfold the run the reader is looking at.
+    /// Not the run under the viewport's top row: in a real log that row is
+    /// usually prose or a blank separator, so a rule keyed on it finds no run at
+    /// all and `z` silently does nothing. Scanning the visible rows for the
+    /// first run makes the key work wherever the reader has scrolled to, and it
+    /// is what makes an expanded run foldable again — expanding moves the
+    /// summary row off the top, so the old rule lost the run the moment it was
+    /// unfolded.
     ///
-    /// Returns true when a run was actually flipped, so a caller can tell "this
-    /// row is not a run" from "the reader just folded something".
-    pub(crate) fn toggle_fold_at_viewport_top(&mut self) -> bool {
-        let Some(run_id) = self
-            .log_row_at_viewport_top()
-            .and_then(|phys| self.tools().run_identity_at(phys))
-        else {
+    /// Returns true when a run was actually flipped, so a caller can tell "there
+    /// is no run in view" from "the reader just folded something".
+    pub(crate) fn toggle_fold_in_view(&mut self) -> bool {
+        let Some(run_id) = self.first_run_in_view() else {
             return false;
         };
         self.toggle_fold_by_run_id(&run_id)
+    }
+
+    /// The identity of the first run that has any row inside the viewport.
+    ///
+    /// Run membership is exclusive and ordered, so the first match while
+    /// scanning down is both the topmost run and the only one to flip: `z` means
+    /// one run, and a key that folded two would be a different verb.
+    ///
+    /// Falls back to the whole log when nothing has been drawn yet. A key can
+    /// arrive before the first frame, and then the caches say nothing rather
+    /// than saying the viewport is empty: `visual_start` is empty and `offset`
+    /// still holds its `u16::MAX` sentinel, so both are treated as unknown.
+    fn first_run_in_view(&self) -> Option<String> {
+        let runs = agent_tui_kit::state::tool_group::runs(&self.tools().blocks);
+        if runs.is_empty() {
+            return None;
+        }
+        let (top_logical, bottom_logical) = if self.log_scroll.visual_start.is_empty() {
+            (0, usize::MAX)
+        } else {
+            let top = self.log_scroll.offset as usize;
+            (
+                top,
+                top.saturating_add(self.log_scroll.height as usize)
+                    .max(top + 1),
+            )
+        };
+        (top_logical..bottom_logical).find_map(|logical| {
+            let phys = self.visible_message_index(logical)?;
+            agent_tui_kit::state::tool_group::run_at_phys(&runs, phys)
+                .and_then(|index| {
+                    agent_tui_kit::state::tool_group::run_key(&self.tools().blocks, &runs[index])
+                })
+                .map(str::to_string)
+        })
     }
 
     /// Fold or unfold the run whose stable identity is `run_id`, keeping the

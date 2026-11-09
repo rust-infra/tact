@@ -422,10 +422,21 @@ pub fn render_log_panel_pure(
                     ctx.theme.block_border_type(),
                     msgs,
                 )
-                .with_subagent_cancel(cancel_child_id.is_some());
+                .with_subagent_cancel(cancel_child_id.is_some())
+                .with_run_expanded_head(ctx.tools.expanded_run_head_at(phys_idx).is_some());
                 if let Some((cell_area, skip_lines)) =
                     renderer.cell_slice(vis_start, card_cell.height(inner.width) as usize, inner)
                 {
+                    // An expanded run's fold control is the first member's
+                    // title row: that is the row the summary occupied while the
+                    // run was folded, so the same place on screen folds and
+                    // unfolds. Registered only when the title row is actually
+                    // drawn — a clipped head has no control to hit.
+                    if let Some(run_id) = ctx.tools.expanded_run_head_at(phys_idx)
+                        && let Some(rect) = card_cell.run_toggle_rect(cell_area, skip_lines)
+                    {
+                        open_actions.push(OpenAction::new(OpenTarget::tool_run(run_id), rect));
+                    }
                     if let Some(tool_id) = tool_id_for_phys(ctx, phys_idx) {
                         if let Some(tool_rect) =
                             card_cell.collapsed_open_button_rect(cell_area, skip_lines)

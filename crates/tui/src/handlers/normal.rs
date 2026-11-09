@@ -160,11 +160,12 @@ pub(crate) fn handle_normal_mode(
             }
         }
         KeyCode::Char('z') => {
-            // Fold or unfold the tool run at the top of the viewport. `z` is
-            // the fold verb in every editor this keymap borrows from, and the
-            // viewport top is the only row the reader is unambiguously looking
-            // at: the log carries no per-row cursor to hang a fold target on.
-            app.toggle_fold_at_viewport_top();
+            // Fold or unfold the first tool run in view. `z` is the fold verb in
+            // every editor this keymap borrows from. The target is the first run
+            // the reader can see, not the row at the viewport top: that row is
+            // usually prose or a separator, and expanding a run moves its
+            // summary off the top anyway.
+            app.toggle_fold_in_view();
         }
         KeyCode::Char('q') => {
             app.should_quit = true;
@@ -250,17 +251,20 @@ mod tests {
         );
     }
 
-    /// The key resolves through the viewport top, so a viewport parked on plain
-    /// markdown must fold nothing at all.
+    /// A log with no tool run at all folds nothing, and says so by not bumping
+    /// the fold generation: `z` over pure prose is not a toggle.
+    ///
+    /// The companion rule — a run that is merely *below* the viewport top — is
+    /// no longer inert: `z` takes the first run the reader can see, because a
+    /// rule keyed on the top row found the paragraph instead of the run and
+    /// made the key silently do nothing in every real transcript.
     #[test]
-    fn z_does_nothing_when_the_viewport_top_is_not_a_tool_run() {
+    fn z_does_nothing_when_there_is_no_run_to_fold() {
         let mut app = make_app();
         let (tx, _rx) = unbounded_channel();
         app.handle_agent_update(tact_protocol::AgentUpdate::StreamChunk(
             "just prose.\n".into(),
         ));
-        settled_tool(&mut app, 0, "r1", "a.rs");
-        settled_tool(&mut app, 1, "r2", "b.rs");
         app.input_mode = InputMode::Normal;
 
         let before = app.tools().state().fold_rev;
@@ -268,7 +272,36 @@ mod tests {
         assert_eq!(
             before,
             app.tools().state().fold_rev,
-            "a row that is not in a run must not bump the fold generation"
+            "a log with no run must not bump the fold generation"
+        );
+    }
+
+    /// `z` finds the first run below the prose, and folds it. The ordering is
+    /// what makes the key usable: the reader scrolled to a turn and pressed the
+    /// fold verb, not "point at the exact row".
+    #[test]
+    fn z_folds_the_first_run_below_plain_markdown() {
+        let mut app = make_app();
+        let (tx, _rx) = unbounded_channel();
+        app.handle_agent_update(tact_protocol::AgentUpdate::StreamChunk(
+            "just prose.\n\n".into(),
+        ));
+        settled_tool(&mut app, 0, "r1", "a.rs");
+        settled_tool(&mut app, 1, "r2", "b.rs");
+        app.input_mode = InputMode::Normal;
+
+        handle_normal_mode(&mut app, key(KeyCode::Char('z')), &tx);
+        let text = render_log_panel_text(&mut app, 100, 24);
+        assert!(
+            text.contains("a.rs") && text.contains("b.rs"),
+            "the run below the prose must expand: {text}"
+        );
+
+        handle_normal_mode(&mut app, key(KeyCode::Char('z')), &tx);
+        let again = render_log_panel_text(&mut app, 100, 24);
+        assert!(
+            again.contains("2 tools") && !again.contains("b.rs"),
+            "and the next press folds it back: {again}"
         );
     }
 

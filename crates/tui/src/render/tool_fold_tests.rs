@@ -234,3 +234,219 @@ fn an_explicit_expand_survives_a_new_member_settling() {
         "the reader's expand must not snap shut when other work lands: {text}"
     );
 }
+
+/// Three reads preceded by a paragraph: the shape a real turn has, and the one
+/// the old `z` rule could not fold.
+fn reads_after_prose(app: &mut App) {
+    app.add_user_message("Check the tree.".into());
+    app.handle_agent_update(AgentUpdate::StreamChunk("Looking.\n\n".into()));
+    seed(app, 0, "r1", "read_file", "a.rs", StepStatus::Success);
+    seed(app, 1, "r2", "read_file", "b.rs", StepStatus::Success);
+    app.handle_agent_update(AgentUpdate::StreamChunk("Done.\n\n".into()));
+}
+
+/// A left-button press at `(x, y)`, routed through the real mouse handler.
+fn click(app: &mut App, x: u16, y: u16) {
+    crate::handle_mouse_event(
+        app,
+        crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: x,
+            row: y,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        },
+    );
+}
+
+fn z(app: &mut App) {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    app.input_mode = crate::widgets::state::InputMode::Normal;
+    crate::handlers::handle_normal_mode(
+        app,
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('z'),
+            crossterm::event::KeyModifiers::NONE,
+        ),
+        &tx,
+    );
+}
+
+/// Expanding moves the summary row off the viewport top, so a `z` keyed on that
+/// row lost the run the instant it was unfolded: the second press did nothing
+/// and the run could never be folded again.
+#[test]
+fn z_refolds_a_run_it_unfolded() {
+    let mut app = make_app();
+    reads_after_prose(&mut app);
+    let folded = render_log_panel_text(&mut app, 100, 24);
+    assert!(folded.contains("2 tools"), "starts folded: {folded}");
+
+    z(&mut app);
+    let open = render_log_panel_text(&mut app, 100, 24);
+    assert!(
+        open.contains("a.rs") && open.contains("b.rs"),
+        "the first press expands: {open}"
+    );
+
+    z(&mut app);
+    let again = render_log_panel_text(&mut app, 100, 24);
+    assert!(
+        again.contains("2 tools") && !again.contains("b.rs"),
+        "the second press must fold it back: {again}"
+    );
+}
+
+/// The same with prose in front, which puts a non-tool row above the run: a
+/// rule keyed on the viewport top row found the paragraph, not the run, so even
+/// the first press did nothing.
+#[test]
+fn z_folds_a_run_that_does_not_start_at_the_viewport_top() {
+    let mut app = make_app();
+    reads_after_prose(&mut app);
+    let phys = app.tools().blocks[0].phys_idx;
+    assert!(
+        phys > 0,
+        "the run must not start on the first row for this test to mean anything"
+    );
+
+    z(&mut app);
+    let open = render_log_panel_text(&mut app, 100, 24);
+    assert!(
+        open.contains("a.rs"),
+        "`z` must find the run below the prose, not give up on the paragraph: {open}"
+    );
+}
+
+/// A click on an expanded run's head folds it again. The summary row that
+/// carried the control is gone while the run is open, so the head row takes it
+/// over — otherwise a run could only ever be expanded by mouse, never closed.
+#[test]
+fn clicking_an_expanded_run_head_folds_it_again() {
+    use crate::render::test_harness::render_app_text;
+
+    let mut app = make_app();
+    reads_after_prose(&mut app);
+    let _ = render_app_text(&mut app, 100, 24);
+
+    let summary = app
+        .mouse
+        .open_actions
+        .iter()
+        .find(|action| {
+            matches!(
+                action.target,
+                agent_tui_kit::render::log::OpenTarget::ToolRun { .. }
+            )
+        })
+        .cloned()
+        .expect("the folded summary is a control");
+    click(&mut app, summary.rect.x + 2, summary.rect.y);
+    let open = render_app_text(&mut app, 100, 24);
+    assert!(open.contains("a.rs"), "the click expands: {open}");
+
+    let head = app
+        .mouse
+        .open_actions
+        .iter()
+        .find(|action| {
+            matches!(
+                action.target,
+                agent_tui_kit::render::log::OpenTarget::ToolRun { .. }
+            )
+        })
+        .cloned()
+        .expect("an expanded run's head is the control that closes it");
+    click(&mut app, head.rect.x, head.rect.y);
+    let again = render_app_text(&mut app, 100, 24);
+    assert!(
+        again.contains("2 tools") && !again.contains("b.rs"),
+        "the head must fold the run back: {again}"
+    );
+}
+
+/// The head's control is drawn, not invisible: `⏷` sits in the indent gutter on
+/// the row the collapsed summary's `⏵` occupied, so a reader can see there is a
+/// way back.
+#[test]
+fn an_expanded_run_head_draws_the_collapse_glyph() {
+    let mut app = make_app();
+    reads_after_prose(&mut app);
+    let _ = render_log_panel_text(&mut app, 100, 24);
+    let phys = app.tools().blocks[0].phys_idx;
+    let run_id = app.tools().run_identity_at(phys).expect("run identity");
+    assert!(app.tools_mut().toggle_run_by_id(&run_id));
+
+    let text = render_log_panel_text(&mut app, 100, 24);
+    assert!(text.contains('⏷'), "the way back must be visible: {text}");
+
+    // And the members keep the head's columns: a prefix glyph would have pushed
+    // the head one column right of the block below it.
+    let head = text
+        .lines()
+        .find(|line| line.contains("a.rs"))
+        .expect("head title");
+    let member = text
+        .lines()
+        .find(|line| line.contains("b.rs"))
+        .expect("member title");
+    // A terminal column, not a byte offset: `⏷` is three bytes and one cell, so
+    // a byte comparison would report a staircase that is not on screen.
+    let column =
+        |line: &str, needle: &str| line[..line.find(needle).expect("needle")].chars().count();
+    assert_eq!(
+        column(head, "1."),
+        column(member, "2."),
+        "the run must not staircase:\n{text}"
+    );
+}
+
+/// A folded run whose summary was clicked must not also register the head's
+/// control, or the summary and the head would overlap on the same row and the
+/// click would depend on which one the list happened to hold first.
+#[test]
+fn only_the_state_that_is_drawn_registers_a_fold_control() {
+    use crate::render::test_harness::render_app_text;
+
+    let mut app = make_app();
+    reads_after_prose(&mut app);
+    let _ = render_app_text(&mut app, 100, 24);
+    let folded = app
+        .mouse
+        .open_actions
+        .iter()
+        .filter(|action| {
+            matches!(
+                action.target,
+                agent_tui_kit::render::log::OpenTarget::ToolRun { .. }
+            )
+        })
+        .count();
+    assert_eq!(folded, 1, "a folded run has exactly one fold control");
+
+    let summary = app
+        .mouse
+        .open_actions
+        .iter()
+        .find(|action| {
+            matches!(
+                action.target,
+                agent_tui_kit::render::log::OpenTarget::ToolRun { .. }
+            )
+        })
+        .cloned()
+        .expect("summary");
+    click(&mut app, summary.rect.x + 2, summary.rect.y);
+    let _ = render_app_text(&mut app, 100, 24);
+    let expanded = app
+        .mouse
+        .open_actions
+        .iter()
+        .filter(|action| {
+            matches!(
+                action.target,
+                agent_tui_kit::render::log::OpenTarget::ToolRun { .. }
+            )
+        })
+        .count();
+    assert_eq!(expanded, 1, "an expanded run has exactly one fold control");
+}

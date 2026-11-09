@@ -321,6 +321,29 @@ The summary reports one wall-clock total for the run, computed as the **union**
 of the members' spans rather than the sum of their durations: tools in one turn
 run concurrently by wave, so four parallel one-second calls took one second.
 
+#### Folding and unfolding the same run
+
+Both affordances have to work in both directions, and each is where the run
+*is* rather than where it was.
+
+`z` takes the **first run with a row in the viewport**, not the run under the
+viewport's top row. In a real log that top row is prose or a blank separator, so
+a rule keyed on it found no run and the key silently did nothing; it also broke
+the second press, because expanding a run moves its summary row off the top.
+Scanning the visible rows makes one key do one run wherever the reader is.
+
+A click on the folded summary flips it. While the run is expanded that summary
+row does not exist, so the **first member's title row** takes the control: it is
+the row the summary occupied, it draws `⏷` in the indent gutter in place of the
+summary's `⏵` (same column, so the run does not shift when it opens), and its hit
+rect covers the glyph plus that whole title row. The glyph is painted into the
+gutter rather than prefixed to the title, because a prefix would push the head
+one column right of the members under it and the run would read as a ladder.
+
+Exactly one fold control exists per run at a time — the summary when folded, the
+head when expanded — so a click never depends on which hitbox the list happens
+to hold first.
+
 ### 6.7 Scrollbar
 
 - Position is computed from the **total visual line count**.

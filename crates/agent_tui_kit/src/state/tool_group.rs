@@ -422,6 +422,26 @@ impl ToolState {
         let index = run_at_phys(&found, phys_idx)?;
         run_key(&self.blocks, &found[index]).map(str::to_string)
     }
+
+    /// The identity of the run whose **first** member sits at `phys_idx`, when
+    /// that run is drawn expanded right now.
+    ///
+    /// Expanding a run replaces its one summary row with its members, so the
+    /// row that carried the collapse affordance disappears with it. The first
+    /// member's title row takes that position back — it is where the summary
+    /// was — so the same click folds the run in both directions.
+    ///
+    /// `None` for a folded run (its summary row already carries the target) and
+    /// for any row that is not a run head.
+    pub fn expanded_run_head_at(&self, phys_idx: usize) -> Option<String> {
+        let found = runs(&self.blocks);
+        let index = run_at_phys(&found, phys_idx)?;
+        let run = &found[index];
+        if run.phys_idx != phys_idx || is_folded(&self.blocks, run, self) {
+            return None;
+        }
+        run_key(&self.blocks, run).map(str::to_string)
+    }
 }
 
 #[cfg(test)]
