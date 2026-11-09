@@ -22930,19 +22930,47 @@ Desktop：Trajectory 时间轴命中与统计边界收敛</h2>
 可在 debug 构建中溢出。</p>
 <p><strong>改后行为：</strong> 绘制和点击统一消费
 <code>TimelineLayout</code>，命中按等宽列直接计算，最小块宽度只影响绘制、不再偷走
-后续列的点击；Ledger 过滤先把匹配索引收成集合；输入与输出 token 改用饱和加法。
-活动折叠规则和状态本地化同时移出主壳，分别由
-<code>ui/process.rs</code> 与 <code>ui/status.rs</code> 负责。</p>
+后续列的点击；只被测试引用的 <code>nearest</code> 已删除，避免两套取列语义分叉。
+Ledger 过滤先把匹配索引收成集合；输入与输出 token 改用饱和加法。</p>
+<p>活动折叠规则和状态本地化同时移出主壳，分别由
+<code>ui/process.rs</code> 与 <code>ui/status.rs</code> 负责。折叠判定
+（<code>is_process_row</code>）只保留一份实现；「计划卡片让位给工具组」的判定从
+每条计划行渲染时重扫整条转录，改为布局阶段用 <code>build_process_layout</code> 一次
+算出 <code>yielded_plans</code>，渲染侧按 <code>row.id</code> 查表。等待原因的本地化
+改为先剥离 runner 写入的 <code>"&lt;From status&gt;: "</code> 前缀再查表，并显式
+回退到原文——此前表格用精确串匹配，而 runner 的载荷带前缀，中文界面实际会漏译。</p>
+<p><strong>症状（二）：</strong> run 的最后一条答案有时不单独渲染，而是被折进活动摘要卡。
+根因是相位标注：<code>tact_llm</code> 的 <code>inferred_phase</code> 把「同一条响应里既有
+文本又有 tool_use」整条标成 <code>Commentary</code>；当这条响应同时是 run 的最后一条时，
+工具调用之后的文本已经粘在前一行上，而 <code>settle_final_answer</code> 只纠正
+<code>phase</code> 为空的行，于是过期的 <code>Commentary</code> 留着，折叠逻辑就把答案
+藏进摘要。`Commentary` 的语义是「后续可能还有输出」，末尾无人接续即已过期。</p>
+<p><strong>改后行为（二）：</strong> <code>settle_final_answer</code> 从后往前找 run 的
+最后一段文本：若文本之后只有非工具/非思考行（即它确实是收尾），且相位为空或为
+<code>Commentary</code>，就提升为 <code>FinalAnswer</code>；若之后还有工具组或思考卡，
+文本本来就是叙述，保持折叠。该判定放在 reducer 而非渲染侧，因此所有消费方
+（桌面折叠、TUI、导出）看到同一份相位。</p>
 <p><strong>验证：</strong>
 <code>a_narrow_track_keeps_spans_clickable</code> 逐列检查窄时间轴命中；
 <code>token_totals_saturate_instead_of_overflowing</code> 覆盖
-<code>u32::MAX</code>；桌面与 desktop-core 的 466 个库测试通过，
+<code>u32::MAX</code>；
+<code>a_runner_status_prefix_still_localizes</code> 与
+<code>free_text_wait_reasons_pass_through_verbatim</code> 覆盖带前缀和自由文本两种
+等待原因；<code>a_trailing_commentary_text_is_promoted_to_the_answer</code> 与
+<code>commentary_followed_by_a_tool_group_stays_narration</code> 分别固定「收尾文本
+提升」与「文本后仍有工作则保持叙述」两侧语义，
+<code>an_answer_after_the_tool_group_stays_out_of_the_fold</code> 从折叠侧固定同一契约；<code>an_expired_token_still_goes_through_the_oauth_manager</code> 改用
+已释放的 loopback 端口而非 <code>.invalid</code> 主机，结果不再取决于解析器或代理，
+超时路径从 30 秒降到毫秒级；桌面与 desktop-core 的库测试通过，
 <code>scripts/check-rust.sh</code> 完整通过。</p>
 <p><strong>Pointers：</strong> <code>crates/desktop/src/ui/trajectory.rs</code>、
 <code>crates/desktop/src/ui/process.rs</code>、
 <code>crates/desktop/src/ui/status.rs</code>、
 <code>crates/desktop/src/root.rs</code>、
-<code>crates/desktop_core/src/controller.rs</code>。</p>
+<code>crates/desktop/src/i18n.rs</code>、
+<code>crates/desktop_core/src/controller.rs</code>、
+<code>crates/agent_tui_kit/src/lib.rs</code>、
+<code>crates/tact/src/mcp/remote.rs</code>。</p>
 <h2 id="related-docs">Related Docs</h2>
 <ul>
 <li><a href="./07_chapter_tool_zh.html">工具系统</a></li>
