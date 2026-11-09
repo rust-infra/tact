@@ -21,6 +21,7 @@ pub mod subagent_panel;
 pub mod task_dag;
 pub mod task_panel;
 pub mod thinking;
+pub mod tool_group;
 pub mod tool_state;
 pub mod ui_types;
 
@@ -43,6 +44,7 @@ pub use task_panel::TaskPanelState;
 pub use thinking::{
     ActiveThinkingBlock, ThinkingBlock, ThinkingPopup, ThinkingState, find_thinking_at_logical,
 };
+pub use tool_group::{ToolRun, is_foldable as run_is_foldable, runs as tool_runs};
 pub use tool_state::{
     ActiveToolBlock, DiffPopup, SubagentPopup, SubagentTranscript, ToolBlock, ToolState,
 };
