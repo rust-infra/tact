@@ -85,6 +85,14 @@ The desktop uses two separate state axes:
 `RunPhase` values are `Idle`, `Waiting`, `Thinking`, `Streaming`,
 `RunningTools`, `WaitingForGate`, `Cancelling`, `Complete`, and `Failed`.
 
+`Complete` is only reachable from `AgentUpdate::TaskComplete`, which the driver
+emits for a turn that ended on its own terms. A turn the model could not finish
+inside the output limit reaches `Failed` instead: the driver maps
+`AgentLoopStop::MaxTokens` — the one stop that means "the answer was cut off" —
+to `AgentUpdate::Error`, so a half-produced reply is never reported as a
+completed task. `RunPhase` collapsing those two into `Complete` is what let a
+truncated answer read as done.
+
 `crates/desktop_core/src/controller.rs` owns the transitions. The UI reads the
 phase from `DesktopSnapshot`; it does not infer host state from individual
 events.
