@@ -14,6 +14,28 @@ pub const RAIL_MAX_WIDTH: f32 = 420.0;
 pub const INSPECTOR_MIN_WIDTH: f32 = 240.0;
 pub const INSPECTOR_MAX_WIDTH: f32 = 520.0;
 
+/// The composer's frame width, and the width of every column that stacks with
+/// it (the transcript, the sticky strip). The prototype's `min(900px, …)`.
+pub const COMPOSER_WIDTH: f32 = 900.0;
+
+/// The width of a composer accessory: the queue, the sticky task card.
+///
+/// Deliberately narrower than [`COMPOSER_WIDTH`]: an accessory reads as
+/// something the composer owns, and a full-width one looks like a second input
+/// box. Both accessories used `mx_auto` on their own, which made them narrower
+/// *and* offset from the composer they belong to; the accessory column aligns
+/// them to the composer's left gutter instead.
+pub const ACCESSORY_WIDTH: f32 = 780.0;
+
+/// The horizontal padding of the composer area.
+pub const COMPOSER_PADDING_X: f32 = 22.0;
+
+/// The gap between the composer frame and the accessory stacked above it.
+///
+/// Tight on purpose: the queue reads as attached to the input, so its last row
+/// sits against the frame rather than floating in the transcript.
+pub const ACCESSORY_GAP: f32 = 4.0;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ShellLayout {
     pub width: f32,

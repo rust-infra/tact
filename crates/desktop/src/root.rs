@@ -6370,7 +6370,7 @@ impl DesktopRoot {
             .min_w_0()
             .h_full()
             .w_full()
-            .max_w(px(900.))
+            .max_w(px(crate::ui::layout::COMPOSER_WIDTH))
             .mx_auto()
             .child(
                 v_flex()
@@ -7886,6 +7886,9 @@ impl DesktopRoot {
         h_flex()
             .debug_selector(|| "gate-banner".into())
             .w_full()
+            // Shares the accessory width with the task card below it, so the
+            // strip has one right edge instead of two.
+            .max_w(px(crate::ui::layout::ACCESSORY_WIDTH))
             .min_w_0()
             .gap_2()
             .rounded_md()
@@ -8164,159 +8167,182 @@ impl DesktopRoot {
             .role(Role::Status)
             .aria_label(self.text(TextKey::RunStatus))
             .w_full()
-            .max_w(px(900.))
-            .mx_auto()
-            .gap_2()
+            // The same gutter the composer area applies, so the strip's content
+            // box is the composer's content box at every window width. The
+            // narrower card is then pinned to that gutter by `items_start`
+            // further in: centering it here would give the strip a second axis,
+            // which is what made it float away from the composer.
+            .px(px(crate::ui::layout::COMPOSER_PADDING_X))
             .pt_2()
-            .pb(px(6.))
-            .when_some(pending, |strip, gate| {
-                strip.child(self.render_gate_banner(gate, cx))
-            })
-            .when(card_visible, |strip| {
-                strip.child(
-                    v_flex()
-                        .id("sticky-task-card")
-                        .debug_selector(|| "sticky-task-card".into())
-                        .w_full()
-                        .min_w_0()
-                        .rounded_lg()
-                        .border_1()
-                        .border_color(cx.theme().border)
-                        .bg(cx.theme().popover)
-                        .p_3()
-                        .gap_2()
-                        .child(
-                            h_flex()
+            .pb(px(crate::ui::layout::ACCESSORY_GAP))
+            .child(
+                v_flex()
+                    .id("sticky-column")
+                    .debug_selector(|| "sticky-column".into())
+                    .w_full()
+                    .max_w(px(crate::ui::layout::COMPOSER_WIDTH))
+                    .mx_auto()
+                    .items_start()
+                    .gap_2()
+                    .when_some(pending, |strip, gate| {
+                        strip.child(self.render_gate_banner(gate, cx))
+                    })
+                    .when(card_visible, |strip| {
+                        strip.child(
+                            v_flex()
+                                .id("sticky-task-card")
+                                .debug_selector(|| "sticky-task-card".into())
                                 .w_full()
+                                .max_w(px(crate::ui::layout::ACCESSORY_WIDTH))
+                                .flex_none()
                                 .min_w_0()
-                                .items_center()
+                                .rounded_lg()
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .bg(cx.theme().popover)
+                                .p_3()
                                 .gap_2()
                                 .child(
-                                    div()
-                                        .flex_none()
-                                        .text_xs()
-                                        .font_semibold()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(format!(
-                                            "{} {completed}/{task_total}",
-                                            self.text(TextKey::Tasks).to_uppercase()
-                                        )),
-                                )
-                                .when_some(current, |header, task| {
-                                    header.child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .truncate()
-                                            .text_sm()
-                                            .font_semibold()
-                                            .child(task.subject.to_string()),
-                                    )
-                                })
-                                .when(current.is_none(), |header| header.child(div().flex_1()))
-                                .child(sticky_count(
-                                    self.text(TextKey::Goals),
-                                    goals,
-                                    InspectorTab::Goals,
-                                    cx,
-                                ))
-                                .child(sticky_count(
-                                    self.text(TextKey::Subagents),
-                                    agents,
-                                    InspectorTab::Subagents,
-                                    cx,
-                                ))
-                                .when(background > 0, |header| {
-                                    header.child(sticky_count(
-                                        self.text(TextKey::Background),
-                                        background,
-                                        InspectorTab::Background,
-                                        cx,
-                                    ))
-                                })
-                                .child(
-                                    div()
-                                        .id("toggle-sticky-tasks")
-                                        .debug_selector(|| "toggle-sticky-tasks".into())
-                                        .role(Role::Button)
-                                        .focusable()
-                                        .tab_stop(true)
-                                        .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
-                                        .aria_label(if self.sticky_tasks_collapsed {
-                                            self.text(TextKey::ExpandStickyTasks)
-                                        } else {
-                                            self.text(TextKey::CollapseStickyTasks)
-                                        })
-                                        .cursor_pointer()
-                                        .rounded_md()
-                                        .p_1()
-                                        .hover(|style| style.bg(cx.theme().muted))
+                                    h_flex()
+                                        .w_full()
+                                        .min_w_0()
+                                        .items_center()
+                                        .gap_2()
                                         .child(
-                                            Icon::new(chevron)
-                                                .size(px(13.))
-                                                .text_color(cx.theme().muted_foreground),
+                                            div()
+                                                .flex_none()
+                                                .text_xs()
+                                                .font_semibold()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(format!(
+                                                    "{} {completed}/{task_total}",
+                                                    self.text(TextKey::Tasks).to_uppercase()
+                                                )),
                                         )
-                                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                            this.sticky_tasks_collapsed =
-                                                !this.sticky_tasks_collapsed;
-                                            // A collapsed strip shows one row, so
-                                            // a remembered offset would reopen
-                                            // mid-list with no way to see the
-                                            // rows above.
-                                            this.sticky_tasks_scroll = 0;
-                                            cx.notify();
-                                        })),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .h(px(3.))
-                                .w_full()
-                                .rounded_full()
-                                .bg(cx.theme().muted)
+                                        .when_some(current, |header, task| {
+                                            header.child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .truncate()
+                                                    .text_sm()
+                                                    .font_semibold()
+                                                    .child(task.subject.to_string()),
+                                            )
+                                        })
+                                        .when(current.is_none(), |header| {
+                                            header.child(div().flex_1())
+                                        })
+                                        .child(sticky_count(
+                                            self.text(TextKey::Goals),
+                                            goals,
+                                            InspectorTab::Goals,
+                                            cx,
+                                        ))
+                                        .child(sticky_count(
+                                            self.text(TextKey::Subagents),
+                                            agents,
+                                            InspectorTab::Subagents,
+                                            cx,
+                                        ))
+                                        .when(background > 0, |header| {
+                                            header.child(sticky_count(
+                                                self.text(TextKey::Background),
+                                                background,
+                                                InspectorTab::Background,
+                                                cx,
+                                            ))
+                                        })
+                                        .child(
+                                            div()
+                                                .id("toggle-sticky-tasks")
+                                                .debug_selector(|| "toggle-sticky-tasks".into())
+                                                .role(Role::Button)
+                                                .focusable()
+                                                .tab_stop(true)
+                                                .focus_visible(|style| {
+                                                    style.bg(gpui::rgba(0x007aff22))
+                                                })
+                                                .aria_label(if self.sticky_tasks_collapsed {
+                                                    self.text(TextKey::ExpandStickyTasks)
+                                                } else {
+                                                    self.text(TextKey::CollapseStickyTasks)
+                                                })
+                                                .cursor_pointer()
+                                                .rounded_md()
+                                                .p_1()
+                                                .hover(|style| style.bg(cx.theme().muted))
+                                                .child(
+                                                    Icon::new(chevron)
+                                                        .size(px(13.))
+                                                        .text_color(cx.theme().muted_foreground),
+                                                )
+                                                .on_click(cx.listener(
+                                                    |this, _: &ClickEvent, _, cx| {
+                                                        this.sticky_tasks_collapsed =
+                                                            !this.sticky_tasks_collapsed;
+                                                        // A collapsed strip shows one row, so
+                                                        // a remembered offset would reopen
+                                                        // mid-list with no way to see the
+                                                        // rows above.
+                                                        this.sticky_tasks_scroll = 0;
+                                                        cx.notify();
+                                                    },
+                                                )),
+                                        ),
+                                )
                                 .child(
                                     div()
-                                        .h_full()
-                                        .w(gpui::relative(progress))
+                                        .h(px(3.))
+                                        .w_full()
                                         .rounded_full()
-                                        .bg(if completed == task_total {
-                                            cx.theme().success
-                                        } else {
-                                            cx.theme().primary
-                                        }),
-                                ),
+                                        .bg(cx.theme().muted)
+                                        .child(
+                                            div()
+                                                .h_full()
+                                                .w(gpui::relative(progress))
+                                                .rounded_full()
+                                                .bg(if completed == task_total {
+                                                    cx.theme().success
+                                                } else {
+                                                    cx.theme().primary
+                                                }),
+                                        ),
+                                )
+                                .when(!self.sticky_tasks_collapsed || task_total == 1, |card| {
+                                    card.child(
+                                        v_flex()
+                                            .w_full()
+                                            .min_w_0()
+                                            .gap_1()
+                                            .children(grouped)
+                                            // The strip is a summary, so its overflow
+                                            // scrolls inside it rather than growing the
+                                            // card over the transcript above.
+                                            .on_scroll_wheel(cx.listener(
+                                                |this, event: &gpui::ScrollWheelEvent, _, cx| {
+                                                    let delta = f32::from(
+                                                        event.delta.pixel_delta(px(20.)).y,
+                                                    );
+                                                    if delta == 0. {
+                                                        return;
+                                                    }
+                                                    let step = delta.signum() as i64;
+                                                    let next = (this.sticky_tasks_scroll as i64
+                                                        - step)
+                                                        .max(0)
+                                                        as usize;
+                                                    if next != this.sticky_tasks_scroll {
+                                                        this.sticky_tasks_scroll = next;
+                                                        cx.notify();
+                                                    }
+                                                },
+                                            )),
+                                    )
+                                }),
                         )
-                        .when(!self.sticky_tasks_collapsed || task_total == 1, |card| {
-                            card.child(
-                                v_flex()
-                                    .w_full()
-                                    .min_w_0()
-                                    .gap_1()
-                                    .children(grouped)
-                                    // The strip is a summary, so its overflow
-                                    // scrolls inside it rather than growing the
-                                    // card over the transcript above.
-                                    .on_scroll_wheel(cx.listener(
-                                        |this, event: &gpui::ScrollWheelEvent, _, cx| {
-                                            let delta =
-                                                f32::from(event.delta.pixel_delta(px(20.)).y);
-                                            if delta == 0. {
-                                                return;
-                                            }
-                                            let step = delta.signum() as i64;
-                                            let next = (this.sticky_tasks_scroll as i64 - step)
-                                                .max(0)
-                                                as usize;
-                                            if next != this.sticky_tasks_scroll {
-                                                this.sticky_tasks_scroll = next;
-                                                cx.notify();
-                                            }
-                                        },
-                                    )),
-                            )
-                        }),
-                )
-            })
+                    }),
+            )
             .into_any_element()
     }
 
@@ -9121,16 +9147,75 @@ impl DesktopRoot {
             .id("composer-area")
             .debug_selector(|| "composer-area".into())
             .w_full()
-            .gap_2()
-            .px(px(22.))
+            .px(px(crate::ui::layout::COMPOSER_PADDING_X))
             .pb(px(18.))
+            // The gap separates the voice banner and the slash overlay from the
+            // composer. The queue is *inside* the stack and uses the tighter
+            // `ACCESSORY_GAP`, so this no longer widens the badge's gap.
+            .gap_2()
             .when(self.voice.listening || self.voice.transcribing, |area| {
                 area.child(self.render_voice_status(cx))
             })
-            .when(!self.snapshot.composer.queue.is_empty(), |area| {
-                area.child(
+            .when_some(self.slash_overlay.clone(), |area, overlay| {
+                area.key_context("SlashOverlay")
+                    .child(self.render_slash_overlay(&overlay, cx))
+            })
+            // One column owns the composer and everything stacked above it, so
+            // an accessory shares the composer's left gutter instead of
+            // centering itself into a second axis. `items_start` is what pins
+            // the narrower accessories to that gutter.
+            .child(
+                v_flex()
+                    .id("composer-stack")
+                    .debug_selector(|| "composer-stack".into())
+                    .w_full()
+                    .max_w(px(crate::ui::layout::COMPOSER_WIDTH))
+                    .mx_auto()
+                    .items_start()
+                    .gap(px(crate::ui::layout::ACCESSORY_GAP))
+                    .when(!self.snapshot.composer.queue.is_empty(), |stack| {
+                        stack.child(self.render_queue_accessory(queue_view, queue_len, cx))
+                    })
+                    .child(
+                        div()
+                            .id("composer-frame")
+                            .debug_selector(|| "composer-frame".into())
+                            // The stack already caps and centers the column;
+                            // re-centering the frame here would give it a
+                            // second axis inside it.
+                            .w_full()
+                            .child(self.prompt.clone()),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// The queued-prompt badge and, when expanded, its list.
+    ///
+    /// A composer accessory rather than a second input: it is narrower than the
+    /// composer frame and shares its left gutter, and its last row sits one
+    /// tight gap above the frame so it reads as attached to the input.
+    fn render_queue_accessory(
+        &self,
+        queue_view: MessageQueue,
+        queue_len: usize,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        v_flex()
+            .id("composer-queue-accessory")
+            .debug_selector(|| "composer-queue-accessory".into())
+            .w_full()
+            .max_w(px(crate::ui::layout::ACCESSORY_WIDTH))
+            .items_start()
+            .gap(px(crate::ui::layout::ACCESSORY_GAP))
+            // A row wrapper keeps the badge at its own text width: a bare child
+            // of the column stretches to the column, which is what made a
+            // two-word badge as wide as the composer.
+            .child(
+                h_flex().w_full().child(
                     div()
                         .id("composer-queue-toggle")
+                        .debug_selector(|| "composer-queue-toggle".into())
                         .role(Role::Button)
                         .focusable()
                         .tab_stop(true)
@@ -9157,42 +9242,23 @@ impl DesktopRoot {
                             this.queue_expanded = !this.queue_expanded;
                             cx.notify();
                         })),
-                )
-                .when(self.queue_expanded, |area| {
-                    area.child(
-                        div()
-                            .track_focus(&self.queue_focus)
-                            .key_context("Queue")
-                            .w_full()
-                            // The queue is a composer accessory, not a
-                            // dialog: it stays a step narrower than the
-                            // composer frame and never taller than a few
-                            // rows. A long queue scrolls instead of
-                            // pushing the transcript off screen. The cap
-                            // belongs on this wrapper: on the scroll
-                            // content it would clamp the content itself
-                            // and nothing past the first screenful could
-                            // be reached.
-                            .max_w(px(820.))
-                            .max_h(px(240.))
-                            .mx_auto()
-                            .child(div().w_full().overflow_y_scrollbar().child(queue_view)),
-                    )
-                })
-            })
-            .when_some(self.slash_overlay.clone(), |area, overlay| {
-                area.key_context("SlashOverlay")
-                    .child(self.render_slash_overlay(&overlay, cx))
-            })
-            .child(
-                div()
-                    .id("composer-frame")
-                    .debug_selector(|| "composer-frame".into())
-                    .w_full()
-                    .max_w(px(900.))
-                    .mx_auto()
-                    .child(self.prompt.clone()),
+                ),
             )
+            .when(self.queue_expanded, |accessory| {
+                accessory.child(
+                    div()
+                        .track_focus(&self.queue_focus)
+                        .key_context("Queue")
+                        .w_full()
+                        // Never taller than a few rows: a long queue scrolls
+                        // instead of pushing the transcript off screen. The cap
+                        // belongs on this wrapper — on the scroll content it
+                        // would clamp the content itself and nothing past the
+                        // first screenful could be reached.
+                        .max_h(px(240.))
+                        .child(div().w_full().overflow_y_scrollbar().child(queue_view)),
+                )
+            })
             .into_any_element()
     }
 
@@ -20001,6 +20067,128 @@ mod tests {
         let _ = std::fs::remove_dir_all(data_dir);
     }
 
+    /// The queue badge is a composer accessory, not a second input: it keeps
+    /// its own text width and shares the composer's left gutter.
+    #[gpui::test]
+    fn the_queue_badge_is_a_narrow_accessory_above_the_composer(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(840.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.composer.queue = Arc::from([tact_desktop_core::QueuedPromptView {
+                    id: 0,
+                    text: Arc::from("first queued prompt"),
+                    attachments: Arc::from([]),
+                }]);
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+        let badge = window
+            .debug_bounds("composer-queue-toggle")
+            .expect("queue badge");
+        let composer = window
+            .debug_bounds("composer-frame")
+            .expect("composer frame");
+        assert!(
+            badge.size.width < composer.size.width / 2.,
+            "the badge keeps its own text width instead of stretching to the composer: badge={badge:?}, composer={composer:?}"
+        );
+        assert_eq!(
+            badge.origin.x, composer.origin.x,
+            "the badge shares the composer's left gutter"
+        );
+        assert_eq!(
+            composer.origin.y - badge.bottom(),
+            px(crate::ui::layout::ACCESSORY_GAP),
+            "the queue sits one tight gap above the composer: badge={badge:?}, composer={composer:?}"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// A window too narrow for the accessory's own width must clamp it, not
+    /// overflow the composer column.
+    #[gpui::test]
+    fn a_narrow_window_clamps_the_accessories_to_the_composer(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(900.), px(700.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.composer.queue = Arc::from([tact_desktop_core::QueuedPromptView {
+                    id: 0,
+                    text: Arc::from("first queued prompt"),
+                    attachments: Arc::from([]),
+                }]);
+                snapshot.inspector = tact_desktop_core::fixtures::demo_inspector();
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+                this.sticky_tasks_collapsed = false;
+            });
+            window.draw(cx).clear(cx);
+        });
+        let composer = window
+            .debug_bounds("composer-frame")
+            .expect("composer frame");
+        let badge = window
+            .debug_bounds("composer-queue-toggle")
+            .expect("queue badge");
+        let card = window
+            .debug_bounds("sticky-task-card")
+            .expect("sticky task card");
+        for (name, bounds) in [("badge", badge), ("sticky card", card)] {
+            assert!(
+                bounds.size.width <= composer.size.width,
+                "the {name} must clamp to the composer, not overflow it: {bounds:?} vs {composer:?}"
+            );
+            assert!(
+                bounds.right() <= composer.right(),
+                "the {name} must not extend past the composer's right edge: {bounds:?} vs {composer:?}"
+            );
+        }
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// The sticky strip is the composer's accessory: its card shares the
+    /// composer's gutter, is narrower than it, and settles against it.
+    #[gpui::test]
+    fn the_sticky_card_is_a_narrow_accessory_above_the_composer(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(840.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.inspector = tact_desktop_core::fixtures::demo_inspector();
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+                this.sticky_tasks_collapsed = false;
+            });
+            window.draw(cx).clear(cx);
+        });
+        let card = window
+            .debug_bounds("sticky-task-card")
+            .expect("sticky task card");
+        let composer = window
+            .debug_bounds("composer-frame")
+            .expect("composer frame");
+        assert!(
+            card.size.width < composer.size.width,
+            "the card is narrower than the composer it belongs to: card={card:?}, composer={composer:?}"
+        );
+        assert_eq!(
+            card.origin.x, composer.origin.x,
+            "the card shares the composer's left gutter"
+        );
+        assert_eq!(
+            composer.origin.y - card.bottom(),
+            px(crate::ui::layout::ACCESSORY_GAP),
+            "the card settles one tight gap above the composer: card={card:?}, composer={composer:?}"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
     #[gpui::test]
     fn every_catalog_entry_executes_in_the_shell(cx: &mut TestAppContext) {
         // Counting loop iterations proves nothing: `execute_command` returns
@@ -22005,12 +22193,18 @@ mod tests {
             "composer x"
         );
 
-        let sticky = window.debug_bounds("sticky-strip").expect("sticky strip");
-        assert_eq!(sticky.size.width, px(900.), "sticky width");
+        // The strip itself is the full-width band above the composer; the
+        // column it centers is the composer's own column, which is what makes
+        // the card share the input's gutter at every window width.
+        let sticky = window.debug_bounds("sticky-column").expect("sticky column");
         assert_eq!(
-            sticky.origin.x,
-            area.origin.x + (area.size.width - px(900.)) / 2.,
-            "sticky x"
+            sticky.size.width,
+            px(crate::ui::layout::COMPOSER_WIDTH),
+            "sticky width matches the composer column"
+        );
+        assert_eq!(
+            sticky.origin.x, composer.origin.x,
+            "sticky shares the composer gutter"
         );
 
         shutdown.shutdown_blocking().unwrap();
