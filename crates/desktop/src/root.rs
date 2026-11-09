@@ -9174,7 +9174,7 @@ impl DesktopRoot {
                     .items_start()
                     .gap(px(crate::ui::layout::ACCESSORY_GAP))
                     .when(!self.snapshot.composer.queue.is_empty(), |stack| {
-                        stack.child(self.render_queue_accessory(queue_view, queue_len, cx))
+                        stack.child(self.render_queue_accessory(queue_view, cx))
                     })
                     .child(
                         div()
@@ -9198,51 +9198,49 @@ impl DesktopRoot {
     fn render_queue_accessory(
         &self,
         queue_view: MessageQueue,
-        queue_len: usize,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let queue_len = self.snapshot.composer.queue.len();
         v_flex()
             .id("composer-queue-accessory")
             .debug_selector(|| "composer-queue-accessory".into())
             .w_full()
             .max_w(px(crate::ui::layout::ACCESSORY_WIDTH))
+            // `items_start` is what keeps the badge at its own text width; a
+            // stretched child would make a two-word badge as wide as the
+            // composer.
             .items_start()
             .gap(px(crate::ui::layout::ACCESSORY_GAP))
-            // A row wrapper keeps the badge at its own text width: a bare child
-            // of the column stretches to the column, which is what made a
-            // two-word badge as wide as the composer.
             .child(
-                h_flex().w_full().child(
-                    div()
-                        .id("composer-queue-toggle")
-                        .debug_selector(|| "composer-queue-toggle".into())
-                        .role(Role::Button)
-                        .focusable()
-                        .tab_stop(true)
-                        .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
-                        .aria_label(format!(
-                            "{} {} {queue_len}",
-                            self.text(TextKey::Queue),
-                            self.text(TextKey::Expand)
-                        ))
-                        .cursor_pointer()
-                        .rounded_full()
-                        .border_1()
-                        .border_color(cx.theme().border)
-                        .px_2()
-                        .py_1()
-                        .text_xs()
-                        .text_color(cx.theme().link)
-                        .bg(cx.theme().accent)
-                        .child(format!(
-                            "{} {queue_len}",
-                            self.text(TextKey::Queued).to_uppercase()
-                        ))
-                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                            this.queue_expanded = !this.queue_expanded;
-                            cx.notify();
-                        })),
-                ),
+                div()
+                    .id("composer-queue-toggle")
+                    .debug_selector(|| "composer-queue-toggle".into())
+                    .role(Role::Button)
+                    .focusable()
+                    .tab_stop(true)
+                    .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
+                    .aria_label(format!(
+                        "{} {} {queue_len}",
+                        self.text(TextKey::Queue),
+                        self.text(TextKey::Expand)
+                    ))
+                    .cursor_pointer()
+                    .rounded_full()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .px_2()
+                    .py_1()
+                    .text_xs()
+                    .text_color(cx.theme().link)
+                    .bg(cx.theme().accent)
+                    .child(format!(
+                        "{} {queue_len}",
+                        self.text(TextKey::Queued).to_uppercase()
+                    ))
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.queue_expanded = !this.queue_expanded;
+                        cx.notify();
+                    })),
             )
             .when(self.queue_expanded, |accessory| {
                 accessory.child(

@@ -22987,8 +22987,9 @@ Desktop：队列、权限条与任务卡对齐到 composer 的轴</h2>
 （4）。composer 区先铺同一个 22px gutter，再放一条 900px 居中的
 <code>composer-stack</code> 列（<code>items_start</code>、4px gap），
 <code>composer-frame</code> 只是填满该列，不再自己居中。排队提示成为
-<code>composer-queue-accessory</code>（≤780、左对齐），徽标外面套一行
-<code>h_flex</code> 以保住自己的文本宽度，展开的列表仍限高 240px 内部滚动。
+<code>composer-queue-accessory</code>（≤780、左对齐），列的
+<code>items_start</code> 让徽标保持自身文本宽度而不是被拉伸成整行，展开的列表
+仍限高 240px 内部滚动。
 粘性条同样改成 <code>sticky-strip</code>（22px gutter）+
 <code>sticky-column</code>（900px 居中、<code>items_start</code>），权限条与
 任务卡 ≤780、左沿与 composer 对齐，卡底与 composer 顶之间正是
