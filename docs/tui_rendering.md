@@ -249,7 +249,7 @@ Completed code cards remain overlays; thinking and tool cards are direct log cel
 
 | Card Type | File | Description |
 |---|---|---|
-| Thinking card | `cells/thinking.rs` | Direct live card of one row per reasoning line (1→3 tail), then a footer row carrying the title, elapsed time, line count and open button; a finished card is its summary plus that footer |
+| Thinking card | `cells/thinking.rs` | Direct live card with a header row carrying the title, elapsed time, line count and open button, then one row per reasoning line (1→3 tail); a finished card is that header plus its summary |
 | Code card | `cells/code.rs` | Completed code block card with syntax highlighting; plain language label in title (no side emoji icons) |
 
 ### 6.5 Tool Blocks (`cells/tool.rs`)
@@ -310,16 +310,20 @@ The basic log rendering unit, supporting:
 
 ### Card Cells
 
-- `thinking.rs`: borderless direct card of one row per reasoning line plus one footer row carrying the title, elapsed time, line count and open button; a finished card is its summary plus that footer
+- `thinking.rs`: borderless direct card with a header row carrying the title, elapsed time, line count and open button, then one row per reasoning line; a finished card is that header plus its summary
 - `diff.rs`: green `+` prefix, shows file path and line numbers
 - `code.rs`: dark blue-gray background, shows language tag and code preview
 
 ### Thinking Card Rows
 
-A thinking card draws one row per reasoning line, then a footer row. A finished
-card is two rows: its summary, and a footer carrying the title, the elapsed time,
-the line count and the open button. A live card grows to four while its tail
-streams.
+A thinking card draws a header row, then one row per reasoning line. A finished
+card is two rows: the header carrying the title, the elapsed time, the line count
+and the open button, and the summary under it. A live card grows to four while
+its tail streams.
+
+The header leads because it names the state the block is in, and a live card's
+reasoning grows downward from it. With the label on the last row it drifted down
+the screen with every new line, and a status that moves is not a status.
 
 The card has no border and no blank rows of its own. It used to spend five rows
 on a one-line summary, and four of those five were two borders and two blank rows.
@@ -330,8 +334,8 @@ largest single source, against 36 percent for tool calls. That number is an
 observation about one machine's history, not a property of this code; re-measure
 before quoting it.
 
-The footer keeps a row to itself rather than joining the summary. A single row
-would have to carry the title, the summary and the footer at once. At an 80
+The header keeps a row to itself rather than joining the summary. A single row
+would have to carry the title, the summary and the readout at once. At an 80
 column panel that leaves the summary 30 columns; two rows leave it the full 75.
 
 The button does survive on one row at ordinary widths, so the extra row does not

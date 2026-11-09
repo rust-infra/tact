@@ -30,7 +30,7 @@ const CONTENT_PAD: u16 = 1;
 /// [`CONTENT_PAD`] as the prose prefix, so the glyphs and the hit rect agree.
 const PAD: &str = " ";
 
-/// Rows a thinking card occupies: one per body line, plus the footer.
+/// Rows a thinking card occupies: a header, then one row per body line.
 ///
 /// A finished card passes one body line (its summary) and takes two rows. A
 /// live card passes the size of its reasoning tail, so it grows to four.
@@ -39,8 +39,8 @@ const PAD: &str = " ";
 /// rows on a one-line summary, and the other four were two borders and two blank
 /// rows.
 ///
-/// The footer keeps a row of its own rather than joining the summary. One row
-/// would have to hold the title, the summary and the footer at once, and at 80
+/// The header keeps a row of its own rather than joining the summary. One row
+/// would have to hold the title, the summary and the readout at once, and at 80
 /// columns that leaves the summary 30 columns; two rows leave it 75.
 pub fn thinking_visual_rows(body_lines: usize) -> usize {
     body_lines.clamp(1, 3) + 1
@@ -148,12 +148,16 @@ impl ThinkingCell {
         Line::from(spans)
     }
 
-    /// The card's last row: the title, then the readout and the button.
+    /// The card's first row: the title, then the readout and the button.
     ///
-    /// The title lives here rather than above the reasoning so every reasoning
-    /// line keeps the panel's text column. It also keeps the card's identity on
-    /// the row that already carries its facts.
-    fn footer_line(&self) -> Line<'static> {
+    /// The title leads because it names the state the block is in, and a live
+    /// card's reasoning grows downward from it. On the last row the label
+    /// drifted down the screen with every new line, and a status that moves is
+    /// not a status.
+    ///
+    /// Keeping the title off the body rows is what lets reasoning keep the
+    /// panel's text column: as a prefix it would push every line right.
+    fn header_line(&self) -> Line<'static> {
         let title_style = Style::default().fg(self.accent).bg(self.bg);
         let mut spans = vec![
             Span::styled(PAD, title_style),
@@ -169,7 +173,7 @@ impl ThinkingCell {
 
     /// The reasoning rows, all at the panel's own text column.
     ///
-    /// No title prefix: the title moves to the footer, so a summary sits in the
+    /// No title prefix: the title leads on its own row, so a summary sits in the
     /// same column as an assistant reply and the reasoning reads as prose rather
     /// than as a caption beside a glyph. Prefixing the title would push every
     /// line 12 to 16 columns right, a fifth of an 80-column panel.
@@ -213,23 +217,23 @@ impl ThinkingCell {
         Some((Rect::new(area.x, area.y, area.width, height), skip_lines))
     }
 
-    /// The footer's `[󰜼 Open]` button as a screen rect, for the same
+    /// The header's `[󰜼 Open]` button as a screen rect, for the same
     /// `(area, skip_lines)` the renderer draws the cell with.
     ///
-    /// This is the card's **only** clickable glyphs: the summary row is text and
-    /// opens nothing by itself. `None` when the locale drew no button, when the
-    /// clip leaves the footer off the frame, or when the card is too narrow to
-    /// draw the whole button — a half-drawn button is not a half-target.
-    pub fn footer_button_rect(&self, area: Rect, skip_lines: usize) -> Option<Rect> {
+    /// This is the card's **only** clickable glyphs: the reasoning rows are text
+    /// and open nothing by themselves. `None` when the locale drew no button,
+    /// when the clip has scrolled the header off the frame, or when the card is
+    /// too narrow to draw the whole button — a half-drawn button is not a
+    /// half-target.
+    pub fn open_button_rect(&self, area: Rect, skip_lines: usize) -> Option<Rect> {
         let label = self.bottom_action?;
         let (rect, skipped) = self.visible_geometry(area, skip_lines)?;
-        // `visible_geometry` already rejected a clip past the cell's last row,
-        // and the footer is that row, so it is on screen from here on.
-        let footer_row = self.body_lines();
-        let y = rect.y + (footer_row - skipped) as u16;
-        if y >= rect.bottom() {
+        // The header is the cell's first row, so a clip past it leaves no
+        // button to hit.
+        if skipped > 0 {
             return None;
         }
+        let y = rect.y;
         let glyphs = ButtonChrome::Brackets.wrap(label);
         let width = UnicodeWidthStr::width(glyphs.as_str()) as u16;
         let x = rect
@@ -260,15 +264,14 @@ impl Renderable for ThinkingCell {
         buf.set_style(rect, Style::default().bg(self.bg));
 
         let body = self.body_rows(rect.width);
-        let footer_row = self.body_lines();
         for offset in 0..rect.height as usize {
             let row = skipped + offset;
             let y = rect.y + offset as u16;
-            if row < footer_row {
-                buf.set_line(rect.x, y, &body[row], rect.width);
-            } else if row == footer_row {
-                let line = self.footer_line();
+            if row == 0 {
+                let line = self.header_line();
                 buf.set_line(rect.x, y, &line, rect.width);
+            } else if let Some(line) = body.get(row - 1) {
+                buf.set_line(rect.x, y, line, rect.width);
             }
         }
     }
@@ -417,15 +420,15 @@ mod tests {
         let msgs = crate::i18n::Messages::by_language(crate::i18n::Language::English);
         let cell = completed_cell(&msgs, &theme);
 
-        assert_eq!(cell.height(80), 2, "a summary plus its footer");
+        assert_eq!(cell.height(80), 2, "a header plus its summary");
         let text = render_text(&cell);
         let rows: Vec<_> = text.lines().collect();
         assert_eq!(rows.len(), 2, "{text}");
-        assert!(rows[0].contains("last"), "the summary leads: {text}");
         assert!(
-            rows[1].contains("Thought") && rows[1].contains("Open"),
-            "the title and the button share the footer: {text}"
+            rows[0].contains("Thought") && rows[0].contains("Open"),
+            "the header leads: {text}"
         );
+        assert!(rows[1].contains("last"), "the summary follows: {text}");
         for (n, row) in rows.iter().enumerate() {
             assert!(
                 !row.trim().is_empty(),
@@ -443,15 +446,14 @@ mod tests {
         active.push_delta("one\ntwo\nthree\n");
         let cell = ThinkingCell::active(&active, 'x', &theme, &msgs);
 
-        assert_eq!(cell.height(80), 4, "three reasoning lines plus the footer");
+        assert_eq!(cell.height(80), 4, "a header plus three reasoning lines");
         let text = render_text(&cell);
         for needle in ["one", "two", "three", "Open"] {
             assert!(text.contains(needle), "{needle} missing from:\n{text}");
         }
         // One column of reasoning: `two` starts in the same terminal column
-        // `one` does. Read the column off the buffer rather than off a joined
-        // string: the title glyph is one character but two cells, so a
-        // character index and a cell index disagree exactly where this matters.
+        // `one` does. The header takes the first row, so the reasoning lines
+        // are rows 1..; the comparison below accounts for that.
         let area = Rect::new(0, 0, 80, cell.height(80));
         let backend = TestBackend::new(area.width, area.height);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -470,13 +472,13 @@ mod tests {
                 .unwrap_or_else(|| panic!("{needle} not drawn on row {row}:\n{text}"))
         };
         assert_eq!(
-            column_of(0, "one"),
-            column_of(1, "two"),
+            column_of(1, "one"),
+            column_of(2, "two"),
             "the tail must not staircase:\n{text}"
         );
         assert_eq!(
-            column_of(0, "one"),
-            column_of(2, "three"),
+            column_of(1, "one"),
+            column_of(3, "three"),
             "every tail line shares the column:\n{text}"
         );
     }
@@ -485,7 +487,7 @@ mod tests {
     /// the columns it draws them on — the rect is computed from the card's own
     /// geometry, and this reads it back off the buffer instead of trusting it.
     #[test]
-    fn the_footer_button_rect_is_the_drawn_button() {
+    fn the_open_button_rect_is_the_drawn_button() {
         let theme = Theme::from(crate::theme::ThemeName::Dark);
         for lang in [
             crate::i18n::Language::English,
@@ -498,7 +500,7 @@ mod tests {
             let expected = ButtonChrome::Brackets.wrap(msgs.thinking_card_action);
 
             let rect = cell
-                .footer_button_rect(area, 0)
+                .open_button_rect(area, 0)
                 .unwrap_or_else(|| panic!("{lang:?}: a drawn footer carries a button"));
             assert_eq!(rect.height, 1, "{lang:?}: the button is one row");
             // Pinned against the pixels, not against the arithmetic that
@@ -536,29 +538,31 @@ mod tests {
         }
     }
 
-    /// A card whose footer row is clipped off the frame draws no button, so it
-    /// has no target — the rect must not point at rows that are not there.
+    /// The header is the card's first row, so a clip that scrolls it away
+    /// leaves no button; the rect must not point at a row that no longer shows
+    /// it. A card too narrow for the whole button is also not a half-target.
     #[test]
-    fn a_clipped_footer_has_no_button_rect() {
+    fn a_scrolled_off_header_has_no_button_rect() {
         let theme = Theme::from(crate::theme::ThemeName::Dark);
         let msgs = crate::i18n::Messages::by_language(crate::i18n::Language::English);
         let cell = completed_cell(&msgs, &theme);
 
         assert!(
-            cell.footer_button_rect(Rect::new(0, 0, 80, 1), 0).is_none(),
-            "a card whose last row is clipped off draws no button"
+            cell.open_button_rect(Rect::new(0, 0, 80, cell.height(80)), 1)
+                .is_none(),
+            "scrolled past the header there is no button to hit"
         );
         assert!(
-            cell.footer_button_rect(Rect::new(0, 0, 10, cell.height(10)), 0)
+            cell.open_button_rect(Rect::new(0, 0, 10, cell.height(10)), 0)
                 .is_none(),
             "a card too narrow for the whole button is not a half-target"
         );
     }
 
-    /// Scrolled up by one row the summary is gone and the footer moves into its
-    /// place, so the rect has to follow it.
+    /// Unclipped, the rect lands on the glyphs the frame draws — including when
+    /// the cell sits at a vertical offset inside a panel.
     #[test]
-    fn the_button_rect_follows_a_scrolled_card() {
+    fn the_button_rect_tracks_the_header_row() {
         let theme = Theme::from(crate::theme::ThemeName::Dark);
         let msgs = crate::i18n::Messages::by_language(crate::i18n::Language::English);
         let cell = completed_cell(&msgs, &theme);
@@ -567,13 +571,14 @@ mod tests {
         let backend = TestBackend::new(area.width, area.height);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|frame| cell.render_partial(frame.area(), frame.buffer_mut(), 1))
+            .draw(|frame| cell.render(frame.area(), frame.buffer_mut()))
             .expect("draw");
         let buf = terminal.backend().buffer().clone();
 
         let rect = cell
-            .footer_button_rect(area, 1)
+            .open_button_rect(area, 0)
             .expect("a fully visible card keeps its button");
+        assert_eq!(rect.y, 0, "the header is the card's first row");
         let drawn: String = (rect.x..rect.right())
             .map(|x| buf[(x, rect.y)].symbol())
             .collect();

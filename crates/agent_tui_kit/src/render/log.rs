@@ -293,7 +293,7 @@ pub fn render_log_panel_pure(
                     // rows are not a click target, these glyphs are.
                     if let Some((cell_area, skip_lines)) =
                         renderer.cell_slice(vis_start, cell.height(inner.width) as usize, inner)
-                        && let Some(rect) = cell.footer_button_rect(cell_area, skip_lines)
+                        && let Some(rect) = cell.open_button_rect(cell_area, skip_lines)
                         && let Some(block_id) = ctx
                             .thinking
                             .active
