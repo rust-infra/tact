@@ -1179,10 +1179,12 @@ border）——显示行按软换行后的行数计，不只统计显式
 <code>log_scroll.visual_top</code>（首条可见 visual
 行；<code>usize::MAX</code> = 钉住底部哨兵）钳制到
 <code>total - height</code>，并派生 <code>log_scroll.offset</code>
-逻辑镜像供 hit-test/弹窗使用。高于 viewport 的 cell 由
+逻辑镜像供 hit-test/弹窗使用。滚动步进由
 <code>widgets/state/app/scroll.rs</code> 的
-<code>visual_step_up/down</code> 按视觉行步进（cell 内
-<code>j</code>/<code>k</code> 半屏、滚轮 3 行；否则按行边界跳转）。</li>
+<code>scroll_log_up/down</code> 负责：一次移动固定条数的<strong>视觉行</strong>
+（<code>j</code>/<code>k</code> 一行、滚轮三行、<code>g</code>/<code>G</code>
+到两端），与该行折成几行无关——行是存储单位，不是滚动单位。半屏步进
+（<code>key_cell_step</code>）只留给子代理转录那种整块卡片视图。</li>
 <li><strong>Phase 3</strong> — 用
 <code>TextCell</code>、<code>ToolCell</code>、<code>ThinkingCell</code>
 构建 <code>LogColumnRenderer</code>；code 保持 overlay；仅绘制与

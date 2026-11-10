@@ -159,9 +159,9 @@ fn prepare_log_frame(
         for phys in 0..log.items.len() {
             // A folded run is one logical row: its first physical row carries
             // the summary and the members after it are not rows at all. They
-            // are left out of the mapping rather than given zero height,
-            // because a zero-height row deadlocks `visual_step_up` (it returns
-            // `row_top` unchanged and the reader can never scroll past it).
+            // are left out of the mapping rather than given zero height, since
+            // a row that wraps to nothing would put two entries at the same
+            // visual start and make the row under the viewport ambiguous.
             if fold.hides(phys) {
                 continue;
             }

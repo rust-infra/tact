@@ -208,6 +208,92 @@ fn a_press_moves_one_line_inside_a_tall_table() {
     );
 }
 
+/// Wrapped rows are stepped through, not taken whole.
+///
+/// A four-line paragraph is four presses, in either direction. The log used to
+/// jump from row boundary to row boundary, so one press moved the viewport by
+/// the height of the row it left, and going up it visibly skipped lines.
+///
+/// The assertion is on the rendered screen: the marker row slides up by exactly
+/// one line per press, then back down by one, while the rows around it wrap.
+#[test]
+fn a_press_moves_one_line_through_wrapped_rows_both_ways() {
+    let mut app = make_app();
+    for i in 0..6 {
+        app.add_system_message(format!(
+            "above-{i:02} a body long enough to wrap into several visual lines here"
+        ));
+    }
+    app.add_system_message("MARKER".into());
+    for i in 0..6 {
+        app.add_system_message(format!(
+            "below-{i:02} a body long enough to wrap into several visual lines here"
+        ));
+    }
+
+    let (width, height) = (40u16, 14u16);
+    let _ = render_log_panel_text(&mut app, width, height);
+    app.scroll_log_to_top();
+    let rendered = render_log_panel_text(&mut app, width, height);
+
+    // Fixture: a row is several visual lines, or this test is about nothing.
+    let total = *app.log_scroll.visual_start.last().expect("cache built");
+    assert!(
+        total > 2 * app.log_scroll.height as usize,
+        "fixture: the log must overflow the viewport, got {total} lines"
+    );
+
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    app.input_mode = crate::widgets::state::InputMode::Normal;
+    let press = |app: &mut App, ch: char| {
+        crate::handlers::handle_normal_mode(
+            app,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(ch),
+                crossterm::event::KeyModifiers::empty(),
+            ),
+            &tx,
+        );
+        let _ = render_log_panel_text(app, width, height);
+    };
+
+    // Walk down until the marker is on screen, then record its row.
+    let mut marker_row = line_index_of(&rendered, "MARKER");
+    let mut down = Vec::new();
+    for _ in 0..12 {
+        press(&mut app, 'j');
+        let text = render_log_panel_text(&mut app, width, height);
+        let Some(row) = line_index_of(&text, "MARKER") else {
+            break;
+        };
+        if let Some(prev) = marker_row {
+            down.push(prev - row);
+        }
+        marker_row = Some(row);
+    }
+    let mut up = Vec::new();
+    for _ in 0..12 {
+        press(&mut app, 'k');
+        let text = render_log_panel_text(&mut app, width, height);
+        let Some(row) = line_index_of(&text, "MARKER") else {
+            break;
+        };
+        if let Some(prev) = marker_row {
+            up.push(row - prev);
+        }
+        marker_row = Some(row);
+    }
+
+    assert!(
+        down.len() >= 4 && down.iter().all(|&d| d == 1),
+        "the marker must slide up one line per press down, got {down:?}"
+    );
+    assert!(
+        up.len() >= 4 && up.iter().all(|&d| d == 1),
+        "the marker must slide down one line per press up, got {up:?}"
+    );
+}
+
 #[test]
 fn tall_markdown_cell_is_fully_traversable() {
     // Regression: a whole-Markdown message taller than the viewport (a long
@@ -224,11 +310,10 @@ fn tall_markdown_cell_is_fully_traversable() {
     app.append_markdown(md);
 
     // 60x10 terminal → 8 content lines for the bordered panel.
-    let viewport_height = 8usize;
     let _ = render_log_panel_text(&mut app, 60, 10);
     app.scroll_log_to_top();
 
-    let step = crate::widgets::state::app::scroll::key_cell_step(viewport_height);
+    let step = crate::widgets::state::app::scroll::LOG_LINE_STEP;
     let mut seen_top = false;
     let mut seen_mid = false;
     let mut seen_bottom = false;

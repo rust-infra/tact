@@ -144,13 +144,13 @@ pub(crate) fn handle_mouse_scroll_up(app: &mut App, hit: MousePanelHit) {
         app.overlay_popup_scroll_up();
     } else if app.show_subagent_view {
         // A wheel-up is the same decision as `k`: stop following the tail.
-        app.subagent_scroll_by(-(crate::widgets::state::app::scroll::WHEEL_CELL_STEP as isize));
+        app.subagent_scroll_by(-(crate::widgets::state::app::scroll::WHEEL_STEP as isize));
     } else if hit.in_task_panel && sticky_scrollable(app) {
         app.mouse.in_task_panel = true;
         scroll_active_sticky(app, -1);
     } else if hit.in_log {
         app.mouse.in_task_panel = false;
-        app.scroll_log_up(crate::widgets::state::app::scroll::WHEEL_CELL_STEP);
+        app.scroll_log_up(crate::widgets::state::app::scroll::WHEEL_STEP);
     }
 }
 
@@ -160,13 +160,13 @@ pub(crate) fn handle_mouse_scroll_down(app: &mut App, hit: MousePanelHit) {
         app.overlay_popup_scroll_down();
     } else if app.show_subagent_view {
         // Wheel-down re-arms following once it reaches the end (the helper).
-        app.subagent_scroll_by(crate::widgets::state::app::scroll::WHEEL_CELL_STEP as isize);
+        app.subagent_scroll_by(crate::widgets::state::app::scroll::WHEEL_STEP as isize);
     } else if hit.in_task_panel && sticky_scrollable(app) {
         app.mouse.in_task_panel = true;
         scroll_active_sticky(app, 1);
     } else if hit.in_log {
         app.mouse.in_task_panel = false;
-        app.scroll_log_down(crate::widgets::state::app::scroll::WHEEL_CELL_STEP);
+        app.scroll_log_down(crate::widgets::state::app::scroll::WHEEL_STEP);
     }
 }
 
@@ -1695,7 +1695,7 @@ mod tests {
             app.add_system_message(format!("row-{i}"));
         }
         let _ = crate::render::test_harness::render_log_panel_text(&mut app, 60, 4);
-        app.log_scroll.visual_top = 2;
+        app.log_scroll.visual_top = 4;
 
         handle_mouse_scroll_up(
             &mut app,
@@ -1705,7 +1705,10 @@ mod tests {
             },
         );
 
-        assert_eq!(app.log_scroll.offset, 1);
+        assert_eq!(
+            app.log_scroll.visual_top, 1,
+            "one notch is three visual lines, whatever the rows are"
+        );
     }
 
     #[test]
@@ -1725,7 +1728,10 @@ mod tests {
             },
         );
 
-        assert_eq!(app.log_scroll.offset, 1);
+        assert_eq!(
+            app.log_scroll.offset, 3,
+            "the row mirror lands on the line three visual lines down"
+        );
     }
 
     #[test]

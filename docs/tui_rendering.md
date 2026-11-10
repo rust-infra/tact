@@ -237,10 +237,14 @@ The log panel is the most complex rendering component. Its core flow is:
 - The viewport's first visible *visual* line is `log_scroll.visual_top`
   (authoritative; `usize::MAX` = pin-to-bottom sentinel). `log_scroll.offset`
   is a derived logical mirror for hit-testing and popups.
-- Cells taller than the viewport are stepped through visually
-  (`visual_step_up/down` in `widgets/state/app/scroll.rs`: half a viewport
-  per `j`/`k`, 3 lines per wheel tick inside the cell; row-boundary jumps
-  otherwise).
+- A scroll step moves `visual_top` by a number of *visual lines* and clamps
+  it to the content, whatever the row under it is. A row is a storage unit,
+  not a scroll unit: `j`/`k` move one line (`LOG_LINE_STEP`) and the wheel
+  moves three (`WHEEL_STEP`) whether the row is a single line or a paragraph
+  that wrapped into twelve. `g` and `G` jump to the ends.
+- `widgets/state/app/scroll.rs` owns these positions (`scroll_log_up/down`).
+  Half-screen steps (`key_cell_step`) belong to the subagent transcript only,
+  which is one bounded card rather than a column read line by line.
 - Only renders `TextCell`s that fall inside the current viewport.
 
 ### 6.4 Card Overlays
@@ -299,9 +303,9 @@ run and membership can never go stale.
 
 A folded run is **one logical row**, not a run of zero-height rows. Its members
 are left out of `visible_indices` and `phys_to_logical_cache` entirely. Giving
-them zero height instead would deadlock `visual_step_up`, which returns
-`row_top` unchanged for a zero-height row, so upward scroll would stop at the
-fold and never pass it.
+them zero height instead would repeat the same visual start for two rows, so
+the row sitting under the viewport top would be ambiguous for the logical
+offset mirror.
 
 Folding changes how many logical rows exist without changing how many physical
 rows there are, so `log.items.len()` cannot invalidate the layout caches. Both
