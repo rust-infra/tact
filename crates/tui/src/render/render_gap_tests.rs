@@ -1475,3 +1475,35 @@ fn a_folded_tool_run_keeps_one_blank_row_on_both_sides() {
     );
     assert_blank(&rows, summary + 1, "between the run and the reply");
 }
+
+/// A system message after a card keeps one blank row from it.
+///
+/// `add_system_message` appends straight to the log and never runs the stream
+/// path's `ensure_gap_after_*` rules, so the gap cannot come from there. It has
+/// to come from the card's own row count: the card's last row is its status row,
+/// and the row under it belongs to nobody unless the card reserves it.
+///
+/// This is the one direction the spacing table cannot cover by rule, because no
+/// `ensure_gap_before_*` runs for a system message at all.
+#[test]
+fn a_system_message_after_a_card_keeps_one_blank_row() {
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+        "Considering the options.\n".into(),
+    )));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+    app.add_system_message("note from the app".into());
+
+    let rows = rendered_rows(&mut app, 100, 20);
+
+    let card = row_nth(&rows, "Thought", 0);
+    let note = row_nth(&rows, "note from the app", 0);
+    assert_eq!(
+        note,
+        card + 2,
+        "the card and a following system message must be one blank row apart:\n{}",
+        rows.join("\n")
+    );
+    assert_blank(&rows, card + 1, "between the card and the system message");
+}

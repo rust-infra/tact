@@ -22006,8 +22006,19 @@ sticky 卡片整条消失，恢复干净对话区；有任一域活跃时卡片�
 （均读真实帧的行号，不是读状态字段）；逐条把对应的修复移走后确认会失败。
 <code>cargo test -p agent_tui_kit --lib</code> 454、<code>cargo test -p tui --lib</code>
 781 全绿，clippy <code>-D warnings</code> 与 fmt 干净。</p>
+<p><strong>卡片之后的系统消息（同日追加）：</strong> 间距规则有一条覆盖不到的缝。
+<code>add_system_message</code> 直接往日志里追加，完全不经过流式路径的那几个
+<code>ensure_gap_*</code>，所以「卡片 → 系统消息」这一侧没有任何人补空行：
+<code>prose → card</code> 有一行空行，<code>card → prose</code> 却紧贴，
+和「普通内容与卡片区之间恰好一个空行」这条规则相反。修法是加一个对称入口
+<code>ensure_gap_before_system_message</code>，由 <code>add_system_message</code> 在追加前调用。
+没有让卡片重新占一行尾部空行：那会把「一张卡一行」的目标抵掉。
+<code>card → tool</code> 仍然无间距，这段只针对普通内容。</p>
+<p><strong>验证（追加）：</strong> <code>a_system_message_after_a_card_keeps_one_blank_row</code>
+在真实帧里读行号，断言系统消息在卡片下一格（card + 2）。修复前是 card + 1，失败。</p>
 <p><strong>Pointers：</strong>
 <code>crates/tui/src/widgets/state/app/visibility.rs</code>（<code>ensure_gap_before_thinking</code>、
+<code>ensure_gap_before_system_message</code>、
 <code>ensure_gap_after_thinking</code>、<code>phys_idx_is_separator</code>）、
 <code>crates/agent_tui_kit/src/state/thinking.rs</code>（<code>preceded_by_gap</code>）、
 <code>crates/tui/src/render/render_gap_tests.rs</code>、

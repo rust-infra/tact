@@ -329,6 +329,7 @@ impl App {
     /// system color for each line.
     pub(crate) fn add_system_message(&mut self, content: String) {
         let theme = self.theme;
+        self.ensure_gap_before_system_message();
         for line in content.split('\n') {
             let style = SystemMsgStyle::from_marker(line).unwrap_or(SystemMsgStyle::Default);
             self.append_msg(

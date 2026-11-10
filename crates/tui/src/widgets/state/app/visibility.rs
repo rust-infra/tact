@@ -679,6 +679,23 @@ impl App {
         self.append_blank(LogItemKind::AssistantMarkdown);
     }
 
+    /// Blank line before a system message when it follows a card.
+    ///
+    /// A system message is appended straight to the log and runs none of the
+    /// streaming path's gap checks, so without this a note lands flush against
+    /// the card's status row. The rule is the same one the reply path uses: a
+    /// card's status row is a block of its own, and ordinary content under it
+    /// stays one blank row away.
+    pub(crate) fn ensure_gap_before_system_message(&mut self) {
+        let Some(phys) = self.last_visible_phys_idx() else {
+            return;
+        };
+        if !self.phys_idx_owned_by_card(phys) || self.phys_idx_is_separator(phys) {
+            return;
+        }
+        self.append_blank(LogItemKind::AssistantMarkdown);
+    }
+
     /// Blank line before assistant stream content when it follows a user message.
     pub(crate) fn ensure_gap_after_user_message(&mut self) {
         let Some(phys) = self.last_visible_phys_idx() else {

@@ -293,6 +293,11 @@ The four transitions and who owns them:
 | thinking card → thinking card | none | `ensure_gap_before_thinking` returns early |
 | tool block → assistant reply | one row | `ensure_gap_after_tools` |
 | thinking card → assistant reply | one row | `ensure_gap_after_thinking` |
+| thinking card → system message | one row | `ensure_gap_before_system_message` |
+
+The system-message row is the one a reader would expect to be free and is not:
+`add_system_message` appends to the log directly and runs none of the streaming
+path's checks, so nothing on the reply side would have inserted that gap.
 
 No gap inside the region is deliberate on two counts: a blank row is what ends a folded tool run (`tool_group::runs` joins blocks that start where the previous one ends), and a call belongs next to the reasoning that explains it rather than being pushed away from it.
 
