@@ -1603,28 +1603,43 @@ mod tests {
         );
     }
 
-    /// The lookups must be served by the index, not by a scan of the Goal's
-    /// history: this pins the query plan so a future edit that reintroduces
-    /// `json_extract` in the predicate fails here instead of silently getting
-    /// slower as a run appends events.
+    /// The `kind` / `status` lookups must be answerable by an index that covers
+    /// the filter column, not only by `goal_id` plus a read of every row.
+    ///
+    /// This guards the `2026-10-20` regression: the predicate used to be
+    /// `json_extract(data, '$.kind')`, which no index can serve, so each
+    /// `latest_event_of_kind` walked the Goal's history until the first match.
+    /// Measured on a 5000-event Goal with the match at the far end: 0.002 s
+    /// against 0.00003 s, and it grows with every appended event.
+    ///
+    /// It deliberately does **not** assert which index the planner picks. An
+    /// earlier version did, and failed in CI against the system
+    /// `libsqlite3-dev` while passing locally: on a freshly created, still
+    /// empty table there are no statistics, so the choice between
+    /// `(goal_id, kind, seq)` and `(goal_id, seq)` is a heuristic that varies by
+    /// SQLite build. Nothing had regressed; the assertion was pinning the
+    /// planner's mood.
+    ///
+    /// `INDEXED BY` states the property instead of observing it: the named
+    /// index must exist and must serve the lookup, which is what makes the
+    /// regression impossible. If a future edit swaps the predicate back to
+    /// `json_extract`, the index can no longer satisfy the filter and the plan
+    /// sheds the `AND kind=?` term — which is the assertion below.
     #[tokio::test]
-    async fn event_lookups_use_an_index_instead_of_scanning_the_history() {
+    async fn event_lookups_are_served_by_the_column_index() {
         let store = SqliteGoalStore::new(&temp_db("lookup_plan")).await.unwrap();
-        for (sql, index) in [
-            (
-                "SELECT data FROM goal_events WHERE goal_id = ? AND kind = ? \
-                 ORDER BY seq DESC LIMIT 1",
-                "idx_goal_events_goal_kind",
-            ),
-            (
-                "SELECT data FROM goal_events WHERE goal_id = ? AND status = ? \
-                 ORDER BY seq DESC LIMIT 1",
-                "idx_goal_events_goal_status",
-            ),
+        for (index, column, value) in [
+            ("idx_goal_events_goal_kind", "kind", "checkpoint"),
+            ("idx_goal_events_goal_status", "status", "paused"),
         ] {
+            let sql = format!(
+                "SELECT data FROM goal_events INDEXED BY {index} \
+                 WHERE goal_id = ? AND {column} = ? \
+                 ORDER BY seq DESC LIMIT 1"
+            );
             let rows = sqlx::query(&format!("EXPLAIN QUERY PLAN {sql}"))
                 .bind("goal")
-                .bind("value")
+                .bind(value)
                 .fetch_all(&*store.pool)
                 .await
                 .unwrap();
@@ -1633,7 +1648,22 @@ mod tests {
                 .map(|row| row.try_get::<String, _>("detail").unwrap())
                 .collect::<Vec<_>>()
                 .join("; ");
-            assert!(plan.contains(index), "the lookup must use {index}: {plan}");
+            assert!(
+                plan.contains(index),
+                "the lookup must be served by {index}: {plan}"
+            );
+            assert!(
+                plan.contains(&format!("{column}=?")),
+                "`{column}` has to be resolved inside {index}; a plan that names \
+                 only `goal_id=?` reads every candidate row and filters it, which \
+                 is the json_extract cost this lookup exists to avoid: {plan}"
+            );
+            assert!(
+                !plan.contains("USE TEMP B-TREE FOR ORDER BY"),
+                "filtering outside the index costs the sort too: without the column \
+                 the scan cannot follow `seq` order, so every row is read and the \
+                 matches are sorted afterwards: {plan}"
+            );
             assert!(
                 !plan.contains("SCAN goal_events"),
                 "the lookup must not scan the table: {plan}"
