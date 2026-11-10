@@ -276,17 +276,31 @@ Key types:
 
 `StepAdded` only updates the internal `app.plan.steps` store (`description` = `tool (arg_summary)`); there is no dedicated plan panel, and it does not insert a separate log line. The log block appears on `StepStarted`. Untruncated args are available in the detail popup via `StepResult.arg_full`.
 
-One blank line separates tool blocks from preceding normal content (`ensure_gap_before_tools`). Thinking completion changes its existing card in place and does not add a separator.
+One blank line separates tool blocks from preceding normal content (`ensure_gap_before_tools`). Tool blocks and thinking cards stack with each other without a gap — they are one region of work, not two blocks. Thinking completion changes its existing card in place and does not add a separator.
 
 ### 6.5.1 Block Spacing
 
-Every block in the log — a paragraph, a tool block, a thinking card, a code card — is separated from the next by exactly one blank row. The rules live in `widgets/state/app/visibility.rs`: `ensure_gap_before_tools` / `ensure_gap_after_tools`, and `ensure_gap_before_thinking` / `ensure_gap_after_thinking` for cards.
+Ordinary content and the card region are separated by exactly one blank row. Inside the card region — tool blocks and thinking cards — rows stack with no gap at all. The rules live in `widgets/state/app/visibility.rs`: `ensure_gap_before_tools` / `ensure_gap_after_tools`, and `ensure_gap_before_thinking` / `ensure_gap_after_thinking` for cards.
 
-The thinking card is why this is written down. It used to carry its own leading blank row and a border, so the spacing was implicit in the card's chrome. Once the card became content-only (`cells/thinking.rs`), nothing separated the tool block's meta row, the card's header and the card's first body line, and the three stacked lines read as one table. A card now inserts its gap as a real row of the log when it opens.
+The four transitions and who owns them:
+
+| previous → next | gap | rule |
+|---|---|---|
+| user / assistant prose → tool block | one row | `ensure_gap_before_tools` |
+| user / assistant prose → thinking card | one row | `ensure_gap_before_thinking` |
+| tool block → thinking card | none | both `ensure_gap_*` return early |
+| thinking card → tool block | none | `ensure_gap_before_tools` returns early |
+| thinking card → thinking card | none | `ensure_gap_before_thinking` returns early |
+| tool block → assistant reply | one row | `ensure_gap_after_tools` |
+| thinking card → assistant reply | one row | `ensure_gap_after_thinking` |
+
+No gap inside the region is deliberate on two counts: a blank row is what ends a folded tool run (`tool_group::runs` joins blocks that start where the previous one ends), and a call belongs next to the reasoning that explains it rather than being pushed away from it.
+
+The thinking card is why this is written down at all. It used to carry its own leading blank row and a border, so the spacing was implicit in the card's chrome. Once the card became content-only (`cells/thinking.rs`), the boundary between prose and the card region disappeared.
 
 Two consequences worth knowing before editing this code:
 
-- A card's placeholder rows have an empty `raw`, exactly like the blank row that separates blocks, so `raw.is_empty()` cannot tell a gap from a card. `phys_idx_is_separator` excludes rows owned by a card (`phys_idx_owned_by_card`) before answering.
+- A card's placeholder rows have an empty `raw`, exactly like the blank row that separates blocks, so `raw.is_empty()` cannot tell a gap from a card. `phys_idx_is_separator` excludes rows owned by a card (`phys_idx_owned_by_card`) before answering, and the same predicate is what makes "the previous row is already a card" answerable.
 - The gap belongs to the card that opened it (`ActiveThinkingBlock::preceded_by_gap`). A card that finishes with no content removes its own rows *and* that gap, so an empty thinking turn leaves the log byte-for-byte as it found it.
 
 Indent: tool blocks use `LOG_TOOL_BLOCK_INDENT` (8 columns) in `render/util.rs`.
@@ -411,10 +425,10 @@ the screen with every new line, and a status that moves is not a status.
 The card has no border and no blank rows of its own. It used to spend five rows
 on a one-line summary, and four of those five were two borders and two blank rows.
 
-Dropping that chrome also dropped the spacing it provided. The gap between the
-card and the block before it is now a row of the log, inserted when the card
-opens and removed with the card if the card ends up empty — see
-[§6.5.1 Block Spacing](#651-block-spacing).
+Dropping that chrome moved the boundary between prose and the card region onto
+real log rows: a gap row is inserted when a card opens after prose, and removed
+with the card if the card ends up empty. A card that follows a tool block gets
+no gap — the two stack — see [§6.5.1 Block Spacing](#651-block-spacing).
 
 A local measurement over the 35 session transcripts in `.tact/transcripts` (3784
 thinking cards, 9081 tool calls) put thinking at 38 percent of all log rows, the

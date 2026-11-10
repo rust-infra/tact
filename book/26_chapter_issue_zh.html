@@ -21984,25 +21984,28 @@ sticky 卡片整条消失，恢复干净对话区；有任一域活跃时卡片�
 <code>raw.is_empty()</code>：卡片的占位行 <code>raw</code> 同样是空串，
 和块间空行无法区分，所以「上一行是空行 → 已有间距」的判断在卡片前面永远为真，
 工具块与卡片之间、卡片与回答之间的空行都补不上。</p>
-<p><strong>决策：</strong> 把「每个块之间恰好一个空行」写成一条规则，放在
-<code>widgets/state/app/visibility.rs</code>：卡片打开时
-<code>ensure_gap_before_thinking</code> 插入自己的空行，回答流开始时
-<code>ensure_gap_after_thinking</code> 补卡片后面的空行。区分「空行」与「卡片的空占位行」交给
+<p><strong>决策：</strong> 把「散文与卡片区之间恰好一个空行，卡片区内部不留空行」写成规则，放在
+<code>widgets/state/app/visibility.rs</code>。卡片打开时
+<code>ensure_gap_before_thinking</code> 判断上一行：是散文才插入自己的空行，是工具块或另一张卡片就不插；
+回答流开始时 <code>ensure_gap_after_thinking</code> 补卡片后面的空行。
+<code>ensure_gap_before_tools</code> 对称：上一行已经是卡片或工具块就不再插。
+区分「空行」与「卡片的空占位行」交给
 <code>phys_idx_is_separator</code>——先排除被卡片占用的行
-（<code>phys_idx_owned_by_card</code>）再判断。空行属于卡片本身
-（<code>ActiveThinkingBlock::preceded_by_gap</code>）：卡片收尾时如果没有内容，
+（<code>phys_idx_owned_by_card</code>）再判断；同一个谓词也回答了「上一行是不是已经在卡片区里」。
+空行属于卡片本身（<code>ActiveThinkingBlock::preceded_by_gap</code>）：卡片收尾时如果没有内容，
 连自己那行空行一起删掉，一次空的 thinking 不会在日志里留下孤立的空行。</p>
-<p><strong>改后行为：</strong> 工具块、thinking 卡片、回答、折叠后的工具摘要行
-之间都恰好隔一个空行；卡片内部头行与正文仍然紧贴（那是同一块的两行）。
-空 thinking 不改变日志的任何一行。</p>
-<p><strong>验证：</strong> <code>a_thinking_card_keeps_one_blank_row_from_the_tool_block_above_it</code>、
+<p><strong>改后行为：</strong> 散文（user / assistant）与工具块、thinking 卡片之间各隔一个空行；
+工具块与卡片之间、卡片与卡片之间、工具块与工具块之间都不留空行——它们是一整片连续的工作区，
+折行的工具组（<code>tool_group::runs</code>）也靠「没有空行」判断两次调用属于同一组。
+卡片内部头行与正文仍然紧贴（那是同一块的两行）。空 thinking 不改变日志的任何一行。</p>
+<p><strong>验证：</strong> <code>a_thinking_card_butts_against_the_tool_block_above_it</code>、
 <code>the_reply_after_a_thinking_card_keeps_one_blank_row</code>、
 <code>a_blank_thinking_card_removes_the_gap_it_opened</code>、
-<code>two_thinking_cards_keep_a_blank_row_between_them</code>、
+<code>two_thinking_cards_stack_without_a_gap</code>、
 <code>a_folded_tool_run_keeps_one_blank_row_on_both_sides</code>
 （均读真实帧的行号，不是读状态字段）；逐条把对应的修复移走后确认会失败。
-<code>cargo test -p agent_tui_kit --lib</code> 452、<code>cargo test -p tui --lib</code>
-774 全绿，clippy <code>-D warnings</code> 与 fmt 干净。</p>
+<code>cargo test -p agent_tui_kit --lib</code> 454、<code>cargo test -p tui --lib</code>
+781 全绿，clippy <code>-D warnings</code> 与 fmt 干净。</p>
 <p><strong>Pointers：</strong>
 <code>crates/tui/src/widgets/state/app/visibility.rs</code>（<code>ensure_gap_before_thinking</code>、
 <code>ensure_gap_after_thinking</code>、<code>phys_idx_is_separator</code>）、

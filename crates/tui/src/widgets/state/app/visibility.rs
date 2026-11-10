@@ -608,6 +608,9 @@ impl App {
     /// cannot tell the two apart, and the spacing rules have to ask this
     /// instead — otherwise the blank line after a card reads as "already
     /// spaced" and the next block butts against the card.
+    ///
+    /// It also answers "is the previous row part of the card run", which is
+    /// what keeps cards and tool blocks stacked without gaps between them.
     fn phys_idx_owned_by_card(&self, phys: usize) -> bool {
         self.phys_idx_in_tool_block(phys) || self.phys_idx_in_thinking_card(phys)
     }
@@ -662,23 +665,27 @@ impl App {
         }
     }
 
-    /// Blank line before a tool block when it follows normal content.
+    /// Blank line before a tool block when it follows ordinary content.
+    ///
+    /// Nothing is inserted when the block above is already a card or another
+    /// tool block: tool blocks and thinking cards stack directly, so a run of
+    /// work reads as one continuous region rather than as a table of gaps.
     pub(crate) fn ensure_gap_before_tools(&mut self) {
         let Some(phys) = self.last_visible_phys_idx() else {
             return;
         };
-        if self.phys_idx_in_tool_block(phys) || self.phys_idx_is_separator(phys) {
+        if self.phys_idx_owned_by_card(phys) || self.phys_idx_is_separator(phys) {
             return;
         }
         self.append_blank(LogItemKind::SystemTool);
     }
 
-    /// Blank line before a thinking card when it follows any other block.
+    /// Blank line before a thinking card when it follows ordinary content.
     ///
-    /// A tool block is exactly where this matters most: a card used to open
-    /// with a blank row and a border, so the tool's meta row and the card's
-    /// header never touched. Without the chrome they would, and a header, a
-    /// meta row and a body line stacked with no gap read as one table.
+    /// A tool block, another card, or a live card's placeholder rows are not
+    /// ordinary content: cards and tool blocks stack without a gap, and a
+    /// thinking card that opens right after a tool call must not push the
+    /// tool's meta row away from it.
     ///
     /// Returns whether it inserted the gap, so the card can remove it again if
     /// the card itself turns out to be empty.
@@ -686,7 +693,7 @@ impl App {
         let Some(phys) = self.last_visible_phys_idx() else {
             return false;
         };
-        if self.phys_idx_is_separator(phys) {
+        if self.phys_idx_owned_by_card(phys) || self.phys_idx_is_separator(phys) {
             return false;
         }
         self.append_blank(LogItemKind::Thinking);

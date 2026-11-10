@@ -1260,12 +1260,14 @@ fn assert_blank(rows: &[String], index: usize, why: &str) {
     );
 }
 
-/// A thinking card no longer draws a border or a leading blank row, so the gap
-/// between it and the tool block above has to be a row of the log. Without it
-/// the tool's meta row and the card's status row stack with nothing between
-/// them and read as one table.
+/// A tool block and a thinking card are one region of work, not two blocks: the
+/// card's status row sits directly under the tool's meta row.
+///
+/// A blank row here would break the tool run apart — `tool_group::runs` treats a
+/// gap as the end of a run — and would push a call away from the reasoning that
+/// explains it.
 #[test]
-fn a_thinking_card_keeps_one_blank_row_from_the_tool_block_above_it() {
+fn a_thinking_card_butts_against_the_tool_block_above_it() {
     let mut app = make_app();
     app.handle_agent_update(AgentUpdate::StreamChunk("Checking.\n\n".into()));
     app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
@@ -1293,11 +1295,10 @@ fn a_thinking_card_keeps_one_blank_row_from_the_tool_block_above_it() {
     let header = row_nth(&rows, "Thought", 0);
     assert_eq!(
         header,
-        meta + 2,
-        "the tool's meta row and the card's status row must be one blank row apart:\n{}",
+        meta + 1,
+        "the tool's meta row and the card's status row sit on adjacent rows:\n{}",
         rows.join("\n")
     );
-    assert_blank(&rows, meta + 1, "between the tool block and the card");
     // The finished card is one row: the reasoning is behind the button, so the
     // row under the status row is the gap before the next block, not a body.
     assert_blank(&rows, header + 1, "under the card's only row");
@@ -1404,10 +1405,10 @@ fn a_finished_card_leaves_exactly_one_placeholder_row() {
     );
 }
 
-/// Two settled thinking cards in a row are still two blocks: folding is about
-/// tool runs, not about cards, so each keeps its own gap.
+/// Two settled thinking cards in a row stack without a gap: they are two rows
+/// of one reasoning region, not two blocks.
 #[test]
-fn two_thinking_cards_keep_a_blank_row_between_them() {
+fn two_thinking_cards_stack_without_a_gap() {
     let mut app = make_app();
     for delta in ["first card\n", "second card\n"] {
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
@@ -1423,11 +1424,10 @@ fn two_thinking_cards_keep_a_blank_row_between_them() {
     let second_card = row_nth(&rows, "Thought", 1);
     assert_eq!(
         second_card,
-        first_card + 2,
-        "two cards are two blocks and stay one blank row apart:\n{}",
+        first_card + 1,
+        "two cards stack on adjacent rows:\n{}",
         rows.join("\n")
     );
-    assert_blank(&rows, first_card + 1, "between the two cards");
 }
 
 /// The same rule above and below a tool block: a settled run is one row, and a
