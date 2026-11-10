@@ -7,15 +7,6 @@
 //! so the component stays free of host rendering concerns.
 
 use crossterm::event::KeyEvent;
-use ratatui::{
-    buffer::Buffer,
-    layout::Rect,
-    style::Style,
-    text::{Line, Span},
-    widgets::Paragraph,
-    widgets::Widget,
-};
-use ratatui::style::Color;
 
 use crate::{Component, Ctx, i18n::Messages, protocol::AgentUpdate, state::StreamState};
 
