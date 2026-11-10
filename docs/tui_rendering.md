@@ -239,12 +239,13 @@ The log panel is the most complex rendering component. Its core flow is:
   is a derived logical mirror for hit-testing and popups.
 - A scroll step moves `visual_top` by a number of *visual lines* and clamps
   it to the content, whatever the row under it is. A row is a storage unit,
-  not a scroll unit: `j`/`k` move one line (`LOG_LINE_STEP`) and the wheel
-  moves three (`WHEEL_STEP`) whether the row is a single line or a paragraph
-  that wrapped into twelve. `g` and `G` jump to the ends.
+  not a scroll unit: `j`/`k` and a wheel notch both move one line
+  (`LOG_LINE_STEP`) whether the row is a single line or a paragraph that
+  wrapped into twelve. `g` and `G` jump to the ends.
 - `widgets/state/app/scroll.rs` owns these positions (`scroll_log_up/down`).
-  Half-screen steps (`key_cell_step`) belong to the subagent transcript only,
-  which is one bounded card rather than a column read line by line.
+  The coarser steps belong to the subagent transcript only, which is one
+  bounded card rather than a column read line by line: three lines per notch
+  (`SUBAGENT_WHEEL_STEP`) and half a screen per key (`key_cell_step`).
 - Only renders `TextCell`s that fall inside the current viewport.
 
 ### 6.4 Card Overlays

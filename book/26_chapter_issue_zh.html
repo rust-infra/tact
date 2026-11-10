@@ -22125,25 +22125,28 @@ sticky 卡片整条消失，恢复干净对话区；有任一域活跃时卡片�
 <p><strong>决策：</strong> 行是存储单位，不是滚动单位。删除
 <code>visual_step_up</code> / <code>visual_step_down</code> 两个函数，<code>scroll_log_up/down</code>
 直接对 <code>visual_top</code> 做加减并按内容长度钳制：
-<code>j</code>/<code>k</code> 一行（<code>LOG_LINE_STEP</code>），滚轮三行（新常量
-<code>WHEEL_STEP</code>，原 <code>WHEEL_CELL_STEP</code> 改名，因为它早已不局限于 cell 内）。
-向上钳到 0，向下到达底部时仍然重新开启跟随。半屏步进
-<code>key_cell_step</code> 只留在子代理转录视图，那是整块卡片而不是逐行阅读的列。
+<code>j</code>/<code>k</code> 与滚轮都是一行（<code>LOG_LINE_STEP</code>，滚轮原先的三行
+<code>WHEEL_CELL_STEP</code> 因此不再需要）。向上钳到 0，向下到达底部时仍然重新开启跟随。
+更粗的步进只留在子代理转录视图，那是整块卡片而不是逐行阅读的列：滚轮三行
+（<code>SUBAGENT_WHEEL_STEP</code>）、按键半屏（<code>key_cell_step</code>）。
 删除两个函数后布局/缓存问题也随之消失：折行行不再需要特殊分支，前缀和缓存只用来算总行数与逻辑镜像。</p>
-<p><strong>改后行为：</strong> 任何内容都是一次一行，上下对称。折成四行的段落要走四次，
-和四行独立消息一样。滚轮一次三行，<code>g</code>/<code>G</code> 到两端。</p>
+<p><strong>改后行为：</strong> 日志里任何内容都是一次一行，上下对称，键盘和滚轮一致。
+折成四行的段落要走四次，和四行独立消息一样。<code>g</code>/<code>G</code> 到两端。</p>
 <p><strong>验证：</strong> <code>a_press_moves_one_line_through_wrapped_rows_both_ways</code>
 用真实的 <code>j</code>/<code>k</code> 按键驱动，断言渲染后 <code>MARKER</code> 行每次只上移一行、
 回程每次只下移一行；把修复移走后该测试以 <code>[3, 3, 3, 3, 3]</code> 失败，确认有牙。
 <code>every_line_inside_a_tall_row_is_reachable</code>
-断言 10 行高行内部每一行都是停靠点，<code>the_wheel_moves_three_lines_per_notch</code> 管滚轮，
+断言 10 行高行内部每一行都是停靠点，<code>a_wheel_notch_moves_one_line_like_a_key_press</code> 管滚轮，
+<code>a_wheel_notch_steps_one_line_in_the_log_and_three_in_the_subagent_view</code>
+同时钉住日志一行与转录三行这两种步长，
 <code>stepping_past_either_end_clamps_instead_of_wrapping</code> 管钳制与重新跟随，
 <code>a_short_row_log_steps_by_lines_too</code> 管普通短行日志与 <code>offset</code> 镜像。
 <code>cargo test -p tui --lib</code> 780 全绿，<code>cargo clippy -p tui --all-targets -- -D warnings</code> 干净。</p>
 <p><strong>Pointers：</strong>
 <code>crates/tui/src/widgets/state/app/scroll.rs</code>（<code>LOG_LINE_STEP</code>、
-<code>WHEEL_STEP</code>、<code>scroll_log_up/down</code>）、
-<code>crates/tui/src/handlers/mouse.rs</code>（滚轮改指 <code>WHEEL_STEP</code>）、
+<code>SUBAGENT_WHEEL_STEP</code>、<code>key_cell_step</code>、
+<code>scroll_log_up/down</code>）、
+<code>crates/tui/src/handlers/mouse.rs</code>（滚轮改指 <code>LOG_LINE_STEP</code>）、
 <code>crates/tui/src/render/log_render_tests.rs</code>、
 <a href="../docs/tui_rendering.md">docs/tui_rendering.md</a> §6.3 与 §6.6、
 <a href="./23_chapter_tui_zh.html">第 23 章</a> 渲染管线节。</p>

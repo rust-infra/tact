@@ -144,13 +144,13 @@ pub(crate) fn handle_mouse_scroll_up(app: &mut App, hit: MousePanelHit) {
         app.overlay_popup_scroll_up();
     } else if app.show_subagent_view {
         // A wheel-up is the same decision as `k`: stop following the tail.
-        app.subagent_scroll_by(-(crate::widgets::state::app::scroll::WHEEL_STEP as isize));
+        app.subagent_scroll_by(-(crate::widgets::state::app::scroll::SUBAGENT_WHEEL_STEP as isize));
     } else if hit.in_task_panel && sticky_scrollable(app) {
         app.mouse.in_task_panel = true;
         scroll_active_sticky(app, -1);
     } else if hit.in_log {
         app.mouse.in_task_panel = false;
-        app.scroll_log_up(crate::widgets::state::app::scroll::WHEEL_STEP);
+        app.scroll_log_up(crate::widgets::state::app::scroll::LOG_LINE_STEP);
     }
 }
 
@@ -160,13 +160,13 @@ pub(crate) fn handle_mouse_scroll_down(app: &mut App, hit: MousePanelHit) {
         app.overlay_popup_scroll_down();
     } else if app.show_subagent_view {
         // Wheel-down re-arms following once it reaches the end (the helper).
-        app.subagent_scroll_by(crate::widgets::state::app::scroll::WHEEL_STEP as isize);
+        app.subagent_scroll_by(crate::widgets::state::app::scroll::SUBAGENT_WHEEL_STEP as isize);
     } else if hit.in_task_panel && sticky_scrollable(app) {
         app.mouse.in_task_panel = true;
         scroll_active_sticky(app, 1);
     } else if hit.in_log {
         app.mouse.in_task_panel = false;
-        app.scroll_log_down(crate::widgets::state::app::scroll::WHEEL_STEP);
+        app.scroll_log_down(crate::widgets::state::app::scroll::LOG_LINE_STEP);
     }
 }
 
@@ -870,6 +870,57 @@ mod tests {
         assert!(
             app.mouse.subagent_back_area.is_empty(),
             "closing must clear the hit rect, or a later click hits a stale one"
+        );
+    }
+
+    /// The log scrolls one line per wheel notch; the subagent transcript keeps
+    /// its coarser step, because it is one bounded card rather than a column
+    /// read line by line.
+    #[test]
+    fn a_wheel_notch_steps_one_line_in_the_log_and_three_in_the_subagent_view() {
+        let mut app = make_app();
+        for i in 0..40 {
+            app.add_system_message(format!("row-{i:02}"));
+        }
+        let _ = crate::render::test_harness::render_log_panel_text(&mut app, 60, 10);
+        app.scroll_log_to_top();
+
+        handle_mouse_scroll_down(
+            &mut app,
+            MousePanelHit {
+                in_log: true,
+                in_task_panel: false,
+            },
+        );
+        assert_eq!(app.log_viewport_top(), 1, "one line in the log");
+
+        crate::render::test_harness::seed_subagent_view(&mut app);
+        // A short body, so the transcript overflows and a notch has somewhere
+        // to land.
+        crate::render::test_harness::render_main_area_terminal(&mut app, 100, 8);
+        let body = app.mouse.popup_text_body_area;
+        let max_scroll = app
+            .subagent_popup()
+            .expect("view")
+            .layout
+            .as_ref()
+            .expect("layout")
+            .total_rows
+            .saturating_sub(body.height as usize);
+        assert!(
+            max_scroll >= crate::widgets::state::app::scroll::SUBAGENT_WHEEL_STEP,
+            "fixture: the transcript must overflow by more than one notch"
+        );
+
+        // The view opens on the tail; one notch up is three lines short of it.
+        handle_mouse_event(
+            &mut app,
+            mouse_event(MouseEventKind::ScrollUp, body.x + 1, body.y + 1),
+        );
+        assert_eq!(
+            app.subagent_popup().expect("view").scroll,
+            (max_scroll - crate::widgets::state::app::scroll::SUBAGENT_WHEEL_STEP) as u16,
+            "three lines in the transcript"
         );
     }
 
@@ -1706,8 +1757,8 @@ mod tests {
         );
 
         assert_eq!(
-            app.log_scroll.visual_top, 1,
-            "one notch is three visual lines, whatever the rows are"
+            app.log_scroll.visual_top, 3,
+            "a notch moves one visual line, the same as a key press"
         );
     }
 
@@ -1729,8 +1780,8 @@ mod tests {
         );
 
         assert_eq!(
-            app.log_scroll.offset, 3,
-            "the row mirror lands on the line three visual lines down"
+            app.log_scroll.offset, 1,
+            "the row mirror lands on the line one visual line down"
         );
     }
 

@@ -6,13 +6,15 @@
 //! be. A row is a storage unit, not a scroll unit: one press moves one line
 //! whether that row is a single line or a paragraph that wrapped into twelve.
 //!
-//! `j` and `k` pass [`LOG_LINE_STEP`], the wheel [`WHEEL_STEP`]. The prefix-sum
-//! cache `LogScroll::visual_start` says where each row begins, and its last
-//! entry is the total visual line count, which bounds the position.
+//! Keys and the wheel both pass [`LOG_LINE_STEP`], so a notch of the wheel
+//! moves as far as a press of `j` or `k`. The prefix-sum cache
+//! `LogScroll::visual_start` says where each row begins, and its last entry is
+//! the total visual line count, which bounds the position.
 
 use crate::widgets::state::App;
 
-/// Keyboard step in the log: one visual line, every press.
+/// Step in the log, for a key press and for a notch of the wheel alike: one
+/// visual line.
 ///
 /// A row is a storage unit, not a scroll unit. Taking a row whole moves the
 /// viewport by however many lines that row wrapped into: measured, a press
@@ -20,14 +22,15 @@ use crate::widgets::state::App;
 /// four-line row moved five. `G` and `g` stay the fast routes to the ends.
 pub(crate) const LOG_LINE_STEP: usize = 1;
 
-/// Mouse-wheel step: three visual lines, every notch. Used by the log and the
-/// subagent transcript.
-pub(crate) const WHEEL_STEP: usize = 3;
-
-/// Keyboard step inside the subagent transcript: half a screen.
+/// Mouse-wheel step inside the subagent transcript: three visual lines, every
+/// notch.
 ///
 /// That view is one bounded card rather than a column the reader scans line by
-/// line, so it keeps the coarser step.
+/// line, so it keeps a coarser step than the log.
+pub(crate) const SUBAGENT_WHEEL_STEP: usize = 3;
+
+/// Keyboard step inside the subagent transcript: half a screen, for the same
+/// reason as [`SUBAGENT_WHEEL_STEP`].
 pub(crate) fn key_cell_step(viewport_height: usize) -> usize {
     (viewport_height / 2).max(1)
 }
@@ -291,15 +294,15 @@ mod tests {
     }
 
     #[test]
-    fn the_wheel_moves_three_lines_per_notch() {
+    fn a_wheel_notch_moves_one_line_like_a_key_press() {
         let mut app = app_with_layout(&VS, 4);
 
-        app.scroll_log_down(WHEEL_STEP);
-        assert_eq!(app.log_viewport_top(), 3);
-        app.scroll_log_down(WHEEL_STEP);
-        assert_eq!(app.log_viewport_top(), 6);
-        app.scroll_log_up(WHEEL_STEP);
-        assert_eq!(app.log_viewport_top(), 3);
+        app.scroll_log_down(LOG_LINE_STEP);
+        assert_eq!(app.log_viewport_top(), 1);
+        app.scroll_log_down(LOG_LINE_STEP);
+        assert_eq!(app.log_viewport_top(), 2);
+        app.scroll_log_up(LOG_LINE_STEP);
+        assert_eq!(app.log_viewport_top(), 1);
     }
 
     #[test]
@@ -318,18 +321,18 @@ mod tests {
         assert!(app.is_log_pinned_to_bottom());
     }
 
-    /// A wheel notch lands three lines down even when those lines belong to
-    /// three different rows, which is how a normal log is shaped.
+    /// One line at a time, even when consecutive lines belong to different
+    /// rows, which is how a normal log is shaped.
     #[test]
     fn a_short_row_log_steps_by_lines_too() {
         let mut app = app_with_layout(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 2);
 
-        app.scroll_log_down(WHEEL_STEP);
-        assert_eq!(app.log_viewport_top(), 3);
+        app.scroll_log_down(LOG_LINE_STEP);
+        assert_eq!(app.log_viewport_top(), 1);
 
         app.scroll_log_up(LOG_LINE_STEP);
-        assert_eq!(app.log_viewport_top(), 2);
-        assert_eq!(app.log_scroll.offset, 2, "the row mirror follows the lines");
+        assert_eq!(app.log_viewport_top(), 0);
+        assert_eq!(app.log_scroll.offset, 0, "the row mirror follows the lines");
     }
 
     #[test]

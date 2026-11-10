@@ -1182,9 +1182,10 @@ border）——显示行按软换行后的行数计，不只统计显式
 逻辑镜像供 hit-test/弹窗使用。滚动步进由
 <code>widgets/state/app/scroll.rs</code> 的
 <code>scroll_log_up/down</code> 负责：一次移动固定条数的<strong>视觉行</strong>
-（<code>j</code>/<code>k</code> 一行、滚轮三行、<code>g</code>/<code>G</code>
-到两端），与该行折成几行无关——行是存储单位，不是滚动单位。半屏步进
-（<code>key_cell_step</code>）只留给子代理转录那种整块卡片视图。</li>
+（<code>j</code>/<code>k</code> 与滚轮都是一行、<code>g</code>/<code>G</code>
+到两端），与该行折成几行无关——行是存储单位，不是滚动单位。更粗的步进
+（滚轮 <code>SUBAGENT_WHEEL_STEP</code> 三行、按键 <code>key_cell_step</code>
+半屏）只留给子代理转录那种整块卡片视图。</li>
 <li><strong>Phase 3</strong> — 用
 <code>TextCell</code>、<code>ToolCell</code>、<code>ThinkingCell</code>
 构建 <code>LogColumnRenderer</code>；code 保持 overlay；仅绘制与
