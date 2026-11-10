@@ -448,12 +448,15 @@ real log rows: a gap row is inserted when a card opens after prose, and removed
 with the card if the card ends up empty. A card that follows a tool block gets
 no gap — the two stack — see [§6.5.1 Block Spacing](#651-block-spacing).
 
-A local measurement over the 35 session transcripts in `.tact/transcripts` (3784
-thinking cards, 9081 tool calls) put thinking at 38 percent of all log rows, the
-largest single source, against 36 percent for tool calls. That number is an
-observation about one machine's history, not a property of this code; re-measure
-before quoting it. It was taken while a finished card still drew two rows, so it
-overstates the current share by one row per settled thought.
+A measurement over the 60 session transcripts in `.tact/transcripts` (2956
+thinking cards, 9976 tool calls) put thinking at **24 percent** of the log's rows
+and tool blocks at **32 percent**, under the shapes that were about to change: 5
+rows for a finished card, 2 for a settled tool call. Collapsing the card to one
+row removes 11824 rows, **19 percent of the whole log**. Those are counts from one
+machine's history, not properties of this code, and the row totals are a
+reconstruction from the transcripts rather than a render; re-measure before
+quoting them. Within the same corpus, **78.6 percent of tool calls sit in an
+adjacent run** of two or more, which is what folding can reach.
 
 The header keeps a row to itself rather than joining the reasoning: one row would
 have to carry the title and the readout at once, and the reasoning would have
