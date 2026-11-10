@@ -118,25 +118,54 @@ impl App {
         // `run_bounds_by_id` only answers for a *folded* run, so an answer here
         // means rows are about to come back; `None` means the run is about to
         // fold. Only disappearing rows can pull the content under the eye.
+        //
+        // The run's bounds are physical rows, while the viewport and the
+        // compensation both count visual lines. The two agree only when nothing
+        // above the run wraps, so they are converted here: comparing them
+        // directly scrolled the reader by the run's own height whenever the
+        // prose above it wrapped.
         let viewport = self.log_viewport_top();
         let restoring = self.tools().run_bounds_by_id(run_id);
         let folding = if restoring.is_none() {
-            self.tools().run_bounds_if_unfolded(run_id)
+            self.tools()
+                .run_bounds_if_unfolded(run_id)
+                .map(|(start, end, _)| {
+                    (
+                        self.visual_line_of_phys(start),
+                        self.visual_line_of_phys(end),
+                    )
+                })
         } else {
             None
         };
         if !self.tools_mut().toggle_run_by_id(run_id) {
             return false;
         }
-        if let Some((_, end, rows)) = folding
-            && rows > 0
+        if let Some((Some(start), Some(end))) = folding
+            && end > start
         {
-            self.compensate_for_removed_rows(rows, end <= viewport);
+            // A fold leaves the summary row where the run began, so the lines
+            // that disappear are the run's span less that one row.
+            let removed = end.saturating_sub(start).saturating_sub(1);
+            self.compensate_for_removed_rows(removed, end <= viewport);
         }
         // A fold changes the content without appending a row, so nothing else
         // would ask for the repaint that shows it.
         self.dirty = true;
         true
+    }
+
+    /// The visual line a physical log row starts on, from the last frame's
+    /// prefix sum.
+    ///
+    /// The prefix sum is indexed by *logical* row, so a physical index goes
+    /// through `phys_to_logical_cache` first; once anything is folded the two
+    /// indices differ. `None` when nothing has been drawn yet, or when the row
+    /// is hidden by a fold and so has no visual start of its own. A caller
+    /// comparing positions must treat `None` as "say nothing", never as zero.
+    fn visual_line_of_phys(&self, phys: usize) -> Option<usize> {
+        let logical = self.phys_to_logical_fast(phys)?;
+        self.log_scroll.visual_start.get(logical).copied()
     }
 
     /// Map a logical line number to the physical index in messages.

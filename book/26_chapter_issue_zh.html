@@ -22051,9 +22051,23 @@ sticky 卡片整条消失，恢复干净对话区；有任一域活跃时卡片�
 <code>z_folds_the_first_run_below_plain_markdown</code>。
 <code>cargo test -p agent_tui_kit --lib</code> 452、<code>cargo test -p tui --lib</code>
 780 全绿，clippy <code>-D warnings</code> 与 fmt 干净。</p>
+<p><strong>折叠后的滚动补偿（同日追加）：</strong> 折叠会删掉读者盯着的行之上的行，
+所以视口要跟着上移同样的量（<code>compensate_for_removed_rows</code>）。
+这里有两个单位混用的坑。工具组的边界是<strong>物理行</strong>，视口位置是<strong>视觉行</strong>；
+只有当一个组上方的正文都不折行时两者才相等，而代码直接拿它们比较，
+于是上方有折行段落时，折叠会把读者按这一组的高度整体上推——实测视口从 29 跳到 24，
+读者正在看的那一行换成了几段无关的正文。修法是把边界先经
+<code>phys_to_logical_cache</code> 和视觉前缀和换算成视觉行再比较
+（<code>visual_line_of_phys</code>）。另外消失的行数是这一组的视觉跨度减一，
+因为折叠会把摘要行留在组开始的位置。工具组只是部分在视口上方时仍然不补偿：
+读者看得见它在收起，此时挪动内容反而更怪。</p>
+<p><strong>验证（追加）：</strong> <code>folding_the_run_under_the_eye_leaves_the_eye_where_it_was</code>
+把视口停在工具组自己的第一行（上方是折行的正文），再按真实的 <code>z</code> 折叠，
+断言视口位置不变、观众仍停在摘要行。把单位换算换回物理行比较，该测试失败（24 vs 29）；
+恢复后通过。</p>
 <p><strong>Pointers：</strong>
 <code>crates/tui/src/widgets/state/app/visibility.rs</code>（<code>toggle_fold_in_view</code>、
-<code>first_run_in_view</code>）、
+<code>first_run_in_view</code>、<code>visual_line_of_phys</code>）、
 <code>crates/agent_tui_kit/src/state/tool_group.rs</code>（<code>expanded_run_head_at</code>）、
 <code>crates/agent_tui_kit/src/render/cells/tool.rs</code>（<code>run_toggle_rect</code>、
 <code>run_toggle_glyph_rect</code>）、

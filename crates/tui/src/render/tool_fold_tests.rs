@@ -450,3 +450,84 @@ fn only_the_state_that_is_drawn_registers_a_fold_control() {
         .count();
     assert_eq!(expanded, 1, "an expanded run has exactly one fold control");
 }
+
+/// Folding must not move the reader when the run is what they are looking at.
+///
+/// The run sits at the top of the viewport, so folding it replaces those rows in
+/// place and nothing above the eye changed. The rows above wrap, which is what
+/// makes a physical row index and a visual line disagree — and the compensation
+/// used to compare one against the other, so it scrolled the reader up by the
+/// run's saved rows and put unrelated prose on the line they were reading.
+#[test]
+fn folding_the_run_under_the_eye_leaves_the_eye_where_it_was() {
+    let mut app = make_app();
+    for i in 0..14 {
+        app.add_system_message(format!(
+            "note-{i:02} a body long enough to wrap into two or three visual lines here"
+        ));
+    }
+    seed(&mut app, 0, "t1", "bash", "one", StepStatus::Success);
+    seed(&mut app, 1, "t2", "bash", "two", StepStatus::Success);
+    seed(&mut app, 2, "t3", "bash", "three", StepStatus::Success);
+    // Enough tail that parking on the run is nowhere near the bottom clamp: a
+    // clamped viewport moves for a reason that has nothing to do with the fold.
+    for i in 0..40 {
+        app.add_system_message(format!("tail-{i:02} line"));
+    }
+
+    let (width, height) = (44u16, 12u16);
+    let _ = render_log_panel_text(&mut app, width, height);
+    let run = agent_tui_kit::state::tool_group::runs(&app.tools().blocks)
+        .into_iter()
+        .next()
+        .expect("three adjacent calls form a run");
+    let key = agent_tui_kit::state::tool_group::run_key(&app.tools().blocks, &run)
+        .expect("run key")
+        .to_string();
+
+    // Fixture: expand the run, then park the viewport on its own first row so
+    // the run is what the reader is looking at, with wrapped prose above.
+    assert!(app.toggle_fold_by_run_id(&key), "expand the run");
+    let _ = render_log_panel_text(&mut app, width, height);
+    let run_start = app.log_scroll.visual_start[run.phys_idx];
+    app.log_scroll.visual_top = run_start;
+    app.log_scroll.follow = false;
+    let before = render_log_panel_text(&mut app, width, height);
+    assert_eq!(
+        app.log_viewport_top(),
+        run_start,
+        "fixture: the viewport must not be clamped away from the run"
+    );
+    assert!(
+        before.lines().nth(1).unwrap_or("").contains("Bash"),
+        "fixture: the eye must start on the run:\n{before}"
+    );
+
+    // The action: `z`, the key a reader presses, folds the run in view.
+    z(&mut app);
+    let after = render_log_panel_text(&mut app, width, height);
+    let run_after = agent_tui_kit::state::tool_group::runs(&app.tools().blocks)
+        .into_iter()
+        .next()
+        .expect("the run still exists");
+    assert!(
+        agent_tui_kit::state::tool_group::is_folded(
+            &app.tools().blocks,
+            &run_after,
+            app.tools().state()
+        ),
+        "fixture: `z` must have folded the run it was pointed at"
+    );
+
+    assert_eq!(
+        app.log_viewport_top(),
+        run_start,
+        "folding the run under the eye must not scroll: it collapses in \\
+         place\nbefore:\n{before}\nafter:\n{after}"
+    );
+    assert!(
+        after.lines().nth(1).unwrap_or("").contains("tools"),
+        "the eye must still be on the run's summary row, not on prose that was \\
+         above it\nbefore:\n{before}\nafter:\n{after}"
+    );
+}

@@ -363,6 +363,24 @@ Exactly one fold control exists per run at a time — the summary when folded, t
 head when expanded — so a click never depends on which hitbox the list happens
 to hold first.
 
+#### Keeping the reader's place across a fold
+
+Folding removes rows above whatever the reader is looking at, so the viewport is
+moved up by the same amount (`compensate_for_removed_rows`). Two details make it
+correct, and both were wrong first.
+
+The run's bounds are **physical rows**, while the viewport is a **visual line**.
+The two indices agree only when nothing above the run wraps, so the bounds are
+converted through `phys_to_logical_cache` and the visual prefix sum before
+anything is compared. Comparing them directly scrolled the reader by the run's own
+height whenever the prose above it wrapped.
+
+The number of lines that disappear is the run's visual span less one, because the
+fold leaves its summary row where the run began. The compensation is still
+skipped when the run was only partly above the viewport: the reader can watch
+that collapse, and moving the content under their eyes while they watch is the
+stranger of the two behaviours.
+
 ### 6.7 Scrollbar
 
 - Position is computed from the **total visual line count**.
