@@ -1226,3 +1226,104 @@ fn the_live_row_hands_off_to_the_frozen_row() {
         "the live row must be gone once the task ends, got:\n{frozen}"
     );
 }
+
+/// Every state a subagent card can be in has to answer "open the transcript".
+///
+/// The card is the only thing that fronts a child run, and each of its shapes
+/// puts the affordance somewhere else: the footer while it streams, the meta row
+/// once it has no body. One shape was missed — the card just after spawn, before
+/// the first output arrives — and that is not a brief window: a child can think
+/// for a minute before its first line, so the card sat there for that whole
+/// minute with nothing clickable. The double-click route does not cover it
+/// either: double-clicking a subagent card selects its text, by design.
+#[test]
+fn a_subagent_card_is_openable_in_every_shape_it_can_take() {
+    use agent_tui_kit::render::log::OpenTarget;
+    use tact_protocol::{ToolDetailKind, ToolPopupKind, ToolVisualKind};
+
+    /// The shapes a `spawn_subagent` card passes through, in the order a reader
+    /// meets them.
+    #[derive(Clone, Copy)]
+    enum Shape {
+        JustSpawned,
+        Streaming,
+        Finished,
+        Folded,
+    }
+
+    fn subagent_presentation() -> ToolPresentationInfo {
+        ToolPresentationInfo {
+            visual_kind: ToolVisualKind::Subagent,
+            display_name: "🤖 Subagent".into(),
+            keep_full_live_output: true,
+            detail: ToolDetailKind::Result,
+            popup: ToolPopupKind::SubagentTranscript,
+            compact_result_to_meta: false,
+            keep_live: false,
+        }
+    }
+
+    fn build(app: &mut App, shape: Shape) {
+        let call = StepCall::new(0, "sa-1", "spawn_subagent", "research")
+            .presentation(subagent_presentation());
+        app.handle_agent_update(call.started());
+        match shape {
+            Shape::JustSpawned => {}
+            Shape::Streaming => {
+                app.handle_agent_update(AgentUpdate::ToolProgress {
+                    run_id: None,
+                    tool_id: "sa-1".into(),
+                    chunks: vec![tact_protocol::ToolOutputChunk::other("line\n")],
+                });
+            }
+            Shape::Finished | Shape::Folded => {
+                let call = StepCall::new(0, "sa-1", "spawn_subagent", "research")
+                    .presentation(subagent_presentation())
+                    .detail("the summary")
+                    .status(StepStatus::Success);
+                app.handle_agent_update(call.started());
+                app.handle_agent_update(call.finished());
+                if matches!(shape, Shape::Folded)
+                    && let Some(block) = app.tools_mut().blocks.first_mut()
+                {
+                    block.output.layout.detail_collapsed = true;
+                    block.output.layout.has_detail_card = false;
+                }
+            }
+        }
+    }
+
+    /// The subagent targets on screen after a frame.
+    fn open_targets(app: &mut App) -> Vec<OpenTarget> {
+        let _ = render_log_panel_text(app, 100, 24);
+        app.mouse
+            .open_actions
+            .iter()
+            .map(|action| action.target.clone())
+            .filter(|target| matches!(target, OpenTarget::Subagent { .. }))
+            .collect()
+    }
+
+    for (shape, label) in [
+        (Shape::JustSpawned, "just spawned, no output yet"),
+        (Shape::Streaming, "streaming"),
+        (Shape::Finished, "finished"),
+        (Shape::Folded, "folded shut by the reader"),
+    ] {
+        let mut app = make_app();
+        build(&mut app, shape);
+        let targets = open_targets(&mut app);
+        assert_eq!(
+            targets.len(),
+            1,
+            "the {label} card must offer exactly one way in, got {targets:?}"
+        );
+        let OpenTarget::Subagent { tool_id } = &targets[0] else {
+            panic!(
+                "the {label} card must open the transcript, got {:?}",
+                targets[0]
+            );
+        };
+        assert_eq!(tool_id, "sa-1", "the {label} card must open its own child");
+    }
+}
