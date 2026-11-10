@@ -149,8 +149,13 @@ fn classify_text(error_text: &str) -> FailureKind {
 /// Classifies an [`LlmError`](tact_llm::LlmError), preferring its typed fields.
 ///
 /// `HttpError` carries the real HTTP status, so a 429/5xx is retried while a
-/// 400/401/403/404 fails fast instead of burning the user's quota. Other
-/// variants carry no status and fall back to message matching.
+/// 400/401/403/404 fails fast instead of burning the user's quota. `Request`
+/// means the transport never finished — a dropped connection, a read timeout,
+/// or a stream cut before its terminal chunk — and is transient by definition,
+/// which is how [`tact_llm::neutral::model_error`] classifies the same variant.
+/// Classifying it by prose instead made a truncated stream permanent whenever
+/// its wording happened to miss the keyword list. The remaining variants carry
+/// neither a status nor a transport meaning, so they fall back to the text.
 pub fn classify_llm_error(error: &tact_llm::LlmError) -> FailureKind {
     if let tact_llm::LlmError::HttpError { class, .. } = error {
         return match class {
@@ -160,6 +165,9 @@ pub fn classify_llm_error(error: &tact_llm::LlmError) -> FailureKind {
                 FailureKind::Permanent
             }
         };
+    }
+    if matches!(error, tact_llm::LlmError::Request(_)) {
+        return FailureKind::Transient;
     }
     classify_text(&error.to_string())
 }
@@ -282,6 +290,24 @@ mod tests {
         assert_eq!(
             classify_llm_error(&tact_llm::LlmError::Auth("bad key".into())),
             FailureKind::Permanent
+        );
+    }
+
+    /// A cut SSE stream has to be retried, not surfaced as a permanent failure.
+    ///
+    /// The chat-completions adapter reports truncation as `Request`, which is
+    /// the variant that means "the transport did not finish". This pins the
+    /// classification the fix depends on: if the adapter ever reports it as
+    /// `StreamParse` instead, the turn fails permanently and the retry that
+    /// recovers the work never happens.
+    #[test]
+    fn a_truncated_stream_is_worth_retrying() {
+        assert_eq!(
+            classify_llm_error(&tact_llm::LlmError::Request(
+                "SSE stream ended without `[DONE]` or a finish_reason after 11 bytes of text"
+                    .into()
+            )),
+            FailureKind::Transient
         );
     }
 

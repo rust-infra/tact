@@ -85,9 +85,19 @@ pub struct SubagentCancelButton {
 /// Target opened by a rendered `[Open]` affordance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OpenTarget {
-    Thinking { block_id: String },
-    Subagent { tool_id: String },
-    Tool { tool_id: String },
+    Thinking {
+        block_id: String,
+    },
+    Subagent {
+        tool_id: String,
+    },
+    Tool {
+        tool_id: String,
+    },
+    /// A folded run's summary row. Activating it toggles that run.
+    ToolRun {
+        run_id: String,
+    },
 }
 
 impl OpenTarget {
@@ -109,6 +119,13 @@ impl OpenTarget {
     pub fn tool(tool_id: impl Into<String>) -> Self {
         Self::Tool {
             tool_id: tool_id.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn tool_run(run_id: impl Into<String>) -> Self {
+        Self::ToolRun {
+            run_id: run_id.into(),
         }
     }
 }
@@ -259,6 +276,25 @@ pub fn render_log_panel_pure(
             prev_category = Some(category);
         }
 
+        // A folded run paints one summary row where its first member sat. Its
+        // other rows are not in `visible_indices` at all, so they never reach
+        // this loop.
+        if let Some(phys) = phys_idx
+            && let Some(cell) = ctx.tools.fold_summary(phys, ctx.theme, &ctx.messages)
+        {
+            let identity = cell.identity().to_string();
+            if let Some((cell_area, _skip)) = renderer.cell_slice(
+                vs_cache[logical_i],
+                cell.height(inner.width) as usize,
+                inner,
+            ) {
+                open_actions.push(OpenAction::new(OpenTarget::tool_run(identity), cell_area));
+            }
+            renderer.push(vs_cache[logical_i], cell);
+            logical_i += 1;
+            continue;
+        }
+
         // Tool block: replace the summary TextCell + placeholder rows with a
         // single ToolCell that renders both summary and detail card.
         if let Some(phys) = phys_idx {
@@ -293,7 +329,7 @@ pub fn render_log_panel_pure(
                     // rows are not a click target, these glyphs are.
                     if let Some((cell_area, skip_lines)) =
                         renderer.cell_slice(vis_start, cell.height(inner.width) as usize, inner)
-                        && let Some(rect) = cell.footer_button_rect(cell_area, skip_lines)
+                        && let Some(rect) = cell.open_button_rect(cell_area, skip_lines)
                         && let Some(block_id) = ctx
                             .thinking
                             .active
@@ -386,18 +422,37 @@ pub fn render_log_panel_pure(
                     ctx.theme.block_border_type(),
                     msgs,
                 )
-                .with_subagent_cancel(cancel_child_id.is_some());
+                .with_subagent_cancel(cancel_child_id.is_some())
+                .with_run_expanded_head(ctx.tools.expanded_run_head_at(phys_idx).is_some());
                 if let Some((cell_area, skip_lines)) =
                     renderer.cell_slice(vis_start, card_cell.height(inner.width) as usize, inner)
                 {
+                    // An expanded run's fold control is the first member's
+                    // title row: that is the row the summary occupied while the
+                    // run was folded, so the same place on screen folds and
+                    // unfolds. Registered only when the title row is actually
+                    // drawn — a clipped head has no control to hit.
+                    if let Some(run_id) = ctx.tools.expanded_run_head_at(phys_idx)
+                        && let Some(rect) = card_cell.run_toggle_rect(cell_area, skip_lines)
+                    {
+                        open_actions.push(OpenAction::new(OpenTarget::tool_run(run_id), rect));
+                    }
                     if let Some(tool_id) = tool_id_for_phys(ctx, phys_idx) {
                         if let Some(tool_rect) =
                             card_cell.collapsed_open_button_rect(cell_area, skip_lines)
                         {
-                            open_actions.push(OpenAction::new(
-                                OpenTarget::tool(tool_id.clone()),
-                                tool_rect,
-                            ));
+                            // A collapsed subagent card has no footer of its
+                            // own, so this meta-row `[Open]` is the only thing
+                            // a reader can click. It has to open the transcript,
+                            // not the tool's diff popup: the child's output is
+                            // what the card is about, and the diff popup has
+                            // nothing to show for a `spawn_subagent` call.
+                            let target = if card_cell.is_subagent() {
+                                OpenTarget::subagent(tool_id.clone())
+                            } else {
+                                OpenTarget::tool(tool_id.clone())
+                            };
+                            open_actions.push(OpenAction::new(target, tool_rect));
                         }
                         if let Some(rect) =
                             card_cell.subagent_open_button_rect(cell_area, skip_lines)

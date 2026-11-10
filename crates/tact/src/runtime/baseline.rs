@@ -206,6 +206,7 @@ fn normalize_usage(record: &UsageRecord) -> String {
 fn normalize_terminal(stop: &RunStop) -> String {
     match stop {
         RunStop::Completed => "completed".into(),
+        RunStop::EmptyTurn => "empty_turn".into(),
         RunStop::YieldToHost { .. } => "yield_to_host".into(),
         RunStop::MaxTurns => "max_turns".into(),
         RunStop::MaxTokens => "max_tokens".into(),

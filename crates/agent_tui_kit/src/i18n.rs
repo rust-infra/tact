@@ -74,11 +74,22 @@ pub struct Messages {
     /// a finished card came to read "in progress".
     pub thinking_card_title_active: &'static str, // "🧠 Thinking"
     pub thinking_card_title_done: &'static str, // "🧠 Thought"
-    /// Thinking card footer: `⏱ {elapsed} | ↕ {shown}/{total} lines | {action}`
-    /// — the elapsed time leads, each label staying on the readout it names.
-    /// The action is the **tail**, the same rule a collapsed tool card's meta row
-    /// follows, so the cell splits it off by suffix match rather than searching.
+    /// Thinking card footer while it streams: `⏱ {elapsed} | ↕ {shown}/{total}
+    /// lines | {action}` — the elapsed time leads, each label staying on the
+    /// readout it names. The action is the **tail**, the same rule a collapsed
+    /// tool card's meta row follows, so the cell splits it off by suffix match
+    /// rather than searching.
     pub thinking_card_bottom: &'static str,
+    /// Footer of a **finished** thinking card: `⏱ {elapsed} | {total} lines |
+    /// {action}`.
+    ///
+    /// One `{}` fewer than [`Self::thinking_card_bottom`]: the card draws no
+    /// reasoning rows, so there is no "shown" number to state. A total alone is
+    /// what the collapsed tool card says too, and for the same reason.
+    pub thinking_card_bottom_done: &'static str,
+    /// Singular form of [`Self::thinking_card_bottom_done`] — a one-line
+    /// thought is common enough that `1 lines` would be the usual reading.
+    pub thinking_card_bottom_done_one: &'static str,
     /// Label of the footer's button — a single click opens the card popup.
     ///
     /// The card itself is the hit target, so unlike
@@ -252,6 +263,8 @@ pub struct Messages {
     pub help_G: &'static str,
     pub help_y: &'static str,
     pub help_t: &'static str,
+    /// `z` folds or unfolds the tool run at the top of the viewport.
+    pub help_z: &'static str,
     pub help_colon: &'static str,
     pub help_insert_header: &'static str,
     pub help_type_task: &'static str,
@@ -529,6 +542,8 @@ impl Messages {
             thinking_card_title_active: " 🧠 Thinking ",
             thinking_card_title_done: " 🧠 Thought ",
             thinking_card_bottom: " ⏱ {} | ↕ {}/{} lines | {}",
+            thinking_card_bottom_done: " ⏱ {} | {} lines | {}",
+            thinking_card_bottom_done_one: " ⏱ {} | {} line | {}",
             // Nerd Font gesture icon for "how", the word for "what" — the same
             // pair the collapsed tool card draws.
             thinking_card_action: "󰜼 Open",
@@ -644,6 +659,7 @@ impl Messages {
             help_gg: "    gg          Go to top of log",
             help_G: "    G           Go to bottom of log",
             help_y: "    y           Copy selected to clipboard",
+            help_z: "    z           Fold/unfold the first tool run in view",
             help_t: "    t           Open/close thinking card popup",
             help_colon: "    /           Command palette (commands & skills)",
             help_insert_header: "  ✏️  Insert Mode (i or Enter from Normal)",
@@ -878,6 +894,8 @@ impl Messages {
             thinking_card_title_active: " 🧠 思考 ",
             thinking_card_title_done: " 🧠 已思考 ",
             thinking_card_bottom: " ⏱ {} | ↕ {}/{} 行 | {}",
+            thinking_card_bottom_done: " ⏱ {} | {} 行 | {}",
+            thinking_card_bottom_done_one: " ⏱ {} | {} 行 | {}",
             // 与英文同一枚字形（`md-gesture_double_tap`，U+F073C），中文只换动词。
             thinking_card_action: "󰜼 打开",
             diff_card_title: "+{} {}",
@@ -988,6 +1006,7 @@ impl Messages {
             help_gg: "    gg          跳到日志顶部",
             help_G: "    G           跳到日志底部",
             help_y: "    y           复制选中内容到剪贴板",
+            help_z: "    z           折叠/展开视野内第一个工具组",
             help_t: "    t           打开/关闭思考卡片弹窗",
             help_colon: "    /           命令面板 (内置命令与 Skills)",
             help_insert_header: "  ✏️  插入模式 (在普通模式按 i 或 Enter)",

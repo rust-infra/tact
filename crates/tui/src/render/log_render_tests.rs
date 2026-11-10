@@ -146,6 +146,154 @@ fn log_scroll_offset_hides_early_lines() {
     );
 }
 
+/// A tall table is the one cell the log steps inside rather than over. It used
+/// to step half a screen there, which moved the line under the reader's eye by
+/// seven and crossed a 121-row table in 16 presses. One `j` is one line.
+#[test]
+fn a_press_moves_one_line_inside_a_tall_table() {
+    let mut app = make_app();
+    let mut md = String::from("| Name | Description |\n| --- | --- |\n");
+    for i in 0..40 {
+        md.push_str(&format!(
+            "| row-{i:02} | a long description that must wrap inside the table cell |\n"
+        ));
+    }
+    app.append_markdown(md);
+
+    let (width, height) = (56u16, 16u16);
+    let _ = render_log_panel_text(&mut app, width, height);
+    app.scroll_log_to_top();
+    let _ = render_log_panel_text(&mut app, width, height);
+
+    // Fixture: the table must be taller than the viewport, or it is a short
+    // row and this test would be about the wrong branch.
+    let total = *app.log_scroll.visual_start.last().expect("cache built");
+    let viewport = app.log_scroll.height as usize;
+    assert!(
+        total > viewport,
+        "fixture: the table must be a tall cell, got {total} rows in {viewport}"
+    );
+
+    // Drive the real key, not the step constant: the bug was what `j` did, and
+    // a test that calls `scroll_log_down` cannot see the key handler change.
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    app.input_mode = crate::widgets::state::InputMode::Normal;
+    let mut prev = app.log_viewport_top();
+    let mut deltas = Vec::new();
+    for _ in 0..20 {
+        crate::handlers::handle_normal_mode(
+            &mut app,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('j'),
+                crossterm::event::KeyModifiers::empty(),
+            ),
+            &tx,
+        );
+        let _ = render_log_panel_text(&mut app, width, height);
+        let v = app.log_viewport_top();
+        if v == prev {
+            break;
+        }
+        deltas.push(v - prev);
+        prev = v;
+    }
+    assert!(
+        deltas.iter().all(|&d| d == 1),
+        "every press inside the table must move one line, got {deltas:?}"
+    );
+    assert!(
+        deltas.len() >= 15,
+        "a table of {total} rows needs many presses at one line each, got {}",
+        deltas.len()
+    );
+}
+
+/// Wrapped rows are stepped through, not taken whole.
+///
+/// A four-line paragraph is four presses, in either direction. The log used to
+/// jump from row boundary to row boundary, so one press moved the viewport by
+/// the height of the row it left, and going up it visibly skipped lines.
+///
+/// The assertion is on the rendered screen: the marker row slides up by exactly
+/// one line per press, then back down by one, while the rows around it wrap.
+#[test]
+fn a_press_moves_one_line_through_wrapped_rows_both_ways() {
+    let mut app = make_app();
+    for i in 0..6 {
+        app.add_system_message(format!(
+            "above-{i:02} a body long enough to wrap into several visual lines here"
+        ));
+    }
+    app.add_system_message("MARKER".into());
+    for i in 0..6 {
+        app.add_system_message(format!(
+            "below-{i:02} a body long enough to wrap into several visual lines here"
+        ));
+    }
+
+    let (width, height) = (40u16, 14u16);
+    let _ = render_log_panel_text(&mut app, width, height);
+    app.scroll_log_to_top();
+    let rendered = render_log_panel_text(&mut app, width, height);
+
+    // Fixture: a row is several visual lines, or this test is about nothing.
+    let total = *app.log_scroll.visual_start.last().expect("cache built");
+    assert!(
+        total > 2 * app.log_scroll.height as usize,
+        "fixture: the log must overflow the viewport, got {total} lines"
+    );
+
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    app.input_mode = crate::widgets::state::InputMode::Normal;
+    let press = |app: &mut App, ch: char| {
+        crate::handlers::handle_normal_mode(
+            app,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(ch),
+                crossterm::event::KeyModifiers::empty(),
+            ),
+            &tx,
+        );
+        let _ = render_log_panel_text(app, width, height);
+    };
+
+    // Walk down until the marker is on screen, then record its row.
+    let mut marker_row = line_index_of(&rendered, "MARKER");
+    let mut down = Vec::new();
+    for _ in 0..12 {
+        press(&mut app, 'j');
+        let text = render_log_panel_text(&mut app, width, height);
+        let Some(row) = line_index_of(&text, "MARKER") else {
+            break;
+        };
+        if let Some(prev) = marker_row {
+            down.push(prev - row);
+        }
+        marker_row = Some(row);
+    }
+    let mut up = Vec::new();
+    for _ in 0..12 {
+        press(&mut app, 'k');
+        let text = render_log_panel_text(&mut app, width, height);
+        let Some(row) = line_index_of(&text, "MARKER") else {
+            break;
+        };
+        if let Some(prev) = marker_row {
+            up.push(row - prev);
+        }
+        marker_row = Some(row);
+    }
+
+    assert!(
+        down.len() >= 4 && down.iter().all(|&d| d == 1),
+        "the marker must slide up one line per press down, got {down:?}"
+    );
+    assert!(
+        up.len() >= 4 && up.iter().all(|&d| d == 1),
+        "the marker must slide down one line per press up, got {up:?}"
+    );
+}
+
 #[test]
 fn tall_markdown_cell_is_fully_traversable() {
     // Regression: a whole-Markdown message taller than the viewport (a long
@@ -162,11 +310,10 @@ fn tall_markdown_cell_is_fully_traversable() {
     app.append_markdown(md);
 
     // 60x10 terminal → 8 content lines for the bordered panel.
-    let viewport_height = 8usize;
     let _ = render_log_panel_text(&mut app, 60, 10);
     app.scroll_log_to_top();
 
-    let step = crate::widgets::state::app::scroll::key_cell_step(viewport_height);
+    let step = crate::widgets::state::app::scroll::LOG_LINE_STEP;
     let mut seen_top = false;
     let mut seen_mid = false;
     let mut seen_bottom = false;
@@ -231,6 +378,11 @@ fn log_mixed_categories_render_user_and_assistant() {
     );
 }
 
+/// A reasoning line and the reply under it start on the same column.
+///
+/// The card is kept **live** here on purpose: a finished card draws only its
+/// status row, so there would be no reasoning line left to measure. The live
+/// body is the one that has to line up with prose.
 #[test]
 fn log_assistant_reply_aligns_with_thinking_indent() {
     let mut app = make_app();
@@ -238,7 +390,6 @@ fn log_assistant_reply_aligns_with_thinking_indent() {
     app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
         "thinking reference".into(),
     )));
-    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
     app.add_system_message("final assistant reply".into());
 
     let terminal = render_log_panel_terminal(&mut app, 80, 20);
@@ -283,8 +434,11 @@ fn log_task_end_separator_renders_solid_rule() {
     );
 }
 
+/// A finished card still states how much reasoning there was, even though it
+/// draws none of it: the line count is the only thing left saying "there is
+/// more behind this button".
 #[test]
-fn log_thinking_title_shows_scroll_indicator_when_collapsed() {
+fn log_thinking_title_shows_the_reasoning_size_when_folded() {
     let mut app = make_app();
     for i in 1..=6 {
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(format!(
@@ -295,8 +449,12 @@ fn log_thinking_title_shows_scroll_indicator_when_collapsed() {
 
     let text = render_log_panel_text(&mut app, 100, 24);
     assert!(
-        text.contains('↕') || text.contains("Thinking"),
-        "collapsed thinking block with >3 lines should show scroll indicator or title, got:\n{text}"
+        text.contains("6 lines"),
+        "a folded card with six reasoning lines must say so, got:\n{text}"
+    );
+    assert!(
+        text.contains("Thought") && text.contains("Open"),
+        "the folded card is its status row, got:\n{text}"
     );
 }
 
@@ -1225,4 +1383,105 @@ fn the_live_row_hands_off_to_the_frozen_row() {
             .is_some_and(|l| l.contains("Task stats:")),
         "the live row must be gone once the task ends, got:\n{frozen}"
     );
+}
+
+/// Every state a subagent card can be in has to answer "open the transcript".
+///
+/// The card is the only thing that fronts a child run, and each of its shapes
+/// puts the affordance somewhere else: the footer while it streams, the meta row
+/// once it has no body. One shape was missed — the card just after spawn, before
+/// the first output arrives — and that is not a brief window: a child can think
+/// for a minute before its first line, so the card sat there for that whole
+/// minute with nothing clickable. The double-click route does not cover it
+/// either: double-clicking a subagent card selects its text, by design.
+#[test]
+fn a_subagent_card_is_openable_in_every_shape_it_can_take() {
+    use agent_tui_kit::render::log::OpenTarget;
+    use tact_protocol::{ToolDetailKind, ToolPopupKind, ToolVisualKind};
+
+    /// The shapes a `spawn_subagent` card passes through, in the order a reader
+    /// meets them.
+    #[derive(Clone, Copy)]
+    enum Shape {
+        JustSpawned,
+        Streaming,
+        Finished,
+        Folded,
+    }
+
+    fn subagent_presentation() -> ToolPresentationInfo {
+        ToolPresentationInfo {
+            visual_kind: ToolVisualKind::Subagent,
+            display_name: "🤖 Subagent".into(),
+            keep_full_live_output: true,
+            detail: ToolDetailKind::Result,
+            popup: ToolPopupKind::SubagentTranscript,
+            compact_result_to_meta: false,
+            keep_live: false,
+        }
+    }
+
+    fn build(app: &mut App, shape: Shape) {
+        let call = StepCall::new(0, "sa-1", "spawn_subagent", "research")
+            .presentation(subagent_presentation());
+        app.handle_agent_update(call.started());
+        match shape {
+            Shape::JustSpawned => {}
+            Shape::Streaming => {
+                app.handle_agent_update(AgentUpdate::ToolProgress {
+                    run_id: None,
+                    tool_id: "sa-1".into(),
+                    chunks: vec![tact_protocol::ToolOutputChunk::other("line\n")],
+                });
+            }
+            Shape::Finished | Shape::Folded => {
+                let call = StepCall::new(0, "sa-1", "spawn_subagent", "research")
+                    .presentation(subagent_presentation())
+                    .detail("the summary")
+                    .status(StepStatus::Success);
+                app.handle_agent_update(call.started());
+                app.handle_agent_update(call.finished());
+                if matches!(shape, Shape::Folded)
+                    && let Some(block) = app.tools_mut().blocks.first_mut()
+                {
+                    block.output.layout.detail_collapsed = true;
+                    block.output.layout.has_detail_card = false;
+                }
+            }
+        }
+    }
+
+    /// The subagent targets on screen after a frame.
+    fn open_targets(app: &mut App) -> Vec<OpenTarget> {
+        let _ = render_log_panel_text(app, 100, 24);
+        app.mouse
+            .open_actions
+            .iter()
+            .map(|action| action.target.clone())
+            .filter(|target| matches!(target, OpenTarget::Subagent { .. }))
+            .collect()
+    }
+
+    for (shape, label) in [
+        (Shape::JustSpawned, "just spawned, no output yet"),
+        (Shape::Streaming, "streaming"),
+        (Shape::Finished, "finished"),
+        (Shape::Folded, "folded shut by the reader"),
+    ] {
+        let mut app = make_app();
+        build(&mut app, shape);
+        let targets = open_targets(&mut app);
+        assert_eq!(
+            targets.len(),
+            1,
+            "the {label} card must offer exactly one way in, got {targets:?}"
+        );
+        let OpenTarget::Subagent { tool_id } = &targets[0] else {
+            panic!(
+                "the {label} card must open the transcript, got {:?}",
+                targets[0]
+            );
+        };
+        assert_eq!(tool_id, "sa-1", "the {label} card must open its own child");
+    }
 }

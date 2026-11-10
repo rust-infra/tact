@@ -760,8 +760,19 @@ settings。这也修复了只读逃逸：<code>Plan</code> 父级不再能 spawn
 行</strong>并随同一份切片几何记录命中矩形（此前是渲染循环的标题行
 overlay，会被长标题写掉）。点击卡片<strong>页脚</strong>（运行中
 <code>Click for buffered output</code>、成功后 <code>[Open]</code>、失败
-<code>Click for full error</code>；2026-11-01 起三种相位都可点）进入<strong>子代理视图</strong>（<code>ToolPopupKind::SubagentTranscript</code>）。卡片正文本身不再响应单击：单击只起手一次拖选、双击才选中文字，与
-Thinking 卡片一致。视图内主区域整块换成子会话，顶部一行面包屑
+<code>Click for full error</code>；2026-11-01 起三种相位都可点）进入<strong>子代理视图</strong>（<code>ToolPopupKind::SubagentTranscript</code>）。
+卡片正文本身不再响应单击：单击只起手一次拖选、双击才选中文字，与
+Thinking 卡片一致。</p>
+<p>正文不响应点击带来一个必须显式补的洞：<strong>卡片没有正文时</strong>
+页脚根本不存在。三种无正文状态都要能点开——刚 spawn 还没输出、读者把卡片折起
+来、子会话结束时没有内容可展示。三种都已落进 meta 行的
+<code>… 0 lines · [Open]</code>（与折叠输出同一套 affordance，
+<code>wants_collapsed_affordance = detail_collapsed || (是 subagent 且无 detail card)</code>）。
+其中「刚 spawn」并不短暂：子 agent 可以先想一分钟才出第一行，那一分钟里卡片只有两行，
+若无这个入口就完全点不开。折叠态的 <code>[Open]</code> 还必须指向
+<strong>子代理视图</strong>而不是工具的 diff 弹窗——<code>spawn_subagent</code>
+没有 diff 可看，命中矩形相同，差别只在登记成
+<code>OpenTarget::Subagent</code> 还是 <code>OpenTarget::Tool</code>。视图内主区域整块换成子会话，顶部一行面包屑
 <code>‹ N. Subagent · 标题</code>，<code>Esc</code>
 或点击面包屑退回主日志；子会话的工具调用渲染成<strong>自包含块</strong>（<code>▎ N. ⚡ Bash args</code>
 / <code>✓ Success · 133ms · 42 lines</code> / code band 输出 /
@@ -850,25 +861,41 @@ session id 为主键 —— 是 <code>background_tasks</code> 的子 agent
 中，模型自行决定 <code>resume</code> 或重新 spawn。</p>
 <hr />
 <h2 id="9-返回值">9. 返回值</h2>
-<p><code>agent_loop</code> 完成后，handler 反向扫描
-<code>runtime.context</code> 找最后一条 <code>Role::Assistant</code>
-消息，经 <code>extract_text</code> 提取纯文本：</p>
-<pre class="rust"><code>let summary = subagent
-    .runtime
-    .context
-    .iter()
-    .rev()
-    .find(|message| matches!(message.role, Role::Assistant))
-    .map(|message| extract_text(&amp;message.content))
-    .filter(|text| !text.is_empty())
-    .unwrap_or_else(|| &quot;(no summary)&quot;.to_string());</code></pre>
-<p>含义：</p>
-<ul>
-<li>Thinking 块与 tool-use 元数据被剥离；仅 text 块计数。</li>
-<li>若模型在 tool-use 轮结束而无最终文本回复，父级可能收到
-<code>(no summary)</code>。</li>
-<li>中间 assistant 推理不返回 —— 仅最后 assistant 文本快照。</li>
-</ul>
+<p>摘要取决于<strong>哪种结束方式</strong>，这是两件事，混在一起正是曾经把
+空回合报成成功的原因。</p>
+<p><strong>正常结束</strong>（模型自己收尾）：取最后一条
+<code>Role::Assistant</code> 消息的文本，<em>不多走一步</em>。若那条消息没有
+正文，子 agent 就是什么都没产出，摘要写成
+<code>(ended with an empty turn) ...</code>。以前这里会继续往回找上一条有文本的
+消息，于是一个结尾为空的运行会把开场白（&quot;I'll start by examining...&quot;）
+当成结果交给父级 —— 读起来像是它汇报了工作，其实它只是开了个头。</p>
+<pre class="rust"><code>fn final_assistant_text(subagent: &amp;Agent) -&gt; Option&lt;String&gt; {
+    subagent.runtime.context.iter().rev()
+        .find(|message| matches!(message.role, Role::Assistant))
+        .map(|message| extract_text(&amp;message.content))
+        .filter(|text| !text.trim().is_empty())   // 只看最后一条，不回溯
+}</code></pre>
+<p><strong>被 max_turns 截断</strong>：这时回溯是对的。截断点常常落在
+tool-use 轮上，那条消息本来就没有正文，所以取最近一条<em>有</em>文本的消息，
+再由 <code>truncated_summary</code> 说明截断本身和下一步该怎么办。</p>
+<p>两种情况都遵守：Thinking 块与 tool-use 元数据被剥离，仅 text 块计入；
+中间 assistant 推理不返回。</p>
+<p><strong>成功与否同样看结束方式。</strong>
+<code>TerminalFacts</code> 把三个事实收成一处判断：循环是否 <code>Ok</code>、
+是否被取消、是否空回合。空回合的循环是 <code>Ok</code>（没出错），但它没有
+结果，所以 <code>succeeded()</code> 为假，父级收到的
+<code>SubagentFinished</code> 是失败而非完成。</p>
+<p><strong>取消则补写摘要。</strong>
+<code>SubagentManager::cancel</code> 接收一个
+<code>Option&lt;String&gt;</code>：<code>cancel_subagent</code> 请求时还不知道
+子 agent 做过什么，传 <code>None</code>，只把状态改成
+<code>Cancelled</code> 好让 <code>check_subagent</code> 不再说它 running；
+子 agent 自己的收尾路径知道结果，传 <code>Some(summary)</code> 写进记录。
+<code>None</code> 永不覆盖已写入的摘要，知道更少的一方不能擦掉知道更多的一方的
+结论。此前两者都丢弃摘要，于是 <code>subagent_runs</code> 里所有
+<code>cancelled</code> 行的 <code>summary</code> 都是 NULL，sticky 与
+<code>check_subagent</code> 只能显示 <code>(no summary)</code> —— 而取消掉的
+运行恰恰是读者最想回头看的那种。</p>
 <p>该字符串成为 <code>spawn_subagent</code> 工具的 JSON/text
 结果，作为普通 <code>ToolResult</code> 追加到 <strong>父级</strong>
 context。</p>

@@ -17,7 +17,7 @@ use tool_refactor_macros::tool;
 use tracing::warn;
 
 use crate::{
-    Agent, AgentSystemPrompt,
+    Agent, AgentLoopStop, AgentSystemPrompt,
     consts::TactPath,
     extract_text,
     mcp::MCPToolRouter,
@@ -192,21 +192,55 @@ pub const SPAWN_SUBAGENT_METADATA: ToolMetadata = ToolMetadata {
 
 /// Extract the subagent's final summary from its last assistant message.
 ///
+/// Two endings need different text, and conflating them is what made an empty
+/// run report its opening line as its result.
+///
 /// A run stopped by its own turn cap is the one ending the parent cannot read
 /// off the text: the loop returns `Ok(())`, so the run looks successful, and the
 /// cut lands on a tool-call turn more often than not — whose assistant message
-/// carries no text at all, which is why the parent used to receive a bare
-/// `(no summary)` with no way to tell a finished child from a truncated one.
-/// Raising the cap is something only the parent can do, and only on the next
-/// spawn, so the summary says what happened and what to do about it.
+/// carries no text at all. There, walking back to the last thing the child *did*
+/// say is right, because `truncated_summary` then explains the cut.
+///
+/// A run that ended on its own has no such cover. Its last assistant message is
+/// its result, and if that message carries no text the child produced nothing:
+/// walking back would present an earlier turn as the answer. That is how a run
+/// whose final turn was empty reported "I'll start by examining..." as if it
+/// were a summary of the work.
 fn extract_summary(subagent: &Agent) -> String {
-    let body = last_assistant_text(subagent).unwrap_or_else(|| "(no summary)".to_string());
     match subagent.max_turns {
         Some(max) if subagent.max_turns_reached => {
+            let body = last_assistant_text(subagent).unwrap_or_else(|| "(no summary)".to_string());
             truncated_summary(&body, max, subagent.runtime.session_id.as_deref())
         }
-        _ => body,
+        _ => match final_assistant_text(subagent) {
+            Some(text) => text,
+            None => EMPTY_SUMMARY.to_string(),
+        },
     }
+}
+
+/// What a child leaves behind when it ended its turn writing nothing.
+///
+/// The first line is what the sticky strip renders, so it has to say the child
+/// stopped without an answer. Naming the shape of the failure is the whole point:
+/// `(no summary)` reads as "the parent did not look", and the child's opening
+/// line reads as a result.
+pub const EMPTY_SUMMARY: &str = "(ended with an empty turn) the model stopped without writing an answer; no result was produced";
+
+/// The text of the child's **last** assistant message, empty when that message
+/// carried none.
+///
+/// Unlike [`last_assistant_text`] this never walks back: the point is to report
+/// the ending, not to find something readable.
+fn final_assistant_text(subagent: &Agent) -> Option<String> {
+    subagent
+        .runtime
+        .context
+        .iter()
+        .rev()
+        .find(|message| matches!(message.role, Role::Assistant))
+        .map(|message| extract_text(&message.content))
+        .filter(|text| !text.trim().is_empty())
 }
 
 /// The last text the child wrote, walking back past turns that carried only tool
@@ -259,12 +293,38 @@ fn truncated_summary(body: &str, max: u32, child_id: Option<&str>) -> String {
     )
 }
 
-/// A subagent is only reported successful when its agent loop returned `Ok`
-/// **and** it was not cooperatively cancelled. A cancelled child can still
-/// exit its loop cleanly (`Ok`) after the flag is set, so the raw result alone
-/// would misreport a cancellation as success.
-fn terminal_success(success: bool, cancelled: bool) -> bool {
-    success && !cancelled
+/// How a child's activation ended, reduced to the one question the run record
+/// answers: did it produce a result?
+///
+/// Three facts decide it, and each has a different remedy for the parent. A
+/// cancellation is the user's doing, not the child's failure. An empty turn is
+/// the child stopping without an answer: the loop returned `Ok` because nothing
+/// went wrong, but there is nothing to read, and reporting success made the
+/// sticky strip show a finished run whose summary was its opening line.
+///
+/// A `#[derive]`-free struct rather than three bools at the call site: the two
+/// arms that need this sit hundreds of lines apart, and a fourth argument would
+/// be the one a reader forgets to pass.
+#[derive(Debug, Clone, Copy)]
+struct TerminalFacts {
+    /// The agent loop returned `Ok`.
+    loop_ok: bool,
+    /// The cooperative cancel flag was set.
+    cancelled: bool,
+    /// The loop ended on a turn with nothing to read.
+    empty_turn: bool,
+}
+
+impl TerminalFacts {
+    /// The child produced a result the parent can rely on.
+    fn succeeded(self) -> bool {
+        self.loop_ok && !self.cancelled && !self.empty_turn
+    }
+
+    /// The summary needs the cancellation marker in front of it.
+    fn was_cancelled(self) -> bool {
+        self.cancelled
+    }
 }
 
 /// Optional frontmatter for a subagent skill card. Only `description` is
@@ -800,9 +860,16 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
         let launched = format!("async_launched {{ {child_id} }}");
         tokio::spawn(async move {
             let result = subagent
-                .agent_loop(Some(Message::new_text(Role::User, prompt)))
+                .agent_loop_detailed(Some(Message::new_text(Role::User, prompt)))
                 .await;
-            let success = result.is_ok();
+            // An empty turn is a well-formed run that produced nothing. Counting
+            // it as success is what let a child that stopped mid-thought report
+            // itself as finished, with its opening line as the summary.
+            let empty_turn = matches!(
+                &result,
+                Ok(outcome) if outcome.stop == AgentLoopStop::EmptyTurn
+            );
+            let success = result.is_ok() && !empty_turn;
             let summary =
                 with_worktree_note(extract_summary(&subagent), worktree_for_task.as_ref());
             // The child is done: drop it (which closes its tagged channel and
@@ -827,9 +894,13 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
             // A cancellation request flips the child flag; the agent loop
             // exits cooperatively at its next check point. Mark the run as
             // Cancelled instead of Completed so the record tells the truth.
-            let cancelled = cancel_flag.is_cancelled();
-            let succeeded = terminal_success(success, cancelled);
-            let summary = if cancelled {
+            let facts = TerminalFacts {
+                loop_ok: success,
+                cancelled: cancel_flag.is_cancelled(),
+                empty_turn,
+            };
+            let succeeded = facts.succeeded();
+            let summary = if facts.was_cancelled() {
                 format!("(cancelled by user)\n{summary}")
             } else {
                 summary
@@ -840,15 +911,15 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
                 &stop_hooks,
                 child_id.clone(),
                 prompt_for_stop,
-                success,
-                cancelled,
+                facts.loop_ok,
+                facts.cancelled,
                 summary,
             )
             .await;
-            let _ = if cancelled {
-                manager.cancel(&child_id).await
+            let _ = if facts.was_cancelled() {
+                manager.cancel(&child_id, Some(&summary)).await
             } else {
-                manager.finish(&child_id, success, summary.clone()).await
+                manager.finish(&child_id, succeeded, summary.clone()).await
             };
             // Broadcast the sticky snapshot after the row is durable, before
             // the parent tool card is finalized.
@@ -882,10 +953,18 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
         // Sync: block on the nested loop; tool result = last assistant text.
         let prompt_for_stop = input.prompt.clone();
         let result = subagent
-            .agent_loop(Some(Message::new_text(Role::User, input.prompt)))
+            .agent_loop_detailed(Some(Message::new_text(Role::User, input.prompt)))
             .await;
-        let success = result.is_ok();
-        let cancelled = cancel_flag.is_cancelled();
+        // Same rule as the async arm: a run that ended on an empty turn is not
+        // a success, so the parent is not told the work is done.
+        let facts = TerminalFacts {
+            loop_ok: result.is_ok(),
+            cancelled: cancel_flag.is_cancelled(),
+            empty_turn: matches!(
+                &result,
+                Ok(outcome) if outcome.stop == AgentLoopStop::EmptyTurn
+            ),
+        };
         let summary = extract_summary(&subagent);
         // Drain the child's forwarder before returning: the dispatcher emits
         // this call's `StepFinished` — which finalizes the card — the moment we
@@ -899,18 +978,18 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
         // Persist the terminal state so a cancelled / failed sync child is
         // visible to `check_subagent` (it previously left no `subagent_runs`
         // row at all).
-        let _ = if cancelled {
-            ctx.subagent_manager.cancel(&child_id).await
+        let _ = if facts.was_cancelled() {
+            ctx.subagent_manager.cancel(&child_id, Some(&summary)).await
         } else {
             ctx.subagent_manager
-                .finish(&child_id, success, summary.clone())
+                .finish(&child_id, facts.succeeded(), summary.clone())
                 .await
         };
         crate::subagent::emit_subagents_changed(&ctx.events, &ctx.subagent_manager).await;
         if let Some(lock) = lock {
             lock.release().await?;
         }
-        let summary = if cancelled {
+        let summary = if facts.was_cancelled() {
             format!("(cancelled by user)\n{summary}")
         } else {
             summary
@@ -921,8 +1000,8 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
             &ctx.subagent_stop_hooks,
             child_id.clone(),
             prompt_for_stop,
-            success,
-            cancelled,
+            facts.loop_ok,
+            facts.cancelled,
             summary,
         )
         .await;
@@ -1012,8 +1091,9 @@ pub async fn cancel_subagent(ctx: ToolContext, input: CancelSubagentInput) -> Re
     let cancelled = ctx.subagent_manager.request_cancel(input.child_id.as_str());
     if cancelled {
         // Best-effort: mark the run record Cancelled now; the child's finish
-        // path keeps it Cancelled when the flag is set.
-        let _ = ctx.subagent_manager.cancel(&input.child_id).await;
+        // path keeps it Cancelled when the flag is set, and is the one that
+        // writes the summary — the request has nothing to report yet.
+        let _ = ctx.subagent_manager.cancel(&input.child_id, None).await;
         crate::subagent::emit_subagents_changed(&ctx.events, &ctx.subagent_manager).await;
         Ok(format!("cancel requested for subagent {}", input.child_id))
     } else {
@@ -1117,14 +1197,33 @@ mod tests {
         assert!(summary.contains("max_turns = 6"), "{summary:?}");
     }
 
+    /// A child may exit its loop cleanly (`loop_ok`) for reasons that are not
+    /// success: the user cancelled it, or it stopped having written nothing.
     #[test]
-    fn cancelled_subagent_is_not_reported_as_successful() {
-        // A cancelled child may still exit its loop cleanly (success=true),
-        // but must never be reported successful to the parent / TUI.
-        assert!(!terminal_success(true, true));
-        assert!(terminal_success(true, false));
-        assert!(!terminal_success(false, false));
-        assert!(!terminal_success(false, true));
+    fn a_run_is_only_successful_when_it_was_not_cancelled_and_produced_something() {
+        let facts = |loop_ok, cancelled, empty_turn| TerminalFacts {
+            loop_ok,
+            cancelled,
+            empty_turn,
+        };
+
+        assert!(
+            facts(true, false, false).succeeded(),
+            "the ordinary good run"
+        );
+        assert!(
+            !facts(true, true, false).succeeded(),
+            "a cancelled child exits cleanly, but the user ended it"
+        );
+        assert!(
+            !facts(true, false, true).succeeded(),
+            "an empty turn returns Ok and has nothing to read; that is not success"
+        );
+        assert!(!facts(false, false, false).succeeded(), "a failed loop");
+        assert!(!facts(false, true, true).succeeded(), "everything at once");
+
+        assert!(!facts(true, false, true).was_cancelled());
+        assert!(facts(true, true, false).was_cancelled());
     }
 
     #[tokio::test]

@@ -23,6 +23,15 @@ pub struct ActiveThinkingBlock {
     pending_line: String,
     completed_tail: VecDeque<String>,
     pub started_at: Instant,
+    /// Whether the app inserted a blank row between the previous block and
+    /// this card's placeholder rows.
+    ///
+    /// The gap belongs to the card, not to the log: a card that finishes blank
+    /// is removed, and so is the gap it opened, or the blank line would be left
+    /// separating nothing. Tracked as a flag rather than inferred at removal
+    /// time because the row in front is a placeholder too — its empty `raw`
+    /// cannot tell a gap from a card row.
+    pub preceded_by_gap: bool,
 }
 
 impl ActiveThinkingBlock {
@@ -36,6 +45,7 @@ impl ActiveThinkingBlock {
             pending_line: String::new(),
             completed_tail: VecDeque::new(),
             started_at,
+            preceded_by_gap: false,
         }
     }
 
@@ -82,11 +92,23 @@ pub struct ThinkingState {
 }
 
 /// A completed reasoning card anchored at one shared-log placeholder row.
+///
+/// A finished card draws **one** row — its status row — and the reasoning
+/// itself lives here, behind the `[Open]` button. The block therefore holds the
+/// whole thought, not just what fits on a card.
 #[derive(Debug, Clone)]
 pub struct ThinkingBlock {
     pub block_id: String,
     pub phys_idx: usize,
     pub content: String,
+    /// One-line digest of the reasoning.
+    ///
+    /// The card no longer draws it: a finished card is a status row, and the
+    /// summary was the row under it that got cut. It stays on the state because
+    /// it is the block's own short answer to "what was thought", which a host
+    /// rendering its own card (or a future one-row variant) needs without
+    /// re-deriving it, and because the popup's title path and the card selection
+    /// read the block as a whole.
     pub summary: String,
     pub cached_markdown: Vec<ratatui::text::Line<'static>>,
     pub elapsed: Duration,
@@ -174,7 +196,7 @@ pub fn find_thinking_at_logical(
     thinking.blocks.iter().find_map(|block| {
         find(
             block.phys_idx,
-            crate::render::cells::thinking::thinking_visual_rows(1),
+            crate::render::cells::thinking::COMPLETED_THINKING_ROWS,
         )
     })
 }

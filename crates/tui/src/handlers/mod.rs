@@ -1586,7 +1586,7 @@ mod tests {
         app.scroll_log_to_top();
 
         let viewport_height = 8usize;
-        let step = crate::widgets::state::app::scroll::key_cell_step(viewport_height);
+        let step = crate::widgets::state::app::scroll::LOG_LINE_STEP;
         let mut seen = false;
         for _ in 0..300 {
             let text = crate::render::test_harness::render_log_panel_text(

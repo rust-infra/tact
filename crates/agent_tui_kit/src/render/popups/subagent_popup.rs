@@ -1306,6 +1306,7 @@ mod tests {
                 phys_idx: 0,
                 tool_id: "sa-1".into(),
                 output: subagent_card(false),
+                span: None,
             });
         }
         tools

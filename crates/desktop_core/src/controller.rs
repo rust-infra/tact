@@ -505,10 +505,10 @@ pub fn help_reader(language: CatalogLocale) -> ReaderRequest {
     let title = localized(language, "Keyboard Shortcuts", "键盘快捷键");
     let markdown = match language {
         CatalogLocale::En => format!(
-            "| Shortcut | Action |\n| --- | --- |\n| {primary}+K | Command Center |\n| {primary}+B | Toggle sessions |\n| {primary}+Alt+B | Toggle inspector |\n| {primary}+Enter | Send |\n| Esc | Close/cancel |\n| {primary}+. | Stop |\n| {primary}+1..5 | Inspector tabs |\n| {option}+Up/Down | Queue navigation |\n| Space | Toggle multi-select |\n| Enter | Activate focused control |\n| Tab / Shift+Tab | Traverse controls |"
+            "# Keyboard Shortcuts\n\n- {primary}+K Command Center\n- {primary}+B Toggle sessions\n- {primary}+Alt+B Toggle inspector\n- {primary}+Enter Send\n- Esc Close/cancel\n- {primary}+. Stop\n- {primary}+1..5 Inspector tabs\n- {option}+Up/Down Queue navigation\n- Space Toggle multi-select\n- Enter Activate focused control\n- Tab / Shift+Tab Traverse controls"
         ),
         CatalogLocale::Zh => format!(
-            "| 快捷键 | 操作 |\n| --- | --- |\n| {primary}+K | 命令中心 |\n| {primary}+B | 切换会话栏 |\n| {primary}+Alt+B | 切换检查器 |\n| {primary}+Enter | 发送 |\n| Esc | 关闭/取消 |\n| {primary}+. | 停止 |\n| {primary}+1..5 | 检查器标签 |\n| {option}+Up/Down | 队列导航 |\n| Space | 切换多选项 |\n| Enter | 激活当前控件 |\n| Tab / Shift+Tab | 遍历控件 |"
+            "# 键盘快捷键\n\n- {primary}+K 命令中心\n- {primary}+B 切换会话栏\n- {primary}+Alt+B 切换检查器\n- {primary}+Enter 发送\n- Esc 关闭/取消\n- {primary}+. 停止\n- {primary}+1..5 检查器标签\n- {option}+Up/Down 队列导航\n- Space 切换多选项\n- Enter 激活当前控件\n- Tab / Shift+Tab 遍历控件"
         ),
     };
     ReaderRequest {

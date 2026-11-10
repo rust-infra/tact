@@ -48,6 +48,22 @@ impl ToolPhase {
     fn has_result_detail(self) -> bool {
         matches!(self, Self::Failed | Self::Cancelled)
     }
+
+    /// The call has not reached an end state yet.
+    ///
+    /// A run of adjacent blocks may not be folded while any member is live: its
+    /// rows are still changing, and a summary that shrinks the run while a tool
+    /// is mid-call would jump the reader on every result. Every terminal phase —
+    /// including `Failed` and `Cancelled` — is foldable, because the summary row
+    /// carries the count of failures.
+    pub fn is_live(self) -> bool {
+        matches!(self, Self::Queued | Self::Running)
+    }
+
+    /// The call ended without succeeding.
+    pub fn is_failure(self) -> bool {
+        matches!(self, Self::Failed | Self::Cancelled)
+    }
 }
 
 fn kind_from_presentation(

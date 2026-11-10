@@ -15,6 +15,10 @@ pub enum AgentLoopStop {
     /// The model ended the turn (`end_turn` / `stop_sequence` / `pause_turn` / none)
     /// and no tool asked to yield.
     Completed,
+    /// The model returned a turn with nothing to read: no text, no tool call,
+    /// no image. The loop ended where it always does; what differs is that the
+    /// caller got nothing, so this must not be reported as a success.
+    EmptyTurn,
     /// A Goal tool asked the Runner to hand control back to the user.
     GoalYield(crate::tool::GoalYieldReason),
     /// The turn cap (`max_turns`) was reached.

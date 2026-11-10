@@ -670,6 +670,23 @@ impl AgentKernel {
                 | StopReason::StopSequence
                 | StopReason::PauseTurn
                 | StopReason::ToolUse => {
+                    // A turn that produced nothing is not a completion. The
+                    // provider can answer with an empty content array and no
+                    // stop reason, which the transport normalises to
+                    // `end_turn`; reporting `Completed` then tells the caller
+                    // the request was handled when there is nothing to read.
+                    // `Completed` stays reachable, so nothing downstream has to
+                    // change its vocabulary: the run still ends here, and the
+                    // caller is told what it actually got.
+                    if response.message.is_empty_turn() {
+                        return Ok(self.outcome(
+                            state,
+                            activation_turns,
+                            tool_calls,
+                            RunStop::EmptyTurn,
+                            &recovery,
+                        ));
+                    }
                     return Ok(self.outcome(
                         state,
                         activation_turns,

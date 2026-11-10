@@ -913,6 +913,7 @@ impl App {
         // pre-dispatch behavior of `apply_stream_chunk`.
         self.ensure_gap_after_user_message();
         self.ensure_gap_after_tools();
+        self.ensure_gap_after_thinking();
         // Thinking region is closed by the safety gate above when still open.
 
         // StreamComponent (registry dispatch) already ran the parse state

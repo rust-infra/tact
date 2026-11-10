@@ -10,3 +10,4 @@ pub mod separator;
 pub mod text;
 pub mod thinking;
 pub mod tool;
+pub mod tool_run;

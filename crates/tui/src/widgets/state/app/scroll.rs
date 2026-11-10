@@ -1,92 +1,39 @@
 //! Visual-line log scrolling.
 //!
-//! The log panel's authoritative scroll position is `LogScroll::visual_top`
-//! — the first visible visual line. The pure step functions below translate
-//! "one scroll step" into a new visual position that can traverse a cell
-//! taller than the viewport (a long Markdown table, an expanded tool card):
+//! The log panel's authoritative scroll position is `LogScroll::visual_top`,
+//! the first visible visual line. A scroll step moves that position by `step`
+//! visual lines, clamped to the content, whatever the row under it happens to
+//! be. A row is a storage unit, not a scroll unit: one press moves one line
+//! whether that row is a single line or a paragraph that wrapped into twelve.
 //!
-//! - inside such a cell the position moves by `step` visual lines;
-//! - at a cell boundary the position jumps to the adjacent row (entering a
-//!   tall row from below lands on its bottom, from above on its top);
-//! - for rows no taller than the viewport this degenerates to the old
-//!   one-logical-row-per-step behavior.
-//!
-//! `vs` is the visual start prefix-sum cache (`visual_start_cache`), whose
-//! last entry is the total visual line count.
+//! Keys and the wheel both pass [`LOG_LINE_STEP`], so a notch of the wheel
+//! moves as far as a press of `j` or `k`. The prefix-sum cache
+//! `LogScroll::visual_start` says where each row begins, and its last entry is
+//! the total visual line count, which bounds the position.
 
 use crate::widgets::state::App;
 
-/// Scroll one step down (`j` / wheel down). Returns the new visual top.
+/// Step in the log, for a key press and for a notch of the wheel alike: one
+/// visual line.
 ///
-/// `step` only matters inside a cell taller than the viewport; at row
-/// boundaries the position jumps to the next row regardless of `step`.
-pub(crate) fn visual_step_down(
-    vs: &[usize],
-    viewport_height: usize,
-    v: usize,
-    step: usize,
-) -> usize {
-    let Some(&total) = vs.last() else {
-        return v;
-    };
-    if total <= viewport_height {
-        return v;
-    }
-    let max_visual = total - viewport_height;
-    if v >= max_visual {
-        return v;
-    }
-    // Row containing `v` (partition_point finds the first start > v).
-    let i = vs.partition_point(|&start| start <= v).saturating_sub(1);
-    let row_top = vs[i];
-    let row_end = vs.get(i + 1).copied().unwrap_or(total);
-    if row_end - row_top > viewport_height {
-        let bottom_pos = row_end - viewport_height;
-        if v < bottom_pos {
-            // Inside the tall cell: move down within it.
-            return (v + step).min(bottom_pos);
-        }
-        // At the cell's bottom: enter the next row from above.
-        return row_end.min(max_visual);
-    }
-    // Short row: jump to the next row's top.
-    row_end.min(max_visual)
-}
+/// A row is a storage unit, not a scroll unit. Taking a row whole moves the
+/// viewport by however many lines that row wrapped into: measured, a press
+/// over a three-line row moved three lines, and the first press up over a
+/// four-line row moved five. `G` and `g` stay the fast routes to the ends.
+pub(crate) const LOG_LINE_STEP: usize = 1;
 
-/// Scroll one step up (`k` / wheel up). Returns the new visual top.
-pub(crate) fn visual_step_up(vs: &[usize], viewport_height: usize, v: usize, step: usize) -> usize {
-    if v == 0 || vs.len() < 2 {
-        return 0;
-    }
-    let total = *vs.last().unwrap_or(&0);
-    let i = vs.partition_point(|&start| start <= v).saturating_sub(1);
-    let row_top = vs[i];
-    let row_end = vs.get(i + 1).copied().unwrap_or(total);
-    if row_end - row_top > viewport_height && v > row_top {
-        // Inside the tall cell: move up within it.
-        return v.saturating_sub(step).max(row_top);
-    }
-    // At the top of the current row: enter the previous row. A tall previous
-    // row is entered at its bottom so its middle stays traversable.
-    if i == 0 {
-        return 0;
-    }
-    let prev_top = vs[i - 1];
-    let prev_height = row_top - prev_top;
-    if prev_height > viewport_height {
-        row_top - viewport_height
-    } else {
-        prev_top
-    }
-}
+/// Mouse-wheel step inside the subagent transcript: three visual lines, every
+/// notch.
+///
+/// That view is one bounded card rather than a column the reader scans line by
+/// line, so it keeps a coarser step than the log.
+pub(crate) const SUBAGENT_WHEEL_STEP: usize = 3;
 
-/// Keyboard step inside a cell taller than the viewport: half a screen.
+/// Keyboard step inside the subagent transcript: half a screen, for the same
+/// reason as [`SUBAGENT_WHEEL_STEP`].
 pub(crate) fn key_cell_step(viewport_height: usize) -> usize {
     (viewport_height / 2).max(1)
 }
-
-/// Mouse-wheel step inside a cell taller than the viewport.
-pub(crate) const WHEEL_CELL_STEP: usize = 3;
 
 impl App {
     /// The viewport's first visible visual line, resolved from the persisted
@@ -168,33 +115,63 @@ impl App {
         }
     }
 
-    /// Scroll up by `step` visual lines inside a tall cell (row-boundary
-    /// jumps otherwise). `key_cell_step` / `WHEEL_CELL_STEP` pick `step`.
-    pub(crate) fn scroll_log_up(&mut self, step: usize) {
-        let v = self.log_viewport_top();
-        let vh = self.log_scroll.height as usize;
-        self.log_scroll.visual_top = visual_step_up(&self.log_scroll.visual_start, vh, v, step);
-        // Any deliberate move up is a decision to stop following the tail.
-        self.log_scroll.follow = false;
+    /// Keep the reader's eye on the same content after rows disappear above it.
+    ///
+    /// Folding a run removes `rows_removed` visual rows. When all of them sit at
+    /// or above the viewport top, everything the reader is looking at slides up
+    /// by that much, and without this the line they were reading jumps off the
+    /// top of the screen (measured: screen row 6 became row -1).
+    ///
+    /// A run that is only partly above the top is left alone on purpose. The
+    /// reader can see it collapsing, and moving the content under their eyes
+    /// while they watch would be the stranger of the two behaviours.
+    ///
+    /// Only the non-following case needs this: a following viewport is already
+    /// pinned to the tail, which `render_log_panel` recomputes from `usize::MAX`.
+    pub(crate) fn compensate_for_removed_rows(&mut self, rows_removed: usize, above_top: bool) {
+        if rows_removed == 0 || !above_top || self.log_scroll.follow {
+            return;
+        }
+        self.log_scroll.visual_top = self.log_scroll.visual_top.saturating_sub(rows_removed);
         self.sync_log_offset_mirror();
     }
 
-    /// Scroll down by `step` visual lines inside a tall cell (row-boundary
-    /// jumps otherwise).
-    pub(crate) fn scroll_log_down(&mut self, step: usize) {
+    /// Scroll up by `step` visual lines, clamped to the top of the log.
+    ///
+    /// `step` counts visual lines, not rows: a paragraph that wrapped into
+    /// four lines takes four presses to pass, the same as four one-line rows.
+    pub(crate) fn scroll_log_up(&mut self, step: usize) {
         let v = self.log_viewport_top();
-        let vh = self.log_scroll.height as usize;
-        let next = visual_step_down(&self.log_scroll.visual_start, vh, v, step);
+        let next = v.saturating_sub(step);
         self.log_scroll.visual_top = next;
-        // Scrolling back down to the end resumes following — the reader asked
-        // for the tail, and the badge has nothing left to point at. An empty
-        // cache (nothing drawn yet) says nothing and must re-arm nothing.
-        if let Some(&total) = self.log_scroll.visual_start.last() {
-            let max_visual = total.saturating_sub(self.log_scroll.height as usize);
-            if next >= max_visual {
-                self.scroll_log_to_bottom();
-            }
+        // Moving up is a decision to stop following the tail, but only when it
+        // actually moved: in a log shorter than one screen, or already at the
+        // top, `k` has nowhere to go. Clearing `follow` there claims the reader
+        // scrolled away while they are still looking at the only screenful
+        // there is, and lights a "back to bottom" pill for the bottom they are
+        // already on.
+        if next != v {
+            self.log_scroll.follow = false;
         }
+        self.sync_log_offset_mirror();
+    }
+
+    /// Scroll down by `step` visual lines, clamped to the bottom of the log.
+    pub(crate) fn scroll_log_down(&mut self, step: usize) {
+        // An empty cache (nothing drawn yet) says nothing and must re-arm
+        // nothing, so it is the one case that does not move.
+        let Some(&total) = self.log_scroll.visual_start.last() else {
+            return;
+        };
+        let max_visual = total.saturating_sub(self.log_scroll.height as usize);
+        let next = self.log_viewport_top().saturating_add(step);
+        // Scrolling back down to the end resumes following — the reader asked
+        // for the tail, and the badge has nothing left to point at.
+        if next >= max_visual {
+            self.scroll_log_to_bottom();
+            return;
+        }
+        self.log_scroll.visual_top = next;
         self.sync_log_offset_mirror();
     }
 }
@@ -221,13 +198,23 @@ mod tests {
 
     /// The point of the whole change: output arriving while the reader is
     /// scrolled up must not move them, and must say that it arrived.
+    ///
+    /// The log has to be longer than one screen and rendered once, or `k` has
+    /// nowhere to move and the reader never actually left the tail.
     #[test]
     fn a_new_row_does_not_move_a_scrolled_away_viewport_and_lights_the_badge() {
         let mut app = make_app();
-        app.append_markdown("first");
+        for i in 0..40 {
+            app.append_markdown(format!("row-{i}"));
+        }
+        let _ = render_log_panel_text(&mut app, 60, 6);
+
         app.scroll_log_up(1);
         let top = app.log_scroll.visual_top;
-        assert!(!app.is_log_pinned_to_bottom());
+        assert!(
+            !app.is_log_pinned_to_bottom(),
+            "the viewport moved, so the reader left the tail"
+        );
 
         app.append_markdown("second");
 
@@ -286,88 +273,168 @@ mod tests {
         );
     }
 
-    /// Layout: 4 logical rows.
-    ///   row0: visual [0..1)   short
-    ///   row1: visual [1..11)  tall (10 lines, viewport 4)
-    ///   row2: visual [11..12) short
-    ///   row3: visual [12..13) short
-    /// total = 13, vh = 4, max_visual = 9.
+    /// A log whose second row wraps to ten lines. Viewport 4, so the content
+    /// is four viewports' worth and the tall row's middle is what used to be
+    /// unreachable.
     const VS: [usize; 5] = [0, 1, 11, 12, 13];
 
+    fn app_with_layout(vs: &[usize], height: u16) -> App {
+        let mut app = make_app();
+        app.log_scroll.visual_start = vs.to_vec();
+        app.log_scroll.height = height;
+        app.log_scroll.visual_top = 0;
+        app.log_scroll.follow = false;
+        app
+    }
+
+    /// Every visual line inside a tall row is a stopping place, one press at a
+    /// time, in both directions.
+    ///
+    /// The row-boundary rule stepped the whole 10-line row at once, so its
+    /// middle could not be read at all.
     #[test]
-    fn tall_cell_middle_is_traversable_from_above() {
-        let vh = 4;
-        // Down from row0: enter the tall row at its top.
-        let v1 = visual_step_down(&VS, vh, 0, key_cell_step(vh));
-        assert_eq!(v1, 1);
-        // Inside the tall cell: step by half the viewport.
-        let v2 = visual_step_down(&VS, vh, v1, key_cell_step(vh));
-        assert_eq!(v2, 3);
-        let v3 = visual_step_down(&VS, vh, v2, key_cell_step(vh));
-        assert_eq!(v3, 5);
-        // Overshooting clamps to the cell's bottom position (11 - 4 = 7).
-        let v4 = visual_step_down(&VS, vh, v3, key_cell_step(vh));
-        assert_eq!(v4, 7);
-        // At the cell's bottom the next step reaches the true bottom (9):
-        // rows 2/3 are short and fit into the final viewport.
-        let v5 = visual_step_down(&VS, vh, v4, key_cell_step(vh));
-        assert_eq!(v5, 9);
-        assert_eq!(visual_step_down(&VS, vh, v5, key_cell_step(vh)), 9);
+    fn every_line_inside_a_tall_row_is_reachable() {
+        let mut app = app_with_layout(&VS, 4);
+
+        let mut tops = vec![app.log_viewport_top()];
+        while app.log_viewport_top() < 9 {
+            app.scroll_log_down(LOG_LINE_STEP);
+            tops.push(app.log_viewport_top());
+        }
+        assert_eq!(tops, (0..=9).collect::<Vec<_>>());
+
+        let mut back = vec![app.log_viewport_top()];
+        while app.log_viewport_top() > 0 {
+            app.scroll_log_up(LOG_LINE_STEP);
+            back.push(app.log_viewport_top());
+        }
+        assert_eq!(back, (0..=9).rev().collect::<Vec<_>>());
     }
 
     #[test]
-    fn tall_cell_middle_is_traversable_from_below() {
-        let vh = 4;
-        // Bottom-pinned viewport (9) shows the cell tail plus the short rows.
-        let v1 = visual_step_up(&VS, vh, 9, key_cell_step(vh));
-        assert_eq!(v1, 7);
-        // At the tall row's bottom (7): keep walking up inside it.
-        let v2 = visual_step_up(&VS, vh, 7, key_cell_step(vh));
-        assert_eq!(v2, 5);
-        let v3 = visual_step_up(&VS, vh, 5, key_cell_step(vh));
-        assert_eq!(v3, 3);
-        let v4 = visual_step_up(&VS, vh, 3, key_cell_step(vh));
-        assert_eq!(v4, 1);
-        // At the tall row's top: enter the previous short row.
-        assert_eq!(visual_step_up(&VS, vh, 1, key_cell_step(vh)), 0);
-        assert_eq!(visual_step_up(&VS, vh, 0, key_cell_step(vh)), 0);
+    fn a_wheel_notch_moves_one_line_like_a_key_press() {
+        let mut app = app_with_layout(&VS, 4);
+
+        app.scroll_log_down(LOG_LINE_STEP);
+        assert_eq!(app.log_viewport_top(), 1);
+        app.scroll_log_down(LOG_LINE_STEP);
+        assert_eq!(app.log_viewport_top(), 2);
+        app.scroll_log_up(LOG_LINE_STEP);
+        assert_eq!(app.log_viewport_top(), 1);
     }
 
     #[test]
-    fn wheel_uses_three_line_steps_inside_tall_cells() {
-        let vh = 4;
-        assert_eq!(visual_step_down(&VS, vh, 1, WHEEL_CELL_STEP), 4);
-        assert_eq!(visual_step_up(&VS, vh, 7, WHEEL_CELL_STEP), 4);
+    fn stepping_past_either_end_clamps_instead_of_wrapping() {
+        let mut app = app_with_layout(&VS, 4);
+
+        app.scroll_log_up(LOG_LINE_STEP);
+        assert_eq!(app.log_viewport_top(), 0, "the top is a wall");
+
+        app.scroll_log_down(1000);
+        assert!(
+            app.is_log_pinned_to_bottom(),
+            "reaching the end re-arms follow"
+        );
+        app.scroll_log_down(LOG_LINE_STEP);
+        assert!(app.is_log_pinned_to_bottom());
+    }
+
+    /// One line at a time, even when consecutive lines belong to different
+    /// rows, which is how a normal log is shaped.
+    #[test]
+    fn a_short_row_log_steps_by_lines_too() {
+        let mut app = app_with_layout(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 2);
+
+        app.scroll_log_down(LOG_LINE_STEP);
+        assert_eq!(app.log_viewport_top(), 1);
+
+        app.scroll_log_up(LOG_LINE_STEP);
+        assert_eq!(app.log_viewport_top(), 0);
+        assert_eq!(app.log_scroll.offset, 0, "the row mirror follows the lines");
     }
 
     #[test]
-    fn short_rows_keep_one_row_per_step_semantics() {
-        // vs = [0, 1, 2, 3] → three 1-line rows, vh = 2, max_visual = 1.
-        let vs = [0usize, 1, 2, 3];
-        assert_eq!(visual_step_down(&vs, 2, 0, key_cell_step(2)), 1);
-        assert_eq!(visual_step_down(&vs, 2, 1, key_cell_step(2)), 1);
-        assert_eq!(visual_step_up(&vs, 2, 1, key_cell_step(2)), 0);
-        assert_eq!(visual_step_up(&vs, 2, 0, key_cell_step(2)), 0);
+    fn an_empty_cache_never_moves() {
+        let mut app = app_with_layout(&[], 4);
+        app.scroll_log_down(LOG_LINE_STEP);
+        assert_eq!(app.log_viewport_top(), 0);
+        app.scroll_log_up(LOG_LINE_STEP);
+        assert_eq!(app.log_viewport_top(), 0);
     }
 
+    /// Pressing `k` in a log shorter than one screen moves nothing, so it must
+    /// not count as leaving the tail.
+    ///
+    /// `follow` is the whole follow-the-tail policy: it decides whether new
+    /// rows keep the viewport pinned or light the "new activity" badge. Clearing
+    /// it on a keypress that could not move the viewport claims the reader
+    /// scrolled away when they are still looking at the only screenful there
+    /// is, so the pill offers a "back to bottom" that is already the bottom.
     #[test]
-    fn content_shorter_than_viewport_does_not_scroll() {
-        let vs = [0usize, 1, 2, 3];
-        assert_eq!(visual_step_down(&vs, 30, 0, key_cell_step(30)), 0);
-        assert_eq!(visual_step_up(&vs, 30, 0, key_cell_step(30)), 0);
+    fn scrolling_up_inside_a_short_log_keeps_following() {
+        let mut app = make_app();
+        app.append_markdown("only line");
+        let _ = render_log_panel_text(&mut app, 60, 20);
+        assert!(app.is_log_pinned_to_bottom());
+        let top = app.log_viewport_top();
+
+        app.scroll_log_up(1);
+
+        assert_eq!(
+            app.log_viewport_top(),
+            top,
+            "the viewport had nowhere to move"
+        );
+        assert!(
+            app.is_log_pinned_to_bottom(),
+            "a keypress that moved nothing must not stop the tail from following"
+        );
+        assert!(
+            !app.log_scroll.unseen,
+            "and must not light a badge for content that is already on screen"
+        );
     }
 
+    /// The rule generalizes past the first keypress: `k` at the top of a long
+    /// log, already at visual line 0, moves nothing either.
     #[test]
-    fn entering_tall_row_from_below_lands_on_its_bottom() {
-        // row0 short [0..1), row1 tall [1..11), row2 short [11..12).
-        let vh = 4;
-        let v = visual_step_up(&VS, vh, 11, key_cell_step(vh));
-        assert_eq!(v, 7, "scrolling up from row2 shows the tall row's bottom");
+    fn scrolling_up_at_the_very_top_keeps_following() {
+        let mut app = make_app();
+        for i in 0..40 {
+            app.append_markdown(format!("row-{i}"));
+        }
+        let _ = render_log_panel_text(&mut app, 60, 6);
+        app.scroll_log_to_top();
+        assert!(
+            !app.is_log_pinned_to_bottom(),
+            "jumping to the top is deliberate"
+        );
+
+        app.scroll_log_up(1);
+
+        assert_eq!(app.log_viewport_top(), 0, "already at the top");
+        assert!(
+            !app.is_log_pinned_to_bottom(),
+            "an unmoving keypress must not re-arm the tail either"
+        );
     }
 
+    /// The symmetric case: `j` in a log that cannot scroll moves nothing and
+    /// has nothing below to reveal, so it must leave both flags alone.
     #[test]
-    fn empty_cache_is_a_noop() {
-        assert_eq!(visual_step_down(&[], 4, 0, 2), 0);
-        assert_eq!(visual_step_up(&[], 4, 0, 2), 0);
+    fn scrolling_down_inside_a_short_log_changes_nothing() {
+        let mut app = make_app();
+        app.append_markdown("only line");
+        let _ = render_log_panel_text(&mut app, 60, 20);
+        let top = app.log_viewport_top();
+
+        app.scroll_log_down(1);
+
+        assert_eq!(app.log_viewport_top(), top, "nowhere to go");
+        assert!(
+            app.is_log_pinned_to_bottom(),
+            "and the reader never left the tail"
+        );
+        assert!(!app.log_scroll.unseen, "so there is nothing to badge");
     }
 }

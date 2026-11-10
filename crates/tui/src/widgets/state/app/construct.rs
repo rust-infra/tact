@@ -74,11 +74,8 @@ impl App {
         // through `dispatch_components`.
         let mut registry = ComponentRegistry::new();
         registry.push(PlanComponent::new());
-        registry.push(ThinkingComponent::new(
-            theme,
-            Messages::by_language(language),
-        ));
-        registry.push(StreamComponent::new(theme, Messages::by_language(language)));
+        registry.push(ThinkingComponent::new(Messages::by_language(language)));
+        registry.push(StreamComponent::new(Messages::by_language(language)));
         registry.push(ToolComponent::new(Messages::by_language(language)));
         registry.push(StatusBarComponent::new(git_branch));
         registry.push(GoalPanelComponent::new());

@@ -533,6 +533,11 @@ impl OpenAiAdapter {
         // OpenAI-compatible streams only expose reasoning deltas — synthesize
         // Started / Finished around the first and last reasoning fragment.
         let mut thinking_open = false;
+        // Whether the byte stream said it was finished. `[DONE]` is the
+        // documented sentinel; compatible endpoints that omit it still send a
+        // `finish_reason`, so either one counts.
+        let mut saw_terminal = false;
+        let mut text_len = 0usize;
 
         while let Some(event) = event_stream.next().await {
             match event {
@@ -541,6 +546,7 @@ impl OpenAiAdapter {
                 }
                 Ok(msg) => {
                     if msg.data == "[DONE]" {
+                        saw_terminal = true;
                         break;
                     }
 
@@ -563,6 +569,7 @@ impl OpenAiAdapter {
                             match &event {
                                 ProviderProgress::TextDelta(content) => {
                                     text_buffer.push_str(content);
+                                    text_len += content.len();
                                 }
                                 ProviderProgress::Thinking(ThinkingChunk::Delta(reasoning)) => {
                                     reasoning_buffer.push_str(reasoning);
@@ -603,6 +610,7 @@ impl OpenAiAdapter {
                         // finish_reason
                         if let Some(ref finish) = choice.finish_reason {
                             stop_reason = StopReason::from_openai(Some(finish.as_str()));
+                            saw_terminal = true;
                         }
                     }
 
@@ -637,6 +645,30 @@ impl OpenAiAdapter {
 
         if let Some(finished) = finish_thinking_event(&mut thinking_open) {
             events.send(finished);
+        }
+
+        // A byte stream that ends without `[DONE]` and without a
+        // `finish_reason` did not finish; it was cut. Returning `Ok` here is
+        // what let a dropped connection look like a completed turn: every
+        // caller above reports success and persists an empty or half-written
+        // assistant message, and the run record says the work is done.
+        //
+        // Reasoning is not content: a turn that only thought and never reached
+        // text or a tool call has nothing a caller can act on, and that is
+        // exactly the shape that produced the empty turns this guards.
+        if !saw_terminal {
+            let got = if tool_call_buffers.is_empty() {
+                format!("{text_len} bytes of text")
+            } else {
+                format!("{} tool call(s)", tool_call_buffers.len())
+            };
+            // `Request` rather than `StreamParse`: nothing was malformed, the
+            // connection was cut. That classification is what gets the turn
+            // retried instead of surfaced as a permanent failure.
+            return Err(LlmError::Request(format!(
+                "SSE stream ended without `[DONE]` or a finish_reason after {got}; \
+                 the connection was cut before the turn finished"
+            )));
         }
 
         // Build response blocks
@@ -966,6 +998,106 @@ mod tests {
         assert!(
             headers.get(crate::opencode::X_OPENCODE_SESSION).is_none(),
             "non-OpenCode endpoints must not add x-opencode-session"
+        );
+    }
+}
+
+/// A stream that stops early must not be reported as a finished turn.
+///
+/// Measured on this workspace's own database: three subagent runs ended within
+/// 10 ms of each other with `status = completed`, a summary of only their
+/// opening line, and a `token_usages` row of 0 tokens. The SSE loop here exits
+/// normally when the byte stream ends without `[DONE]`, so a truncated
+/// connection looked exactly like a real completion to every caller above it.
+#[cfg(test)]
+mod truncated_stream_tests {
+    use super::*;
+    use crate::NoopProgressSink;
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{method, path},
+    };
+
+    fn body() -> serde_json::Value {
+        serde_json::json!({"model": "m", "stream": true, "messages": []})
+    }
+
+    async fn stream(sse: &'static str) -> Result<LlmResponse, LlmError> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"))
+            .mount(&server)
+            .await;
+        OpenAiAdapter::with_auth(
+            server.uri(),
+            SharedHttpClient::default(),
+            Arc::new(ApiKeyProvider::new("sk-test")),
+        )
+        .stream_completion(&body(), None, &NoopProgressSink)
+        .await
+    }
+
+    /// A connection cut mid-answer leaves no `[DONE]` and no `finish_reason`.
+    /// What arrived is a partial sentence, which must not be handed back as a
+    /// finished result.
+    #[tokio::test]
+    async fn a_stream_cut_off_before_done_is_an_error() {
+        let error = stream("data: {\"choices\":[{\"delta\":{\"content\":\"half an ans\"}}]}\n\n")
+            .await
+            .expect_err("a stream with no terminal chunk produced no complete turn");
+        let text = error.to_string();
+        assert!(
+            text.contains("ended without") || text.contains("terminal"),
+            "the error has to name the truncation, got: {text}"
+        );
+    }
+
+    /// A cut before any content at all is the shape that produced an empty
+    /// assistant message in the database.
+    #[tokio::test]
+    async fn a_stream_cut_off_before_any_content_is_an_error() {
+        stream("")
+            .await
+            .expect_err("an empty stream produced nothing");
+    }
+
+    /// The happy path has to keep working: `[DONE]` still ends the stream, and
+    /// it does so with the text that arrived.
+    #[tokio::test]
+    async fn a_done_terminated_stream_still_completes() {
+        let response = stream(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"an answer\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+        )
+        .await
+        .expect("a stream that reached [DONE] completed");
+        assert!(
+            response
+                .blocks
+                .iter()
+                .any(|block| matches!(block, ContentBlock::Text { text } if text == "an answer")),
+            "the streamed text must survive, got: {:?}",
+            response.blocks
+        );
+    }
+
+    /// Some compatible endpoints close the connection right after the chunk
+    /// that carries `finish_reason`, with no `[DONE]`. That stream did finish,
+    /// and rejecting it would break those endpoints.
+    #[tokio::test]
+    async fn a_finish_reason_alone_ends_the_stream() {
+        let response = stream(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"an answer\"},\"finish_reason\":\"stop\"}]}\n\n",
+        )
+        .await
+        .expect("finish_reason is the endpoint saying the turn is over");
+        assert!(
+            response
+                .blocks
+                .iter()
+                .any(|block| matches!(block, ContentBlock::Text { text } if text == "an answer")),
+            "the streamed text must survive, got: {:?}",
+            response.blocks
         );
     }
 }

@@ -130,6 +130,7 @@ impl TelemetryEventObserver {
             AgentEvent::RunFinished { outcome, .. } => {
                 let status = match &outcome.stop {
                     RunStop::Completed => "completed",
+                    RunStop::EmptyTurn => "empty_turn",
                     RunStop::YieldToHost { .. } => "yielded",
                     RunStop::MaxTurns => "max_turns",
                     RunStop::MaxTokens => "max_tokens",

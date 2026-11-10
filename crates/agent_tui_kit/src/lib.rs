@@ -15,8 +15,8 @@
 //!
 //! # Status
 //!
-//! Phase 0 skeleton — the [`Component`] trait, [`Ctx`], and bridge signatures
-//! below are compile-only drafts; no rendering code has moved in yet.
+//! [`Component`] covers state, update intake and key handling; the host paints
+//! from component state. See `crates/tui/src/render/` for the drawing side.
 
 pub mod bridge;
 pub mod components;
@@ -28,7 +28,6 @@ pub mod theme;
 pub mod widgets;
 
 use crossterm::event::KeyEvent;
-use ratatui::{buffer::Buffer, layout::Rect};
 
 /// Cross-component access: the minimal shared surface a component may touch.
 ///
@@ -79,7 +78,12 @@ pub struct PendingQueue {
     pub items: Vec<PendingMessage>,
 }
 
-/// A self-contained UI unit: state + update intake + rendering + key handling.
+/// A self-contained UI unit: state, update intake and key handling.
+///
+/// The registry dispatches updates and keys. Drawing is not part of this
+/// contract: each shell reads the component state it needs through
+/// [`Component::as_any`] and paints it, because the panels share one log
+/// surface and a component cannot lay itself out against that alone.
 ///
 /// `U` defaults to [`protocol::AgentUpdate`]; hosts that emit a different
 /// update enum implement `Component<TheirUpdate>` and map at the boundary.
@@ -94,15 +98,6 @@ pub trait Component<U = protocol::AgentUpdate>: 'static + Send {
     fn on_key(&mut self, key: KeyEvent, ctx: &mut Ctx<'_>) -> bool {
         let _ = (key, ctx);
         false
-    }
-
-    /// Render into `buf` within `area`; returns the visual height used.
-    fn render(&self, area: Rect, buf: &mut Buffer, ctx: &Ctx<'_>) -> u16;
-
-    /// Height at width (for layout). Default renders into a scratch buffer.
-    fn height(&self, width: u16, ctx: &Ctx<'_>) -> u16 {
-        let mut buf = Buffer::empty(Rect::new(0, 0, width, 0));
-        self.render(Rect::new(0, 0, width, u16::MAX), &mut buf, ctx)
     }
 
     /// Update/key ordering priority; lower runs first (coordinator = 0).
@@ -123,14 +118,6 @@ impl<U: 'static> Component<U> for Box<dyn Component<U>> {
 
     fn on_key(&mut self, key: KeyEvent, ctx: &mut Ctx<'_>) -> bool {
         (**self).on_key(key, ctx)
-    }
-
-    fn render(&self, area: Rect, buf: &mut Buffer, ctx: &Ctx<'_>) -> u16 {
-        (**self).render(area, buf, ctx)
-    }
-
-    fn height(&self, width: u16, ctx: &Ctx<'_>) -> u16 {
-        (**self).height(width, ctx)
     }
 
     fn priority(&self) -> u8 {
