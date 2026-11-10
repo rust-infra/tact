@@ -3088,7 +3088,7 @@ mod tests {
     fn clicking_the_back_to_bottom_hint_returns_to_the_tail() {
         let mut app = app_with_clickable_log();
         app.add_system_message("row".into());
-        app.scroll_log_up(1);
+        app.scroll_log_to_top();
         assert!(!app.is_log_pinned_to_bottom(), "fixture: scrolled away");
         app.set_scroll_back_area(Rect::new(60, 0, 20, 1));
 
@@ -3106,7 +3106,7 @@ mod tests {
     fn a_click_outside_the_hint_does_not_move_the_viewport() {
         let mut app = app_with_clickable_log();
         app.add_system_message("row".into());
-        app.scroll_log_up(1);
+        app.scroll_log_to_top();
         app.set_scroll_back_area(Rect::new(60, 0, 20, 1));
 
         handle_mouse_event(&mut app, mouse_down(30, 0));

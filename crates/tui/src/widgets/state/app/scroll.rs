@@ -142,9 +142,17 @@ impl App {
     /// four lines takes four presses to pass, the same as four one-line rows.
     pub(crate) fn scroll_log_up(&mut self, step: usize) {
         let v = self.log_viewport_top();
-        self.log_scroll.visual_top = v.saturating_sub(step);
-        // Any deliberate move up is a decision to stop following the tail.
-        self.log_scroll.follow = false;
+        let next = v.saturating_sub(step);
+        self.log_scroll.visual_top = next;
+        // Moving up is a decision to stop following the tail, but only when it
+        // actually moved: in a log shorter than one screen, or already at the
+        // top, `k` has nowhere to go. Clearing `follow` there claims the reader
+        // scrolled away while they are still looking at the only screenful
+        // there is, and lights a "back to bottom" pill for the bottom they are
+        // already on.
+        if next != v {
+            self.log_scroll.follow = false;
+        }
         self.sync_log_offset_mirror();
     }
 
@@ -190,13 +198,23 @@ mod tests {
 
     /// The point of the whole change: output arriving while the reader is
     /// scrolled up must not move them, and must say that it arrived.
+    ///
+    /// The log has to be longer than one screen and rendered once, or `k` has
+    /// nowhere to move and the reader never actually left the tail.
     #[test]
     fn a_new_row_does_not_move_a_scrolled_away_viewport_and_lights_the_badge() {
         let mut app = make_app();
-        app.append_markdown("first");
+        for i in 0..40 {
+            app.append_markdown(format!("row-{i}"));
+        }
+        let _ = render_log_panel_text(&mut app, 60, 6);
+
         app.scroll_log_up(1);
         let top = app.log_scroll.visual_top;
-        assert!(!app.is_log_pinned_to_bottom());
+        assert!(
+            !app.is_log_pinned_to_bottom(),
+            "the viewport moved, so the reader left the tail"
+        );
 
         app.append_markdown("second");
 
@@ -342,5 +360,81 @@ mod tests {
         assert_eq!(app.log_viewport_top(), 0);
         app.scroll_log_up(LOG_LINE_STEP);
         assert_eq!(app.log_viewport_top(), 0);
+    }
+
+    /// Pressing `k` in a log shorter than one screen moves nothing, so it must
+    /// not count as leaving the tail.
+    ///
+    /// `follow` is the whole follow-the-tail policy: it decides whether new
+    /// rows keep the viewport pinned or light the "new activity" badge. Clearing
+    /// it on a keypress that could not move the viewport claims the reader
+    /// scrolled away when they are still looking at the only screenful there
+    /// is, so the pill offers a "back to bottom" that is already the bottom.
+    #[test]
+    fn scrolling_up_inside_a_short_log_keeps_following() {
+        let mut app = make_app();
+        app.append_markdown("only line");
+        let _ = render_log_panel_text(&mut app, 60, 20);
+        assert!(app.is_log_pinned_to_bottom());
+        let top = app.log_viewport_top();
+
+        app.scroll_log_up(1);
+
+        assert_eq!(
+            app.log_viewport_top(),
+            top,
+            "the viewport had nowhere to move"
+        );
+        assert!(
+            app.is_log_pinned_to_bottom(),
+            "a keypress that moved nothing must not stop the tail from following"
+        );
+        assert!(
+            !app.log_scroll.unseen,
+            "and must not light a badge for content that is already on screen"
+        );
+    }
+
+    /// The rule generalizes past the first keypress: `k` at the top of a long
+    /// log, already at visual line 0, moves nothing either.
+    #[test]
+    fn scrolling_up_at_the_very_top_keeps_following() {
+        let mut app = make_app();
+        for i in 0..40 {
+            app.append_markdown(format!("row-{i}"));
+        }
+        let _ = render_log_panel_text(&mut app, 60, 6);
+        app.scroll_log_to_top();
+        assert!(
+            !app.is_log_pinned_to_bottom(),
+            "jumping to the top is deliberate"
+        );
+
+        app.scroll_log_up(1);
+
+        assert_eq!(app.log_viewport_top(), 0, "already at the top");
+        assert!(
+            !app.is_log_pinned_to_bottom(),
+            "an unmoving keypress must not re-arm the tail either"
+        );
+    }
+
+    /// The symmetric case: `j` in a log that cannot scroll moves nothing and
+    /// has nothing below to reveal, so it must leave both flags alone.
+    #[test]
+    fn scrolling_down_inside_a_short_log_changes_nothing() {
+        let mut app = make_app();
+        app.append_markdown("only line");
+        let _ = render_log_panel_text(&mut app, 60, 20);
+        let top = app.log_viewport_top();
+
+        app.scroll_log_down(1);
+
+        assert_eq!(app.log_viewport_top(), top, "nowhere to go");
+        assert!(
+            app.is_log_pinned_to_bottom(),
+            "and the reader never left the tail"
+        );
+        assert!(!app.log_scroll.unseen, "so there is nothing to badge");
     }
 }

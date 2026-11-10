@@ -911,7 +911,7 @@ mod tests {
         let (mut app, _rx) = TestApp::new().into_commands();
         let user_cmd_tx = app.user_cmd_tx.clone();
         app.append_markdown("row");
-        app.scroll_log_up(1);
+        app.scroll_log_to_top();
         assert!(!app.is_log_pinned_to_bottom(), "fixture: scrolled away");
 
         handle_insert_mode(
