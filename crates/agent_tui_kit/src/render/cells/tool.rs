@@ -105,21 +105,22 @@ impl ToolCell {
     ) -> Self {
         // Collapsed output (command / read / edit) draws no card, so the meta
         // row is the only place left to say that output exists and how to open
-        // it.
-        let collapsed_output_hint = output
-            .layout
-            .detail_collapsed
+        // it. A subagent card is the same shape whenever it has no body: just
+        // spawned, folded shut by the reader, or finished with nothing to show.
+        // Those are the states where a reader most wants to look inside, and the
+        // meta row was the only thing left clickable, so it gets the same
+        // affordance as a collapsed command.
+        let subagent_without_body =
+            matches!(output.visual_kind, tact_protocol::ToolVisualKind::Subagent)
+                && !output.layout.has_detail_card;
+        let wants_collapsed_affordance = output.layout.detail_collapsed || subagent_without_body;
+        let collapsed_output_hint = wants_collapsed_affordance
             .then(|| collapsed_output_hint(msgs, output.detail_total_lines));
         // The button's own halves: the label it is built from, and the glyphs
         // it draws, which are the tail the meta row splits off to style.
-        let collapsed_action_label = output
-            .layout
-            .detail_collapsed
-            .then_some(msgs.tool_collapsed_output_action);
-        let collapsed_action = output
-            .layout
-            .detail_collapsed
-            .then(|| collapsed_action_text(msgs));
+        let collapsed_action_label =
+            wants_collapsed_affordance.then_some(msgs.tool_collapsed_output_action);
+        let collapsed_action = wants_collapsed_affordance.then(|| collapsed_action_text(msgs));
         // Card chrome is localized too, and the cell is built once per frame
         // with the *current* messages: deriving it here (instead of reading it
         // off the output) is what keeps the card in the language the rest of the
@@ -417,6 +418,16 @@ impl ToolCell {
                 1,
             )
         })
+    }
+
+    /// Whether this card fronts a `spawn_subagent` call.
+    ///
+    /// The renderer needs it beside [`Self::subagent_open_button_rect`], because
+    /// a *collapsed* subagent card draws its `[Open]` on the meta row instead of
+    /// the footer, and that button has to reach the transcript rather than the
+    /// tool's diff popup.
+    pub fn is_subagent(&self) -> bool {
+        self.is_subagent
     }
 
     /// The card footer is the subagent popup's click target in every phase:

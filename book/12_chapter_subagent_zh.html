@@ -760,8 +760,19 @@ settings。这也修复了只读逃逸：<code>Plan</code> 父级不再能 spawn
 行</strong>并随同一份切片几何记录命中矩形（此前是渲染循环的标题行
 overlay，会被长标题写掉）。点击卡片<strong>页脚</strong>（运行中
 <code>Click for buffered output</code>、成功后 <code>[Open]</code>、失败
-<code>Click for full error</code>；2026-11-01 起三种相位都可点）进入<strong>子代理视图</strong>（<code>ToolPopupKind::SubagentTranscript</code>）。卡片正文本身不再响应单击：单击只起手一次拖选、双击才选中文字，与
-Thinking 卡片一致。视图内主区域整块换成子会话，顶部一行面包屑
+<code>Click for full error</code>；2026-11-01 起三种相位都可点）进入<strong>子代理视图</strong>（<code>ToolPopupKind::SubagentTranscript</code>）。
+卡片正文本身不再响应单击：单击只起手一次拖选、双击才选中文字，与
+Thinking 卡片一致。</p>
+<p>正文不响应点击带来一个必须显式补的洞：<strong>卡片没有正文时</strong>
+页脚根本不存在。三种无正文状态都要能点开——刚 spawn 还没输出、读者把卡片折起
+来、子会话结束时没有内容可展示。三种都已落进 meta 行的
+<code>… 0 lines · [Open]</code>（与折叠输出同一套 affordance，
+<code>wants_collapsed_affordance = detail_collapsed || (是 subagent 且无 detail card)</code>）。
+其中「刚 spawn」并不短暂：子 agent 可以先想一分钟才出第一行，那一分钟里卡片只有两行，
+若无这个入口就完全点不开。折叠态的 <code>[Open]</code> 还必须指向
+<strong>子代理视图</strong>而不是工具的 diff 弹窗——<code>spawn_subagent</code>
+没有 diff 可看，命中矩形相同，差别只在登记成
+<code>OpenTarget::Subagent</code> 还是 <code>OpenTarget::Tool</code>。视图内主区域整块换成子会话，顶部一行面包屑
 <code>‹ N. Subagent · 标题</code>，<code>Esc</code>
 或点击面包屑退回主日志；子会话的工具调用渲染成<strong>自包含块</strong>（<code>▎ N. ⚡ Bash args</code>
 / <code>✓ Success · 133ms · 42 lines</code> / code band 输出 /

@@ -394,10 +394,18 @@ pub fn render_log_panel_pure(
                         if let Some(tool_rect) =
                             card_cell.collapsed_open_button_rect(cell_area, skip_lines)
                         {
-                            open_actions.push(OpenAction::new(
-                                OpenTarget::tool(tool_id.clone()),
-                                tool_rect,
-                            ));
+                            // A collapsed subagent card has no footer of its
+                            // own, so this meta-row `[Open]` is the only thing
+                            // a reader can click. It has to open the transcript,
+                            // not the tool's diff popup: the child's output is
+                            // what the card is about, and the diff popup has
+                            // nothing to show for a `spawn_subagent` call.
+                            let target = if card_cell.is_subagent() {
+                                OpenTarget::subagent(tool_id.clone())
+                            } else {
+                                OpenTarget::tool(tool_id.clone())
+                            };
+                            open_actions.push(OpenAction::new(target, tool_rect));
                         }
                         if let Some(rect) =
                             card_cell.subagent_open_button_rect(cell_area, skip_lines)
