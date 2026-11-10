@@ -1622,6 +1622,12 @@ impl Agent {
 
         let stop = match outcome.stop {
             RunStop::Completed => AgentLoopStop::Completed,
+            // The model answered with nothing. `AgentLoopStop` is the UI-facing
+            // vocabulary, which has no separate variant for it: the run did end
+            // where `Completed` ends, and what the caller must not do is treat
+            // it as success. That distinction lives on the subagent record,
+            // which is the thing that reports "done" to the reader.
+            RunStop::EmptyTurn => AgentLoopStop::EmptyTurn,
             RunStop::YieldToHost { .. } => {
                 self.runtime.goal_yield_reason = Some(GoalYieldReason::NeedsUser);
                 AgentLoopStop::GoalYield(GoalYieldReason::NeedsUser)

@@ -1334,6 +1334,13 @@ impl GoalRunner {
             // same way — so the Goal ends as `Failed` instead of being left
             // `Running` with a finished run behind it (2026-10-15).
             AgentLoopStop::BlockedByHook => (GoalRunOutcome::FatalError, vec![GoalStatus::Failed]),
+            // The model answered with nothing at all. Not `Completed`, and not
+            // `ProgressMade` either: there is no text to read and no tool call
+            // to show for the activation. `TransientError` keeps the Goal's
+            // status, so a flaky provider costs one activation rather than the
+            // whole Goal — the runner's own turn and tool-call budgets are what
+            // bound the retries.
+            AgentLoopStop::EmptyTurn => (GoalRunOutcome::TransientError, vec![]),
             AgentLoopStop::Completed => self.map_completion(goal, run).await?,
         })
     }
@@ -1593,6 +1600,7 @@ fn run_summary(run: &GoalRun, outcome: GoalRunOutcome) -> String {
 fn stop_reason(stop: AgentLoopStop) -> &'static str {
     match stop {
         AgentLoopStop::Completed => "completed",
+        AgentLoopStop::EmptyTurn => "empty_turn",
         AgentLoopStop::GoalYield(_) => "goal_yield",
         AgentLoopStop::MaxTurns => "max_turns",
         AgentLoopStop::MaxTokens => "max_tokens",

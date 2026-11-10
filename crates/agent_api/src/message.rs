@@ -164,6 +164,27 @@ impl AgentMessage {
             })
             .collect()
     }
+
+    /// The model returned a turn with nothing a reader can act on.
+    ///
+    /// True when the message carries no text, no tool call and no image — the
+    /// shapes that make a turn do work. Reasoning is deliberately not counted:
+    /// a turn that thought and then stopped is exactly the failure this
+    /// describes, because the reasoning never reaches the caller and the turn
+    /// leaves nothing behind but a spinner that stopped.
+    ///
+    /// A provider that fails mid-stream can answer with an empty content array
+    /// and no stop reason, which the transport normalises to `end_turn`. Without
+    /// this predicate that turn is indistinguishable from a real completion, so
+    /// the run reports success while the caller has nothing.
+    pub fn is_empty_turn(&self) -> bool {
+        self.content.iter().all(|block| match block {
+            AgentContentBlock::Text { text } => text.trim().is_empty(),
+            AgentContentBlock::Thinking { .. } | AgentContentBlock::RedactedThinking { .. } => true,
+            AgentContentBlock::ToolUse { .. } | AgentContentBlock::Image { .. } => false,
+            AgentContentBlock::ToolResult { .. } => false,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -290,4 +311,93 @@ mod tests {
             message
         );
     }
+}
+
+/// The shapes that make a turn do work. Anything else is an empty turn.
+///
+/// This predicate is what separates "the model answered" from "the model
+/// stopped", and every case below is one that actually occurred: a provider
+/// answering `content: []`, and a run that thought and then ended without
+/// writing anything.
+#[test]
+fn an_empty_turn_is_anything_with_nothing_to_read_or_do() {
+    let assistant =
+        |content| AgentMessage::new(AgentRole::Assistant, MessageOrigin::Assistant, content);
+
+    assert!(
+        assistant(vec![]).is_empty_turn(),
+        "a provider that answers with no content produced nothing"
+    );
+    assert!(
+        assistant(vec![AgentContentBlock::Text {
+            text: "  \n ".into()
+        }])
+        .is_empty_turn(),
+        "whitespace is not an answer"
+    );
+    assert!(
+        assistant(vec![AgentContentBlock::Thinking {
+            thinking: "weighing the options".into(),
+            signature: String::new(),
+        }])
+        .is_empty_turn(),
+        "reasoning never reaches the caller, so a turn of only reasoning produced nothing"
+    );
+    assert!(
+        assistant(vec![
+            AgentContentBlock::Thinking {
+                thinking: "hm".into(),
+                signature: String::new(),
+            },
+            AgentContentBlock::Text { text: "\n".into() },
+        ])
+        .is_empty_turn(),
+        "reasoning plus whitespace is still nothing"
+    );
+
+    assert!(
+        !assistant(vec![AgentContentBlock::Text {
+            text: "here is the answer".into()
+        }])
+        .is_empty_turn(),
+        "text is an answer"
+    );
+    assert!(
+        !assistant(vec![AgentContentBlock::ToolUse {
+            id: "t1".into(),
+            name: "read_file".into(),
+            input: serde_json::json!({}),
+        }])
+        .is_empty_turn(),
+        "a tool call is work"
+    );
+    assert!(
+        !assistant(vec![
+            AgentContentBlock::Thinking {
+                thinking: "check the file".into(),
+                signature: String::new(),
+            },
+            AgentContentBlock::ToolUse {
+                id: "t1".into(),
+                name: "read_file".into(),
+                input: serde_json::json!({}),
+            },
+        ])
+        .is_empty_turn(),
+        "reasoning that then acted is not empty"
+    );
+    assert!(
+        !assistant(vec![
+            AgentContentBlock::Text {
+                text: "done".into()
+            },
+            AgentContentBlock::ToolUse {
+                id: "t1".into(),
+                name: "bash".into(),
+                input: serde_json::json!({}),
+            },
+        ])
+        .is_empty_turn(),
+        "one real block is enough"
+    );
 }

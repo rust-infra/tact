@@ -333,7 +333,9 @@ pub async fn run_command_loop_with_account(
             }
             UserCommand::CancelSubagent { child_id } => {
                 if subagent_manager.request_cancel(&child_id) {
-                    let _ = subagent_manager.cancel(&child_id).await;
+                    // The request has nothing to report yet; the child's own
+                    // finish path writes the summary it produced.
+                    let _ = subagent_manager.cancel(&child_id, None).await;
                     tact::subagent::emit_subagents_changed(&events, &subagent_manager).await;
                     events.send(AgentUpdate::Info(format!(
                         "Cancelling subagent {child_id}..."

@@ -172,7 +172,20 @@ impl SubagentManager {
     }
 
     /// Records a cooperative cancellation.
-    pub async fn cancel(&self, child_id: &str) -> Result<()> {
+    ///
+    /// `summary` is what the child left behind, or `None` when the request only
+    /// marks the run as cancelled and the child has not exited yet. The two
+    /// callers are different moments in one lifecycle:
+    ///
+    /// - a `cancel_subagent` request marks the row early, so `check_subagent`
+    ///   stops calling it running, and passes `None` because there is nothing
+    ///   to report yet;
+    /// - the child's own finish path passes the summary it produced, which is
+    ///   what makes the row readable afterwards.
+    ///
+    /// `None` never clears a summary already on the record: a second caller
+    /// that knows less must not erase what the first one learned.
+    pub async fn cancel(&self, child_id: &str, summary: Option<&str>) -> Result<()> {
         let mut record = self
             .records
             .get(child_id)
@@ -180,6 +193,9 @@ impl SubagentManager {
             .with_context(|| format!("unknown subagent run {child_id}"))?;
         record.status = SubagentStatus::Cancelled;
         record.finished_at = Some(Utc::now());
+        if let Some(summary) = summary {
+            record.summary = Some(summary.to_string());
+        }
         self.records.upsert(&record).await
     }
 
@@ -301,8 +317,9 @@ impl SubagentManager {
 
         for child_id in &child_ids {
             // Synchronous children have cancel handles but no subagent_runs
-            // row; their errors are intentionally ignored here.
-            let _ = self.cancel(child_id).await;
+            // row; their errors are intentionally ignored here. Shutdown has no
+            // summary to report: the row only has to stop saying "running".
+            let _ = self.cancel(child_id, None).await;
         }
         child_ids.len()
     }
@@ -486,8 +503,10 @@ impl SharedSubagentManager {
         self.inner.finish(child_id, success, summary).await
     }
 
-    pub async fn cancel(&self, child_id: &str) -> Result<()> {
-        self.inner.cancel(child_id).await
+    /// Records a cooperative cancellation; see
+    /// [`SubagentManager::cancel`] for what `summary` means.
+    pub async fn cancel(&self, child_id: &str, summary: Option<&str>) -> Result<()> {
+        self.inner.cancel(child_id, summary).await
     }
 
     pub fn register_cancel_handle(&self, child_id: &str, flag: Arc<CancelController>) {
@@ -650,7 +669,7 @@ mod tests {
         let db = temp_db("cancel");
         let manager = SharedSubagentManager::new(SubagentManager::new(&db).await.unwrap());
         manager.start("child-1".to_string()).await.unwrap();
-        manager.cancel("child-1").await.unwrap();
+        manager.cancel("child-1", None).await.unwrap();
         let output = manager.check(Some("child-1")).await.unwrap();
         assert!(output.contains("cancelled"), "output: {output}");
     }
@@ -884,5 +903,57 @@ mod tests {
             MAX_SUBAGENT_SNAPSHOT,
             "snapshot output must respect the cap"
         );
+    }
+
+    /// A cancelled run has to carry what the child produced.
+    ///
+    /// The two callers of `cancel` are different moments: the `cancel_subagent`
+    /// request marks the row so `check_subagent` stops calling it running and has
+    /// nothing to report yet, while the child's own finish path is the one that
+    /// knows what it managed to do. Only the second one can write the summary, and
+    /// before this it was thrown away with the record left at `None` — the sticky
+    /// strip and `check_subagent` then showed `(no summary)` for every cancelled
+    /// run, which is exactly the run a reader most wants to inspect.
+    #[tokio::test]
+    async fn a_cancelled_run_keeps_the_summary_its_child_produced() {
+        let db = temp_db("cancel_summary");
+        let manager = SharedSubagentManager::new(SubagentManager::new(&db).await.unwrap());
+        manager.start("child".to_string()).await.unwrap();
+
+        // The request arrives first and knows nothing.
+        manager.cancel("child", None).await.unwrap();
+        let after_request = manager.get("child").await.unwrap().unwrap();
+        assert_eq!(after_request.status, SubagentStatus::Cancelled);
+        assert_eq!(
+            after_request.summary, None,
+            "a request has nothing to report and must not invent one"
+        );
+
+        // The child's own finish path reports what it left behind.
+        manager
+            .cancel("child", Some("(cancelled by user)\nhalf the review"))
+            .await
+            .unwrap();
+        let finished = manager.get("child").await.unwrap().unwrap();
+        assert_eq!(finished.status, SubagentStatus::Cancelled);
+        assert_eq!(
+            finished.summary.as_deref(),
+            Some("(cancelled by user)\nhalf the review"),
+            "the summary the child produced has to survive"
+        );
+    }
+
+    /// A later caller that knows less must not erase what an earlier one learned.
+    #[tokio::test]
+    async fn a_late_cancel_request_does_not_clear_a_summary() {
+        let db = temp_db("cancel_summary_keep");
+        let manager = SharedSubagentManager::new(SubagentManager::new(&db).await.unwrap());
+        manager.start("child".to_string()).await.unwrap();
+        manager.cancel("child", Some("what it did")).await.unwrap();
+
+        manager.cancel("child", None).await.unwrap();
+
+        let record = manager.get("child").await.unwrap().unwrap();
+        assert_eq!(record.summary.as_deref(), Some("what it did"));
     }
 }
