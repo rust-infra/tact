@@ -84,6 +84,15 @@ pub struct ToolCell {
     /// Whether this card is a live async subagent, i.e. draws the meta-row
     /// `[Cancel]` button at all.
     subagent_cancel: bool,
+    /// This block is the head of a run that is drawn expanded, so its title row
+    /// carries the collapse affordance.
+    ///
+    /// Expanding a run replaces its one summary row (which carried `⏵`) with its
+    /// members. Without a marker on the head that took the summary's row, the
+    /// way back would be invisible: the reader would have to know that the
+    /// title row is a control. `⏷` is the widening counterpart of the summary's
+    /// `⏵`, on the row the summary occupied.
+    run_expanded_head: bool,
 }
 
 impl ToolCell {
@@ -171,7 +180,16 @@ impl ToolCell {
             subagent_context_window: output.subagent_context_window,
             subagent_cancel_label: msgs.subagent_cancel_btn,
             subagent_cancel: false,
+            run_expanded_head: false,
         }
+    }
+
+    /// Mark this card as the head of a run drawn expanded, so its title row
+    /// draws the collapse affordance and the host knows the row is a control.
+    #[must_use]
+    pub fn with_run_expanded_head(mut self, expanded_head: bool) -> Self {
+        self.run_expanded_head = expanded_head;
+        self
     }
 
     /// Mark this card as the live async subagent it belongs to, so it draws the
@@ -189,6 +207,35 @@ impl ToolCell {
             self.title_raw.clone(),
             Style::default().fg(self.fg).add_modifier(Modifier::BOLD),
         ))
+    }
+
+    /// The title row as it is drawn.
+    ///
+    /// An expanded run head adds nothing to this line: its collapse glyph is
+    /// painted into the indent gutter to the left (see `render_partial`), so the
+    /// title keeps its own columns and every member of the run stays aligned
+    /// with the head. Prefixing the glyph would push the head one column right
+    /// of the members beneath it, and the run would read as a ladder.
+    fn drawn_title_line(&self) -> Line<'static> {
+        self.title_line()
+    }
+
+    /// Where the collapse glyph goes: the two columns just left of the title,
+    /// inside the block's indent gutter.
+    ///
+    /// `row_area` is already the title's own row (the caller indented it by
+    /// `LOG_TOOL_BLOCK_INDENT`), so this only steps left. Painting into the
+    /// gutter rather than in front of the title is what keeps the run's members
+    /// aligned: a prefix would push the head one column right of the members
+    /// beneath it.
+    ///
+    /// `None` when this block is not an expanded run head, or when the gutter is
+    /// too narrow to hold the glyph without leaving the panel.
+    fn run_toggle_glyph_rect(&self, row_area: Rect) -> Option<Rect> {
+        if !self.run_expanded_head || row_area.x < 2 {
+            return None;
+        }
+        Some(Rect::new(row_area.x - 2, row_area.y, 2, 1))
     }
 
     fn meta_line(&self) -> Line<'static> {
@@ -401,6 +448,26 @@ impl ToolCell {
         lines
     }
 
+    /// Screen rect of an expanded run head's collapse control: the glyph in the
+    /// gutter plus the whole title row beside it.
+    ///
+    /// The glyph alone would be a two-cell target, and the row beside it is not
+    /// text a reader selects — activating either puts the run back. That row is
+    /// the one the folded summary occupied, so the control stays where the
+    /// summary was rather than moving as the run expands.
+    ///
+    /// `None` when this card is not an expanded run head, or when a clip has
+    /// scrolled the title row off the frame.
+    pub fn run_toggle_rect(&self, area: Rect, skip_lines: usize) -> Option<Rect> {
+        if !self.run_expanded_head || skip_lines > 0 {
+            return None;
+        }
+        let row =
+            crate::render::util::indent_rect(area, crate::render::util::LOG_TOOL_BLOCK_INDENT);
+        let width = row.width.saturating_add(2);
+        (width > 0 && row.height > 0).then(|| Rect::new(row.x.saturating_sub(2), row.y, width, 1))
+    }
+
     /// Screen rect of a collapsed tool's `[Open]` meta-row button.
     pub fn collapsed_open_button_rect(&self, area: Rect, skip_lines: usize) -> Option<Rect> {
         if self.collapsed_action.is_none() || skip_lines >= self.height(area.width) as usize {
@@ -560,9 +627,22 @@ impl Renderable for ToolCell {
                     // exist. The paragraph keeps the row's own fg so the
                     // untouched remainder of the row is painted exactly as the
                     // rest of the theme paints every other row.
-                    Paragraph::new(vec![self.title_line()])
+                    Paragraph::new(vec![self.drawn_title_line()])
                         .style(Style::default().fg(self.fg).bg(self.bg))
                         .render(row_area, buf);
+                    // The folded summary's `⏵` lives in this gutter column, so
+                    // the expanded run's `⏷` does too: the two states differ by
+                    // the glyph, not by where the run starts.
+                    if row == 0
+                        && let Some(glyph) = self.run_toggle_glyph_rect(row_area)
+                    {
+                        buf.set_string(
+                            glyph.x,
+                            glyph.y,
+                            "⏷",
+                            Style::default().fg(self.accent).bg(self.bg),
+                        );
+                    }
                 } else {
                     self.render_meta_row(row_area, buf);
                 }

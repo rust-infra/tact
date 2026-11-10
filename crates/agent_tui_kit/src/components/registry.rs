@@ -6,7 +6,6 @@
 //! sequential pass over `priority()` order.
 
 use crossterm::event::KeyEvent;
-use ratatui::{buffer::Buffer, layout::Rect};
 
 use crate::{Component, Ctx};
 
@@ -63,25 +62,6 @@ impl<U: 'static> ComponentRegistry<U> {
             }
         }
         false
-    }
-
-    /// Render every component into `buf` within `area` in priority order;
-    /// returns the total visual height used.
-    pub fn render_all(&self, area: Rect, buf: &mut Buffer, ctx: &Ctx<'_>) -> u16 {
-        let mut used = 0u16;
-        for (_, component) in &self.components {
-            let remaining = Rect::new(
-                area.x,
-                area.y + used,
-                area.width,
-                area.height.saturating_sub(used),
-            );
-            if remaining.height == 0 {
-                break;
-            }
-            used = used.saturating_add(component.render(remaining, buf, ctx));
-        }
-        used
     }
 
     /// Borrow a concrete component by type (downcast); the shell uses this
@@ -159,10 +139,6 @@ mod tests {
         fn on_key(&mut self, _key: KeyEvent, _ctx: &mut Ctx<'_>) -> bool {
             self.keys.fetch_add(1, Ordering::Relaxed);
             false
-        }
-
-        fn render(&self, _area: Rect, _buf: &mut Buffer, _ctx: &Ctx<'_>) -> u16 {
-            0
         }
 
         fn priority(&self) -> u8 {

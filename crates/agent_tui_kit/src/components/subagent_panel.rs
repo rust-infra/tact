@@ -5,7 +5,6 @@
 //! — the app layer handles the shared sticky host layout / mouse routing.
 
 use crossterm::event::KeyEvent;
-use ratatui::{buffer::Buffer, layout::Rect};
 
 use crate::{Component, Ctx, protocol::AgentUpdate, state::SubagentPanelState};
 
@@ -62,10 +61,6 @@ impl Component for SubagentPanelComponent {
 
     fn on_key(&mut self, _key: KeyEvent, _ctx: &mut Ctx<'_>) -> bool {
         false
-    }
-
-    fn render(&self, _area: Rect, _buf: &mut Buffer, _ctx: &Ctx<'_>) -> u16 {
-        0
     }
 
     fn priority(&self) -> u8 {

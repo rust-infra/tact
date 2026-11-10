@@ -28,6 +28,8 @@ pub(super) use popups::{
     select::render_select_popup, slash_command::render_slash_command_popup,
 };
 
+pub(crate) mod fold;
+
 #[cfg(test)]
 mod log_render_tests;
 #[cfg(test)]
@@ -36,6 +38,8 @@ mod popup_scene_tests;
 mod render_gap_tests;
 #[cfg(test)]
 mod scene_tests;
+#[cfg(test)]
+mod tool_fold_tests;
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_harness;

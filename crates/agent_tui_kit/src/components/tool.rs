@@ -13,7 +13,6 @@
 use std::collections::HashMap;
 
 use crossterm::event::KeyEvent;
-use ratatui::{buffer::Buffer, layout::Rect};
 
 use crate::{
     Component, Ctx,
@@ -565,6 +564,10 @@ impl ToolComponent {
                 phys_idx: active.phys_idx,
                 tool_id: tool_id.to_string(),
                 output,
+                span: Some(crate::state::ToolSpan {
+                    started_at: active.started_at,
+                    finished_at: std::time::Instant::now(),
+                }),
             });
             events.push(ToolEvent::Finalized {
                 tool_id: tool_id.to_string(),
@@ -577,6 +580,9 @@ impl ToolComponent {
                 phys_idx: 0, // shell fallback backfills via set_blocks_phys_idx
                 tool_id: tool_id.to_string(),
                 output,
+                // No live card was found, so there is no start time to measure
+                // from; reporting one would invent a duration.
+                span: None,
             });
             events.push(ToolEvent::Finalized {
                 tool_id: tool_id.to_string(),
@@ -768,10 +774,6 @@ impl Component for ToolComponent {
 
     fn on_key(&mut self, _key: KeyEvent, _ctx: &mut Ctx<'_>) -> bool {
         false
-    }
-
-    fn render(&self, _area: Rect, _buf: &mut Buffer, _ctx: &Ctx<'_>) -> u16 {
-        0
     }
 
     fn priority(&self) -> u8 {

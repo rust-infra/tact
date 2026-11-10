@@ -9,34 +9,25 @@
 use std::time::Instant;
 
 use crossterm::event::KeyEvent;
-use ratatui::{
-    buffer::Buffer,
-    layout::Rect,
-    style::{Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Widget},
-};
+use ratatui::text::Line;
 
 use crate::{
     Component, Ctx, InputMode, LogCoordinator,
     i18n::Messages,
     protocol::{AgentUpdate, ThinkingChunk},
     state::{ActiveThinkingBlock, LogItemKind, ThinkingBlock, ThinkingState},
-    theme::Theme,
 };
 
 /// Streaming reasoning card (thinking → tool → reply flow).
 pub struct ThinkingComponent {
     state: ThinkingState,
-    theme: Theme,
     messages: Messages,
 }
 
 impl ThinkingComponent {
-    pub fn new(theme: Theme, messages: Messages) -> Self {
+    pub fn new(messages: Messages) -> Self {
         Self {
             state: ThinkingState::default(),
-            theme,
             messages,
         }
     }
@@ -90,24 +81,6 @@ impl ThinkingComponent {
             }
         }
     }
-
-    fn render_card(&self, block: &ThinkingBlock, area: Rect, buf: &mut Buffer) {
-        let title = self.messages.thinking_card_title_done.to_string();
-        let style = Style::default().fg(self.theme.accent);
-        let block_widget = Block::default()
-            .borders(Borders::ALL)
-            .border_style(style)
-            .title(Span::styled(title, style));
-        let inner = block_widget.inner(area);
-        block_widget.render(area, buf);
-        let head = Line::from(Span::styled(
-            block.summary.clone(),
-            Style::default()
-                .fg(self.theme.fg)
-                .add_modifier(Modifier::BOLD),
-        ));
-        Paragraph::new(head).render(inner, buf);
-    }
 }
 
 /// Transparent field access: hosts keep `app.<field>…` working after the field
@@ -138,37 +111,6 @@ impl Component for ThinkingComponent {
 
     fn on_key(&mut self, _key: KeyEvent, _ctx: &mut Ctx<'_>) -> bool {
         false
-    }
-
-    fn render(&self, area: Rect, buf: &mut Buffer, _ctx: &Ctx<'_>) -> u16 {
-        // Active card: render its tail; completed cards render their summary.
-        let mut used: u16 = 0;
-        if let Some(active) = &self.state.active {
-            let rows = active.body_line_count().max(1) as u16;
-            let card_area = Rect::new(area.x, area.y + used, area.width, rows + 2);
-            let block_widget = Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(self.theme.accent))
-                .title(Span::styled(
-                    self.messages.thinking_card_title_active.to_string(),
-                    Style::default().fg(self.theme.accent),
-                ));
-            let inner = block_widget.inner(card_area);
-            block_widget.render(card_area, buf);
-            let text = active.display_tail().join("\n");
-            Paragraph::new(Line::from(Span::styled(
-                text,
-                Style::default().fg(self.theme.fg),
-            )))
-            .render(inner, buf);
-            used += rows + 2;
-        }
-        for block in self.state.blocks.iter().rev().take(1) {
-            let card_area = Rect::new(area.x, area.y + used, area.width, 3);
-            self.render_card(block, card_area, buf);
-            used += 3;
-        }
-        used
     }
 
     fn priority(&self) -> u8 {
@@ -212,10 +154,8 @@ mod tests {
 
     #[test]
     fn thinking_start_delta_finish_populates_state_and_log() {
-        let mut component = ThinkingComponent::new(
-            crate::theme::Theme::from(crate::theme::ThemeName::Ink),
-            Messages::by_language(crate::i18n::Language::English),
-        );
+        let mut component =
+            ThinkingComponent::new(Messages::by_language(crate::i18n::Language::English));
         let mut log = LogCoordinator::default();
         let mut queue = PendingQueue::default();
         let mut events: Vec<crate::state::StreamEvent> = Vec::new();
@@ -249,10 +189,8 @@ mod tests {
 
     #[test]
     fn unrelated_updates_do_not_repaint() {
-        let mut component = ThinkingComponent::new(
-            crate::theme::Theme::from(crate::theme::ThemeName::Ink),
-            Messages::by_language(crate::i18n::Language::English),
-        );
+        let mut component =
+            ThinkingComponent::new(Messages::by_language(crate::i18n::Language::English));
         let mut log = LogCoordinator::default();
         let mut queue = PendingQueue::default();
         let mut events: Vec<crate::state::StreamEvent> = Vec::new();
@@ -268,12 +206,12 @@ mod tests {
         assert!(!dirty, "thinking component ignores non-thinking updates");
     }
 
+    /// A finished card lands in the component state with its summary intact.
+    /// The host reads that state and paints it; the component draws nothing.
     #[test]
-    fn render_draws_card_into_buffer() {
-        let mut component = ThinkingComponent::new(
-            crate::theme::Theme::from(crate::theme::ThemeName::Ink),
-            Messages::by_language(crate::i18n::Language::English),
-        );
+    fn a_finished_card_keeps_its_summary_in_state() {
+        let mut component =
+            ThinkingComponent::new(Messages::by_language(crate::i18n::Language::English));
         let mut log = LogCoordinator::default();
         let mut queue = PendingQueue::default();
         let mut events: Vec<crate::state::StreamEvent> = Vec::new();
@@ -287,25 +225,11 @@ mod tests {
                 &mut ctx(&mut log, &mut queue, &mut events, &mut Vec::new()),
             );
         }
-        let mut buf = Buffer::empty(Rect::new(0, 0, 60, 5));
-        let mut log2 = LogCoordinator::default();
-        let mut queue2 = PendingQueue::default();
-        let mut events2: Vec<crate::state::StreamEvent> = Vec::new();
-        let used = component.render(
-            Rect::new(0, 0, 60, 5),
-            &mut buf,
-            &ctx(&mut log2, &mut queue2, &mut events2, &mut Vec::new()),
-        );
-        assert!(used > 0);
-        let mut text = String::new();
-        for y in 0..5u16 {
-            for x in 0..60u16 {
-                text.push_str(buf[(x, y)].symbol());
-            }
-        }
-        assert!(
-            text.contains("visible summary line"),
-            "card content should render, got: {text:?}"
-        );
+        let block = component
+            .state()
+            .blocks
+            .last()
+            .expect("the finished card is in state");
+        assert_eq!(block.summary, "visible summary line");
     }
 }

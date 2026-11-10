@@ -739,6 +739,10 @@
 <li class="toc-l2"><a href="#31-2026-11-04--desktop-%E4%BB%BB%E5%8A%A1%E6%9D%A1%E6%B7%B7%E5%85%A5%E5%85%B6%E5%AE%83-session-%E7%9A%84%E4%BB%BB%E5%8A%A1" title="31. 2026-11-04 — Desktop 任务条混入其它 session 的任务"><span class="toc-label">31. 2026-11-04 — Desktop 任务条混入其它 session 的任务</span></a></li>
 <li class="toc-l2"><a href="#33-2026-11-10--%E8%A2%AB%E6%88%AA%E6%96%AD%E7%9A%84%E6%B5%81%E4%B8%8D%E5%86%8D%E5%BD%93%E6%88%90%E5%AE%8C%E6%88%90%E7%9A%84%E5%9B%9E%E5%90%88" title="33. 2026-11-10 — 被截断的流不再当成完成的回合"><span class="toc-label">33. 2026-11-10 — 被截断的流不再当成完成的回合</span></a></li>
 <li class="toc-l2"><a href="#32-2026-11-04--desktop-%E4%BB%BB%E5%8A%A1%E5%85%A8%E9%83%A8%E5%AE%8C%E6%88%90%E5%90%8E%E9%9A%90%E8%97%8F%E4%BB%BB%E5%8A%A1%E5%8D%A1trajectory-%E6%90%9C%E7%B4%A2%E6%A1%86%E6%94%B9%E4%B8%BA%E5%8D%95%E5%B1%82" title="32. 2026-11-04 — Desktop：任务全部完成后隐藏任务卡；Trajectory 搜索框改为单层"><span class="toc-label">32. 2026-11-04 — Desktop：任务全部完成后隐藏任务卡；Trajectory 搜索框改为单层</span></a></li>
+<li class="toc-l2"><a href="#33-2026-11-10--thinking-%E5%8D%A1%E7%89%87%E5%8E%8B%E7%BC%A9%E5%90%8E%E5%9D%97%E9%97%B4%E6%8C%A4%E6%88%90%E4%B8%80%E7%89%87" title="33. 2026-11-10 — thinking 卡片压缩后，块与块挤成一片"><span class="toc-label">33. 2026-11-10 — thinking 卡片压缩后，块与块挤成一片</span></a></li>
+<li class="toc-l2"><a href="#34-2026-11-10--%E5%B7%A5%E5%85%B7%E7%BB%84%E5%B1%95%E5%BC%80%E5%90%8E%E6%97%A0%E6%B3%95%E5%86%8D%E6%8A%98%E5%8F%A0" title="34. 2026-11-10 — 工具组展开后无法再折叠"><span class="toc-label">34. 2026-11-10 — 工具组展开后无法再折叠</span></a></li>
+<li class="toc-l2"><a href="#35-2026-11-10--thinking-%E5%8D%A1%E7%89%87%E8%B7%91%E5%AE%8C%E5%90%8E%E5%8F%AA%E7%95%99%E7%8A%B6%E6%80%81%E8%A1%8C" title="35. 2026-11-10 — thinking 卡片跑完后只留状态行，摘要不再画"><span class="toc-label">35. 2026-11-10 — thinking 卡片跑完后只留状态行，摘要不再画</span></a></li>
+<li class="toc-l2"><a href="#36-2026-11-10--%E6%97%A5%E5%BF%97%E6%BB%9A%E5%8A%A8%E6%8C%89%E8%A1%8C%E7%BF%BB%E9%A1%B5%E5%8D%A1%E4%BD%8F%E9%98%85%E8%AF%BB%E4%BD%8D%E7%BD%AE" title="36. 2026-11-10 — 日志向上滚动不是按行翻页"><span class="toc-label">36. 2026-11-10 — 日志向上滚动不是按行翻页</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -16780,8 +16784,10 @@ Markdown 消息。</td>
 </tr>
 <tr>
 <td>Pointers</td>
-<td><code>crates/tui/src/widgets/state/app/scroll.rs</code>（步进函数与滚动
-API）、<code>crates/tui/src/widgets/state/log_scroll.rs</code>（<code>visual_top</code>）、<code>crates/tui/src/render/log.rs</code>（视觉钳制与镜像派生）、<code>crates/tui/src/handlers/{normal,mouse,mod}.rs</code>（按键、滚轮、<code>/skills</code>
+<td><code>crates/tui/src/widgets/state/app/scroll.rs</code>（滚动
+API；当时的 <code>visual_step_up/down</code> 后来在
+<a href="#36-2026-11-10--日志滚动按行翻页卡住阅读位置">第 36 条</a>
+中删除）、<code>crates/tui/src/widgets/state/log_scroll.rs</code>（<code>visual_top</code>）、<code>crates/tui/src/render/log.rs</code>（视觉钳制与镜像派生）、<code>crates/tui/src/handlers/{normal,mouse,mod}.rs</code>（按键、滚轮、<code>/skills</code>
 分页）、<code>crates/tui/src/widgets/state/app/{agent,messages,visibility}.rs</code>（钉底辅助）；回归测试
 <code>tall_markdown_cell_is_fully_traversable</code>、<code>skills_command_paginates_long_lists</code>；<a
 href="./23_chapter_tui_zh.html">第 23 章</a> 渲染管线节。</td>
@@ -22015,6 +22021,212 @@ sticky 卡片整条消失，恢复干净对话区；有任一域活跃时卡片�
 <code>crates/desktop/src/ui/sticky.rs</code>（<code>card_visible</code>）、
 <code>crates/desktop/src/root.rs</code>（<code>render_sticky</code>、
 <code>render_trajectory_summary</code>）。</p>
+<hr />
+<h2 id="33-2026-11-10--thinking-卡片压缩后块间挤成一片">33. 2026-11-10 — thinking 卡片压缩后，块与块挤成一片</h2>
+<p><strong>现象：</strong> 把 thinking 卡片从「空行 + 边框 + 正文 + 边框」压成
+「头行 + 正文」之后，日志里出现三行贴死的连续文字：工具块的状态行
+（<code>✓ Success · 60.61ms · 8 lines · [Open]</code>）、<code>🧠 Thought</code>
+头行、紧接着的推理正文，中间一个空行都没有；卡片下面的回答同样直接贴在正文上。
+三行紧挨着读起来像一张三行表格，而不像三个独立的东西。</p>
+<p><strong>根因：</strong> 卡片以前的间距是它自己的 chrome。五行的卡片开头就是一个空行、
+一道上边框，删掉之后没有任何东西补回这个间距。间距规则本身也只认
+<code>raw.is_empty()</code>：卡片的占位行 <code>raw</code> 同样是空串，
+和块间空行无法区分，所以「上一行是空行 → 已有间距」的判断在卡片前面永远为真，
+工具块与卡片之间、卡片与回答之间的空行都补不上。</p>
+<p><strong>决策：</strong> 把「散文与卡片区之间恰好一个空行，卡片区内部不留空行」写成规则，放在
+<code>widgets/state/app/visibility.rs</code>。卡片打开时
+<code>ensure_gap_before_thinking</code> 判断上一行：是散文才插入自己的空行，是工具块或另一张卡片就不插；
+回答流开始时 <code>ensure_gap_after_thinking</code> 补卡片后面的空行。
+<code>ensure_gap_before_tools</code> 对称：上一行已经是卡片或工具块就不再插。
+区分「空行」与「卡片的空占位行」交给
+<code>phys_idx_is_separator</code>——先排除被卡片占用的行
+（<code>phys_idx_owned_by_card</code>）再判断；同一个谓词也回答了「上一行是不是已经在卡片区里」。
+空行属于卡片本身（<code>ActiveThinkingBlock::preceded_by_gap</code>）：卡片收尾时如果没有内容，
+连自己那行空行一起删掉，一次空的 thinking 不会在日志里留下孤立的空行。</p>
+<p><strong>改后行为：</strong> 散文（user / assistant）与工具块、thinking 卡片之间各隔一个空行；
+工具块与卡片之间、卡片与卡片之间、工具块与工具块之间都不留空行——它们是一整片连续的工作区，
+折行的工具组（<code>tool_group::runs</code>）也靠「没有空行」判断两次调用属于同一组。
+卡片内部头行与正文仍然紧贴（那是同一块的两行）。空 thinking 不改变日志的任何一行。</p>
+<p><strong>验证：</strong> <code>a_thinking_card_butts_against_the_tool_block_above_it</code>、
+<code>the_reply_after_a_thinking_card_keeps_one_blank_row</code>、
+<code>a_blank_thinking_card_removes_the_gap_it_opened</code>、
+<code>two_thinking_cards_stack_without_a_gap</code>、
+<code>a_folded_tool_run_keeps_one_blank_row_on_both_sides</code>
+（均读真实帧的行号，不是读状态字段）；逐条把对应的修复移走后确认会失败。
+<code>cargo test -p agent_tui_kit --lib</code> 454、<code>cargo test -p tui --lib</code>
+781 全绿，clippy <code>-D warnings</code> 与 fmt 干净。</p>
+<p><strong>卡片之后的系统消息（同日追加）：</strong> 间距规则有一条覆盖不到的缝。
+<code>add_system_message</code> 直接往日志里追加，完全不经过流式路径的那几个
+<code>ensure_gap_*</code>，所以「卡片 → 系统消息」这一侧没有任何人补空行：
+<code>prose → card</code> 有一行空行，<code>card → prose</code> 却紧贴，
+和「普通内容与卡片区之间恰好一个空行」这条规则相反。修法是加一个对称入口
+<code>ensure_gap_before_system_message</code>，由 <code>add_system_message</code> 在追加前调用。
+没有让卡片重新占一行尾部空行：那会把「一张卡一行」的目标抵掉。
+<code>card → tool</code> 仍然无间距，这段只针对普通内容。</p>
+<p><strong>验证（追加）：</strong> <code>a_system_message_after_a_card_keeps_one_blank_row</code>
+在真实帧里读行号，断言系统消息在卡片下一格（card + 2）。修复前是 card + 1，失败。</p>
+<p><strong>Pointers：</strong>
+<code>crates/tui/src/widgets/state/app/visibility.rs</code>（<code>ensure_gap_before_thinking</code>、
+<code>ensure_gap_before_system_message</code>、
+<code>ensure_gap_after_thinking</code>、<code>phys_idx_is_separator</code>）、
+<code>crates/agent_tui_kit/src/state/thinking.rs</code>（<code>preceded_by_gap</code>）、
+<code>crates/tui/src/render/render_gap_tests.rs</code>、
+<a href="../docs/tui_rendering.md">docs/tui_rendering.md</a> §6.5.1。</p>
+<hr />
+<h2 id="34-2026-11-10--工具组展开后无法再折叠">34. 2026-11-10 — 工具组展开后无法再折叠</h2>
+<p><strong>现象：</strong> 相邻工具调用折叠成一行摘要之后，点开或按 <code>z</code>
+展开，就再也收不回去了。展开状态下再按 <code>z</code> 没有任何反应，摘要行也已经不在了，
+鼠标也没有别的可点的地方——一组工具只能单向地越开越大。</p>
+<p><strong>根因：</strong> 两个入口各自断在不同的地方。
+<code>z</code> 解析的是「视口顶部那一行」，而真实日志里那一行是正文或块间空行，
+所以 <code>run_identity_at</code> 返回 <code>None</code>，按键静默失效；
+更关键的是展开之后摘要行被成员行取代、离开了视口顶部，第二下按 <code>z</code>
+就再找不到这组工具了。旧测试之所以通过，是因为它没有用户消息和正文，
+工具组恰好从第一行开始，视口顶部正好就是它。
+鼠标则是因为 <code>OpenTarget::ToolRun</code> 只在折叠分支里登记：
+摘要行是唯一的点击目标，展开后它消失，hitbox 随之消失。</p>
+<p><strong>决策：</strong> 两个入口都改成「工具组在哪里就指向哪里」。
+<code>z</code> 改为取<strong>视口内第一个有行落在其中的工具组</strong>
+（<code>toggle_fold_in_view</code> / <code>first_run_in_view</code>），
+与顶部那一行无关；首帧之前缓存还没建立（<code>offset</code> 仍是
+<code>u16::MAX</code> 哨兵、<code>visual_start</code> 为空），此时退化为全日志搜索，
+而不是当作「视口为空」。鼠标则在展开态把<strong>第一个成员的标题行</strong>
+登记为折叠目标——它正是摘要行原来的位置，因此同一个位置既能展开也能收起。
+标题行在缩进 gutter 里画 <code>⏷</code>，与摘要行的 <code>⏵</code> 同列；
+不用前缀把字形塞进标题，否则这一组的第一行会比下面的成员右一列，读起来像阶梯。
+同一时刻一组工具只有一个折叠控件（折叠时是摘要行，展开时是标题行），
+点击不依赖 hitbox 的枚举顺序。</p>
+<p><strong>改后行为：</strong> <code>z</code> 在真实日志（前面有正文、有用户消息）
+里能折叠、也能再展开回来；鼠标点摘要展开、点展开后的标题行收起，两个方向都通。
+展开态标题行左侧显示 <code>⏷</code>，提示这里可以点击。</p>
+<p><strong>验证：</strong> <code>z_refolds_a_run_it_unfolded</code>、
+<code>z_folds_a_run_that_does_not_start_at_the_viewport_top</code>、
+<code>clicking_an_expanded_run_head_folds_it_again</code>、
+<code>an_expanded_run_head_draws_the_collapse_glyph</code>、
+<code>only_the_state_that_is_drawn_registers_a_fold_control</code>；
+逐条把对应的修复移走后确认会失败。原先断言旧行为的
+<code>z_does_nothing_when_the_viewport_top_is_not_a_tool_run</code>
+已改写为 <code>z_does_nothing_when_there_is_no_run_to_fold</code>
+（日志里根本没有工具组才不响应）并新增
+<code>z_folds_the_first_run_below_plain_markdown</code>。
+<code>cargo test -p agent_tui_kit --lib</code> 452、<code>cargo test -p tui --lib</code>
+780 全绿，clippy <code>-D warnings</code> 与 fmt 干净。</p>
+<p><strong>折叠后的滚动补偿（同日追加）：</strong> 折叠会删掉读者盯着的行之上的行，
+所以视口要跟着上移同样的量（<code>compensate_for_removed_rows</code>）。
+这里有两个单位混用的坑。工具组的边界是<strong>物理行</strong>，视口位置是<strong>视觉行</strong>；
+只有当一个组上方的正文都不折行时两者才相等，而代码直接拿它们比较，
+于是上方有折行段落时，折叠会把读者按这一组的高度整体上推——实测视口从 29 跳到 24，
+读者正在看的那一行换成了几段无关的正文。修法是把边界先经
+<code>phys_to_logical_cache</code> 和视觉前缀和换算成视觉行再比较
+（<code>visual_line_of_phys</code>）。另外消失的行数是这一组的视觉跨度减一，
+因为折叠会把摘要行留在组开始的位置。工具组只是部分在视口上方时仍然不补偿：
+读者看得见它在收起，此时挪动内容反而更怪。</p>
+<p><strong>验证（追加）：</strong> <code>folding_the_run_under_the_eye_leaves_the_eye_where_it_was</code>
+把视口停在工具组自己的第一行（上方是折行的正文），再按真实的 <code>z</code> 折叠，
+断言视口位置不变、观众仍停在摘要行。把单位换算换回物理行比较，该测试失败（24 vs 29）；
+恢复后通过。</p>
+<p><strong>Pointers：</strong>
+<code>crates/tui/src/widgets/state/app/visibility.rs</code>（<code>toggle_fold_in_view</code>、
+<code>first_run_in_view</code>、<code>visual_line_of_phys</code>）、
+<code>crates/agent_tui_kit/src/state/tool_group.rs</code>（<code>expanded_run_head_at</code>）、
+<code>crates/agent_tui_kit/src/render/cells/tool.rs</code>（<code>run_toggle_rect</code>、
+<code>run_toggle_glyph_rect</code>）、
+<code>crates/agent_tui_kit/src/render/log.rs</code>、
+<code>crates/tui/src/render/tool_fold_tests.rs</code>、
+<a href="../docs/tui_rendering.md">docs/tui_rendering.md</a> §6.6。</p>
+<hr />
+<h2 id="35-2026-11-10--thinking-卡片跑完后只留状态行">35. 2026-11-10 — thinking 卡片跑完后只留状态行，摘要不再画</h2>
+<p><strong>现象：</strong> 实时流结束后，卡片仍然占两行：<code>🧠 已思考</code>
+状态行，加上下面一行摘要。摘要只是推理的最后一句，而完整推理本来就在
+<code>[打开]</code> 按钮后面——于是每一条已经想完的思考都多占一行，只为预告一份点一下就能看全的内容。</p>
+<p><strong>根因：</strong> 完成态的卡片把「状态」和「内容预览」画在了同一个 cell 里：
+<code>ThinkingCell::completed</code> 给 <code>lines</code> 塞进
+<code>block.summary</code>，高度因此永远是
+<code>thinking_visual_rows(1)</code> = 2。行数公式只有一个，而它按「有正文」算。</p>
+<p><strong>决策：</strong> 把「完成」和「有正文」拆成两个不同的状态。cell 的正文改成
+<code>Option&lt;Vec&lt;String&gt;&gt;</code>：运行中是
+<code>Some(tail)</code>（空 tail 仍占一行空行，日志占位行按此计数），完成是
+<code>None</code>，高度 <code>body_lines() + 1</code> 自然等于 1。新增常量
+<code>COMPLETED_THINKING_ROWS = 1</code>，所有「已结算卡片的行数」都改用它
+（日志占位行、<code>find_thinking_at_logical</code>、<code>phys_idx_in_thinking_card</code>），
+不再复用运行中的公式——<code>thinking_visual_rows(1)</code> 回答的是 2，用错会把多出来的一行留成卡片内部的空行。</p>
+<p>底栏也随状态分开。运行中的卡片报分数
+（<code>⏱ 1.2s | ↕ 2/12 行 | [打开]</code>），因为屏幕上确实画着 tail 行；完成的卡片只报总数
+（<code>⏱ 3.4s | 12 行 | [打开]</code>），与折叠 tool 卡片同一种读法。写
+<code>↕ 0/12</code> 是在报一个它并不拥有的行数，<code>12/12</code> 则是废话。单行推理用单数
+（<code>1 line</code> / <code>1 行</code>），照折叠 tool 卡片的既有做法。
+<code>ThinkingBlock::summary</code> 字段保留（弹窗与整卡选择仍把 block 当整体读），只是不再被画出来。</p>
+<p><strong>改后行为：</strong> 流结束后日志里只剩一行
+<code>🧠 已思考  ⏱ 3.4s | 12 行 | [󰜼 打开]</code>；完整推理点按钮查看。运行中仍是
+1–3 行 tail 加状态行。卡片之间的空行规则不变：完成态卡片上方、下方各一行空行。</p>
+<p><strong>验证：</strong> <code>a_finished_card_spends_no_row_on_chrome</code>、
+<code>a_finished_thinking_cell_draws_only_its_header</code>、
+<code>a_finished_card_leaves_exactly_one_placeholder_row</code>、
+<code>a_thinking_card_keeps_one_blank_row_from_the_tool_block_above_it</code>、
+<code>the_reply_after_a_thinking_card_keeps_one_blank_row</code>、
+<code>log_renders_collapsed_thinking_card</code>、
+<code>log_thinking_title_shows_the_reasoning_size_when_folded</code>、
+<code>the_footer_ends_in_the_shared_button</code>、
+<code>a_one_line_finished_card_states_one_line</code>、
+<code>a_live_card_reports_how_much_of_the_reasoning_is_drawn</code>；
+逐条把对应的修复移走后确认会失败（完成态改回画摘要 → 5 条红；占位行改回 2 行 →
+<code>a_finished_card_leaves_exactly_one_placeholder_row</code> 红）。原先断言旧行为的
+<code>completed_thinking_cell_renders_only_its_summary</code> 改写为
+<code>a_finished_thinking_cell_draws_only_its_header</code>，
+<code>log_thinking_title_shows_scroll_indicator_when_collapsed</code> 改写为
+<code>log_thinking_title_shows_the_reasoning_size_when_folded</code>，
+<code>log_assistant_reply_aligns_with_thinking_indent</code> 改为用**运行中**的卡片驱动
+（完成态已无正文可对齐），<code>clicking_a_thinking_card_body_starts_text_selection</code>
+改写为 <code>clicking_a_thinking_card_row_starts_text_selection</code>（卡片只剩一行，标题与按钮同列不同位置）。
+<code>cargo test -p agent_tui_kit --lib</code> 453、<code>cargo test -p tui --lib</code>
+781 全绿。</p>
+<p><strong>Pointers：</strong>
+<code>crates/agent_tui_kit/src/render/cells/thinking.rs</code>（<code>COMPLETED_THINKING_ROWS</code>、
+<code>ThinkingCell::body</code>、<code>LineCount</code>）、
+<code>crates/agent_tui_kit/src/i18n.rs</code>（<code>thinking_card_bottom_done</code>、
+<code>thinking_card_bottom_done_one</code>）、
+<code>crates/agent_tui_kit/src/state/thinking.rs</code>（<code>find_thinking_at_logical</code>）、
+<code>crates/tui/src/widgets/state/app/visibility.rs</code>（<code>close_active_thinking_block</code>、
+<code>phys_idx_in_thinking_card</code>）、
+<code>crates/tui/src/render/render_gap_tests.rs</code>、
+<a href="../docs/tui_rendering.md">docs/tui_rendering.md</a> §6.4 与 §Thinking Card Rows。</p>
+<hr />
+<h2 id="36-2026-11-10--日志滚动按行翻页卡住阅读位置">36. 2026-11-10 — 日志向上滚动不是按行翻页</h2>
+<p><strong>现象：</strong> 长回复里往上滚，视口一次跳三到五行；同一份内容往下滚却只走一行。段落折成四行的地方，按一下 <code>k</code> 就把这四行连带周边一次跨过去，读者刚看到的那一行直接消失。</p>
+<p><strong>根因：</strong> 滚动单位是<em>逻辑行</em>，不是视觉行。<code>visual_step_up/down</code>
+在「短行」分支里直接跳到相邻行边界（<code>row_top</code> / <code>row_end</code>），
+只有「高于 viewport 的 cell」才按传入的 <code>step</code> 走。而
+<code>LOG_LINE_STEP = 1</code> 只在上一个修复里管住了第一段，行边界跳转仍然按整行高度移动，
+上行还多一条「从下方进入高 cell 时落在其底部」的规则，
+于是同一段文本上下两个方向走得不一样远。实测：视口顶部每次下移 3 行，首次上移 5 行。</p>
+<p><strong>决策：</strong> 行是存储单位，不是滚动单位。删除
+<code>visual_step_up</code> / <code>visual_step_down</code> 两个函数，<code>scroll_log_up/down</code>
+直接对 <code>visual_top</code> 做加减并按内容长度钳制：
+<code>j</code>/<code>k</code> 与滚轮都是一行（<code>LOG_LINE_STEP</code>，滚轮原先的三行
+<code>WHEEL_CELL_STEP</code> 因此不再需要）。向上钳到 0，向下到达底部时仍然重新开启跟随。
+更粗的步进只留在子代理转录视图，那是整块卡片而不是逐行阅读的列：滚轮三行
+（<code>SUBAGENT_WHEEL_STEP</code>）、按键半屏（<code>key_cell_step</code>）。
+删除两个函数后布局/缓存问题也随之消失：折行行不再需要特殊分支，前缀和缓存只用来算总行数与逻辑镜像。</p>
+<p><strong>改后行为：</strong> 日志里任何内容都是一次一行，上下对称，键盘和滚轮一致。
+折成四行的段落要走四次，和四行独立消息一样。<code>g</code>/<code>G</code> 到两端。</p>
+<p><strong>验证：</strong> <code>a_press_moves_one_line_through_wrapped_rows_both_ways</code>
+用真实的 <code>j</code>/<code>k</code> 按键驱动，断言渲染后 <code>MARKER</code> 行每次只上移一行、
+回程每次只下移一行；把修复移走后该测试以 <code>[3, 3, 3, 3, 3]</code> 失败，确认有牙。
+<code>every_line_inside_a_tall_row_is_reachable</code>
+断言 10 行高行内部每一行都是停靠点，<code>a_wheel_notch_moves_one_line_like_a_key_press</code> 管滚轮，
+<code>a_wheel_notch_steps_one_line_in_the_log_and_three_in_the_subagent_view</code>
+同时钉住日志一行与转录三行这两种步长，
+<code>stepping_past_either_end_clamps_instead_of_wrapping</code> 管钳制与重新跟随，
+<code>a_short_row_log_steps_by_lines_too</code> 管普通短行日志与 <code>offset</code> 镜像。
+<code>cargo test -p tui --lib</code> 780 全绿，<code>cargo clippy -p tui --all-targets -- -D warnings</code> 干净。</p>
+<p><strong>Pointers：</strong>
+<code>crates/tui/src/widgets/state/app/scroll.rs</code>（<code>LOG_LINE_STEP</code>、
+<code>SUBAGENT_WHEEL_STEP</code>、<code>key_cell_step</code>、
+<code>scroll_log_up/down</code>）、
+<code>crates/tui/src/handlers/mouse.rs</code>（滚轮改指 <code>LOG_LINE_STEP</code>）、
+<code>crates/tui/src/render/log_render_tests.rs</code>、
+<a href="../docs/tui_rendering.md">docs/tui_rendering.md</a> §6.3 与 §6.6、
+<a href="./23_chapter_tui_zh.html">第 23 章</a> 渲染管线节。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>

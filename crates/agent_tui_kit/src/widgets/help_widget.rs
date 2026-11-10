@@ -41,6 +41,7 @@ impl Widget for HelpWidget<'_, '_> {
             Line::from(Span::styled(msgs.help_gg, normal_style)),
             Line::from(Span::styled(msgs.help_G, normal_style)),
             Line::from(Span::styled(msgs.help_y, normal_style)),
+            Line::from(Span::styled(msgs.help_z, normal_style)),
             Line::from(Span::styled(msgs.help_t, normal_style)),
             Line::from(Span::styled(msgs.help_colon, normal_style)),
             Line::from(""),

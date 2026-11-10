@@ -144,13 +144,13 @@ pub(crate) fn handle_mouse_scroll_up(app: &mut App, hit: MousePanelHit) {
         app.overlay_popup_scroll_up();
     } else if app.show_subagent_view {
         // A wheel-up is the same decision as `k`: stop following the tail.
-        app.subagent_scroll_by(-(crate::widgets::state::app::scroll::WHEEL_CELL_STEP as isize));
+        app.subagent_scroll_by(-(crate::widgets::state::app::scroll::SUBAGENT_WHEEL_STEP as isize));
     } else if hit.in_task_panel && sticky_scrollable(app) {
         app.mouse.in_task_panel = true;
         scroll_active_sticky(app, -1);
     } else if hit.in_log {
         app.mouse.in_task_panel = false;
-        app.scroll_log_up(crate::widgets::state::app::scroll::WHEEL_CELL_STEP);
+        app.scroll_log_up(crate::widgets::state::app::scroll::LOG_LINE_STEP);
     }
 }
 
@@ -160,13 +160,13 @@ pub(crate) fn handle_mouse_scroll_down(app: &mut App, hit: MousePanelHit) {
         app.overlay_popup_scroll_down();
     } else if app.show_subagent_view {
         // Wheel-down re-arms following once it reaches the end (the helper).
-        app.subagent_scroll_by(crate::widgets::state::app::scroll::WHEEL_CELL_STEP as isize);
+        app.subagent_scroll_by(crate::widgets::state::app::scroll::SUBAGENT_WHEEL_STEP as isize);
     } else if hit.in_task_panel && sticky_scrollable(app) {
         app.mouse.in_task_panel = true;
         scroll_active_sticky(app, 1);
     } else if hit.in_log {
         app.mouse.in_task_panel = false;
-        app.scroll_log_down(crate::widgets::state::app::scroll::WHEEL_CELL_STEP);
+        app.scroll_log_down(crate::widgets::state::app::scroll::LOG_LINE_STEP);
     }
 }
 
@@ -870,6 +870,57 @@ mod tests {
         assert!(
             app.mouse.subagent_back_area.is_empty(),
             "closing must clear the hit rect, or a later click hits a stale one"
+        );
+    }
+
+    /// The log scrolls one line per wheel notch; the subagent transcript keeps
+    /// its coarser step, because it is one bounded card rather than a column
+    /// read line by line.
+    #[test]
+    fn a_wheel_notch_steps_one_line_in_the_log_and_three_in_the_subagent_view() {
+        let mut app = make_app();
+        for i in 0..40 {
+            app.add_system_message(format!("row-{i:02}"));
+        }
+        let _ = crate::render::test_harness::render_log_panel_text(&mut app, 60, 10);
+        app.scroll_log_to_top();
+
+        handle_mouse_scroll_down(
+            &mut app,
+            MousePanelHit {
+                in_log: true,
+                in_task_panel: false,
+            },
+        );
+        assert_eq!(app.log_viewport_top(), 1, "one line in the log");
+
+        crate::render::test_harness::seed_subagent_view(&mut app);
+        // A short body, so the transcript overflows and a notch has somewhere
+        // to land.
+        crate::render::test_harness::render_main_area_terminal(&mut app, 100, 8);
+        let body = app.mouse.popup_text_body_area;
+        let max_scroll = app
+            .subagent_popup()
+            .expect("view")
+            .layout
+            .as_ref()
+            .expect("layout")
+            .total_rows
+            .saturating_sub(body.height as usize);
+        assert!(
+            max_scroll >= crate::widgets::state::app::scroll::SUBAGENT_WHEEL_STEP,
+            "fixture: the transcript must overflow by more than one notch"
+        );
+
+        // The view opens on the tail; one notch up is three lines short of it.
+        handle_mouse_event(
+            &mut app,
+            mouse_event(MouseEventKind::ScrollUp, body.x + 1, body.y + 1),
+        );
+        assert_eq!(
+            app.subagent_popup().expect("view").scroll,
+            (max_scroll - crate::widgets::state::app::scroll::SUBAGENT_WHEEL_STEP) as u16,
+            "three lines in the transcript"
         );
     }
 
@@ -1695,7 +1746,7 @@ mod tests {
             app.add_system_message(format!("row-{i}"));
         }
         let _ = crate::render::test_harness::render_log_panel_text(&mut app, 60, 4);
-        app.log_scroll.visual_top = 2;
+        app.log_scroll.visual_top = 4;
 
         handle_mouse_scroll_up(
             &mut app,
@@ -1705,7 +1756,10 @@ mod tests {
             },
         );
 
-        assert_eq!(app.log_scroll.offset, 1);
+        assert_eq!(
+            app.log_scroll.visual_top, 3,
+            "a notch moves one visual line, the same as a key press"
+        );
     }
 
     #[test]
@@ -1725,7 +1779,10 @@ mod tests {
             },
         );
 
-        assert_eq!(app.log_scroll.offset, 1);
+        assert_eq!(
+            app.log_scroll.offset, 1,
+            "the row mirror lands on the line one visual line down"
+        );
     }
 
     #[test]
@@ -1858,10 +1915,10 @@ mod tests {
         app
     }
 
-    /// A Thinking card has one target: the `[󰜼 Open]` button on its bottom
-    /// border. It draws text on rows that do not map to that text, so — like a
-    /// whole-Markdown row — nothing else about it answers a click, not its
-    /// summary, not its title, not the blank rows around it.
+    /// A Thinking card has one target: the `[󰜼 Open]` button on its footer.
+    /// Its reasoning and title arm card selection instead of opening the popup,
+    /// so — like a whole-Markdown row — only the button answers an open: not its
+    /// summary and not its title.
     ///
     /// The probe reads the rendered frame: the hit rects are recorded from the
     /// geometry the frame drew, and this proves they land on the glyphs.
@@ -1890,9 +1947,9 @@ mod tests {
                 "]",
                 "{ctx}: the measured width must land on the drawn button's last glyph"
             );
-            // The card is a blank row, title, one body row, the footer, a blank
-            // row — so the title sits two rows above the footer.
-            let title_row = row - 2;
+            // The card is its summary row then its footer, and the title now
+            // leads the footer — on the same row as the button.
+            let title_row = row;
             let title: String = (0..buf.area.width)
                 .map(|x| buf[(x, title_row)].symbol())
                 .collect();
@@ -1919,10 +1976,15 @@ mod tests {
             );
             assert!(
                 !double_click_opens_thinking(&mut app, start, row - 1),
-                "{ctx}: the card's own text must stay inert"
+                "{ctx}: the card's reasoning must stay inert"
             );
+            // The title shares the footer row with the button, so the title's
+            // own columns are what must stay inert — not the whole row.
+            let title_glyph = (0..buf.area.width)
+                .find(|&x| buf[(x, title_row)].symbol() == "🧠")
+                .expect("the title is drawn");
             assert!(
-                !double_click_opens_thinking(&mut app, start, title_row),
+                !double_click_opens_thinking(&mut app, title_glyph, title_row),
                 "{ctx}: the card's title must stay inert"
             );
         }
@@ -2009,7 +2071,10 @@ mod tests {
 
         let terminal = render_main_area_terminal(&mut app, 100, 60);
         let buf = terminal.backend().buffer().clone();
-        let (thinking_x, thinking_y) = glyph_origin(&buf, "four");
+        // The card draws one row, and its body is not on screen any more, so the
+        // drag starts on the status row's title — inert, unlike the button
+        // beside it.
+        let (thinking_x, thinking_y) = glyph_origin(&buf, "Thought");
         let (target_x, target_y) = glyph_origin(&buf, "Target");
         let thinking_phys = app.thinking().blocks[0].phys_idx;
         let tool_phys = app.tools().blocks[0].phys_idx;
@@ -2044,7 +2109,7 @@ mod tests {
 
         let selected_frame = render_main_area_terminal(&mut app, 100, 60);
         let selected_buf = selected_frame.backend().buffer();
-        for needle in ["four", "Bash", "Target"] {
+        for needle in ["Thought", "Bash", "Target"] {
             let (_, row) = glyph_origin(selected_buf, needle);
             assert!(
                 (0..selected_buf.area.width).any(|x| selected_buf[(x, row)]
@@ -2066,23 +2131,29 @@ mod tests {
         );
     }
 
+    /// The card's own row is selectable even though it draws no reasoning: the
+    /// card carries the full content, so a click on the title arms a selection
+    /// of it. Only the `[Open]` button is a control — and it sits on the very
+    /// same row, so this also proves the two are told apart by column.
     #[test]
-    fn clicking_a_thinking_card_body_starts_text_selection() {
+    fn clicking_a_thinking_card_row_starts_text_selection() {
         use crate::render::test_harness::render_main_area_terminal;
 
         let mut app = app_with_thinking_card(crate::i18n::Language::English);
         let terminal = render_main_area_terminal(&mut app, 100, 20);
         let buf = terminal.backend().buffer().clone();
-        let (start, row) = glyph_origin(&buf, "[󰜼");
+        let (title_x, row) = glyph_origin(&buf, "Thought");
+        let (_, button_row) = glyph_origin(&buf, "[󰜼");
+        assert_eq!(row, button_row, "the title and the button share the row");
 
         app.mouse.last_click_time = Some(std::time::Instant::now());
-        app.mouse.last_click_pos = Some((start, row - 1));
+        app.mouse.last_click_pos = Some((title_x, row));
         app.mouse.click_count = 3;
-        handle_log_click(&mut app, mouse_down(start, row - 1));
+        handle_log_click(&mut app, mouse_down(title_x, row));
 
         assert!(
             app.mouse.dragging_log,
-            "card body should start a drag selection"
+            "the card's row should start a drag selection"
         );
         assert!(
             app.mouse.card_selection.is_some(),

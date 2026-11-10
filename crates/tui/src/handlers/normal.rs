@@ -53,20 +53,14 @@ pub(crate) fn handle_normal_mode(
             if app.mouse.in_task_panel && sticky_scrollable(app) {
                 scroll_active_sticky(app, 1);
             } else {
-                let step = crate::widgets::state::app::scroll::key_cell_step(
-                    app.log_scroll.height as usize,
-                );
-                app.scroll_log_down(step);
+                app.scroll_log_down(crate::widgets::state::app::scroll::LOG_LINE_STEP);
             }
         }
         KeyCode::Char('k') => {
             if app.mouse.in_task_panel && sticky_scrollable(app) {
                 scroll_active_sticky(app, -1);
             } else {
-                let step = crate::widgets::state::app::scroll::key_cell_step(
-                    app.log_scroll.height as usize,
-                );
-                app.scroll_log_up(step);
+                app.scroll_log_up(crate::widgets::state::app::scroll::LOG_LINE_STEP);
             }
         }
         KeyCode::Char('g') => {
@@ -165,6 +159,14 @@ pub(crate) fn handle_normal_mode(
                 app.open_thinking_popup_at_physical_index(phys_idx);
             }
         }
+        KeyCode::Char('z') => {
+            // Fold or unfold the first tool run in view. `z` is the fold verb in
+            // every editor this keymap borrows from. The target is the first run
+            // the reader can see, not the row at the viewport top: that row is
+            // usually prose or a separator, and expanding a run moves its
+            // summary off the top anyway.
+            app.toggle_fold_in_view();
+        }
         KeyCode::Char('q') => {
             app.should_quit = true;
         }
@@ -189,12 +191,118 @@ mod tests {
 
     use super::*;
     use crate::{
-        render::test_harness::make_app,
+        render::test_harness::{make_app, render_log_panel_text},
+        test_fixtures::StepCall,
         widgets::state::{LogSelection, TextPosition},
     };
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::empty())
+    }
+
+    /// Seed one finished tool call at `idx`.
+    fn settled_tool(app: &mut App, idx: usize, id: &str, arg: &str) {
+        use std::collections::HashMap;
+
+        use tact_protocol::{AgentUpdate, PlanStep, StepStatus};
+
+        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+            format!("step {id}"),
+            "read_file",
+            id,
+            HashMap::from([("arg".to_string(), arg.to_string())]),
+        )));
+        app.handle_agent_update(StepCall::new(idx, id, "read_file", arg).started());
+        app.handle_agent_update(
+            StepCall::new(idx, id, "read_file", arg)
+                .detail("out")
+                .status(StepStatus::Success)
+                .duration_us(1_200)
+                .finished(),
+        );
+    }
+
+    /// `z` is the reader's only keyboard route into a fold, so it has to reach
+    /// the run under the viewport top and nothing else.
+    #[test]
+    fn z_folds_and_unfolds_the_run_at_the_viewport_top() {
+        let mut app = make_app();
+        let (tx, _rx) = unbounded_channel();
+        settled_tool(&mut app, 0, "r1", "a.rs");
+        settled_tool(&mut app, 1, "r2", "b.rs");
+        settled_tool(&mut app, 2, "r3", "c.rs");
+        app.input_mode = InputMode::Normal;
+
+        let folded = render_log_panel_text(&mut app, 80, 20);
+        assert!(folded.contains("3 tools"), "starts folded: {folded}");
+
+        handle_normal_mode(&mut app, key(KeyCode::Char('z')), &tx);
+        let open = render_log_panel_text(&mut app, 80, 20);
+        assert!(
+            open.contains("b.rs") && open.contains("c.rs"),
+            "`z` at the run head must reveal every member: {open}"
+        );
+
+        handle_normal_mode(&mut app, key(KeyCode::Char('z')), &tx);
+        let again = render_log_panel_text(&mut app, 80, 20);
+        assert!(
+            again.contains("3 tools") && !again.contains("b.rs"),
+            "`z` is a toggle, so a second press folds it back: {again}"
+        );
+    }
+
+    /// A log with no tool run at all folds nothing, and says so by not bumping
+    /// the fold generation: `z` over pure prose is not a toggle.
+    ///
+    /// The companion rule — a run that is merely *below* the viewport top — is
+    /// no longer inert: `z` takes the first run the reader can see, because a
+    /// rule keyed on the top row found the paragraph instead of the run and
+    /// made the key silently do nothing in every real transcript.
+    #[test]
+    fn z_does_nothing_when_there_is_no_run_to_fold() {
+        let mut app = make_app();
+        let (tx, _rx) = unbounded_channel();
+        app.handle_agent_update(tact_protocol::AgentUpdate::StreamChunk(
+            "just prose.\n".into(),
+        ));
+        app.input_mode = InputMode::Normal;
+
+        let before = app.tools().state().fold_rev;
+        handle_normal_mode(&mut app, key(KeyCode::Char('z')), &tx);
+        assert_eq!(
+            before,
+            app.tools().state().fold_rev,
+            "a log with no run must not bump the fold generation"
+        );
+    }
+
+    /// `z` finds the first run below the prose, and folds it. The ordering is
+    /// what makes the key usable: the reader scrolled to a turn and pressed the
+    /// fold verb, not "point at the exact row".
+    #[test]
+    fn z_folds_the_first_run_below_plain_markdown() {
+        let mut app = make_app();
+        let (tx, _rx) = unbounded_channel();
+        app.handle_agent_update(tact_protocol::AgentUpdate::StreamChunk(
+            "just prose.\n\n".into(),
+        ));
+        settled_tool(&mut app, 0, "r1", "a.rs");
+        settled_tool(&mut app, 1, "r2", "b.rs");
+        app.input_mode = InputMode::Normal;
+
+        handle_normal_mode(&mut app, key(KeyCode::Char('z')), &tx);
+        let text = render_log_panel_text(&mut app, 100, 24);
+        assert!(
+            text.contains("a.rs") && text.contains("b.rs"),
+            "the run below the prose must expand: {text}"
+        );
+
+        handle_normal_mode(&mut app, key(KeyCode::Char('z')), &tx);
+        let again = render_log_panel_text(&mut app, 100, 24);
+        assert!(
+            again.contains("2 tools") && !again.contains("b.rs"),
+            "and the next press folds it back: {again}"
+        );
     }
 
     /// The user-visible half of the keyboard-focus fix: after opening the view,

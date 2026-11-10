@@ -53,12 +53,129 @@ impl App {
             .log_indent()
     }
 
+    /// Fold or unfold the first tool run the reader can see.
+    ///
+    /// Not the run under the viewport's top row: in a real log that row is
+    /// usually prose or a blank separator, so a rule keyed on it finds no run at
+    /// all and `z` silently does nothing. Scanning the visible rows for the
+    /// first run makes the key work wherever the reader has scrolled to, and it
+    /// is what makes an expanded run foldable again — expanding moves the
+    /// summary row off the top, so the old rule lost the run the moment it was
+    /// unfolded.
+    ///
+    /// Returns true when a run was actually flipped, so a caller can tell "there
+    /// is no run in view" from "the reader just folded something".
+    pub(crate) fn toggle_fold_in_view(&mut self) -> bool {
+        let Some(run_id) = self.first_run_in_view() else {
+            return false;
+        };
+        self.toggle_fold_by_run_id(&run_id)
+    }
+
+    /// The identity of the first run that has any row inside the viewport.
+    ///
+    /// Run membership is exclusive and ordered, so the first match while
+    /// scanning down is both the topmost run and the only one to flip: `z` means
+    /// one run, and a key that folded two would be a different verb.
+    ///
+    /// Falls back to the whole log when nothing has been drawn yet. A key can
+    /// arrive before the first frame, and then the caches say nothing rather
+    /// than saying the viewport is empty: `visual_start` is empty and `offset`
+    /// still holds its `u16::MAX` sentinel, so both are treated as unknown.
+    fn first_run_in_view(&self) -> Option<String> {
+        let runs = agent_tui_kit::state::tool_group::runs(&self.tools().blocks);
+        if runs.is_empty() {
+            return None;
+        }
+        let (top_logical, bottom_logical) = if self.log_scroll.visual_start.is_empty() {
+            (0, usize::MAX)
+        } else {
+            let top = self.log_scroll.offset as usize;
+            (
+                top,
+                top.saturating_add(self.log_scroll.height as usize)
+                    .max(top + 1),
+            )
+        };
+        (top_logical..bottom_logical).find_map(|logical| {
+            let phys = self.visible_message_index(logical)?;
+            agent_tui_kit::state::tool_group::run_at_phys(&runs, phys)
+                .and_then(|index| {
+                    agent_tui_kit::state::tool_group::run_key(&self.tools().blocks, &runs[index])
+                })
+                .map(str::to_string)
+        })
+    }
+
+    /// Fold or unfold the run whose stable identity is `run_id`, keeping the
+    /// reader's eye on the line it was on.
+    ///
+    /// The single place that pairs the toggle with the scroll compensation. The
+    /// `z` key and a click on the summary row both land here; a second copy
+    /// would drift on the one question that matters, namely which rows
+    /// disappear and where they sat.
+    pub(crate) fn toggle_fold_by_run_id(&mut self, run_id: &str) -> bool {
+        // `run_bounds_by_id` only answers for a *folded* run, so an answer here
+        // means rows are about to come back; `None` means the run is about to
+        // fold. Only disappearing rows can pull the content under the eye.
+        //
+        // The run's bounds are physical rows, while the viewport and the
+        // compensation both count visual lines. The two agree only when nothing
+        // above the run wraps, so they are converted here: comparing them
+        // directly scrolled the reader by the run's own height whenever the
+        // prose above it wrapped.
+        let viewport = self.log_viewport_top();
+        let restoring = self.tools().run_bounds_by_id(run_id);
+        let folding = if restoring.is_none() {
+            self.tools()
+                .run_bounds_if_unfolded(run_id)
+                .map(|(start, end, _)| {
+                    (
+                        self.visual_line_of_phys(start),
+                        self.visual_line_of_phys(end),
+                    )
+                })
+        } else {
+            None
+        };
+        if !self.tools_mut().toggle_run_by_id(run_id) {
+            return false;
+        }
+        if let Some((Some(start), Some(end))) = folding
+            && end > start
+        {
+            // A fold leaves the summary row where the run began, so the lines
+            // that disappear are the run's span less that one row.
+            let removed = end.saturating_sub(start).saturating_sub(1);
+            self.compensate_for_removed_rows(removed, end <= viewport);
+        }
+        // A fold changes the content without appending a row, so nothing else
+        // would ask for the repaint that shows it.
+        self.dirty = true;
+        true
+    }
+
+    /// The visual line a physical log row starts on, from the last frame's
+    /// prefix sum.
+    ///
+    /// The prefix sum is indexed by *logical* row, so a physical index goes
+    /// through `phys_to_logical_cache` first; once anything is folded the two
+    /// indices differ. `None` when nothing has been drawn yet, or when the row
+    /// is hidden by a fold and so has no visual start of its own. A caller
+    /// comparing positions must treat `None` as "say nothing", never as zero.
+    fn visual_line_of_phys(&self, phys: usize) -> Option<usize> {
+        let logical = self.phys_to_logical_fast(phys)?;
+        self.log_scroll.visual_start.get(logical).copied()
+    }
+
     /// Map a logical line number to the physical index in messages.
     /// Returns None if the logical line number exceeds the fixed message range
     /// (meaning it's an incomplete streaming line).
     pub(crate) fn visible_message_index(&self, logical_idx: usize) -> Option<usize> {
         // Prefer the per-frame cache built by render_log_panel (O(1)).
-        if self.log_scroll.visible_indices_ver == self.log.items.len() {
+        if self.log_scroll.visible_indices_ver == self.log.items.len()
+            && self.log_scroll.visible_indices_fold_rev == self.tools().state().fold_rev
+        {
             return self.log_scroll.visible_indices.get(logical_idx).copied();
         }
         let mut visible_count = 0;
@@ -245,7 +362,7 @@ impl App {
         self.thinking().blocks.iter().find_map(|block| {
             find(
                 block.phys_idx,
-                crate::render::cells::thinking::thinking_visual_rows(1),
+                crate::render::cells::thinking::COMPLETED_THINKING_ROWS,
             )
         })
     }
@@ -406,10 +523,18 @@ impl App {
         let old_rows =
             crate::render::cells::thinking::thinking_visual_rows(active.body_line_count());
         if active.is_blank() {
-            let end = active.phys_idx.saturating_add(old_rows);
-            if active.phys_idx < self.log.items.len() && end <= self.log.items.len() {
-                self.drain_msgs(active.phys_idx..end);
+            let start = active.phys_idx;
+            let end = start.saturating_add(old_rows);
+            if start < self.log.items.len() && end <= self.log.items.len() {
+                self.drain_msgs(start..end);
                 self.shift_phys_indices_from(end, -(old_rows as isize));
+                // A card that never received content also never earns the gap
+                // it opened with; leaving the gap behind would put a blank line
+                // in the middle of whatever surrounds it.
+                if active.preceded_by_gap && start > 0 {
+                    self.drain_msgs(start - 1..start);
+                    self.shift_phys_indices_from(start, -1);
+                }
             }
             return;
         }
@@ -422,7 +547,7 @@ impl App {
             .unwrap_or_default()
             .to_string();
         let (cached_markdown, _) = render_markdown_tui(&active.content, &self.theme);
-        let new_rows = crate::render::cells::thinking::thinking_visual_rows(1);
+        let new_rows = crate::render::cells::thinking::COMPLETED_THINKING_ROWS;
         self.resize_thinking_placeholder_rows(active.phys_idx, old_rows, new_rows);
         self.thinking_mut().blocks.push(ThinkingBlock::new(
             active.block_id.clone(),
@@ -439,11 +564,11 @@ impl App {
         if self.thinking_mut().active.is_some() {
             return;
         }
+        let gap = self.ensure_gap_before_thinking();
         let phys_idx = self.push_thinking_placeholder_rows(1);
-        self.thinking_mut().active = Some(ActiveThinkingBlock::new(
-            phys_idx,
-            std::time::Instant::now(),
-        ));
+        let mut active = ActiveThinkingBlock::new(phys_idx, std::time::Instant::now());
+        active.preceded_by_gap = gap;
+        self.thinking_mut().active = Some(active);
     }
 
     /// Append a thinking delta without creating source rows in the shared log.
@@ -489,12 +614,83 @@ impl App {
         })
     }
 
+    /// Whether `phys` is one of the rows a thinking card draws.
+    fn phys_idx_in_thinking_card(&self, phys: usize) -> bool {
+        let rows_for =
+            |body_lines: usize| crate::render::cells::thinking::thinking_visual_rows(body_lines);
+        if let Some(active) = self.thinking().active.as_ref()
+            && phys >= active.phys_idx
+            && phys < active.phys_idx + rows_for(active.body_line_count())
+        {
+            return true;
+        }
+        self.thinking().blocks.iter().any(|block| {
+            phys >= block.phys_idx
+                && phys < block.phys_idx + crate::render::cells::thinking::COMPLETED_THINKING_ROWS
+        })
+    }
+
+    /// Whether `phys` is a row some card paints, rather than a plain text row.
+    ///
+    /// Cards sit on placeholder rows whose `raw` text is empty, exactly like
+    /// the blank line that separates two blocks. So "the last row is blank"
+    /// cannot tell the two apart, and the spacing rules have to ask this
+    /// instead — otherwise the blank line after a card reads as "already
+    /// spaced" and the next block butts against the card.
+    ///
+    /// It also answers "is the previous row part of the card run", which is
+    /// what keeps cards and tool blocks stacked without gaps between them.
+    fn phys_idx_owned_by_card(&self, phys: usize) -> bool {
+        self.phys_idx_in_tool_block(phys) || self.phys_idx_in_thinking_card(phys)
+    }
+
+    /// Whether `phys` is the blank line between two blocks.
+    fn phys_idx_is_separator(&self, phys: usize) -> bool {
+        self.log
+            .items
+            .get(phys)
+            .is_some_and(|item| item.raw.is_empty())
+            && !self.phys_idx_owned_by_card(phys)
+    }
+
     /// Blank line before assistant stream content when it follows a tool card.
     pub(crate) fn ensure_gap_after_tools(&mut self) {
         let Some(phys) = self.last_visible_phys_idx() else {
             return;
         };
         if !self.phys_idx_in_tool_block(phys) {
+            return;
+        }
+        self.append_blank(LogItemKind::AssistantMarkdown);
+    }
+
+    /// Blank line before assistant stream content when it follows a thinking
+    /// card.
+    ///
+    /// The card no longer has a border or a blank row of its own, so nothing
+    /// else separates its last reasoning line from the reply that answers it.
+    pub(crate) fn ensure_gap_after_thinking(&mut self) {
+        let Some(phys) = self.last_visible_phys_idx() else {
+            return;
+        };
+        if !self.phys_idx_in_thinking_card(phys) {
+            return;
+        }
+        self.append_blank(LogItemKind::AssistantMarkdown);
+    }
+
+    /// Blank line before a system message when it follows a card.
+    ///
+    /// A system message is appended straight to the log and runs none of the
+    /// streaming path's gap checks, so without this a note lands flush against
+    /// the card's status row. The rule is the same one the reply path uses: a
+    /// card's status row is a block of its own, and ordinary content under it
+    /// stays one blank row away.
+    pub(crate) fn ensure_gap_before_system_message(&mut self) {
+        let Some(phys) = self.last_visible_phys_idx() else {
+            return;
+        };
+        if !self.phys_idx_owned_by_card(phys) || self.phys_idx_is_separator(phys) {
             return;
         }
         self.append_blank(LogItemKind::AssistantMarkdown);
@@ -515,23 +711,39 @@ impl App {
         }
     }
 
-    /// Blank line before a tool block when it follows normal content.
+    /// Blank line before a tool block when it follows ordinary content.
+    ///
+    /// Nothing is inserted when the block above is already a card or another
+    /// tool block: tool blocks and thinking cards stack directly, so a run of
+    /// work reads as one continuous region rather than as a table of gaps.
     pub(crate) fn ensure_gap_before_tools(&mut self) {
         let Some(phys) = self.last_visible_phys_idx() else {
             return;
         };
-        if self.phys_idx_in_tool_block(phys) {
-            return;
-        }
-        if self
-            .log
-            .items
-            .get(phys)
-            .is_some_and(|item| item.raw.is_empty())
-        {
+        if self.phys_idx_owned_by_card(phys) || self.phys_idx_is_separator(phys) {
             return;
         }
         self.append_blank(LogItemKind::SystemTool);
+    }
+
+    /// Blank line before a thinking card when it follows ordinary content.
+    ///
+    /// A tool block, another card, or a live card's placeholder rows are not
+    /// ordinary content: cards and tool blocks stack without a gap, and a
+    /// thinking card that opens right after a tool call must not push the
+    /// tool's meta row away from it.
+    ///
+    /// Returns whether it inserted the gap, so the card can remove it again if
+    /// the card itself turns out to be empty.
+    pub(crate) fn ensure_gap_before_thinking(&mut self) -> bool {
+        let Some(phys) = self.last_visible_phys_idx() else {
+            return false;
+        };
+        if self.phys_idx_owned_by_card(phys) || self.phys_idx_is_separator(phys) {
+            return false;
+        }
+        self.append_blank(LogItemKind::Thinking);
+        true
     }
 
     /// Flush residual content from the streaming buffer into the message list.
