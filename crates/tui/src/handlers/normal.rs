@@ -605,4 +605,31 @@ mod tests {
                 .any(|item| item.raw.contains("second line"))
         );
     }
+
+    /// The user-visible half of the short-log fix: pressing `k` when there is
+    /// nothing to scroll must not put a "Back to bottom" pill on the screen.
+    ///
+    /// The state-level test pins `follow`; this one goes through the real
+    /// keypress and the real render, because the pill is what the reader
+    /// actually sees and it is drawn from that flag.
+    #[test]
+    fn k_in_a_short_log_draws_no_scroll_back_pill() {
+        let mut app = make_app();
+        app.append_markdown("only line");
+        let _ = crate::render::test_harness::render_main_area_text(&mut app, 80, 20);
+        let (tx, _rx) = unbounded_channel();
+
+        handle_normal_mode(&mut app, key(KeyCode::Char('k')), &tx);
+
+        let text = crate::render::test_harness::render_main_area_text(&mut app, 80, 20);
+        assert!(
+            !text.contains("Back to bottom"),
+            "a keypress that moved nothing must not offer a way back to where \
+             the reader already is:\n{text}"
+        );
+        assert!(
+            app.scroll_back_area.is_empty(),
+            "and must not leave a click target behind"
+        );
+    }
 }

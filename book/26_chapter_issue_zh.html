@@ -737,6 +737,7 @@
 <li class="toc-l2"><a href="#29-2026-11-01--%E5%8F%96%E6%B6%88%E8%BF%90%E8%A1%8C%E5%90%8E%E9%98%9F%E5%88%97%E4%B8%8D%E5%86%8D%E6%8A%A2%E8%B7%91" title="29. 2026-11-01 — 取消运行后队列不再抢跑"><span class="toc-label">29. 2026-11-01 — 取消运行后队列不再抢跑</span></a></li>
 <li class="toc-l2"><a href="#30-2026-11-02--desktop-%E6%BB%9A%E5%8A%A8%E5%90%88%E5%B9%B6%E4%B8%8E%E5%BC%B9%E7%AA%97%E5%8D%A1%E6%AD%BB" title="30. 2026-11-02 — Desktop 滚动合并与弹窗卡死"><span class="toc-label">30. 2026-11-02 — Desktop 滚动合并与弹窗卡死</span></a></li>
 <li class="toc-l2"><a href="#31-2026-11-04--desktop-%E4%BB%BB%E5%8A%A1%E6%9D%A1%E6%B7%B7%E5%85%A5%E5%85%B6%E5%AE%83-session-%E7%9A%84%E4%BB%BB%E5%8A%A1" title="31. 2026-11-04 — Desktop 任务条混入其它 session 的任务"><span class="toc-label">31. 2026-11-04 — Desktop 任务条混入其它 session 的任务</span></a></li>
+<li class="toc-l2"><a href="#34-2026-11-10--%E7%9F%AD%E6%97%A5%E5%BF%97%E9%87%8C%E6%8C%89-k-%E4%B8%8D%E5%86%8D%E5%85%B3%E6%8E%89%E8%B7%9F%E9%9A%8F" title="34. 2026-11-10 — 短日志里按 k 不再关掉跟随"><span class="toc-label">34. 2026-11-10 — 短日志里按 k 不再关掉跟随</span></a></li>
 <li class="toc-l2"><a href="#33-2026-11-10--%E8%A2%AB%E6%88%AA%E6%96%AD%E7%9A%84%E6%B5%81%E4%B8%8D%E5%86%8D%E5%BD%93%E6%88%90%E5%AE%8C%E6%88%90%E7%9A%84%E5%9B%9E%E5%90%88" title="33. 2026-11-10 — 被截断的流不再当成完成的回合"><span class="toc-label">33. 2026-11-10 — 被截断的流不再当成完成的回合</span></a></li>
 <li class="toc-l2"><a href="#32-2026-11-04--desktop-%E4%BB%BB%E5%8A%A1%E5%85%A8%E9%83%A8%E5%AE%8C%E6%88%90%E5%90%8E%E9%9A%90%E8%97%8F%E4%BB%BB%E5%8A%A1%E5%8D%A1trajectory-%E6%90%9C%E7%B4%A2%E6%A1%86%E6%94%B9%E4%B8%BA%E5%8D%95%E5%B1%82" title="32. 2026-11-04 — Desktop：任务全部完成后隐藏任务卡；Trajectory 搜索框改为单层"><span class="toc-label">32. 2026-11-04 — Desktop：任务全部完成后隐藏任务卡；Trajectory 搜索框改为单层</span></a></li>
 <li class="toc-l2"><a href="#33-2026-11-10--thinking-%E5%8D%A1%E7%89%87%E5%8E%8B%E7%BC%A9%E5%90%8E%E5%9D%97%E9%97%B4%E6%8C%A4%E6%88%90%E4%B8%80%E7%89%87" title="33. 2026-11-10 — thinking 卡片压缩后，块与块挤成一片"><span class="toc-label">33. 2026-11-10 — thinking 卡片压缩后，块与块挤成一片</span></a></li>
@@ -21939,6 +21940,38 @@ TUI 侧 <code>agent_tui_kit::state::task_panel</code> 对齐：只分「进行�
 <code>task_update</code>）、<code>crates/tact_host/src/driver.rs</code>
 （<code>publish_session_tasks</code>）、<code>crates/desktop/src/ui/sticky.rs</code>
 （<code>GROUPS</code>、<code>group_tasks</code>、<code>active_task</code>）。</p>
+<h2 id="34-2026-11-10--短日志里按-k-不再关掉跟随">34. 2026-11-10 — 短日志里按 <code>k</code> 不再关掉跟随</h2>
+<p><strong>现象：</strong> 日志不足一屏时（刚开一个新会话最常见），按一下 <code>k</code>
+或滚一下滚轮，视口纹丝不动，但界面进入“已离开底部”状态：出现
+“Back to bottom” 提示条，之后新内容到达时还会亮起未读角标——而那个“底部”就是用户
+正在看的位置。</p>
+<p><strong>根因：</strong> <code>scroll_log_up</code> 在调用
+<code>visual_step_up</code> 之后无条件执行 <code>self.log_scroll.follow = false</code>。
+<code>visual_step_up</code> 本身是诚实的：内容不足一屏、或已经在第 0 行时，它原样返回
+<code>v</code>。但调用方把“按了一次上滚键”当成了“用户决定离开底部”，而没有检查这次
+按键有没有真的移动视口。<code>scroll_log_down</code> 没有对称问题，它的重新挂上
+<code>follow</code> 走的是“是否到达末尾”的判断，本来就是幂等的。</p>
+<p><strong>决策：</strong> 只在该步真的移动了视口时才清 <code>follow</code>。判据取
+<code>next != v</code>，而不是“内容比一屏长”——后者要求调用方再算一次总行数与视口高度，
+把同一个几何判断复制到第二个地方，而 <code>visual_step_up</code> 刚刚已经算过并给出了
+答案。被吞掉的按键要么无内容可滚，要么已在顶端，两种情况下“底部”与当前位置重合，
+清掉 <code>follow</code> 都没有可指的东西。</p>
+<p><strong>改后行为：</strong> 短日志里按 <code>k</code>、滚轮上滚、或已在顶端时再按
+<code>k</code>，视口与跟随状态都不变，既不弹提示条也不亮角标。有内容可滚时行为不变：
+一按即离开底部并亮出提示条，滚回末尾重新跟随。</p>
+<p><strong>验证：</strong>
+<code>scrolling_up_inside_a_short_log_keeps_following</code>（修复前失败：视口没动，
+<code>is_log_pinned_to_bottom()</code> 却变成 false）、
+<code>scrolling_up_at_the_very_top_keeps_following</code>、
+<code>scrolling_down_inside_a_short_log_changes_nothing</code>。
+三个既有测试原先用「一行日志 + <code>scroll_log_up(1)</code>」表达“已滚离底部”，
+其实那行内容无从滚动，它们能通过正是靠这个 bug；改为显式调用
+<code>scroll_log_to_top()</code>，意图不变而 setup 变诚实。
+<code>cargo test -p tui --lib</code> 758 全绿，<code>cargo test -p agent_tui_kit --lib</code>
+435 全绿。</p>
+<p><strong>Pointers：</strong>
+<code>crates/tui/src/widgets/state/app/scroll.rs</code>（<code>scroll_log_up</code>、
+<code>scroll_log_to_bottom</code>）。</p>
 <h2 id="33-2026-11-10--被截断的流不再当成完成的回合">33. 2026-11-10 — 被截断的流不再当成完成的回合</h2>
 <p><strong>现象：</strong> 后台 subagent 频繁“成功但没干活”：状态写着 completed，
 摘要却只有开场那句 “I'll start by exploring the repository state”，甚至完全空白。

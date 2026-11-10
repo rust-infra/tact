@@ -246,6 +246,13 @@ The log panel is the most complex rendering component. Its core flow is:
   The coarser steps belong to the subagent transcript only, which is one
   bounded card rather than a column read line by line: three lines per notch
   (`SUBAGENT_WHEEL_STEP`) and half a screen per key (`key_cell_step`).
+- `log_scroll.follow` is the whole follow-the-tail policy: when set, appended
+  rows re-pin the viewport to the bottom and clear `unseen`; when clear, the
+  reader keeps their place and `unseen` lights the "back to bottom" pill. Only
+  a step that **moves** the viewport clears it (`scroll_log_up`), so `k` in a
+  log shorter than one screen, or already at the top, leaves both flags alone:
+  there is nothing to return to. Reaching the end re-arms it
+  (`scroll_log_down` -> `scroll_log_to_bottom`).
 - Only renders `TextCell`s that fall inside the current viewport.
 
 ### 6.4 Card Overlays
