@@ -293,6 +293,11 @@ fn log_mixed_categories_render_user_and_assistant() {
     );
 }
 
+/// A reasoning line and the reply under it start on the same column.
+///
+/// The card is kept **live** here on purpose: a finished card draws only its
+/// status row, so there would be no reasoning line left to measure. The live
+/// body is the one that has to line up with prose.
 #[test]
 fn log_assistant_reply_aligns_with_thinking_indent() {
     let mut app = make_app();
@@ -300,7 +305,6 @@ fn log_assistant_reply_aligns_with_thinking_indent() {
     app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
         "thinking reference".into(),
     )));
-    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
     app.add_system_message("final assistant reply".into());
 
     let terminal = render_log_panel_terminal(&mut app, 80, 20);
@@ -345,8 +349,11 @@ fn log_task_end_separator_renders_solid_rule() {
     );
 }
 
+/// A finished card still states how much reasoning there was, even though it
+/// draws none of it: the line count is the only thing left saying "there is
+/// more behind this button".
 #[test]
-fn log_thinking_title_shows_scroll_indicator_when_collapsed() {
+fn log_thinking_title_shows_the_reasoning_size_when_folded() {
     let mut app = make_app();
     for i in 1..=6 {
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(format!(
@@ -357,8 +364,12 @@ fn log_thinking_title_shows_scroll_indicator_when_collapsed() {
 
     let text = render_log_panel_text(&mut app, 100, 24);
     assert!(
-        text.contains('↕') || text.contains("Thinking"),
-        "collapsed thinking block with >3 lines should show scroll indicator or title, got:\n{text}"
+        text.contains("6 lines"),
+        "a folded card with six reasoning lines must say so, got:\n{text}"
+    );
+    assert!(
+        text.contains("Thought") && text.contains("Open"),
+        "the folded card is its status row, got:\n{text}"
     );
 }
 

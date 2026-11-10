@@ -333,7 +333,7 @@ impl App {
         self.thinking().blocks.iter().find_map(|block| {
             find(
                 block.phys_idx,
-                crate::render::cells::thinking::thinking_visual_rows(1),
+                crate::render::cells::thinking::COMPLETED_THINKING_ROWS,
             )
         })
     }
@@ -518,7 +518,7 @@ impl App {
             .unwrap_or_default()
             .to_string();
         let (cached_markdown, _) = render_markdown_tui(&active.content, &self.theme);
-        let new_rows = crate::render::cells::thinking::thinking_visual_rows(1);
+        let new_rows = crate::render::cells::thinking::COMPLETED_THINKING_ROWS;
         self.resize_thinking_placeholder_rows(active.phys_idx, old_rows, new_rows);
         self.thinking_mut().blocks.push(ThinkingBlock::new(
             active.block_id.clone(),
@@ -595,10 +595,10 @@ impl App {
         {
             return true;
         }
-        self.thinking()
-            .blocks
-            .iter()
-            .any(|block| phys >= block.phys_idx && phys < block.phys_idx + rows_for(1))
+        self.thinking().blocks.iter().any(|block| {
+            phys >= block.phys_idx
+                && phys < block.phys_idx + crate::render::cells::thinking::COMPLETED_THINKING_ROWS
+        })
     }
 
     /// Whether `phys` is a row some card paints, rather than a plain text row.

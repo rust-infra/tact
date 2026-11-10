@@ -119,8 +119,12 @@ fn log_renders_collapsed_thinking_card() {
         "thinking block should be closed after stream"
     );
     assert!(
-        text.contains("Thinking") || text.contains("Analyzing") || text.contains("considering"),
-        "collapsed thinking card should render in log, got:\n{text}"
+        text.contains("Thought"),
+        "collapsed thinking card should render its status row in log, got:\n{text}"
+    );
+    assert!(
+        !text.contains("considering options."),
+        "the reasoning is behind the button, not in the log, got:\n{text}"
     );
 }
 
@@ -1258,8 +1262,8 @@ fn assert_blank(rows: &[String], index: usize, why: &str) {
 
 /// A thinking card no longer draws a border or a leading blank row, so the gap
 /// between it and the tool block above has to be a row of the log. Without it
-/// the tool's meta row, the card's header and its body stack with nothing
-/// between them and read as one table.
+/// the tool's meta row and the card's status row stack with nothing between
+/// them and read as one table.
 #[test]
 fn a_thinking_card_keeps_one_blank_row_from_the_tool_block_above_it() {
     let mut app = make_app();
@@ -1290,20 +1294,22 @@ fn a_thinking_card_keeps_one_blank_row_from_the_tool_block_above_it() {
     assert_eq!(
         header,
         meta + 2,
-        "the tool's meta row and the card's header must be one blank row apart:\n{}",
+        "the tool's meta row and the card's status row must be one blank row apart:\n{}",
         rows.join("\n")
     );
     assert_blank(&rows, meta + 1, "between the tool block and the card");
-    // And the card's own header leads its body, with no gap inside it.
+    // The finished card is one row: the reasoning is behind the button, so the
+    // row under the status row is the gap before the next block, not a body.
+    assert_blank(&rows, header + 1, "under the card's only row");
     assert!(
-        rows[header + 1].contains("Working tree clean."),
-        "the body follows the header directly:\n{}",
+        !rows.iter().any(|row| row.contains("Working tree clean.")),
+        "the summary is behind the button, not drawn:\n{}",
         rows.join("\n")
     );
 }
 
 /// The same rule on the other side: the reply that answers the reasoning is
-/// not glued to the card's last body row.
+/// not glued to the card's status row.
 #[test]
 fn the_reply_after_a_thinking_card_keeps_one_blank_row() {
     let mut app = make_app();
@@ -1316,15 +1322,15 @@ fn the_reply_after_a_thinking_card_keeps_one_blank_row() {
 
     let rows = rendered_rows(&mut app, 100, 20);
 
-    let body = row_nth(&rows, "Considering the options.", 0);
+    let card = row_nth(&rows, "Thought", 0);
     let reply = row_nth(&rows, "Here is the answer.", 0);
     assert_eq!(
         reply,
-        body + 2,
-        "the card's body and the reply must be one blank row apart:\n{}",
+        card + 2,
+        "the card and the reply must be one blank row apart:\n{}",
         rows.join("\n")
     );
-    assert_blank(&rows, body + 1, "between the card and the reply");
+    assert_blank(&rows, card + 1, "between the card and the reply");
 }
 
 /// A thinking card that never received content leaves no rows at all — and no
@@ -1358,6 +1364,46 @@ fn a_blank_thinking_card_removes_the_gap_it_opened() {
     );
 }
 
+/// The log holds exactly one placeholder row for a finished card.
+///
+/// The cell draws one row and the log has to agree: one row too many leaves a
+/// blank line inside the card (a click there resolves to nothing, and the gap
+/// rules see a row nobody draws), one too few clips the status row away. This
+/// reads the log itself, because the renderer hides a surplus row — it is blank
+/// either way, so only the row count can tell the two apart.
+#[test]
+fn a_finished_card_leaves_exactly_one_placeholder_row() {
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+        "one\ntwo\nthree\nfour\nfive\n".into(),
+    )));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+
+    let block = app
+        .thinking()
+        .blocks
+        .first()
+        .expect("the card settled into a block");
+    let owned = (block.phys_idx..app.log.items.len())
+        .take_while(|&phys| {
+            app.log.items[phys].kind == crate::widgets::state::LogItemKind::Thinking
+        })
+        .count();
+    assert_eq!(
+        owned,
+        crate::render::cells::thinking::COMPLETED_THINKING_ROWS,
+        "the card owns one row, its status row; log kinds from {}: {:?}",
+        block.phys_idx,
+        app.log
+            .items
+            .iter()
+            .skip(block.phys_idx)
+            .map(|item| item.kind)
+            .collect::<Vec<_>>()
+    );
+}
+
 /// Two settled thinking cards in a row are still two blocks: folding is about
 /// tool runs, not about cards, so each keeps its own gap.
 #[test]
@@ -1373,15 +1419,15 @@ fn two_thinking_cards_keep_a_blank_row_between_them() {
 
     let rows = rendered_rows(&mut app, 100, 20);
 
-    let first_body = row_nth(&rows, "first card", 0);
-    let second_header = row_nth(&rows, "Thought", 1);
+    let first_card = row_nth(&rows, "Thought", 0);
+    let second_card = row_nth(&rows, "Thought", 1);
     assert_eq!(
-        second_header,
-        first_body + 2,
+        second_card,
+        first_card + 2,
         "two cards are two blocks and stay one blank row apart:\n{}",
         rows.join("\n")
     );
-    assert_blank(&rows, first_body + 1, "between the two cards");
+    assert_blank(&rows, first_card + 1, "between the two cards");
 }
 
 /// The same rule above and below a tool block: a settled run is one row, and a

@@ -2014,7 +2014,10 @@ mod tests {
 
         let terminal = render_main_area_terminal(&mut app, 100, 60);
         let buf = terminal.backend().buffer().clone();
-        let (thinking_x, thinking_y) = glyph_origin(&buf, "four");
+        // The card draws one row, and its body is not on screen any more, so the
+        // drag starts on the status row's title — inert, unlike the button
+        // beside it.
+        let (thinking_x, thinking_y) = glyph_origin(&buf, "Thought");
         let (target_x, target_y) = glyph_origin(&buf, "Target");
         let thinking_phys = app.thinking().blocks[0].phys_idx;
         let tool_phys = app.tools().blocks[0].phys_idx;
@@ -2049,7 +2052,7 @@ mod tests {
 
         let selected_frame = render_main_area_terminal(&mut app, 100, 60);
         let selected_buf = selected_frame.backend().buffer();
-        for needle in ["four", "Bash", "Target"] {
+        for needle in ["Thought", "Bash", "Target"] {
             let (_, row) = glyph_origin(selected_buf, needle);
             assert!(
                 (0..selected_buf.area.width).any(|x| selected_buf[(x, row)]
@@ -2071,23 +2074,29 @@ mod tests {
         );
     }
 
+    /// The card's own row is selectable even though it draws no reasoning: the
+    /// card carries the full content, so a click on the title arms a selection
+    /// of it. Only the `[Open]` button is a control — and it sits on the very
+    /// same row, so this also proves the two are told apart by column.
     #[test]
-    fn clicking_a_thinking_card_body_starts_text_selection() {
+    fn clicking_a_thinking_card_row_starts_text_selection() {
         use crate::render::test_harness::render_main_area_terminal;
 
         let mut app = app_with_thinking_card(crate::i18n::Language::English);
         let terminal = render_main_area_terminal(&mut app, 100, 20);
         let buf = terminal.backend().buffer().clone();
-        let (start, row) = glyph_origin(&buf, "[󰜼");
+        let (title_x, row) = glyph_origin(&buf, "Thought");
+        let (_, button_row) = glyph_origin(&buf, "[󰜼");
+        assert_eq!(row, button_row, "the title and the button share the row");
 
         app.mouse.last_click_time = Some(std::time::Instant::now());
-        app.mouse.last_click_pos = Some((start, row - 1));
+        app.mouse.last_click_pos = Some((title_x, row));
         app.mouse.click_count = 3;
-        handle_log_click(&mut app, mouse_down(start, row - 1));
+        handle_log_click(&mut app, mouse_down(title_x, row));
 
         assert!(
             app.mouse.dragging_log,
-            "card body should start a drag selection"
+            "the card's row should start a drag selection"
         );
         assert!(
             app.mouse.card_selection.is_some(),

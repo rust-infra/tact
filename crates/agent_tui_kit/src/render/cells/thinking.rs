@@ -30,24 +30,53 @@ const CONTENT_PAD: u16 = 1;
 /// [`CONTENT_PAD`] as the prose prefix, so the glyphs and the hit rect agree.
 const PAD: &str = " ";
 
-/// Rows a thinking card occupies: a header, then one row per body line.
+/// Rows a **live** thinking card occupies: a header, then one row per body line.
 ///
-/// A finished card passes one body line (its summary) and takes two rows. A
-/// live card passes the size of its reasoning tail, so it grows to four.
+/// The live card passes the size of its reasoning tail, so it grows to four.
+///
+/// A finished card draws no body at all and takes [`COMPLETED_THINKING_ROWS`];
+/// it does not go through this function, because a body of zero lines is not a
+/// thing the clamp can express.
 ///
 /// The card draws no border and no blank rows of its own. It used to spend five
 /// rows on a one-line summary, and the other four were two borders and two blank
 /// rows.
 ///
-/// The header keeps a row of its own rather than joining the summary. One row
-/// would have to hold the title, the summary and the readout at once, and at 80
-/// columns that leaves the summary 30 columns; two rows leave it 75.
+/// The header keeps a row of its own rather than joining the reasoning. One row
+/// would have to hold the title and the readout at once, and the reasoning
+/// would have nowhere to go.
 pub fn thinking_visual_rows(body_lines: usize) -> usize {
     body_lines.clamp(1, 3) + 1
 }
 
+/// Rows a **finished** thinking card occupies: its header, and nothing else.
+///
+/// The reasoning is behind the `[Open]` button, so a summary row would only be
+/// the last line of a paragraph the reader can open in full — one row of log per
+/// finished thought is the whole budget the card is meant to spend.
+pub const COMPLETED_THINKING_ROWS: usize = 1;
+
+/// How the footer states the reasoning's size.
+///
+/// A live card shows a fraction because the rows on screen are real: `↕ 2/12
+/// lines` says "two of the twelve are drawn". A finished card draws none, so a
+/// fraction would be either a lie (`0/12`) or meaningless (`12/12`); it states
+/// the total instead, the same way a collapsed tool card does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LineCount {
+    Fraction { shown: usize, total: usize },
+    Total(usize),
+}
+
 pub struct ThinkingCell {
-    lines: Vec<String>,
+    /// The reasoning rows — `Some` while the card streams, `None` once it is
+    /// finished and draws no body at all.
+    ///
+    /// `Some(vec![])` is not the same state: a live card that has not received
+    /// its first line yet still owns a body row (an empty one), and the
+    /// placeholder rows in the log are counted for it. `None` is the finished
+    /// card, whose only row is the header.
+    body: Option<Vec<String>>,
     title: String,
     /// Footer text left of the button — see [`Self::footer`].
     bottom: String,
@@ -67,21 +96,37 @@ impl ThinkingCell {
     /// meta row follows too, so this is a suffix match rather than a search: a
     /// locale that stopped ending with it draws the readout without a button
     /// instead of a button in the wrong place.
+    ///
+    /// The line count is either a `shown/total` fraction (a live card, where the
+    /// number of tail rows on screen is real information) or the total alone (a
+    /// finished card, which draws no rows to be "shown"). The finished template
+    /// has one `{}` fewer, which is why the two are filled separately rather
+    /// than passing a zero: `↕ 0/1 lines` would claim a row count the card does
+    /// not have.
     fn footer(
         msgs: &Messages,
-        shown: usize,
-        total: usize,
+        count: LineCount,
         elapsed: Duration,
     ) -> (String, Option<&'static str>) {
         let label = msgs.thinking_card_action;
         let action = ButtonChrome::Brackets.wrap(label);
-        // Filled in template order: elapsed first, then the line count.
-        let text = msgs
-            .thinking_card_bottom
-            .replacen("{}", &format_elapsed(elapsed), 1)
-            .replacen("{}", &shown.to_string(), 1)
-            .replacen("{}", &total.to_string(), 1)
-            .replacen("{}", &action, 1);
+        let template = match count {
+            LineCount::Fraction { .. } => msgs.thinking_card_bottom,
+            LineCount::Total(1) => msgs.thinking_card_bottom_done_one,
+            LineCount::Total(_) => msgs.thinking_card_bottom_done,
+        };
+        let mut text = template.replacen("{}", &format_elapsed(elapsed), 1);
+        match count {
+            LineCount::Fraction { shown, total } => {
+                text = text.replacen("{}", &shown.to_string(), 1).replacen(
+                    "{}",
+                    &total.to_string(),
+                    1,
+                );
+            }
+            LineCount::Total(total) => text = text.replacen("{}", &total.to_string(), 1),
+        }
+        let text = text.replacen("{}", &action, 1);
         match text.strip_suffix(&action) {
             Some(prefix) => (prefix.to_string(), Some(label)),
             None => (text, None),
@@ -98,9 +143,16 @@ impl ThinkingCell {
         let visible = lines.len().clamp(1, 3);
         let total = block.content.lines().count().max(1);
         let elapsed = block.started_at.elapsed();
-        let (bottom, bottom_action) = Self::footer(msgs, visible, total, elapsed);
+        let (bottom, bottom_action) = Self::footer(
+            msgs,
+            LineCount::Fraction {
+                shown: visible,
+                total,
+            },
+            elapsed,
+        );
         Self {
-            lines,
+            body: Some(lines),
             title: format!(" {spinner}{}", msgs.thinking_card_title_active),
             bottom,
             bottom_action,
@@ -113,9 +165,9 @@ impl ThinkingCell {
 
     pub fn completed(block: &ThinkingBlock, theme: &Theme, msgs: &Messages) -> Self {
         let total = block.content.lines().count().max(1);
-        let (bottom, bottom_action) = Self::footer(msgs, 1, total, block.elapsed);
+        let (bottom, bottom_action) = Self::footer(msgs, LineCount::Total(total), block.elapsed);
         Self {
-            lines: vec![block.summary.clone()],
+            body: None,
             title: msgs.thinking_card_title_done.to_string(),
             bottom,
             bottom_action,
@@ -167,19 +219,30 @@ impl ThinkingCell {
         Line::from(spans)
     }
 
+    /// How many rows the reasoning takes: zero for a finished card, which draws
+    /// none, and the clamped tail size for a live one.
     fn body_lines(&self) -> usize {
-        self.lines.len().clamp(1, 3)
+        match &self.body {
+            Some(lines) => lines.len().clamp(1, 3),
+            None => 0,
+        }
     }
 
     /// The reasoning rows, all at the panel's own text column.
     ///
-    /// No title prefix: the title leads on its own row, so a summary sits in the
-    /// same column as an assistant reply and the reasoning reads as prose rather
-    /// than as a caption beside a glyph. Prefixing the title would push every
-    /// line 12 to 16 columns right, a fifth of an 80-column panel.
+    /// No title prefix: the title leads on its own row, so a reasoning line sits
+    /// in the same column as an assistant reply and the reasoning reads as prose
+    /// rather than as a caption beside a glyph. Prefixing the title would push
+    /// every line 12 to 16 columns right, a fifth of an 80-column panel.
+    ///
+    /// A finished card has no body at all — [`Self::body_lines`] is zero and
+    /// this returns nothing.
     fn body_rows(&self, width: u16) -> Vec<Line<'static>> {
+        let Some(lines) = &self.body else {
+            return Vec::new();
+        };
         let style = Style::default().fg(self.fg).bg(self.bg);
-        let mut lines = self.lines.clone();
+        let mut lines = lines.clone();
         if lines.is_empty() {
             lines.push(String::new());
         }
@@ -196,6 +259,12 @@ impl ThinkingCell {
             .collect()
     }
 
+    /// The rows the cell draws, header included: one for a finished card, up to
+    /// four for a live one.
+    fn total_rows(&self) -> usize {
+        self.body_lines() + 1
+    }
+
     /// Where the cell's own rows land for a draw `area` clipped at
     /// `skip_lines`, and how many of them that clip ate.
     ///
@@ -206,7 +275,7 @@ impl ThinkingCell {
         if area.width == 0 || area.height == 0 {
             return None;
         }
-        let total_rows = self.body_lines() + 1;
+        let total_rows = self.total_rows();
         if skip_lines >= total_rows {
             return None;
         }
@@ -254,7 +323,7 @@ impl Renderable for ThinkingCell {
     }
 
     fn height(&self, _width: u16) -> u16 {
-        thinking_visual_rows(self.body_lines()) as u16
+        self.total_rows() as u16
     }
 
     fn render_partial(&self, area: Rect, buf: &mut Buffer, skip_lines: usize) {
@@ -375,8 +444,12 @@ mod tests {
         assert!(text.contains("Thinking"), "{text}");
     }
 
+    /// A finished card is a status, not a preview: its reasoning is behind the
+    /// `[Open]` button, and the row it used to spend on a summary is gone. The
+    /// summary itself stays in `ThinkingBlock` — the popup and the selection
+    /// read it — but nothing draws it.
     #[test]
-    fn completed_thinking_cell_renders_only_its_summary() {
+    fn a_finished_thinking_cell_draws_only_its_header() {
         let theme = Theme::from(crate::theme::ThemeName::Dark);
         let msgs = crate::i18n::Messages::by_language(crate::i18n::Language::English);
         let block = ThinkingBlock {
@@ -387,10 +460,19 @@ mod tests {
             cached_markdown: Vec::new(),
             elapsed: std::time::Duration::ZERO,
         };
-        let text = render_text(&ThinkingCell::completed(&block, &theme, &msgs));
-        assert!(text.contains("last"), "{text}");
-        assert!(!text.contains("first"), "{text}");
+        let cell = ThinkingCell::completed(&block, &theme, &msgs);
+        let text = render_text(&cell);
+
+        assert_eq!(
+            cell.height(80),
+            COMPLETED_THINKING_ROWS as u16,
+            "a finished card is its status row:\n{text}"
+        );
         assert!(text.contains("Thought"), "{text}");
+        assert!(
+            !text.contains("last") && !text.contains("first"),
+            "the summary is no longer drawn:\n{text}"
+        );
     }
 
     #[test]
@@ -412,29 +494,27 @@ mod tests {
     }
 
     /// Every row the card occupies carries something: a finished card is its
-    /// summary and its footer, nothing else. Before, five rows carried one line
-    /// of summary and the four around it were two borders and two blank rows.
+    /// status row and nothing else. Before, five rows carried one line of
+    /// summary and the four around it were two borders and two blank rows; then
+    /// two rows carried a summary the reader could open in full anyway.
     #[test]
     fn a_finished_card_spends_no_row_on_chrome() {
         let theme = Theme::from(crate::theme::ThemeName::Dark);
         let msgs = crate::i18n::Messages::by_language(crate::i18n::Language::English);
         let cell = completed_cell(&msgs, &theme);
 
-        assert_eq!(cell.height(80), 2, "a header plus its summary");
+        assert_eq!(cell.height(80), 1, "a status row, nothing else");
         let text = render_text(&cell);
         let rows: Vec<_> = text.lines().collect();
-        assert_eq!(rows.len(), 2, "{text}");
+        assert_eq!(rows.len(), 1, "{text}");
         assert!(
             rows[0].contains("Thought") && rows[0].contains("Open"),
-            "the header leads: {text}"
+            "the status row carries the title and the button: {text}"
         );
-        assert!(rows[1].contains("last"), "the summary follows: {text}");
-        for (n, row) in rows.iter().enumerate() {
-            assert!(
-                !row.trim().is_empty(),
-                "row {n} of a thinking card is blank: {text}"
-            );
-        }
+        assert!(
+            !rows[0].trim().is_empty(),
+            "the one row a finished card spends is not blank: {text}"
+        );
     }
 
     /// A live card shows its whole reasoning tail, each line under the last.
@@ -632,6 +712,9 @@ mod tests {
     /// from the chrome, label from the locale) drawn in the button color, with
     /// the readout around it in the border color — the same shape a collapsed
     /// tool card draws.
+    ///
+    /// The readout states the total, not a fraction: a finished card draws no
+    /// reasoning rows, so there is no "shown" number to report.
     #[test]
     fn the_footer_ends_in_the_shared_button() {
         let theme = Theme::from(crate::theme::ThemeName::Dark);
@@ -643,9 +726,15 @@ mod tests {
             let line = cell.bottom_line();
             let drawn: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
             assert!(drawn.trim_end().ends_with(expected), "{drawn:?}");
+            // The total, and only the total: `↕ 1/2` would claim a row count the
+            // card does not draw.
             assert!(
-                drawn.contains("↕ 1/2 lines") || drawn.contains("↕ 1/2 行"),
+                drawn.contains("⏱ 1.5s | 2 lines") || drawn.contains("⏱ 1.5s | 2 行"),
                 "{drawn:?}"
+            );
+            assert!(
+                !drawn.contains('↕'),
+                "a finished card states the total, not a fraction: {drawn:?}"
             );
             // Order is a contract too: the elapsed time leads, the line count
             // follows, each label staying on the readout it names.
@@ -653,10 +742,11 @@ mod tests {
                 .find('⏱')
                 .unwrap_or_else(|| panic!("no elapsed readout: {drawn:?}"));
             let count_at = drawn
-                .find('↕')
+                .find("lines")
+                .or_else(|| drawn.find('行'))
                 .unwrap_or_else(|| panic!("no line count: {drawn:?}"));
             assert!(
-                elapsed_at < count_at && drawn.contains("⏱ 1.5s | ↕ 1/2"),
+                elapsed_at < count_at,
                 "the elapsed time must lead the readout: {drawn:?}"
             );
             assert_eq!(
@@ -668,6 +758,65 @@ mod tests {
                 line.spans[1].style.fg,
                 Some(theme.muted),
                 "the button keeps its own color: {drawn:?}"
+            );
+        }
+    }
+
+    /// One reasoning line is the common case, so the footer says `1 line`, not
+    /// `1 lines` — the same singular the collapsed tool card carries.
+    #[test]
+    fn a_one_line_finished_card_states_one_line() {
+        let theme = Theme::from(crate::theme::ThemeName::Dark);
+        for lang in [
+            crate::i18n::Language::English,
+            crate::i18n::Language::Chinese,
+        ] {
+            let msgs = crate::i18n::Messages::by_language(lang);
+            let block = ThinkingBlock {
+                block_id: "test-thinking".into(),
+                phys_idx: 0,
+                content: "only line".into(),
+                summary: "only line".into(),
+                cached_markdown: Vec::new(),
+                elapsed: std::time::Duration::from_millis(40),
+            };
+            let cell = ThinkingCell::completed(&block, &theme, &msgs);
+            let drawn: String = cell
+                .bottom_line()
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect();
+            assert!(
+                drawn.contains("| 1 line |") || drawn.contains("| 1 行 |"),
+                "{lang:?}: one reasoning line is singular: {drawn:?}"
+            );
+        }
+    }
+
+    /// A live card still reports the fraction: its tail rows are on screen, so
+    /// "two of the twelve" is real information. This is the other half of the
+    /// contract above — the two states do not share a template.
+    #[test]
+    fn a_live_card_reports_how_much_of_the_reasoning_is_drawn() {
+        let theme = Theme::from(crate::theme::ThemeName::Dark);
+        for lang in [
+            crate::i18n::Language::English,
+            crate::i18n::Language::Chinese,
+        ] {
+            let msgs = crate::i18n::Messages::by_language(lang);
+            let mut active = ActiveThinkingBlock::new(0, std::time::Instant::now());
+            active.push_delta("one\ntwo\nthree\nfour\n");
+            let cell = ThinkingCell::active(&active, 'x', &theme, &msgs);
+            let drawn: String = cell
+                .bottom_line()
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect();
+            assert!(
+                drawn.contains("↕ 3/4"),
+                "{lang:?}: a live card reports the drawn tail: {drawn:?}"
             );
         }
     }

@@ -249,7 +249,7 @@ Completed code cards remain overlays; thinking and tool cards are direct log cel
 
 | Card Type | File | Description |
 |---|---|---|
-| Thinking card | `cells/thinking.rs` | Direct live card with a header row carrying the title, elapsed time, line count and open button, then one row per reasoning line (1→3 tail); a finished card is that header plus its summary |
+| Thinking card | `cells/thinking.rs` | Direct live card with a header row carrying the title, elapsed time, line count and open button, then one row per reasoning line (1→3 tail); a finished card is that header and nothing else |
 | Code card | `cells/code.rs` | Completed code block card with syntax highlighting; plain language label in title (no side emoji icons) |
 
 ### 6.5 Tool Blocks (`cells/tool.rs`)
@@ -375,16 +375,29 @@ The basic log rendering unit, supporting:
 
 ### Card Cells
 
-- `thinking.rs`: borderless direct card with a header row carrying the title, elapsed time, line count and open button, then one row per reasoning line; a finished card is that header plus its summary
+- `thinking.rs`: borderless direct card with a header row carrying the title, elapsed time, line count and open button, then one row per reasoning line; a finished card is that header alone
 - `diff.rs`: green `+` prefix, shows file path and line numbers
 - `code.rs`: dark blue-gray background, shows language tag and code preview
 
 ### Thinking Card Rows
 
-A thinking card draws a header row, then one row per reasoning line. A finished
-card is two rows: the header carrying the title, the elapsed time, the line count
-and the open button, and the summary under it. A live card grows to four while
-its tail streams.
+A thinking card draws a header row, then one row per reasoning line. A **live**
+card grows to four rows while its tail streams. A **finished** card is one row:
+the status row carrying the title, the elapsed time, the line count and the open
+button. Its summary is no longer drawn — the reasoning is behind the `[Open]`
+button, so a summary row was a preview of something the reader can open in full,
+and it cost a row on every settled thought.
+
+The two states do not share a footer template either. A live card reports a
+fraction (`⏱ 1.2s | ↕ 2/12 lines | [Open]`) because its tail rows are really on
+screen; a finished card reports the total (`⏱ 3.4s | 12 lines | [Open]`), the
+same shape a collapsed tool card uses. `↕ 0/12` would state a row count the card
+does not have, and `12/12` would be a tautology.
+
+`COMPLETED_THINKING_ROWS` (`render/cells/thinking.rs`) is the finished card's row
+count. Every place that counts a settled card's rows — the log placeholder rows,
+`find_thinking_at_logical`, `phys_idx_in_thinking_card` — uses that constant, not
+`thinking_visual_rows(1)`: the latter is the *live* formula and answers 2.
 
 The header leads because it names the state the block is in, and a live card's
 reasoning grows downward from it. With the label on the last row it drifted down
@@ -402,11 +415,12 @@ A local measurement over the 35 session transcripts in `.tact/transcripts` (3784
 thinking cards, 9081 tool calls) put thinking at 38 percent of all log rows, the
 largest single source, against 36 percent for tool calls. That number is an
 observation about one machine's history, not a property of this code; re-measure
-before quoting it.
+before quoting it. It was taken while a finished card still drew two rows, so it
+overstates the current share by one row per settled thought.
 
-The header keeps a row to itself rather than joining the summary. A single row
-would have to carry the title, the summary and the readout at once. At an 80
-column panel that leaves the summary 30 columns; two rows leave it the full 75.
+The header keeps a row to itself rather than joining the reasoning: one row would
+have to carry the title and the readout at once, and the reasoning would have
+nowhere to go.
 
 The button does survive on one row at ordinary widths, so the extra row does not
 buy a working click target. What it buys is summary width: a one-row card spends
