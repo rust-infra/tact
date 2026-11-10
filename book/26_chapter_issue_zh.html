@@ -737,6 +737,7 @@
 <li class="toc-l2"><a href="#29-2026-11-01--%E5%8F%96%E6%B6%88%E8%BF%90%E8%A1%8C%E5%90%8E%E9%98%9F%E5%88%97%E4%B8%8D%E5%86%8D%E6%8A%A2%E8%B7%91" title="29. 2026-11-01 — 取消运行后队列不再抢跑"><span class="toc-label">29. 2026-11-01 — 取消运行后队列不再抢跑</span></a></li>
 <li class="toc-l2"><a href="#30-2026-11-02--desktop-%E6%BB%9A%E5%8A%A8%E5%90%88%E5%B9%B6%E4%B8%8E%E5%BC%B9%E7%AA%97%E5%8D%A1%E6%AD%BB" title="30. 2026-11-02 — Desktop 滚动合并与弹窗卡死"><span class="toc-label">30. 2026-11-02 — Desktop 滚动合并与弹窗卡死</span></a></li>
 <li class="toc-l2"><a href="#31-2026-11-04--desktop-%E4%BB%BB%E5%8A%A1%E6%9D%A1%E6%B7%B7%E5%85%A5%E5%85%B6%E5%AE%83-session-%E7%9A%84%E4%BB%BB%E5%8A%A1" title="31. 2026-11-04 — Desktop 任务条混入其它 session 的任务"><span class="toc-label">31. 2026-11-04 — Desktop 任务条混入其它 session 的任务</span></a></li>
+<li class="toc-l2"><a href="#33-2026-11-10--%E8%A2%AB%E6%88%AA%E6%96%AD%E7%9A%84%E6%B5%81%E4%B8%8D%E5%86%8D%E5%BD%93%E6%88%90%E5%AE%8C%E6%88%90%E7%9A%84%E5%9B%9E%E5%90%88" title="33. 2026-11-10 — 被截断的流不再当成完成的回合"><span class="toc-label">33. 2026-11-10 — 被截断的流不再当成完成的回合</span></a></li>
 <li class="toc-l2"><a href="#32-2026-11-04--desktop-%E4%BB%BB%E5%8A%A1%E5%85%A8%E9%83%A8%E5%AE%8C%E6%88%90%E5%90%8E%E9%9A%90%E8%97%8F%E4%BB%BB%E5%8A%A1%E5%8D%A1trajectory-%E6%90%9C%E7%B4%A2%E6%A1%86%E6%94%B9%E4%B8%BA%E5%8D%95%E5%B1%82" title="32. 2026-11-04 — Desktop：任务全部完成后隐藏任务卡；Trajectory 搜索框改为单层"><span class="toc-label">32. 2026-11-04 — Desktop：任务全部完成后隐藏任务卡；Trajectory 搜索框改为单层</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
@@ -21932,6 +21933,54 @@ TUI 侧 <code>agent_tui_kit::state::task_panel</code> 对齐：只分「进行�
 <code>task_update</code>）、<code>crates/tact_host/src/driver.rs</code>
 （<code>publish_session_tasks</code>）、<code>crates/desktop/src/ui/sticky.rs</code>
 （<code>GROUPS</code>、<code>group_tasks</code>、<code>active_task</code>）。</p>
+<h2 id="33-2026-11-10--被截断的流不再当成完成的回合">33. 2026-11-10 — 被截断的流不再当成完成的回合</h2>
+<p><strong>现象：</strong> 后台 subagent 频繁“成功但没干活”：状态写着 completed，
+摘要却只有开场那句 “I'll start by exploring the repository state”，甚至完全空白。
+同一次里三个 review subagent 在 <code>03:14:59.017 / .019 / .026</code> 内相继结束，
+彼此相差不到 10 ms。</p>
+<p><strong>根因：</strong> 两条独立的静默失败路径，都停在同一个错误结论上——“这轮做完了”。
+其一，chat completions 适配器的 SSE 循环在字节流结束时正常退出，既不检查
+<code>[DONE]</code> 也不检查 <code>finish_reason</code>，于是被切断的连接返回
+<code>Ok(LlmResponse)</code>。数据库里这三条 run 各自的最后一次
+<code>token_usages</code> 记录都是 0 token，正是这条路径写的。其二，Anthropic 适配器把
+<code>reqwest_eventsource</code> 的 <code>StreamEnded</code> 包成
+<code>Anthropic(ApiError("Stream ended"))</code>，而 <code>LlmError::Request</code>
+之外的变体只做文本匹配，这个词不在瞬时关键词表里，于是连接中断被判成永久失败、
+不重试。此外 <code>recovery::classify_llm_error</code> 与
+<code>tact_llm::neutral::model_error</code> 对同一个 <code>Request</code> 变体给出相反
+结论：后者按类型判为 transient，前者按文案匹配。</p>
+<p><strong>决策：</strong> 让“流有没有结束”变成一个显式事实，而不是默认为真。chat
+completions 记录 <code>saw_terminal</code>（<code>[DONE]</code> 或任意
+<code>finish_reason</code>），循环结束后仍为假就返回
+<code>LlmError::Request</code>，错误文案带上到达了多少文本或多少个 tool call。用
+<code>Request</code> 而非 <code>StreamParse</code>：什么都没解析错，是连接断了，
+而这个变体在两条分类路径上都是 transient。Anthropic 把
+<code>StreamEnded</code> 单独匹配并降级为 <code>LlmError::Request</code>，其余事件错误
+照旧。分类器改为按类型识别 <code>Request</code>，与 <code>neutral.rs</code> 对齐，
+文本匹配只留给既无状态码也无传输含义的变体。重试本身有
+<code>MAX_TRANSPORT_ATTEMPTS</code> 上限，不会来回死循环。</p>
+<p><strong>改后行为：</strong> 连接在回合中途断掉时，父 agent 收到一条可重试的传输
+失败并自动退避重试，而不是把半句话或空回复当成子 agent 的成果。端点只发
+<code>finish_reason</code> 不发 <code>[DONE]</code> 的仍被接受——那是它在说回合结束。
+Anthropic 流在 <code>message_stop</code> 前断掉同样进入重试。真正解析失败的错误
+仍按永久失败立即上报。</p>
+<p><strong>验证：</strong>
+<code>a_stream_cut_off_before_done_is_an_error</code>、
+<code>a_stream_cut_off_before_any_content_is_an_error</code>（两条在修复前均失败，
+其中空流当时返回 <code>Ok(LlmResponse { blocks: [] })</code>）、
+<code>a_done_terminated_stream_still_completes</code>、
+<code>a_finish_reason_alone_ends_the_stream</code>、
+<code>a_stream_cut_before_message_stop_is_a_transport_failure</code>（修复前报
+<code>Anthropic(ApiError("Stream ended"))</code>）、
+<code>a_truncated_stream_is_worth_retrying</code>
+（修复前 <code>classify_llm_error</code> 返回 <code>Permanent</code>）。
+<code>cargo test -p tact_llm --features anthropic,openai --lib</code> 233 全绿，
+<code>cargo test -p tact --lib recovery</code> 22 全绿。</p>
+<p><strong>Pointers：</strong>
+<code>crates/tact_llm/src/openai/compatible/mod.rs</code>（<code>stream_completion</code>
+的 <code>saw_terminal</code>）、<code>crates/tact_llm/src/anthropic/mod.rs</code>
+（<code>StreamEnded</code> 分支）、<code>crates/tact/src/recovery.rs</code>
+（<code>classify_llm_error</code>）。</p>
 <h2 id="32-2026-11-04--desktop-任务全部完成后隐藏任务卡trajectory-搜索框改为单层">32. 2026-11-04 — Desktop：任务全部完成后隐藏任务卡；Trajectory 搜索框改为单层</h2>
 <p><strong>现象：</strong> 两处界面问题。其一，一轮任务全部完成后，sticky
 任务卡仍停在对话上方：标题写着 <code>TASKS 3/3</code>、进度条全绿，但没有任何事在跑；

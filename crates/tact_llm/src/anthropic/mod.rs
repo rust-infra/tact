@@ -262,6 +262,17 @@ impl LlmClient for AnthropicAdapter {
 
         while let Some(event) = event_source.next().await {
             match event {
+                // A stream that ends without `message_stop` was cut, not
+                // rejected: `StreamEnded` is the transport telling us the
+                // connection closed early. Reporting it as an API error makes
+                // it permanent, so the turn is lost instead of retried.
+                Err(reqwest_eventsource::Error::StreamEnded) => {
+                    return Err(LlmError::Request(format!(
+                        "SSE stream ended before message_stop after {} block(s); \
+                         the connection was cut before the turn finished",
+                        response_blocks.len()
+                    )));
+                }
                 Err(e) => {
                     return Err(LlmError::Anthropic(MessageError::ApiError(
                         format_http_error(&e),
@@ -628,5 +639,54 @@ mod tests {
             text: "hi".into()
         })));
         assert!(!is_thinking_content_block(None));
+    }
+}
+
+/// A Messages stream cut before `message_stop` must be retried, not failed.
+///
+/// `reqwest-eventsource` reports a byte stream that ends without its terminal
+/// event as `StreamEnded`, whose text is "Stream ended" — which matches none of
+/// the transient keywords. The adapter has to name the transport failure as
+/// one, or a dropped connection costs the whole turn.
+#[cfg(test)]
+mod truncated_stream_tests {
+    use super::*;
+    use crate::{CreateMessageParams, Message, NoopProgressSink, RequiredMessageParams, Role};
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{method, path},
+    };
+
+    fn simple_request() -> CreateMessageParams {
+        CreateMessageParams::new(RequiredMessageParams {
+            model: "claude-test".to_string(),
+            messages: vec![Message::new_text(Role::User, "hello")],
+            max_tokens: 64,
+        })
+    }
+
+    async fn stream(sse: &'static str) -> Result<LlmResponse, LlmError> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"))
+            .mount(&server)
+            .await;
+        AnthropicAdapter::new("sk-test", server.uri())
+            .stream_message(&simple_request(), None, &NoopProgressSink)
+            .await
+    }
+
+    #[tokio::test]
+    async fn a_stream_cut_before_message_stop_is_a_transport_failure() {
+        let error = stream(
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"half\"}}\n\n",
+        )
+        .await
+        .expect_err("a stream with no message_stop did not finish the turn");
+        assert!(
+            matches!(error, LlmError::Request(_)),
+            "the adapter must name this as a transport failure so it is retried, got: {error:?}"
+        );
     }
 }
