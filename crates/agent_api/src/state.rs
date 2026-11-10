@@ -164,11 +164,23 @@ pub struct RecoveryStats {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RunStop {
     Completed,
-    YieldToHost { reason: HostYieldReason },
+    /// The model returned a turn with no text, no tool call and no image.
+    ///
+    /// Distinct from [`Self::Completed`] because the caller has nothing to
+    /// read: a run that reports success here would tell a reader the request
+    /// was handled when the model answered with nothing. It is also distinct
+    /// from an error, because the run itself is well formed.
+    EmptyTurn,
+    YieldToHost {
+        reason: HostYieldReason,
+    },
     MaxTurns,
     MaxTokens,
     Cancelled,
-    Blocked { phase: RunPhase, reason: String },
+    Blocked {
+        phase: RunPhase,
+        reason: String,
+    },
 }
 
 /// Product-neutral host yield reasons.

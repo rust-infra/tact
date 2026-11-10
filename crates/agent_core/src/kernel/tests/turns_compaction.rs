@@ -967,3 +967,105 @@ async fn replacement_retain_clear_and_unchanged_are_distinguishable() {
             .any(|message| message.text_content() == "go")
     );
 }
+
+/// A provider that answers with nothing must not be reported as a completion.
+///
+/// Real shape: a streaming provider ends after a reasoning block with no text
+/// delta, so the response is a message whose only block is `Thinking` and whose
+/// stop reason is absent (`None`), which the transport normalises to
+/// `end_turn`. Reporting `Completed` there told the caller the request was
+/// handled when the model had written no answer at all.
+#[tokio::test]
+async fn a_turn_with_nothing_to_read_is_not_a_completion() {
+    let model = ScriptedModel::new(vec![events(reasoning_only_response("empty"))]);
+    let h = harness(
+        model,
+        ScriptedTools::new(Vec::new()),
+        ScriptedGate::new(),
+        ScriptedContext::new(),
+    );
+    let mut state = state();
+
+    let outcome = h
+        .kernel
+        .run(&mut state, input("go"), CancelToken::new())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        outcome.stop,
+        RunStop::EmptyTurn,
+        "an empty turn is its own stop reason, not a completion"
+    );
+    assert_eq!(outcome.turns, 1, "the model call still happened");
+}
+
+/// A message with no content at all: what a provider returns when its stream
+/// ends before the first delta.
+#[tokio::test]
+async fn a_turn_with_no_content_at_all_is_not_a_completion() {
+    let model = ScriptedModel::new(vec![events(no_content_response("blank"))]);
+    let h = harness(
+        model,
+        ScriptedTools::new(Vec::new()),
+        ScriptedGate::new(),
+        ScriptedContext::new(),
+    );
+    let mut state = state();
+
+    let outcome = h
+        .kernel
+        .run(&mut state, input("go"), CancelToken::new())
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.stop, RunStop::EmptyTurn);
+}
+
+/// The same turn with one real block stays a completion, so the guard cannot
+/// swallow ordinary answers.
+#[tokio::test]
+async fn a_turn_with_an_answer_stays_a_completion() {
+    let model = ScriptedModel::new(vec![events(text_response(
+        "answer",
+        "the answer",
+        StopReason::EndTurn,
+    ))]);
+    let h = harness(
+        model,
+        ScriptedTools::new(Vec::new()),
+        ScriptedGate::new(),
+        ScriptedContext::new(),
+    );
+    let mut state = state();
+
+    let outcome = h
+        .kernel
+        .run(&mut state, input("go"), CancelToken::new())
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.stop, RunStop::Completed);
+}
+
+/// A provider that streamed only reasoning: no text, no tool call.
+fn reasoning_only_response(id: &str) -> tact_agent_api::ModelResponse {
+    let mut response = text_response(id, "", StopReason::EndTurn);
+    response.message = AgentMessage::new(
+        AgentRole::Assistant,
+        MessageOrigin::Assistant,
+        vec![AgentContentBlock::Thinking {
+            thinking: "weighing the options and then stopping".into(),
+            signature: String::new(),
+        }],
+    );
+    response
+}
+
+/// A provider whose stream ended before anything was produced.
+fn no_content_response(id: &str) -> tact_agent_api::ModelResponse {
+    let mut response = text_response(id, "", StopReason::EndTurn);
+    response.message =
+        AgentMessage::new(AgentRole::Assistant, MessageOrigin::Assistant, Vec::new());
+    response
+}
