@@ -8,9 +8,11 @@ Built: the record log (`agent_tui_kit::state::trajectory`), the renderer
 entry. Tests: 44 in the kit, 18 in the TUI through the real Normal-mode
 handler.
 
-Not built, and still a decision: a key binding. The page is reachable through
-`/trajectory` and no letter is claimed, which is the state this document
-argues for.
+Not built, and not wanted: a key binding. The page is reached through
+`/trajectory` and no letter is claimed.
+
+Live streaming is built: a running call reports its latest output line, and
+`follow` drives the view while a run is in progress.
 
 ## Purpose
 
@@ -354,6 +356,24 @@ clears it on close.
 Live: while the page is open, `App::handle_agent_update` appends to the record
 log and the page repaints, the way `/tasks-dag` re-renders its lines
 (`crates/tui/src/widgets/state/app/agent.rs:689`).
+
+What "live" means concretely, because a page that only appends rows is not
+live enough to watch a run:
+
+- **A running tool's latest output line replaces its summary.** A call that has
+  been going for a minute showing `bash cargo test` tells the reader nothing;
+  showing `compiling tact_host` tells them it is working. The tail is cleared
+  when the call finishes or is cancelled, so a settled record never shows a
+  fragment next to its answer.
+- **`follow` actually moves the view.** While following, the selection tracks
+  the newest record and the renderer derives the offset from the content,
+  because only the render knows both the painted line count and the viewport.
+  A reader who scrolls away keeps both their selection and their place: an
+  append neither re-arms following nor scrolls them forward.
+- **Leaving the tail pins the offset.** While following, `scroll` is
+  meaningless. The first `k` therefore materializes the current offset before
+  clearing `follow`; without that the view jumped to the top of the ledger,
+  which is the bug the offset test exists to prevent.
 
 ## Where the code goes
 

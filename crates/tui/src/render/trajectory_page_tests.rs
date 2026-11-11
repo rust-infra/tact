@@ -403,3 +403,118 @@ fn the_filter_rejects_nothing_and_accepts_unicode() {
         "and nothing matches it:\n{text}"
     );
 }
+
+#[test]
+fn a_live_append_keeps_the_follower_on_the_newest_record() {
+    let mut app = app_with_a_run();
+    app.open_trajectory_page();
+    assert!(app.trajectory_page.follow);
+    let before = app.trajectory_page.selected.expect("selection");
+
+    app.handle_agent_update(queued("call-3", "grep", "needle"));
+    app.handle_agent_update(finished("call-3", "grep", Some(900_000)));
+
+    let after = app.trajectory_page.selected.expect("selection");
+    assert_ne!(after, before, "following moves the selection with the tail");
+    assert_eq!(
+        after,
+        app.trajectory.records().last().expect("last").id,
+        "the newest record is the selection"
+    );
+    assert!(
+        app.trajectory_page.follow,
+        "and the reader is still following"
+    );
+}
+
+/// The bug this catches: while following, `scroll` is meaningless and the
+/// renderer derives it. Leaving the tail without pinning the offset made the
+/// first `k` jump to the top of the ledger.
+#[test]
+fn leaving_the_tail_pins_the_offset_instead_of_jumping_to_the_top() {
+    let mut app = app_with_a_run();
+    // Enough records that the ledger must scroll.
+    for index in 0..40 {
+        app.handle_agent_update(queued(&format!("bulk-{index}"), "bash", "true"));
+    }
+    app.open_trajectory_page();
+    assert!(app.trajectory_page.follow);
+
+    press(&mut app, crossterm::event::KeyCode::Char('k'));
+
+    assert!(
+        !app.trajectory_page.follow,
+        "k takes the reader off the tail"
+    );
+    assert!(
+        app.trajectory_page.scroll > 0,
+        "and pins the offset it was at, not zero: {}",
+        app.trajectory_page.scroll
+    );
+}
+
+#[test]
+fn a_reader_off_the_tail_keeps_their_place_when_records_arrive() {
+    let mut app = app_with_a_run();
+    for index in 0..40 {
+        app.handle_agent_update(queued(&format!("bulk-{index}"), "bash", "true"));
+    }
+    app.open_trajectory_page();
+    press(&mut app, crossterm::event::KeyCode::Char('k'));
+    let scroll = app.trajectory_page.scroll;
+    let selected = app.trajectory_page.selected;
+
+    app.handle_agent_update(queued("late", "bash", "true"));
+
+    assert!(
+        !app.trajectory_page.follow,
+        "an append does not re-arm following"
+    );
+    assert_eq!(
+        app.trajectory_page.selected, selected,
+        "and it does not move the reader's selection"
+    );
+    assert!(
+        app.trajectory_page.scroll <= scroll,
+        "nor scroll them forward: {} then {}",
+        scroll,
+        app.trajectory_page.scroll
+    );
+}
+
+#[test]
+fn a_live_tail_update_repaints_the_page_without_appending() {
+    let mut app = app_with_a_run();
+    app.open_trajectory_page();
+    app.handle_agent_update(queued("call-9", "bash", "cargo test"));
+    let count = app.trajectory.len();
+
+    app.handle_agent_update(tact_protocol::AgentUpdate::ToolProgress {
+        run_id: None,
+        tool_id: "call-9".into(),
+        chunks: vec![tact_protocol::ToolOutputChunk::stdout(
+            "compiling tact_host\n",
+        )],
+    });
+
+    assert_eq!(app.trajectory.len(), count, "a tail update appends no row");
+    let text = render_app_text(&mut app, 100, 30);
+    assert!(
+        text.contains("compiling tact_host"),
+        "but it is on screen:\n{text}"
+    );
+}
+
+#[test]
+fn the_log_still_gets_every_update_the_page_consumed() {
+    let mut app = app_with_a_run();
+    app.open_trajectory_page();
+    let log_len = app.log.items.len();
+
+    app.handle_agent_update(tact_protocol::AgentUpdate::Info("still logged".into()));
+
+    assert!(
+        app.log.items.len() > log_len,
+        "the page observes; it must not intercept the log's own stream"
+    );
+}
