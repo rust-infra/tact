@@ -58,6 +58,10 @@ fn route_builtin(command: tact_catalog::BuiltinCommand, args: &CommandArguments)
         B::Balance => CommandRoute::User(UserCommand::QueryBalance),
         B::Stats => CommandRoute::Surface(SurfaceQuery::Stats),
         B::TasksDag => CommandRoute::Shell(CommandId::Builtin(command)),
+        // The desktop's trajectory page is its own surface state, not a query
+        // the host answers, so this verb routes to the shell the way tasks-dag
+        // does. The TUI opens its page from the same verb.
+        B::Trajectory => CommandRoute::Shell(CommandId::Builtin(command)),
         B::Background => CommandRoute::Shell(CommandId::Builtin(command)),
         B::Goal => route_goal(args),
     }

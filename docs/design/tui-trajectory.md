@@ -1,6 +1,16 @@
 # TUI trajectory: design
 
-Status: proposed, not implemented.
+Status: implemented for the parts below.
+
+Built: the record log (`agent_tui_kit::state::trajectory`), the renderer
+(`agent_tui_kit::render::trajectory`), and the app wiring
+(`crates/tui/src/widgets/state/app/trajectory.rs`) with `/trajectory` as its
+entry. Tests: 44 in the kit, 18 in the TUI through the real Normal-mode
+handler.
+
+Not built, and still a decision: a key binding. The page is reachable through
+`/trajectory` and no letter is claimed, which is the state this document
+argues for.
 
 ## Purpose
 

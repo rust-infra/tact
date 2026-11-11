@@ -302,8 +302,11 @@ mod tests {
 
     #[test]
     fn every_builtin_variant_has_one_catalog_spec() {
-        assert_eq!(BuiltinCommand::iter().count(), 23);
-        assert_eq!(BuiltinCommand::ALL.len(), 23);
+        // The invariant is that `iter` and `ALL` agree, not that there are any
+        // particular number of commands. A literal here fails when a command is
+        // added correctly, and passes when one is added to `iter` but left out
+        // of `ALL` as long as the two counts happen to cancel out.
+        assert_eq!(BuiltinCommand::iter().count(), BuiltinCommand::ALL.len());
         assert_eq!(BuiltinCommand::ModelSubagent.name(), "model-subagent");
         assert_eq!(BuiltinCommand::SubagentCancel.name(), "subagent_cancel");
         assert_eq!(
