@@ -75,7 +75,7 @@ use crate::ui::selection_actions::{SelectionAction, SelectionActions, SelectionA
 use crate::ui::shell::{RunTab, TrajectoryDetailTab};
 use crate::ui::sidebar_nav::{
     SidebarNav, SidebarNavEvent, SidebarNavItem, SidebarNavLabels, SidebarNavPresentation,
-    SidebarSection,
+    SidebarSection, SidebarSectionCap,
 };
 use crate::ui::status::{
     background_status_label, goal_phase_label, goal_status_label, localized_wait_reason,
@@ -102,6 +102,12 @@ const GATE_COMMAND_MAX_HEIGHT: f32 = 168.;
 const MODEL_PICKER_ROW_HEIGHT: f32 = 30.;
 /// Rows a model picker shows before it scrolls.
 const MODEL_PICKER_VISIBLE_ROWS: usize = 8;
+/// Sessions one project shows in the rail before its list scrolls.
+///
+/// The rail is a single column of project blocks. A cap keeps every project's
+/// heading on screen no matter how deep one project gets; the alternative,
+/// scrolling the whole rail, hides the other projects behind a busy one.
+const RAIL_SECTION_ROW_CAP: usize = 8;
 /// Informational notifications disappear on their own; errors stay until the
 /// user dismisses them.
 const TOAST_HIDE_DELAY: Duration = Duration::from_secs(3);
@@ -1859,6 +1865,10 @@ impl DesktopRoot {
                     .new_session_action(new_session_label.clone())
                     .collapsed(self.collapsed_session_projects.contains(&project_id))
                     .items(items)
+                    // Past this many sessions the project scrolls inside
+                    // itself, so a long project cannot push its neighbours
+                    // past the bottom of the rail.
+                    .cap(SidebarSectionCap::rows(RAIL_SECTION_ROW_CAP))
             })
             .collect();
         if sections.is_empty() {
@@ -16961,6 +16971,65 @@ mod tests {
         INSTALL.call_once(|| config.install_process_config().unwrap());
     }
 
+    fn install_one_long_and_one_short_project(
+        this: &mut DesktopRoot,
+        cx: &mut Context<DesktopRoot>,
+    ) {
+        let busy_project = tact_desktop_core::ProjectId("project-a".into());
+        let quiet_project = tact_desktop_core::ProjectId("project-b".into());
+        let mut snapshot = (*this.snapshot).clone();
+        snapshot.project = tact_desktop_core::ProjectView {
+            id: Some(busy_project.clone()),
+            root: Some("/tmp/project-a".into()),
+            display_name: "Project A".into(),
+            branch: Some("main".into()),
+            repository: None,
+            available: true,
+        };
+        snapshot.projects = vec![
+            snapshot.project.clone(),
+            tact_desktop_core::ProjectView {
+                id: Some(quiet_project.clone()),
+                root: Some("/tmp/project-b".into()),
+                display_name: "Project B".into(),
+                branch: Some("feature".into()),
+                repository: None,
+                available: true,
+            },
+        ]
+        .into();
+        let now = chrono::Utc::now();
+        let mut items = Vec::new();
+        for index in 0..40 {
+            items.push(tact_desktop_core::SessionSummaryView {
+                id: format!("session-a-{index}"),
+                project_id: busy_project.clone(),
+                root_dir: "/tmp/project-a".into(),
+                title: format!("Session A{index}"),
+                updated_at: now - chrono::Duration::minutes(index as i64),
+                archived_at: None,
+                locked: false,
+                message_count: 1,
+                search_score: 0,
+            });
+        }
+        items.push(tact_desktop_core::SessionSummaryView {
+            id: "session-b".into(),
+            project_id: quiet_project,
+            root_dir: "/tmp/project-b".into(),
+            title: "Session B".into(),
+            updated_at: now - chrono::Duration::hours(1),
+            archived_at: None,
+            locked: false,
+            message_count: 1,
+            search_score: 0,
+        });
+        snapshot.sessions.items = items;
+        snapshot.sessions.selected = None;
+        this.snapshot = Arc::new(snapshot);
+        cx.notify();
+    }
+
     fn install_two_project_sessions(this: &mut DesktopRoot, cx: &mut Context<DesktopRoot>) {
         let first_project = tact_desktop_core::ProjectId("project-a".into());
         let second_project = tact_desktop_core::ProjectId("project-b".into());
@@ -23062,6 +23131,65 @@ mod tests {
             window.debug_bounds("sidebar-nav-item-session-a").is_some(),
             "expanding a project must restore its session children"
         );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// A busy project must not push its neighbours out of the rail.
+    ///
+    /// The rail is one column of project blocks. Before the per-section cap,
+    /// 40 sessions in project A put project B's heading at y=2053 inside a
+    /// rail that ends at y=900: the heading was off screen and reachable only
+    /// by scrolling the whole navigation, which is what looked like project A
+    /// squeezing project B. The fix bounds each project's list and gives it
+    /// its own scroll owner, so every heading stays on screen.
+    #[gpui::test]
+    fn a_long_project_scrolls_inside_itself_instead_of_displacing_its_neighbours(
+        cx: &mut TestAppContext,
+    ) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(900.)));
+        window.update(|window, cx| {
+            root.update(cx, install_one_long_and_one_short_project);
+            window.draw(cx).clear(cx);
+        });
+        let rail = window.debug_bounds("session-rail").expect("session rail");
+        let short_header = window
+            .debug_bounds("sidebar-nav-section-sessions-project-project-b")
+            .expect("project B heading");
+        assert!(
+            short_header.origin.y + short_header.size.height <= rail.origin.y + rail.size.height,
+            "a deep project must not push its neighbour's heading below the rail: \
+             rail={rail:?}, project B heading={short_header:?}"
+        );
+
+        let scroller = window
+            .debug_bounds("sidebar-nav-section-scroll-sessions-project-project-a")
+            .expect("project A owns a scroll container");
+        assert!(
+            scroller.size.height
+                <= px(crate::ui::sidebar_nav::COMPACT_SESSION_ROW_HEIGHT
+                    * RAIL_SECTION_ROW_CAP as f32
+                    + 1.),
+            "project A's list must stop at the row cap: {scroller:?}"
+        );
+
+        // Scrolling inside project A must move its own rows and leave the
+        // neighbour's heading where it was.
+        assert_scrolls_past_cap(
+            window,
+            scroller.center(),
+            "sidebar-nav-item-session-a-0",
+            "sidebar-nav-item-session-a-39",
+        );
+        let short_after = window
+            .debug_bounds("sidebar-nav-section-sessions-project-project-b")
+            .expect("project B heading after scrolling A");
+        assert_eq!(
+            short_after.origin.y, short_header.origin.y,
+            "scrolling one project must not move another project's heading"
+        );
+
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
     }
