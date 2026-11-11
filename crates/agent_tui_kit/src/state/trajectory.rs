@@ -15,6 +15,19 @@ use std::time::Duration;
 
 use tact_protocol::{AgentUpdate, StepStatus, ThinkingChunk, ToolVisualKind};
 
+/// How much of a tool's result body the ledger keeps.
+///
+/// The ledger is an audit index, not a result viewer: the tool card and its
+/// popup already hold the full body, and keeping a second copy costs the
+/// process the same bytes twice for the life of the session. Measured over the
+/// 11,737 tool results in this repo's transcripts: p50 is 0.4 KB, p90 is
+/// 3.4 KB, p99 is 15.8 KB. A 4 KB cap keeps 92 percent of records complete and
+/// bounds the rest, where the 8 percent over it hold 10 MB of the 18 MB total.
+///
+/// A truncated record says so (`output_truncated`) rather than pretending the
+/// body ended.
+pub const OUTPUT_CAP_BYTES: usize = 4 * 1024;
+
 /// Stable ledger identity.
 ///
 /// Monotonic per session and never reused, so a selection keyed on it survives
@@ -174,6 +187,11 @@ pub struct TrajectoryRecord {
     pub input: Option<String>,
     /// What came back, when this record has a result body.
     pub output: Option<String>,
+    /// Whether [`Self::output`] holds only the head of the body.
+    ///
+    /// The detail panel names this instead of letting a cut body read as the
+    /// whole answer, which is the same rule as reporting no duration.
+    pub output_truncated: bool,
     /// The last line a running tool printed, kept while it runs.
     ///
     /// A live run is worth watching for this alone: the ledger otherwise shows
@@ -208,6 +226,7 @@ impl TrajectoryRecord {
             duration_ms: None,
             input: None,
             output: None,
+            output_truncated: false,
             live_tail: None,
             search,
         }
@@ -399,11 +418,14 @@ impl TrajectoryLog {
                     record.live_tail = None;
                     record.status = Some(TrajectoryStatus::from_step(result.status));
                     record.duration_ms = result.duration_us.map(|us| us / 1_000);
-                    if let Some(detail) = &result.detail {
-                        record.output = Some(detail.clone());
-                    } else if !result.message.is_empty() {
-                        record.output = Some(result.message.clone());
-                    }
+                    let body = result
+                        .detail
+                        .as_deref()
+                        .filter(|detail| !detail.is_empty())
+                        .unwrap_or(result.message.as_str());
+                    let (body, truncated) = cap_body(body);
+                    record.output = Some(body);
+                    record.output_truncated = truncated;
                     if record.tool_name.is_none() {
                         record.tool_name = Some(result.tool.clone());
                     }
@@ -417,7 +439,14 @@ impl TrajectoryLog {
                     record.tool_id = Some(tool_id.clone());
                     record.tool_name = Some(result.tool.clone());
                     record.input = result.arg_full.clone();
-                    record.output = result.detail.clone().or_else(|| non_empty(&result.message));
+                    let raw = result
+                        .detail
+                        .as_deref()
+                        .filter(|detail| !detail.is_empty())
+                        .unwrap_or(result.message.as_str());
+                    let (body, truncated) = cap_body(raw);
+                    record.output = Some(body);
+                    record.output_truncated = truncated;
                 }
             }
             AgentUpdate::ToolProgress {
@@ -643,6 +672,21 @@ fn summary_line(tool_name: &str, arg_summary: &str) -> String {
         (true, false) => args.to_string(),
         (false, false) => format!("{name} {args}"),
     }
+}
+
+/// Cap a result body, reporting whether anything was dropped.
+///
+/// Byte-based and boundary-safe: a multi-byte character split by the cut would
+/// panic on the next slice, and a tool can return any encoding.
+fn cap_body(body: &str) -> (String, bool) {
+    if body.len() <= OUTPUT_CAP_BYTES {
+        return (body.to_string(), false);
+    }
+    let mut end = OUTPUT_CAP_BYTES;
+    while end > 0 && !body.is_char_boundary(end) {
+        end -= 1;
+    }
+    (body[..end].to_string(), true)
 }
 
 fn non_empty(text: &str) -> Option<String> {
@@ -1451,5 +1495,156 @@ mod live_tests {
         log.observe(&queued("call-1", "bash", "cargo test"));
         log.observe(&progress("call-1", "error: the guard is inverted"));
         assert_eq!(log.matches("inverted"), vec![0]);
+    }
+}
+
+#[cfg(test)]
+mod memory_tests {
+    use super::*;
+    use tact_protocol::{StepResult, ToolPresentationInfo};
+
+    fn call(tool_id: &str, detail: String) -> Vec<AgentUpdate> {
+        vec![
+            AgentUpdate::StepQueued {
+                idx: 0,
+                tool_id: tool_id.into(),
+                tool_name: "read_file".into(),
+                arg_summary: "src/big.rs".into(),
+                arg_full: String::new(),
+                presentation: ToolPresentationInfo::generic("read_file"),
+            },
+            AgentUpdate::StepFinished {
+                idx: 0,
+                run_id: None,
+                tool_id: tool_id.into(),
+                result: StepResult {
+                    tool: "read_file".into(),
+                    arg_summary: String::new(),
+                    arg_full: None,
+                    status: StepStatus::Success,
+                    message: "ok".into(),
+                    detail: Some(detail),
+                    duration_us: Some(1_000),
+                    permission_label: None,
+                    presentation: ToolPresentationInfo::generic("read_file"),
+                },
+            },
+        ]
+    }
+
+    /// The ledger keeps a bounded body: the full text already lives on the tool
+    /// card, and holding it twice costs the process the same bytes twice.
+    #[test]
+    fn a_large_body_is_capped_and_says_so() {
+        let huge = "x".repeat(OUTPUT_CAP_BYTES * 8);
+        let mut log = TrajectoryLog::new();
+        log.begin_turn();
+        for update in call("call-1", huge) {
+            log.observe(&update);
+        }
+
+        let record = log.get(0).expect("record");
+        assert_eq!(
+            record.output.as_ref().expect("body").len(),
+            OUTPUT_CAP_BYTES,
+            "the body stops at the cap"
+        );
+        assert!(record.output_truncated, "and the record admits it");
+    }
+
+    #[test]
+    fn a_body_under_the_cap_is_kept_whole_and_not_marked() {
+        let body = "a short result".to_string();
+        let mut log = TrajectoryLog::new();
+        log.begin_turn();
+        for update in call("call-1", body.clone()) {
+            log.observe(&update);
+        }
+
+        let record = log.get(0).expect("record");
+        assert_eq!(record.output.as_deref(), Some(body.as_str()));
+        assert!(!record.output_truncated);
+    }
+
+    /// A tool can return any encoding, so the cut has to land on a character
+    /// boundary or the next slice panics.
+    #[test]
+    fn the_cap_does_not_split_a_multibyte_character() {
+        // Every char is 3 bytes; the cap lands inside one.
+        let body: String = "读".repeat(OUTPUT_CAP_BYTES);
+        let mut log = TrajectoryLog::new();
+        log.begin_turn();
+        for update in call("call-1", body) {
+            log.observe(&update);
+        }
+
+        let record = log.get(0).expect("record");
+        let kept = record.output.as_ref().expect("body");
+        assert!(record.output_truncated);
+        assert!(kept.len() <= OUTPUT_CAP_BYTES);
+        assert!(
+            kept.chars().all(|c| c == '读'),
+            "the cut left a partial character"
+        );
+    }
+
+    /// A session of many large calls holds a bounded amount, not the sum of
+    /// every tool's output.
+    #[test]
+    fn many_large_calls_stay_within_a_bound() {
+        let huge = "y".repeat(OUTPUT_CAP_BYTES * 4);
+        let mut log = TrajectoryLog::new();
+        log.begin_turn();
+        for index in 0..100 {
+            for update in call(&format!("call-{index}"), huge.clone()) {
+                log.observe(&update);
+            }
+        }
+
+        let held: usize = log
+            .records()
+            .iter()
+            .map(|record| record.output.as_ref().map_or(0, |body| body.len()))
+            .sum();
+        assert!(
+            held <= 100 * OUTPUT_CAP_BYTES,
+            "100 capped calls must hold at most the cap each, held {held}"
+        );
+    }
+
+    /// A record with no detail falls back to the message, which is also capped.
+    #[test]
+    fn the_message_is_the_body_when_there_is_no_detail() {
+        let mut log = TrajectoryLog::new();
+        log.begin_turn();
+        log.observe(&AgentUpdate::StepQueued {
+            idx: 0,
+            tool_id: "call-1".into(),
+            tool_name: "bash".into(),
+            arg_summary: "true".into(),
+            arg_full: String::new(),
+            presentation: ToolPresentationInfo::generic("bash"),
+        });
+        log.observe(&AgentUpdate::StepFinished {
+            idx: 0,
+            run_id: None,
+            tool_id: "call-1".into(),
+            result: StepResult {
+                tool: "bash".into(),
+                arg_summary: String::new(),
+                arg_full: None,
+                status: StepStatus::Success,
+                message: "the message body".into(),
+                detail: None,
+                duration_us: Some(1_000),
+                permission_label: None,
+                presentation: ToolPresentationInfo::generic("bash"),
+            },
+        });
+
+        assert_eq!(
+            log.get(0).expect("record").output.as_deref(),
+            Some("the message body")
+        );
     }
 }

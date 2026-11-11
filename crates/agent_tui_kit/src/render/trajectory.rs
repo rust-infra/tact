@@ -639,7 +639,21 @@ fn render_detail(
     let lines: Vec<Line> = match state.tab {
         TrajectoryTab::Summary => summary_lines(record, theme),
         TrajectoryTab::Payload => body_lines(record.input.as_deref(), "no payload", theme),
-        TrajectoryTab::Result => body_lines(record.output.as_deref(), "no result body", theme),
+        TrajectoryTab::Result => {
+            let mut lines = body_lines(record.output.as_deref(), "no result body", theme);
+            if record.output_truncated {
+                // A cut body must not read as the whole answer. The tool card
+                // and its popup still hold the full text.
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "… truncated at {} KB; open the tool card for the full body",
+                        crate::state::trajectory::OUTPUT_CAP_BYTES / 1024
+                    ),
+                    Style::default().fg(theme.warning),
+                )));
+            }
+            lines
+        }
         TrajectoryTab::Timing => timing_lines(record, theme),
     };
     Paragraph::new(lines).render(inner, buf);
