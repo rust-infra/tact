@@ -209,6 +209,8 @@ pub enum SurfaceId {
     MermaidPopup,
     ThinkingPopup,
     SubagentPopup,
+    /// The trajectory page's body: a record ledger with a selection.
+    TrajectoryPage,
     DiffPopup,
     TaskDagPopup,
     /// A read-out popup's own rect (`/stats`, `/background`, `/view-system-prompt`,
@@ -226,7 +228,11 @@ pub enum SurfaceId {
 
 impl SurfaceId {
     /// Number of surfaces; also the length of [`MouseState::areas`].
-    pub const COUNT: usize = 13;
+    ///
+    /// Derived from the hit-order table rather than counted by hand: a literal
+    /// here drifted the moment a surface was added, and the failure is an
+    /// index panic on the first click instead of a compile error.
+    pub const COUNT: usize = Self::HIT_ORDER.len();
 
     /// Every surface, in hit-test priority order: the most modal overlay first,
     /// so a popup drawn over the log wins the point test.
@@ -241,6 +247,7 @@ impl SurfaceId {
         SurfaceId::DiffPopup,
         SurfaceId::ThinkingPopup,
         SurfaceId::SubagentPopup,
+        SurfaceId::TrajectoryPage,
         SurfaceId::CodePopup,
         SurfaceId::MermaidPopup,
         SurfaceId::TaskDagPopup,
@@ -304,6 +311,10 @@ pub struct MouseState {
     /// the view is drawn, cleared when it closes — a zero-size rect hits
     /// nothing.
     pub subagent_back_area: Rect,
+    /// The trajectory page's painted area, refreshed each frame while the page
+    /// is up and cleared when it closes. The page derives its content height
+    /// from this, so a stale rect would size the ledger wrong.
+    pub trajectory_page_area: Rect,
     /// Hit area of the subagent view's back-to-bottom pill, refreshed each
     /// frame and cleared on close. Empty while the view follows its tail.
     pub subagent_scroll_back_area: Rect,

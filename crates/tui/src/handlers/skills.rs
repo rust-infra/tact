@@ -103,6 +103,10 @@ fn dispatch_user_task(app: &mut App, display_text: String, agent_task: String) -
     app.input_history.saved.clear();
 
     app.status = Status::Planning;
+    // The ledger's turn boundary is the same moment the status bar counts a
+    // user turn, so the two cannot disagree about which turn a record belongs
+    // to. It takes the text before `add_user_message` consumes it.
+    app.begin_trajectory_turn(&display_text);
     app.add_user_message(display_text);
     app.plan_mut().reset();
     app.last_prompt_elapsed_secs = None;

@@ -8,5 +8,6 @@ pub(crate) mod pending;
 pub(crate) mod popups;
 pub(crate) mod registry;
 pub(crate) mod scroll;
+pub(crate) mod trajectory;
 pub(crate) mod visibility;
 pub(crate) mod voice;

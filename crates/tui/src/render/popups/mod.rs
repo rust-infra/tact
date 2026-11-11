@@ -22,6 +22,7 @@ pub(crate) mod subagent_popup;
 pub(crate) mod system_prompt_popup;
 pub(crate) mod task_dag_popup;
 pub(crate) mod thinking_popup;
+pub(crate) mod trajectory_page;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;

@@ -174,6 +174,13 @@ pub struct App {
     pub(crate) show_history: bool,
     pub(crate) show_help: bool,
     pub(crate) show_subagent_view: bool,
+    /// The trajectory page owns the main area while set.
+    pub(crate) show_trajectory: bool,
+    /// The run's ledger. Filled at ingestion because several fields it needs
+    /// are discarded downstream; see `agent_tui_kit::state::trajectory`.
+    pub(crate) trajectory: agent_tui_kit::state::trajectory::TrajectoryLog,
+    /// The reader's place in that ledger.
+    pub(crate) trajectory_page: agent_tui_kit::render::trajectory::TrajectoryPageState,
     pub(crate) focused_panel: FocusedPanel,
     // Mouse interaction
     pub(crate) mouse: MouseState,

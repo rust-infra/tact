@@ -359,6 +359,7 @@ pub struct Messages {
     pub cmd_hooks: &'static str,
     pub cmd_hook_output: &'static str,
     pub cmd_tasks_dag: &'static str,
+    pub cmd_trajectory: &'static str,
     pub cmd_stats: &'static str,
     pub cmd_background: &'static str,
     /// `/goal` — durable supervised Goal lifecycle.
@@ -761,6 +762,7 @@ impl Messages {
             cmd_hooks: tact_catalog::BuiltinCommand::Hooks.description().en,
             cmd_hook_output: tact_catalog::BuiltinCommand::HookOutput.description().en,
             cmd_tasks_dag: tact_catalog::BuiltinCommand::TasksDag.description().en,
+            cmd_trajectory: tact_catalog::BuiltinCommand::Trajectory.description().en,
             cmd_stats: tact_catalog::BuiltinCommand::Stats.description().en,
             cmd_background: tact_catalog::BuiltinCommand::Background.description().en,
             cmd_goal: tact_catalog::BuiltinCommand::Goal.description().en,
@@ -1108,6 +1110,7 @@ impl Messages {
             cmd_hooks: tact_catalog::BuiltinCommand::Hooks.description().zh,
             cmd_hook_output: tact_catalog::BuiltinCommand::HookOutput.description().zh,
             cmd_tasks_dag: tact_catalog::BuiltinCommand::TasksDag.description().zh,
+            cmd_trajectory: tact_catalog::BuiltinCommand::Trajectory.description().zh,
             cmd_stats: tact_catalog::BuiltinCommand::Stats.description().zh,
             cmd_background: tact_catalog::BuiltinCommand::Background.description().zh,
             cmd_goal: tact_catalog::BuiltinCommand::Goal.description().zh,

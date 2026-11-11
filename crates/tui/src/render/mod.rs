@@ -40,6 +40,8 @@ mod render_gap_tests;
 mod scene_tests;
 #[cfg(test)]
 mod tool_fold_tests;
+#[cfg(test)]
+mod trajectory_page_tests;
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_harness;

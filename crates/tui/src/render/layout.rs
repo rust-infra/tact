@@ -25,6 +25,10 @@ pub(crate) fn render_main_area(frame: &mut Frame, area: Rect, app: &mut App) {
         super::popups::subagent_popup::render_subagent_view(frame, area, app);
         return;
     }
+    if app.show_trajectory {
+        super::popups::trajectory_page::render_trajectory_view(frame, area, app);
+        return;
+    }
 
     let sticky_h = if super::task_panel::sticky_host_visible(app) {
         let content = super::task_panel::sticky_host_content_height(app) as u16;

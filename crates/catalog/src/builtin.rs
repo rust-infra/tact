@@ -47,6 +47,8 @@ pub enum BuiltinCommand {
     Stats,
     #[strum(serialize = "tasks-dag")]
     TasksDag,
+    #[strum(serialize = "trajectory")]
+    Trajectory,
     #[strum(serialize = "background")]
     Background,
     #[strum(serialize = "goal")]
@@ -156,6 +158,7 @@ impl BuiltinCommand {
         Self::Lang,
         Self::Stats,
         Self::TasksDag,
+        Self::Trajectory,
         Self::Background,
         Self::Goal,
     ];
@@ -248,6 +251,9 @@ impl BuiltinCommand {
             Self::Lang => LocalizedText::new("Toggle language (EN/中文)", "切换语言 (EN/中文)"),
             Self::Stats => LocalizedText::new("Show session statistics", "显示会话统计"),
             Self::TasksDag => LocalizedText::new("Show task dependency DAG", "显示任务依赖 DAG"),
+            Self::Trajectory => {
+                LocalizedText::new("Show the run's trajectory ledger", "显示本次运行的轨迹账本")
+            }
             Self::Background => {
                 LocalizedText::new("Check background task status", "查看后台任务状态")
             }
@@ -281,6 +287,7 @@ impl BuiltinCommand {
             Self::Lang => "lang",
             Self::Stats => "stats",
             Self::TasksDag => "tasks-dag",
+            Self::Trajectory => "trajectory",
             Self::Background => "background",
             Self::Goal => "goal",
         }
