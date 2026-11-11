@@ -3902,13 +3902,17 @@ mod tests {
         .await;
         let goal = drive_status(&real, goal, &[GoalStatus::Queued, GoalStatus::Running]).await;
 
-        let ttl = Duration::from_millis(20);
+        // The lease has to outlive the claim and the run start: 20 ms they used
+        // to get is inside CI's scheduling jitter, and the start then failed
+        // with `stale lease` before the code under test ran at all. The lapse
+        // still has to happen, so the window moved out instead of shrinking.
+        let ttl = Duration::from_secs(1);
         let token = real.claim_lease("crashed-runner", ttl).await.unwrap();
         let run = real
             .start_run_with_lease(&token, ttl, GoalRun::new(goal.id.clone()))
             .await
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(60)).await;
+        tokio::time::sleep(Duration::from_millis(1200)).await;
         // The crashed process never releases its lease or finishes its run.
         drop(token);
 
@@ -3967,12 +3971,12 @@ mod tests {
         .await;
         let goal = drive_status(&real, goal, &[GoalStatus::Queued, GoalStatus::Running]).await;
 
-        let ttl = Duration::from_millis(20);
+        let ttl = Duration::from_secs(1);
         let token = real.claim_lease("crashed-runner", ttl).await.unwrap();
         real.start_run_with_lease(&token, ttl, GoalRun::new(goal.id.clone()))
             .await
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(60)).await;
+        tokio::time::sleep(Duration::from_millis(1200)).await;
         drop(token);
 
         let db_path = work_dir.join(".tact").join("tact.db");
