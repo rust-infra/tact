@@ -1,6 +1,6 @@
 # Tact LLM Stable Public API Inventory
 
-Reviewed 2026-10-29. The stable root is curated in
+Reviewed 2026-11-08. The stable root is curated in
 `crates/tact_llm/src/lib.rs`; compatibility modules are private unless
 `legacy-tact` is enabled.
 

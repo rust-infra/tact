@@ -14,6 +14,10 @@ pub fn set_dock_badge(label: Option<String>) {
     #[allow(unused_imports)]
     use objc::{sel, sel_impl};
 
+    // SAFETY: every receiver is an AppKit object returned by the preceding
+    // call and nil-checked before use, each selector matches AppKit's declared
+    // signature for that receiver, and `text` is an owned `NSString` (+1, never
+    // released here) that outlives the `setBadgeLabel:` message reading it.
     unsafe {
         let app: id = NSApplication::sharedApplication(nil);
         if app == nil {

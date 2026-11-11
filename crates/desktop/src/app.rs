@@ -128,11 +128,6 @@ fn run_inner(smoke: bool) -> Result<(), DesktopStartError> {
         config.initial_project = std::env::current_dir().ok();
     }
     config.install_process_config()?;
-    if !config.appearance_explicit
-        && let Some(theme) = tact_desktop_core::configured_theme()
-    {
-        config.appearance = tact_desktop_core::appearance_from_theme(&theme);
-    }
     tact_desktop_core::install_exit_listener()?;
     let (controller, events) = DesktopController::start(config)?;
     let shutdown_state = Arc::new(ShutdownState::default());
@@ -142,7 +137,7 @@ fn run_inner(smoke: bool) -> Result<(), DesktopStartError> {
     gpui_platform::application()
         .with_assets(crate::assets::Assets)
         .run(move |cx: &mut App| {
-            gpui_ai::init(cx);
+            gpui_component::init(cx);
             if let Err(error) = cx.text_system().add_fonts(vec![
                 Cow::Borrowed(include_bytes!("../assets/fonts/IBMPlexSans-Regular.ttf").as_slice()),
                 Cow::Borrowed(include_bytes!("../assets/fonts/Lilex-Regular.ttf").as_slice()),
@@ -150,6 +145,7 @@ fn run_inner(smoke: bool) -> Result<(), DesktopStartError> {
                 eprintln!("failed to register Tact Desktop fonts: {error:#}");
             }
             let initial = controller.snapshot();
+            crate::platform::install_app_identity();
             let close_language = initial.language;
             let system_reduce_motion =
                 cx.reduce_motion() || crate::platform::system_reduced_motion();
@@ -185,7 +181,7 @@ fn run_inner(smoke: bool) -> Result<(), DesktopStartError> {
                 }
             });
             std::mem::forget(quit_subscription);
-            crate::theme::apply(initial.appearance, None, cx);
+            crate::theme::apply(initial.theme, initial.appearance, None, cx);
             let controller_for_root = controller.clone();
             let controller_for_close = controller.clone();
             let shutdown_for_close = shutdown_state.clone();
@@ -197,10 +193,11 @@ fn run_inner(smoke: bool) -> Result<(), DesktopStartError> {
             #[cfg(target_os = "linux")]
             {
                 window_options.window_decorations = Some(gpui::WindowDecorations::Client);
+                window_options.icon = crate::platform::icon::window_icon();
             }
             window_options.window_bounds = Some(WindowBounds::Windowed(bounds));
             cx.open_window(window_options, move |window, cx| {
-                crate::theme::apply(initial.appearance, Some(window), cx);
+                crate::theme::apply(initial.theme, initial.appearance, Some(window), cx);
                 window.on_window_should_close(cx, move |_, cx| {
                     if shutdown_for_close.is_succeeded() {
                         return true;

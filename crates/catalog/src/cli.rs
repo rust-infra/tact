@@ -161,6 +161,7 @@ pub enum SettingId {
     HookOutput,
     ModelContextWindow,
     Theme,
+    ThemeFamily,
     Language,
     SnapshotMaxItems,
     MicroCompact,
@@ -184,6 +185,7 @@ impl SettingId {
         Self::HookOutput,
         Self::ModelContextWindow,
         Self::Theme,
+        Self::ThemeFamily,
         Self::Language,
         Self::SnapshotMaxItems,
         Self::MicroCompact,
@@ -207,6 +209,7 @@ impl SettingId {
             Self::HookOutput => "hook-output",
             Self::ModelContextWindow => "model-context-window",
             Self::Theme => "theme",
+            Self::ThemeFamily => "theme-family",
             Self::Language => "language",
             Self::SnapshotMaxItems => "snapshot-max-items",
             Self::MicroCompact => "micro-compact",
@@ -233,6 +236,7 @@ impl SettingId {
                 LocalizedText::new("Model context window", "模型上下文窗口")
             }
             Self::Theme => LocalizedText::new("Theme", "主题"),
+            Self::ThemeFamily => LocalizedText::new("Theme family", "主题系列"),
             Self::Language => LocalizedText::new("Language", "语言"),
             Self::SnapshotMaxItems => LocalizedText::new("Snapshot max items", "快照最大条目数"),
             Self::MicroCompact => LocalizedText::new("Micro compaction", "微型压缩"),
@@ -262,6 +266,7 @@ impl SettingId {
             | Self::Notifications
             | Self::HookOutput
             | Self::Theme
+            | Self::ThemeFamily
             | Self::Language => LocalizedText::new("Live setting", "实时设置"),
         }
     }
@@ -378,6 +383,7 @@ pub enum FixedChoiceSet {
     ReasoningEffort,
     PermissionMode,
     Theme,
+    ThemeFamily,
     Language,
     Boolean,
 }

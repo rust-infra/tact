@@ -3,8 +3,6 @@
 Tact binaries include third-party Rust crates distributed under their own
 licenses. The primary UI dependencies are:
 
-- `gpui-ai` 0.8.0 (local localization patch): MIT. See
-  `vendor/gpui-ai/LICENSE`.
 - `gpui-pre` 0.3.3: Apache-2.0.
 - `gpui-component` 0.6.0: Apache-2.0.
 - `gpui-base` 0.6.0: Apache-2.0.

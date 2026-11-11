@@ -1,17 +1,77 @@
 use gpui::{Hsla, px, rgba};
 use gpui_component::{Theme, ThemeMode};
-use tact_desktop_core::Appearance;
+use tact_desktop_core::{Appearance, DesktopTheme};
 
 use std::sync::OnceLock;
 
 static REDUCED_TRANSPARENCY: OnceLock<bool> = OnceLock::new();
 static HIGH_CONTRAST: OnceLock<bool> = OnceLock::new();
 
-/// Tact Desktop uses the macOS system palette from the design prototype rather
-/// than the neutral grayscale defaults of the component library. The shell and
-/// the embedded components share one palette so a Tact row and a `gpui-ai`
-/// surface cannot drift apart between Light and Dark.
-pub fn apply(appearance: Appearance, window: Option<&mut gpui::Window>, cx: &mut gpui::App) {
+/// One complete desktop palette. The shell, the transcript, and every embedded
+/// `gpui-component` surface read the same values, so a theme family changes the
+/// whole window rather than repainting the chrome around fixed Apple colours.
+#[derive(Clone, Copy)]
+pub struct Palette {
+    pub background: Hsla,
+    pub foreground: Hsla,
+    pub border: Hsla,
+    pub input: Hsla,
+    pub muted: Hsla,
+    pub muted_foreground: Hsla,
+    pub popover: Hsla,
+    pub popover_foreground: Hsla,
+    pub accent: Hsla,
+    pub accent_foreground: Hsla,
+    pub primary: Hsla,
+    pub primary_hover: Hsla,
+    pub primary_active: Hsla,
+    pub primary_foreground: Hsla,
+    pub secondary: Hsla,
+    pub secondary_hover: Hsla,
+    pub secondary_active: Hsla,
+    pub secondary_foreground: Hsla,
+    pub selection: Hsla,
+    pub ring: Hsla,
+    pub sidebar: Hsla,
+    pub sidebar_foreground: Hsla,
+    pub sidebar_border: Hsla,
+    pub sidebar_accent: Hsla,
+    pub sidebar_accent_foreground: Hsla,
+    pub sidebar_primary: Hsla,
+    pub sidebar_primary_foreground: Hsla,
+    pub title_bar: Hsla,
+    pub title_bar_border: Hsla,
+    pub link: Hsla,
+    pub link_hover: Hsla,
+    pub link_active: Hsla,
+    pub success: Hsla,
+    pub success_foreground: Hsla,
+    pub warning: Hsla,
+    pub warning_foreground: Hsla,
+    pub danger: Hsla,
+    pub danger_foreground: Hsla,
+    pub caret: Hsla,
+    pub group_box: Hsla,
+    pub group_box_foreground: Hsla,
+}
+
+pub fn palette(theme: DesktopTheme, appearance: Appearance) -> Palette {
+    match (theme, appearance) {
+        (DesktopTheme::Tact, Appearance::Light) => tact_light(),
+        (DesktopTheme::Tact, Appearance::Dark) => tact_dark(),
+        (DesktopTheme::Claude, Appearance::Light) => claude_light(),
+        (DesktopTheme::Claude, Appearance::Dark) => claude_dark(),
+        (DesktopTheme::Cursor, Appearance::Light) => cursor_light(),
+        (DesktopTheme::Cursor, Appearance::Dark) => cursor_dark(),
+    }
+}
+
+pub fn apply(
+    theme_family: DesktopTheme,
+    appearance: Appearance,
+    window: Option<&mut gpui::Window>,
+    cx: &mut gpui::App,
+) {
     Theme::change(
         match appearance {
             Appearance::Light => ThemeMode::Light,
@@ -28,95 +88,327 @@ pub fn apply(appearance: Appearance, window: Option<&mut gpui::Window>, cx: &mut
     theme.radius = px(10.);
     theme.radius_lg = px(14.);
     theme.shadow = true;
-    apply_palette(theme, matches!(appearance, Appearance::Dark));
+    apply_palette(theme, &palette(theme_family, appearance));
     Theme::sync_base(cx);
 }
 
-fn apply_palette(theme: &mut Theme, dark: bool) {
-    if dark {
-        theme.background = color(0x1c1c1e);
-        theme.foreground = color(0xf5f5f7);
-        theme.border = alpha(0xffffff, 0.10);
-        theme.input = alpha(0xffffff, 0.16);
-        theme.muted = color(0x2c2c2e);
-        theme.muted_foreground = color(0x98989d);
-        theme.popover = color(0x2c2c2e);
-        theme.popover_foreground = color(0xf5f5f7);
-        theme.accent = alpha(0x0a84ff, 0.18);
-        theme.accent_foreground = color(0xf5f5f7);
-        theme.primary = color(0x0a84ff);
-        theme.primary_hover = color(0x409cff);
-        theme.primary_active = color(0x0063ce);
-        theme.primary_foreground = color(0xffffff);
-        theme.secondary = color(0x3a3a3c);
-        theme.secondary_hover = color(0x48484a);
-        theme.secondary_active = color(0x2c2c2e);
-        theme.secondary_foreground = color(0xf5f5f7);
-        theme.selection = alpha(0x0a84ff, 0.28);
-        theme.ring = alpha(0x0a84ff, 0.55);
-        theme.sidebar = alpha(0x1c1c1e, 0.82);
-        theme.sidebar_foreground = color(0xf5f5f7);
-        theme.sidebar_border = alpha(0xffffff, 0.08);
-        theme.sidebar_accent = alpha(0x0a84ff, 0.22);
-        theme.sidebar_accent_foreground = color(0xf5f5f7);
-        theme.sidebar_primary = color(0x0a84ff);
-        theme.sidebar_primary_foreground = color(0xffffff);
-        theme.title_bar = color(0x2c2c2e);
-        theme.title_bar_border = alpha(0xffffff, 0.08);
-        theme.link = color(0x409cff);
-        theme.link_hover = color(0x64b5ff);
-        theme.link_active = color(0x0a84ff);
-        theme.success = color(0x30d158);
-        theme.success_foreground = color(0xffffff);
-        theme.warning = color(0xff9f0a);
-        theme.warning_foreground = color(0x1c1c1e);
-        theme.danger = color(0xff453a);
-        theme.danger_foreground = color(0xffffff);
-        theme.caret = color(0x0a84ff);
-        theme.group_box = color(0x242426);
-        theme.group_box_foreground = color(0xf5f5f7);
-    } else {
-        theme.background = color(0xf5f5f7);
-        theme.foreground = color(0x1d1d1f);
-        theme.border = alpha(0x3c3c43, 0.14);
-        theme.input = alpha(0x3c3c43, 0.20);
-        theme.muted = color(0xececf1);
-        theme.muted_foreground = color(0x6e6e73);
-        theme.popover = color(0xffffff);
-        theme.popover_foreground = color(0x1d1d1f);
-        theme.accent = alpha(0x007aff, 0.12);
-        theme.accent_foreground = color(0x1d1d1f);
-        theme.primary = color(0x007aff);
-        theme.primary_hover = color(0x3395ff);
-        theme.primary_active = color(0x0063ce);
-        theme.primary_foreground = color(0xffffff);
-        theme.secondary = color(0xececf1);
-        theme.secondary_hover = color(0xe2e2e8);
-        theme.secondary_active = color(0xd7d7de);
-        theme.secondary_foreground = color(0x1d1d1f);
-        theme.selection = alpha(0x007aff, 0.16);
-        theme.ring = alpha(0x007aff, 0.45);
-        theme.sidebar = color(0xf2f2f7);
-        theme.sidebar_foreground = color(0x1d1d1f);
-        theme.sidebar_border = alpha(0x3c3c43, 0.12);
-        theme.sidebar_accent = alpha(0x007aff, 0.12);
-        theme.sidebar_accent_foreground = color(0x1d1d1f);
-        theme.sidebar_primary = color(0x007aff);
-        theme.sidebar_primary_foreground = color(0xffffff);
-        theme.title_bar = color(0xffffff);
-        theme.title_bar_border = alpha(0x3c3c43, 0.12);
-        theme.link = color(0x007aff);
-        theme.link_hover = color(0x0063ce);
-        theme.link_active = color(0x004999);
-        theme.success = color(0x34c759);
-        theme.success_foreground = color(0xffffff);
-        theme.warning = color(0xff9f0a);
-        theme.warning_foreground = color(0x1d1d1f);
-        theme.danger = color(0xff453a);
-        theme.danger_foreground = color(0xffffff);
-        theme.caret = color(0x007aff);
-        theme.group_box = color(0xffffff);
-        theme.group_box_foreground = color(0x1d1d1f);
+fn apply_palette(theme: &mut Theme, palette: &Palette) {
+    theme.background = palette.background;
+    theme.foreground = palette.foreground;
+    theme.border = palette.border;
+    theme.input = palette.input;
+    theme.muted = palette.muted;
+    theme.muted_foreground = palette.muted_foreground;
+    theme.popover = palette.popover;
+    theme.popover_foreground = palette.popover_foreground;
+    theme.accent = palette.accent;
+    theme.accent_foreground = palette.accent_foreground;
+    theme.primary = palette.primary;
+    theme.primary_hover = palette.primary_hover;
+    theme.primary_active = palette.primary_active;
+    theme.primary_foreground = palette.primary_foreground;
+    theme.secondary = palette.secondary;
+    theme.secondary_hover = palette.secondary_hover;
+    theme.secondary_active = palette.secondary_active;
+    theme.secondary_foreground = palette.secondary_foreground;
+    theme.selection = palette.selection;
+    theme.ring = palette.ring;
+    theme.sidebar = palette.sidebar;
+    theme.sidebar_foreground = palette.sidebar_foreground;
+    theme.sidebar_border = palette.sidebar_border;
+    theme.sidebar_accent = palette.sidebar_accent;
+    theme.sidebar_accent_foreground = palette.sidebar_accent_foreground;
+    theme.sidebar_primary = palette.sidebar_primary;
+    theme.sidebar_primary_foreground = palette.sidebar_primary_foreground;
+    theme.title_bar = palette.title_bar;
+    theme.title_bar_border = palette.title_bar_border;
+    theme.link = palette.link;
+    theme.link_hover = palette.link_hover;
+    theme.link_active = palette.link_active;
+    theme.success = palette.success;
+    theme.success_foreground = palette.success_foreground;
+    theme.warning = palette.warning;
+    theme.warning_foreground = palette.warning_foreground;
+    theme.danger = palette.danger;
+    theme.danger_foreground = palette.danger_foreground;
+    theme.caret = palette.caret;
+    theme.group_box = palette.group_box;
+    theme.group_box_foreground = palette.group_box_foreground;
+}
+
+fn tact_light() -> Palette {
+    Palette {
+        background: color(0xf5f5f7),
+        foreground: color(0x1d1d1f),
+        border: alpha(0x3c3c43, 0.14),
+        input: alpha(0x3c3c43, 0.20),
+        muted: color(0xececf1),
+        muted_foreground: color(0x6e6e73),
+        popover: color(0xffffff),
+        popover_foreground: color(0x1d1d1f),
+        accent: alpha(0x007aff, 0.12),
+        accent_foreground: color(0x1d1d1f),
+        primary: color(0x007aff),
+        primary_hover: color(0x3395ff),
+        primary_active: color(0x0063ce),
+        primary_foreground: color(0xffffff),
+        secondary: color(0xececf1),
+        secondary_hover: color(0xe2e2e8),
+        secondary_active: color(0xd7d7de),
+        secondary_foreground: color(0x1d1d1f),
+        selection: alpha(0x007aff, 0.16),
+        ring: alpha(0x007aff, 0.45),
+        sidebar: color(0xf2f2f7),
+        sidebar_foreground: color(0x1d1d1f),
+        sidebar_border: alpha(0x3c3c43, 0.12),
+        sidebar_accent: alpha(0x007aff, 0.12),
+        sidebar_accent_foreground: color(0x1d1d1f),
+        sidebar_primary: color(0x007aff),
+        sidebar_primary_foreground: color(0xffffff),
+        title_bar: color(0xf5f5f7),
+        title_bar_border: alpha(0x3c3c43, 0.14),
+        link: color(0x007aff),
+        link_hover: color(0x0063ce),
+        link_active: color(0x004999),
+        success: color(0x34c759),
+        success_foreground: color(0xffffff),
+        warning: color(0xff9f0a),
+        warning_foreground: color(0x1d1d1f),
+        danger: color(0xff453a),
+        danger_foreground: color(0xffffff),
+        caret: color(0x007aff),
+        group_box: color(0xffffff),
+        group_box_foreground: color(0x1d1d1f),
+    }
+}
+
+fn tact_dark() -> Palette {
+    Palette {
+        background: color(0x1c1c1e),
+        foreground: color(0xf5f5f7),
+        border: alpha(0xffffff, 0.10),
+        input: alpha(0xffffff, 0.16),
+        muted: color(0x2c2c2e),
+        muted_foreground: color(0x98989d),
+        popover: color(0x2c2c2e),
+        popover_foreground: color(0xf5f5f7),
+        accent: alpha(0x0a84ff, 0.18),
+        accent_foreground: color(0xf5f5f7),
+        primary: color(0x0a84ff),
+        primary_hover: color(0x409cff),
+        primary_active: color(0x0063ce),
+        primary_foreground: color(0xffffff),
+        secondary: color(0x3a3a3c),
+        secondary_hover: color(0x48484a),
+        secondary_active: color(0x2c2c2e),
+        secondary_foreground: color(0xf5f5f7),
+        selection: alpha(0x0a84ff, 0.28),
+        ring: alpha(0x0a84ff, 0.55),
+        sidebar: alpha(0x1c1c1e, 0.82),
+        sidebar_foreground: color(0xf5f5f7),
+        sidebar_border: alpha(0xffffff, 0.08),
+        sidebar_accent: alpha(0x0a84ff, 0.22),
+        sidebar_accent_foreground: color(0xf5f5f7),
+        sidebar_primary: color(0x0a84ff),
+        sidebar_primary_foreground: color(0xffffff),
+        title_bar: color(0x1c1c1e),
+        title_bar_border: alpha(0xffffff, 0.10),
+        link: color(0x409cff),
+        link_hover: color(0x64b5ff),
+        link_active: color(0x0a84ff),
+        success: color(0x30d158),
+        success_foreground: color(0xffffff),
+        warning: color(0xff9f0a),
+        warning_foreground: color(0x1c1c1e),
+        danger: color(0xff453a),
+        danger_foreground: color(0xffffff),
+        caret: color(0x0a84ff),
+        group_box: color(0x242426),
+        group_box_foreground: color(0xf5f5f7),
+    }
+}
+
+fn claude_light() -> Palette {
+    Palette {
+        background: color(0xfaf9f5),
+        foreground: color(0x1f1e1d),
+        border: color(0xd9d6cc),
+        input: alpha(0x8a8579, 0.25),
+        muted: color(0xf0eee6),
+        muted_foreground: color(0x6e6a60),
+        popover: color(0xffffff),
+        popover_foreground: color(0x1f1e1d),
+        accent: alpha(0xb85535, 0.12),
+        accent_foreground: color(0x1f1e1d),
+        primary: color(0xb85535),
+        primary_hover: color(0xc96442),
+        primary_active: color(0x9e4529),
+        primary_foreground: color(0xffffff),
+        secondary: color(0xf0eee6),
+        secondary_hover: color(0xe8e4da),
+        secondary_active: color(0xddd8cc),
+        secondary_foreground: color(0x1f1e1d),
+        selection: alpha(0xb85535, 0.16),
+        ring: alpha(0xb85535, 0.45),
+        sidebar: color(0xf0eee6),
+        sidebar_foreground: color(0x1f1e1d),
+        sidebar_border: color(0xe2ded3),
+        sidebar_accent: alpha(0xb85535, 0.12),
+        sidebar_accent_foreground: color(0x1f1e1d),
+        sidebar_primary: color(0xb85535),
+        sidebar_primary_foreground: color(0xffffff),
+        title_bar: color(0xfaf9f5),
+        title_bar_border: color(0xd9d6cc),
+        link: color(0xb85535),
+        link_hover: color(0xc96442),
+        link_active: color(0x9e4529),
+        success: color(0x3d7a55),
+        success_foreground: color(0xffffff),
+        warning: color(0xbe7814),
+        warning_foreground: color(0x1f1e1d),
+        danger: color(0xbf4d43),
+        danger_foreground: color(0xffffff),
+        caret: color(0xb85535),
+        group_box: color(0xffffff),
+        group_box_foreground: color(0x1f1e1d),
+    }
+}
+
+fn claude_dark() -> Palette {
+    Palette {
+        background: color(0x262624),
+        foreground: color(0xf0eee6),
+        border: color(0x444340),
+        input: alpha(0xf0eee6, 0.16),
+        muted: color(0x3a3937),
+        muted_foreground: color(0xb7b5ac),
+        popover: color(0x30302e),
+        popover_foreground: color(0xf0eee6),
+        accent: alpha(0xd97757, 0.18),
+        accent_foreground: color(0xf0eee6),
+        primary: color(0xd97757),
+        primary_hover: color(0xe08a6a),
+        primary_active: color(0xc15f3c),
+        primary_foreground: color(0x1f1e1d),
+        secondary: color(0x3a3937),
+        secondary_hover: color(0x444340),
+        secondary_active: color(0x30302e),
+        secondary_foreground: color(0xf0eee6),
+        selection: alpha(0xd97757, 0.28),
+        ring: alpha(0xd97757, 0.55),
+        sidebar: color(0x1f1e1d),
+        sidebar_foreground: color(0xf0eee6),
+        sidebar_border: color(0x3a3937),
+        sidebar_accent: alpha(0xd97757, 0.18),
+        sidebar_accent_foreground: color(0xf0eee6),
+        sidebar_primary: color(0xd97757),
+        sidebar_primary_foreground: color(0x1f1e1d),
+        title_bar: color(0x262624),
+        title_bar_border: color(0x444340),
+        link: color(0xe08a6a),
+        link_hover: color(0xe8a184),
+        link_active: color(0xd97757),
+        success: color(0x7faf8b),
+        success_foreground: color(0x1f1e1d),
+        warning: color(0xe0a458),
+        warning_foreground: color(0x1f1e1d),
+        danger: color(0xe57368),
+        danger_foreground: color(0x1f1e1d),
+        caret: color(0xd97757),
+        group_box: color(0x30302e),
+        group_box_foreground: color(0xf0eee6),
+    }
+}
+
+fn cursor_light() -> Palette {
+    Palette {
+        background: color(0xffffff),
+        foreground: color(0x1f1f1f),
+        border: color(0xe5e5e5),
+        input: alpha(0x1f1f1f, 0.08),
+        muted: color(0xf3f3f3),
+        muted_foreground: color(0x6b6b6b),
+        popover: color(0xffffff),
+        popover_foreground: color(0x1f1f1f),
+        accent: alpha(0x005fb8, 0.10),
+        accent_foreground: color(0x1f1f1f),
+        primary: color(0x005fb8),
+        primary_hover: color(0x0070d8),
+        primary_active: color(0x004e96),
+        primary_foreground: color(0xffffff),
+        secondary: color(0xf3f3f3),
+        secondary_hover: color(0xebebeb),
+        secondary_active: color(0xe0e0e0),
+        secondary_foreground: color(0x1f1f1f),
+        selection: alpha(0x005fb8, 0.14),
+        ring: alpha(0x005fb8, 0.45),
+        sidebar: color(0xf8f8f8),
+        sidebar_foreground: color(0x1f1f1f),
+        sidebar_border: color(0xe5e5e5),
+        sidebar_accent: alpha(0x005fb8, 0.10),
+        sidebar_accent_foreground: color(0x1f1f1f),
+        sidebar_primary: color(0x005fb8),
+        sidebar_primary_foreground: color(0xffffff),
+        title_bar: color(0xffffff),
+        title_bar_border: color(0xe5e5e5),
+        link: color(0x005fb8),
+        link_hover: color(0x0070d8),
+        link_active: color(0x004e96),
+        success: color(0x2e7d32),
+        success_foreground: color(0xffffff),
+        warning: color(0xbf8803),
+        warning_foreground: color(0x1f1f1f),
+        danger: color(0xe51400),
+        danger_foreground: color(0xffffff),
+        caret: color(0x005fb8),
+        group_box: color(0xffffff),
+        group_box_foreground: color(0x1f1f1f),
+    }
+}
+
+fn cursor_dark() -> Palette {
+    Palette {
+        background: color(0x181818),
+        foreground: color(0xd4d4d4),
+        border: color(0x2b2b2b),
+        input: alpha(0xd4d4d4, 0.12),
+        muted: color(0x222222),
+        muted_foreground: color(0x9d9d9d),
+        popover: color(0x1f1f1f),
+        popover_foreground: color(0xd4d4d4),
+        accent: alpha(0x3794ff, 0.16),
+        accent_foreground: color(0xd4d4d4),
+        primary: color(0x0078d4),
+        primary_hover: color(0x1a8ad4),
+        primary_active: color(0x0062b1),
+        primary_foreground: color(0xffffff),
+        secondary: color(0x222222),
+        secondary_hover: color(0x2b2b2b),
+        secondary_active: color(0x303030),
+        secondary_foreground: color(0xd4d4d4),
+        selection: alpha(0x0078d4, 0.28),
+        ring: alpha(0x3794ff, 0.55),
+        sidebar: color(0x141414),
+        sidebar_foreground: color(0xd4d4d4),
+        sidebar_border: color(0x2b2b2b),
+        sidebar_accent: alpha(0x3794ff, 0.16),
+        sidebar_accent_foreground: color(0xffffff),
+        sidebar_primary: color(0x0078d4),
+        sidebar_primary_foreground: color(0xffffff),
+        title_bar: color(0x181818),
+        title_bar_border: color(0x2b2b2b),
+        link: color(0x3794ff),
+        link_hover: color(0x58a6ff),
+        link_active: color(0x4daafc),
+        success: color(0x89d185),
+        success_foreground: color(0x181818),
+        warning: color(0xcca700),
+        warning_foreground: color(0x181818),
+        danger: color(0xf14c4c),
+        danger_foreground: color(0x181818),
+        caret: color(0x3794ff),
+        group_box: color(0x1f1f1f),
+        group_box_foreground: color(0xd4d4d4),
     }
 }
 
@@ -171,9 +463,67 @@ pub fn border_width() -> f32 {
 
 #[cfg(test)]
 mod tests {
+    use super::{Appearance, DesktopTheme, color, palette};
+
     #[test]
     fn contrast_and_transparency_helpers_have_solid_fallbacks() {
         assert!(super::scrim_opacity() >= 0.35);
         assert!(super::border_width() >= 1.0);
+    }
+
+    #[test]
+    fn tact_palette_keeps_the_existing_apple_primary() {
+        let light = palette(DesktopTheme::Tact, Appearance::Light);
+        assert_eq!(light.primary, color(0x007aff));
+        assert_eq!(light.background, color(0xf5f5f7));
+
+        let dark = palette(DesktopTheme::Tact, Appearance::Dark);
+        assert_eq!(dark.primary, color(0x0a84ff));
+        assert_eq!(dark.background, color(0x1c1c1e));
+    }
+
+    #[test]
+    fn claude_palette_uses_the_warm_cream_and_orange_pair() {
+        let light = palette(DesktopTheme::Claude, Appearance::Light);
+        assert_eq!(light.background, color(0xfaf9f5));
+        assert_eq!(light.primary, color(0xb85535));
+
+        let dark = palette(DesktopTheme::Claude, Appearance::Dark);
+        assert_eq!(dark.background, color(0x262624));
+        assert_eq!(dark.primary, color(0xd97757));
+    }
+
+    #[test]
+    fn cursor_palette_uses_the_editor_chrome_and_blue_accent() {
+        let light = palette(DesktopTheme::Cursor, Appearance::Light);
+        assert_eq!(light.background, color(0xffffff));
+        assert_eq!(light.sidebar, color(0xf8f8f8));
+        assert_eq!(light.primary, color(0x005fb8));
+
+        let dark = palette(DesktopTheme::Cursor, Appearance::Dark);
+        assert_eq!(dark.background, color(0x181818));
+        assert_eq!(dark.sidebar, color(0x141414));
+        assert_eq!(dark.primary, color(0x0078d4));
+    }
+
+    #[test]
+    fn title_bar_shares_the_chat_background() {
+        for theme in [
+            DesktopTheme::Tact,
+            DesktopTheme::Claude,
+            DesktopTheme::Cursor,
+        ] {
+            for appearance in [Appearance::Light, Appearance::Dark] {
+                let palette = palette(theme, appearance);
+                assert_eq!(
+                    palette.title_bar, palette.background,
+                    "{theme:?} {appearance:?} title bar must match the chat background"
+                );
+                assert_eq!(
+                    palette.title_bar_border, palette.border,
+                    "{theme:?} {appearance:?} title bar border must match the shell border"
+                );
+            }
+        }
     }
 }

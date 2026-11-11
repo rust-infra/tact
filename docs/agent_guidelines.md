@@ -14,13 +14,13 @@ ensure consistent and efficient tool usage in this project.
   already part of the arguments, no extra cost). The user can click the card to
   run `git diff` for the full comparison.
 - Avoid running auto-diff on every edit — it impacts performance.
-- For multi-line or structured changes, prefer `apply_patch`. For new files or
-  complete rewrites, use `write_file`.
+- For multi-line or structured changes, prefer `edit_file` with a larger
+  `new_text`. For new files or complete rewrites, use `write_file`.
 
 ### bash and the workspace path space
 
 - By default `bash` runs on the host and `pwd` is the project directory, so host
-  absolute paths from `read_file` / `grep` results can be used as-is.
+  absolute paths from file reads and workspace searches can be used as-is.
 - When the session has the opt-in sandbox enabled (`[tools] sandbox = true`,
   Linux only), the `bash` tool description says so. Then the shell sees the workspace at
   `/workspace` (the host path is *not* mounted) and the

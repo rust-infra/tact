@@ -209,6 +209,8 @@ pub struct Messages {
     pub theme_brutal: &'static str,
     pub theme_ink: &'static str,
     pub theme_ink_light: &'static str,
+    pub theme_claude: &'static str,
+    pub theme_claude_dark: &'static str,
     pub status_idle_tmpl: &'static str,
     pub status_planning: &'static str,
     pub status_executing_tmpl: &'static str,
@@ -611,6 +613,8 @@ impl Messages {
             theme_brutal: "Brutal",
             theme_ink: "Ink",
             theme_ink_light: "InkLight",
+            theme_claude: "Claude",
+            theme_claude_dark: "Claude Dark",
             // Four placeholders, filled in this order: mode, focused panel,
             // theme, language. The focused-panel slot mirrors the other
             // `render_status_bar` arms (`{mode} {focus} │ …`).
@@ -959,6 +963,8 @@ impl Messages {
             theme_brutal: "粗野",
             theme_ink: "墨色",
             theme_ink_light: "墨色亮",
+            theme_claude: "Claude",
+            theme_claude_dark: "Claude 暗",
             status_idle_tmpl: "{} {} │ H 历史 │ 🎨 {} │ 🌐 {} │ ? 帮助 │ ✕ 退出",
             status_planning: "规划中...",
             status_executing_tmpl: "正在执行步骤 {}",

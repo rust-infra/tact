@@ -133,6 +133,7 @@ pub fn agent_message(message: &Message) -> AgentMessage {
         agent_origin(role, message.kind, &blocks),
         blocks.iter().map(agent_content_block).collect(),
     )
+    .with_phase(message.phase)
 }
 
 pub fn llm_message(message: &AgentMessage) -> Message {
@@ -140,6 +141,7 @@ pub fn llm_message(message: &AgentMessage) -> Message {
         llm_role(message.role),
         message.content.iter().map(llm_content_block).collect(),
     )
+    .with_phase(message.phase)
 }
 
 pub fn neutral_message(message: &Message) -> ModelMessage {
@@ -283,7 +285,8 @@ pub fn model_response(response: LlmResponse, message_id: MessageId) -> ModelResp
             AgentRole::Assistant,
             MessageOrigin::Assistant,
             response.blocks.iter().map(agent_content_block).collect(),
-        ),
+        )
+        .with_phase(response.phase),
         stop_reason: neutral_stop_reason(response.stop_reason),
         usage: response.usage.as_ref().map(neutral_usage),
         request_body: response.request_body,
@@ -293,6 +296,7 @@ pub fn model_response(response: LlmResponse, message_id: MessageId) -> ModelResp
 
 pub fn llm_response(response: ModelResponse) -> Result<LlmResponse, ModelError> {
     Ok(LlmResponse {
+        phase: response.message.phase,
         blocks: response
             .message
             .content
@@ -557,6 +561,7 @@ mod tests {
             blocks: vec![ContentBlock::Text {
                 text: "answer".into(),
             }],
+            phase: None,
             stop_reason: Some(StopReason::EndTurn),
             usage: Some(TokenUsageInfo {
                 prompt: 1,

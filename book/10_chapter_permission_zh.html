@@ -409,7 +409,7 @@
 <li class="toc-l3"><a href="#131-%E5%9B%BA%E5%AE%9A%E6%A3%80%E6%9F%A5%E7%82%B9" title="13.1 固定检查点"><span class="toc-label">13.1 固定检查点</span></a></li>
 <li class="toc-l3"><a href="#132-readpath--read_file--read_image" title="13.2 ReadPath —— read_file / read_image"><span class="toc-label">13.2 ReadPath —— read_file / read_image</span></a></li>
 <li class="toc-l3"><a href="#133-writepath--write_file--edit_file" title="13.3 WritePath —— write_file / edit_file"><span class="toc-label">13.3 WritePath —— write_file / edit_file</span></a></li>
-<li class="toc-l3"><a href="#134-patchpaths--apply_patch" title="13.4 PatchPaths —— apply_patch"><span class="toc-label">13.4 PatchPaths —— apply_patch</span></a></li>
+<li class="toc-l3"><a href="#134-patchpaths--apply_patch" title="13.4 PatchPaths —— 补丁头路径"><span class="toc-label">13.4 PatchPaths —— 补丁头路径</span></a></li>
 <li class="toc-l3"><a href="#135-shellcommand--bash--background_run--worktree_run" title="13.5 ShellCommand —— bash / background_run / worktree_run"><span class="toc-label">13.5 ShellCommand —— bash / background_run / worktree_run</span></a></li>
 <li class="toc-l3"><a href="#136-%E5%AF%B9%E7%85%A7%E8%A1%A8allow-%E7%9A%84%E4%B8%A4%E7%A7%8D%E5%90%AB%E4%B9%89%E7%9B%B2%E5%8C%BA" title="13.6 对照表、allow 的两种含义、盲区"><span class="toc-label">13.6 对照表、allow 的两种含义、盲区</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
@@ -1424,11 +1424,11 @@ allow」按钮绕过：点一下就解除的拒绝，等于没有拒绝。要解
 <td>路径</td>
 </tr>
 <tr>
-<td><code>apply_patch</code></td>
+<td>（暂无工具）</td>
 <td><code>PatchPaths</code></td>
 <td>每个 <code>+++ b/&lt;path&gt;</code> / <code>+++ &lt;path&gt;</code>
 头，复用调度器同一套提取（<strong>注意</strong>：<code>apply_patch</code>
-当前没有任何 toolset 注册它，这一行只在它被重新接线后生效——见 <a
+已移除，这一行只在有工具重新声明该策略后生效——见 <a
 href="./07_chapter_tool_zh.html">工具系统</a> §5）</td>
 </tr>
 <tr>
@@ -1783,7 +1783,7 @@ something this agent does. If the user asked for this, they can permit the path 
 该问（用户可能正是在配环境），<code>secrets.yaml</code> 该拒。</li>
 </ul>
 <h3 id="134-patchpaths--apply_patch">13.4 <code>PatchPaths</code> ——
-<code>apply_patch</code></h3>
+补丁头路径</h3>
 <p><code>PatchPaths</code> 没有 path
 字段——目标写在补丁头里，所以策略自己从 <code>+++ b/&lt;path&gt;</code> /
 <code>+++ &lt;path&gt;</code>
@@ -1803,10 +1803,8 @@ allow」在这个变体上多一道限制：<code>PermissionPromptPolicy::PatchT
 明说——用其中一个路径生成的规则会静默授权其余文件。</p>
 <blockquote>
 <p><strong>接线状态：</strong>
-<code>crates/tact/src/tool/apply_patch.rs</code>
-今天<strong>没有被编译</strong>（<code>crates/tact/src/tool/mod.rs</code>
-里没有 <code>mod apply_patch;</code>），也没有任何 toolset
-注册它。上面的判定是策略本身的行为、由测试覆盖；要在真实调用里看到它们，得先把工具接回来——见
+<code>apply_patch</code> 已从代码库移除，因此
+<code>PatchPaths</code> 目前没有工具使用。上面的判定是策略本身的行为、由测试覆盖；要在真实调用里看到它们，得先有工具重新声明这个策略——见
 <a href="./07_chapter_tool_zh.html">工具系统</a> §5。</p>
 </blockquote>
 <h3 id="135-shellcommand--bash--background_run--worktree_run">13.5
@@ -1907,7 +1905,7 @@ allow」在这个变体上多一道限制：<code>PermissionPromptPolicy::PatchT
 </tr>
 <tr>
 <td><code>PatchPaths</code></td>
-<td><code>apply_patch</code>（未接线）</td>
+<td>暂无工具使用（原 <code>apply_patch</code> 已移除）</td>
 <td><code>Write</code></td>
 <td>补丁头的 <code>+++</code> 行（可能多个）</td>
 <td>同上</td>

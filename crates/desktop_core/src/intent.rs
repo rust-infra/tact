@@ -13,7 +13,13 @@ pub enum DesktopIntent {
     CloseProject {
         project_id: ProjectId,
     },
+    RemoveProject {
+        project_id: ProjectId,
+    },
     NewSession,
+    NewSessionInProject {
+        project_id: ProjectId,
+    },
     ResumeSession {
         session_id: SessionId,
     },

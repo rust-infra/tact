@@ -1239,6 +1239,11 @@ async fn commandcode_stream_fixture_keeps_reasoning_and_answer() {
             .iter()
             .any(|block| { matches!(block, ContentBlock::Text { text } if text == "Hi") })
     );
+    assert_eq!(
+        response.phase,
+        Some(tact_agent_api::MessagePhase::FinalAnswer),
+        "the provider labelled the message final_answer"
+    );
     server.verify().await;
 }
 
@@ -1282,6 +1287,11 @@ async fn commandcode_tool_call_stream_fixture_keeps_the_call() {
         call.1,
         serde_json::json!({}),
         "the arguments must come from the completed item, not the announcement"
+    );
+    assert_eq!(
+        response.phase,
+        Some(tact_agent_api::MessagePhase::Commentary),
+        "the provider labelled the message commentary"
     );
     server.verify().await;
 }

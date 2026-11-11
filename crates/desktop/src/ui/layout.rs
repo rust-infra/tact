@@ -9,6 +9,34 @@ pub const INSPECTOR_BREAKPOINT: f32 = 1180.0;
 pub const THREE_COLUMN_BREAKPOINT: f32 = INSPECTOR_BREAKPOINT;
 pub const RAIL_WIDTH: f32 = 250.0;
 pub const INSPECTOR_WIDTH: f32 = 318.0;
+pub const RAIL_MIN_WIDTH: f32 = 180.0;
+pub const RAIL_MAX_WIDTH: f32 = 420.0;
+pub const INSPECTOR_MIN_WIDTH: f32 = 240.0;
+pub const INSPECTOR_MAX_WIDTH: f32 = 520.0;
+
+/// The composer frame's width, and the width of the column every surface
+/// stacked with it centers inside: the transcript, the sticky card's column,
+/// the queue accessory's column. The prototype's `min(900px, …)`.
+pub const COMPOSER_WIDTH: f32 = 900.0;
+
+/// The width of a composer accessory: the queue, the gate banner, the sticky
+/// task card.
+///
+/// Deliberately narrower than [`COMPOSER_WIDTH`]: an accessory reads as
+/// something the composer owns, and a full-width one looks like a second input
+/// box. An accessory that centers itself instead of sharing the composer's
+/// column is narrower *and* offset from the frame it belongs to; `items_start`
+/// pins it to the frame's left gutter instead.
+pub const ACCESSORY_WIDTH: f32 = 780.0;
+
+/// The horizontal padding of the composer area.
+pub const COMPOSER_PADDING_X: f32 = 22.0;
+
+/// The gap between the composer frame and the accessory stacked above it.
+///
+/// Tight on purpose: the queue reads as attached to the input, so its last row
+/// sits against the frame rather than floating in the transcript.
+pub const ACCESSORY_GAP: f32 = 4.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ShellLayout {

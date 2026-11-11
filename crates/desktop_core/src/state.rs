@@ -8,10 +8,11 @@ use tact_protocol::{
 
 use crate::{
     AccountView, Appearance, BackgroundTaskView, CatalogLocale, CommandCatalogView, ComposerView,
-    DesktopConfig, DesktopSnapshot, ExtensionsView, FailureView, GateCard, GoalView, InspectorTab,
-    InspectorView, ProjectRecord, ProjectView, ReducedMotion, Revision, RowId, RunPhase,
-    RuntimeView, SectionMask, SessionEpoch, SessionListState, SessionPhase, SessionSummaryView,
-    SessionView, StateCommit, SubagentView, TaskView, TranscriptReducer, UsageView,
+    DesktopConfig, DesktopSnapshot, DesktopTheme, ExtensionsView, FailureView, GateCard, GoalView,
+    InspectorTab, InspectorView, ProjectRecord, ProjectView, ReducedMotion, Revision, RowId,
+    RunPhase, RuntimeView, SectionMask, SessionEpoch, SessionListState, SessionPhase,
+    SessionSummaryView, SessionView, StateCommit, SubagentView, TaskView, TranscriptReducer,
+    UsageView,
 };
 
 pub struct DesktopState {
@@ -33,6 +34,7 @@ pub struct DesktopState {
     pub voice_missing_api_key: bool,
     pub failure: Option<FailureView>,
     pub appearance: Appearance,
+    pub theme: DesktopTheme,
     pub motion: ReducedMotion,
     pub text_scale: f32,
     pub language: tact_catalog::CatalogLocale,
@@ -172,6 +174,10 @@ impl DesktopState {
                 models: models.into(),
                 subagent_model: Arc::from(subagent_model),
                 subagent_models: subagent_models.into(),
+                effort: settings
+                    .as_ref()
+                    .and_then(|settings| settings.agent.reasoning_effort)
+                    .map(|effort| Arc::from(effort.as_str())),
                 permission_mode: config.host.permission_mode,
                 ..ComposerView::default()
             },
@@ -195,6 +201,7 @@ impl DesktopState {
             }),
             failure: None,
             appearance: config.appearance,
+            theme: config.theme,
             motion: config.reduced_motion,
             text_scale: config.text_scale,
             language: config.language,
@@ -280,8 +287,9 @@ impl DesktopState {
         self.pending_run = None;
         self.active_run = None;
         self.reducer.reset_for_session();
-        self.sessions.items.clear();
-        self.sessions.selected = None;
+        // The session catalog belongs to the project, not to the session that
+        // owns the window. A switch keeps the rail's rows mounted; the new
+        // selection and the refreshed summaries arrive on later commits.
         self.sessions.error = None;
         self.sessions.loading = false;
         self.tasks.clear();
@@ -458,6 +466,11 @@ impl DesktopState {
                 if self.runtime.run_started_at.is_none() {
                     self.runtime.run_started_at = Some(Utc::now());
                 }
+                if self.runtime.turn_started_at.is_none()
+                    || self.runtime.turns_taken != *turns_taken
+                {
+                    self.runtime.turn_started_at = Some(Utc::now());
+                }
                 let run_id = run_id
                     .clone()
                     .or_else(|| self.pending_run.take())
@@ -477,7 +490,10 @@ impl DesktopState {
             }
             AgentUpdate::TokenUsage(usage) => self.apply_token_usage(usage),
             AgentUpdate::ModelInfo(model) => {
-                self.runtime.model = Some(Arc::from(model.model.clone()))
+                self.runtime.model = Some(Arc::from(model.model.clone()));
+                self.composer.effort = model
+                    .reasoning_effort
+                    .map(|effort| Arc::from(effort.as_str()));
             }
             AgentUpdate::TaskComplete(_) => {
                 self.runtime.current_phase = RunPhase::Complete;
@@ -646,6 +662,7 @@ impl DesktopState {
             voice_missing_api_key: self.voice_missing_api_key,
             failure: self.failure.clone(),
             appearance: self.appearance,
+            theme: self.theme,
             motion: self.motion,
             text_scale: self.text_scale,
             language: self.language,
@@ -771,6 +788,41 @@ mod tests {
     }
 
     #[test]
+    fn switching_sessions_keeps_the_rail_catalog() {
+        let (mut state, _tmp) = state();
+        state.sessions.items = vec![SessionSummaryView {
+            id: "session-a".into(),
+            project_id: crate::ProjectId("project".into()),
+            root_dir: "/tmp/project".into(),
+            title: "First session".into(),
+            updated_at: Utc::now(),
+            archived_at: None,
+            locked: false,
+            message_count: 3,
+            search_score: 0,
+        }];
+        state.sessions.selected = Some(crate::SessionId("session-a".into()));
+
+        state.begin_session_switch();
+
+        assert_eq!(
+            state.sessions.items.len(),
+            1,
+            "a session switch must not unmount the project's rail rows"
+        );
+        assert_eq!(
+            state
+                .sessions
+                .selected
+                .as_ref()
+                .map(|session| session.0.as_str()),
+            Some("session-a"),
+            "the rail keeps its selection until the new session reports one"
+        );
+        assert_eq!(state.session.phase, SessionPhase::Switching);
+    }
+
+    #[test]
     fn compaction_run_does_not_open_an_activation_in_the_runtime_view() {
         let (mut state, _tmp) = state();
         let outcome = state.apply_agent_batch(vec![
@@ -879,6 +931,56 @@ mod tests {
             run_id: "run-1".into(),
         });
         assert_eq!(state.runtime.current_phase, RunPhase::Complete);
+    }
+
+    #[test]
+    fn each_turn_gets_its_own_clock() {
+        let (mut state, _tmp) = state();
+        state.apply_agent_update(AgentUpdate::RunStarted {
+            run_id: "run-1".into(),
+        });
+        state.apply_agent_update(AgentUpdate::TurnStats {
+            run_id: Some("run-1".into()),
+            turns_taken: 1,
+            max_turns: None,
+        });
+        let first = state.runtime.turn_started_at.expect("first turn clock");
+        state.apply_agent_update(AgentUpdate::TurnStats {
+            run_id: Some("run-1".into()),
+            turns_taken: 2,
+            max_turns: None,
+        });
+        let second = state.runtime.turn_started_at.expect("second turn clock");
+        assert!(second >= first);
+        // A repeated TurnStats for the same turn keeps the clock.
+        state.apply_agent_update(AgentUpdate::TurnStats {
+            run_id: Some("run-1".into()),
+            turns_taken: 2,
+            max_turns: None,
+        });
+        assert_eq!(state.runtime.turn_started_at, Some(second));
+    }
+
+    #[test]
+    fn model_info_syncs_the_reasoning_effort() {
+        let (mut state, _tmp) = state();
+        let info = |effort| {
+            AgentUpdate::ModelInfo(tact_protocol::ModelCallParams {
+                model: "deepseek".into(),
+                max_tokens: 1024,
+                thinking_budget: None,
+                reasoning_effort: effort,
+                extra_body: None,
+            })
+        };
+        state.apply_agent_update(info(Some(tact_protocol::ReasoningEffort::Max)));
+        assert_eq!(state.composer.effort.as_deref(), Some("max"));
+
+        state.apply_agent_update(info(None));
+        assert_eq!(
+            state.composer.effort, None,
+            "a model without an effort must clear the picker"
+        );
     }
 
     #[test]

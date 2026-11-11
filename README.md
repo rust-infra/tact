@@ -31,8 +31,10 @@
 
 tact is a **terminal-first AI coding agent** that lives inside your terminal. It reads your codebase, understands your intent, and executes — editing files, running commands, searching code, and coordinating with sub-agents.
 
-- 🦀 **Written in Rust** — a single small binary, no Electron, no Node.js runtime
-- 🏠 **Fully self-hosted** — your code never leaves your machine (only LLM API traffic)
+- 🦀 **Written in Rust** — a terminal CLI and native desktop app, with no
+  Electron or Node.js runtime
+- 🏠 **Self-hosted runtime** — Tact has no hosted service. Network traffic goes
+  only to the model providers and MCP servers you configure
 - 🔓 **MIT licensed** — open source
 - 🧩 **Extensible** — MCP plugins, custom skills, hooks, and tool macros
 
@@ -132,14 +134,14 @@ desktop and CLI binaries.
 Via Cargo (coming soon to crates.io):
 
 ```bash
-cargo install --path crates/tact-ui   # or: cargo install -p tact-ui from the repo root
+cargo install --path crates/tact-ui   # from the repo root
 ```
 
 **Binary releases:** push a version tag to publish pre-built binaries for Linux (x86_64 / ARM64), macOS (x86_64 / ARM64), and Windows (x86_64):
 
 ```bash
-git tag v2.0.0
-git push origin v2.0.0
+git tag v2.0.4
+git push origin v2.0.4
 ```
 
 GitHub Actions (`.github/workflows/release.yml`) uploads
@@ -171,7 +173,7 @@ memory_enabled = true
 notifications_enabled = true
 
 [ui]
-theme = "retro"   # ink | ink-light | retro | brutal | nord | dark | auto ...
+theme = "retro"   # ink | ink-light | claude | claude-dark | retro | brutal | nord | dark | auto ...
 
 [tools]
 # Bash wall-clock timeout in seconds (default: 1800; 0 disables timeout)
@@ -283,7 +285,12 @@ Multi-turn conversation loop with progressive context management:
 
 1. **Large-output spill** — oversized tool results land on disk with a short preview in context
 2. **Micro-compact (optional)** — when enabled, stub old tool results before each LLM call (keep the last 12 intact)
-3. **Full compact** — for chat-completions providers, when reported/estimated tokens hit ~80% of `model_context_window`, on prompt-too-long recovery, or via a successful `compact` tool: write a JSONL transcript, summarize, and rebuild as **recent real user turns + handoff summary**. OpenAI Responses uses provider-native compaction; DeepSeek Responses falls back to the local summary pipeline when its explicit compact endpoint is unavailable.
+3. **Full compact** — for chat-completions providers, when reported or
+   estimated tokens hit about 80% of `model_context_window`, on
+   prompt-too-long recovery, or through a successful `compact` tool, write a
+   JSONL transcript, summarize it, and rebuild context from recent user turns
+   plus a handoff summary. OpenAI Responses uses provider-native compaction.
+   Responses endpoints without native compaction are unsupported.
 
 The entry path reserves the incoming user turn before push, so a large prompt cannot overflow immediately after append. Failed `compact` tool calls leave history intact.
 
@@ -296,10 +303,10 @@ Details: [`book/05_chapter_compact_zh.html`](./book/05_chapter_compact_zh.html),
 | **File System** | `read_file`, `write_file`, `edit_file` |
 | **Shell** | `bash`, `background_run`, `check_background`, `wait_background`, `sleep` |
 | **Task Management** | `task_create`, `task_get`, `task_list`, `task_update` |
-| **Team & Sub-agents** | `spawn_subagent`, `spawn_teammate`, `list_teammates`, `send_message`, `broadcast`, `read_inbox` |
-| **Memory & Knowledge** | `save_memory`, `load_skill`, `compact` |
-| **Git & Worktree** | `worktree_create`, `worktree_list`, `worktree_status`, `worktree_run`, `worktree_events` |
-| **Scheduling** | `cron_create`, `cron_list`, `cron_delete` |
+| **Agents & Team** | `spawn_subagent`, `check_subagent`, `wait_subagent`, `cancel_subagent`, `spawn_teammate`, `list_teammates`, `send_message`, `broadcast`, `read_inbox` |
+| **Goals** | `goal_read`, `goal_checkpoint`, `goal_request_input`, `goal_propose_completion` |
+| **Memory & Knowledge** | `save_memory`, `load_memory`, `load_skill`, `compact` |
+| **Git & Worktree** | `worktree_create`, `worktree_list`, `worktree_status`, `worktree_run`, `worktree_remove`, `worktree_events` |
 | **Interaction** | `ask_user`, `plan_approval`, `shutdown_request`, `shutdown_response` |
 
 In the interactive TUI, a running `bash` tool shows a bounded five-line live
@@ -322,7 +329,6 @@ auto      →  Auto-approve all actions (CI / trusted repos)
 - **Skills** — `SKILL.md` playbooks under `<workdir>/.tact/skills/`, `~/.tact/skills/`, `~/.agents/skills/`, `.claude/skills/`, and optional `[agent].skill_dirs` (summaries in the system prompt; full body via `load_skill` or TUI `/skill-name`).
 - **Model picker** — TUI `/model` uses configured `models = [...]` first and supplements OpenAI-compatible `openai`, `deepseek`, and `kimi` providers with a cached `GET {base_url}/models` result.
 - **Voice input** — optional microphone recording and transcription via OpenAI, Google Cloud Speech-to-Text, or a local `whisper.cpp` server, configured under `[voice]` (macOS-first). Google API-key mode uses synchronous recognition for recordings up to 60 seconds.
-- **Cron** — schedule recurring prompts. The agent checks in on your project automatically.
 
 ### 🧩 Plugin Marketplace
 
@@ -341,7 +347,10 @@ Tact owns marketplace state, checkouts, and revision-locked plugin caches under 
 
 ### 👥 Sub-agents & Team
 
-Spawn isolated sub-agents for parallel work. Coordinate via message-passing inboxes. Each sub-agent gets a sandboxed toolset (bash + file R/W). Use `plan_approval` / `shutdown_request` protocols for structured handoffs.
+Spawn isolated sub-agents for parallel work. Coordinate via message-passing
+inboxes. Each sub-agent gets a restricted toolset: `bash`, `read_file`,
+`write_file`, `edit_file`, and `sleep`. Use `plan_approval` /
+`shutdown_request` protocols for structured handoffs.
 
 ### 🌳 Git Worktree Isolation
 
@@ -349,7 +358,9 @@ Each task can run in its own `git worktree` lane. No branch switching, no stash 
 
 ### 🔌 MCP Support
 
-Native [Model Context Protocol](https://modelcontextprotocol.io/) client. Connect any MCP server and its tools become available to the agent at runtime.
+Native [Model Context Protocol](https://modelcontextprotocol.io/) client.
+Connect a server and Tact exposes its tools, resources, resource templates,
+prompts, instructions, and tool-list change notifications.
 
 ### 📡 TUI & Headless
 
@@ -364,7 +375,8 @@ Attach workspace images with `@path/to.png` or `![alt](path)`. Raster files are 
 
 ### 💾 Persistent State
 
-Transcripts, tool results, memories, cron jobs, and task state all persist to `~/.tact/` and `<project>/.tact/`. Pick up where you left off.
+Transcripts, token usage, memories, Goal state, background tasks, and task
+state persist to `~/.tact/` and `<project>/.tact/`. Pick up where you left off.
 
 ---
 
@@ -416,6 +428,7 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive, and the [book](./b
 | Tool | Description |
 |------|-------------|
 | `read_file` | Read file contents with optional offset/limit; default page is 2000 lines / ~25k approx tokens with a PARTIAL continuation marker |
+| `read_image` | Read a workspace image as a model-visible image attachment |
 | `write_file` | Write or overwrite a file |
 | `edit_file` | Replace exact text in a file (first match, or all with `replace_all`) |
 | `bash` | Run a shell command |
@@ -424,6 +437,9 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive, and the [book](./b
 | `wait_background` | Wait for a background task to finish, returning as soon as it does |
 | `sleep` | Wait for N milliseconds (not for waiting on background tasks) |
 | `spawn_subagent` | Spawn a sub-agent with fresh context |
+| `check_subagent` | Read a sub-agent's current status |
+| `wait_subagent` | Wait for a sub-agent to finish |
+| `cancel_subagent` | Cancel a running sub-agent |
 | `task_create` | Create a persistent task |
 | `task_get` | Get task details by ID |
 | `task_list` | List all tasks with status |
@@ -437,17 +453,24 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive, and the [book](./b
 | `shutdown_request` | Request shutdown |
 | `shutdown_response` | Respond to shutdown request |
 | `save_memory` | Save persistent memory across sessions |
+| `load_memory` | Load a memory by name |
 | `load_skill` | Load a named skill |
 | `compact` | Request conversation summarization (rewrites history only on success) |
 | `worktree_create` | Create a git worktree lane |
 | `worktree_list` | List tracked worktrees |
 | `worktree_status` | Show git status in a worktree |
 | `worktree_run` | Run a command inside a worktree |
+| `worktree_remove` | Remove a tracked worktree lane |
 | `worktree_events` | List worktree lifecycle events |
-| `cron_create` | Create a scheduled prompt |
-| `cron_list` | List scheduled prompts |
-| `cron_delete` | Delete a scheduled prompt |
+| `goal_read` | Read a Goal and its latest run state |
+| `goal_checkpoint` | Record progress and evidence for a Goal |
+| `goal_request_input` | Ask for user input while a Goal is running |
+| `goal_propose_completion` | Submit a Goal completion proposal for verification |
 | `ask_user` | Ask the user (TUI popup; `multi_select` for checkboxes) |
+
+MCP servers add their own tools at runtime. Tact also exposes
+`list_mcp_resources`, `read_mcp_resource`, `list_mcp_prompts`, and
+`get_mcp_prompt` for MCP resources and prompt templates.
 
 ---
 
@@ -471,78 +494,29 @@ Use `--config /path/to/config.toml` to point at a specific file instead of auto-
 
 ### Full config reference
 
+[`config.example.toml`](./config.example.toml) is the complete, validated
+template. The application copies it to `~/.tact/config.toml` on first run when
+no configuration exists.
+
 ```toml
 [llm]
-provider = "anthropic"           # selects [llm.providers.anthropic]
-max_tokens = 8000                 # optional global default
-thinking_budget = 0               # optional global default; 0 = off
+provider = "anthropic"
 
 [llm.providers.anthropic]
 model = "claude-sonnet-4-20250514"
 api_key = "sk-ant-..."
-base_url = "https://api.anthropic.com"  # required for anthropic
-
-[llm.providers.openai]
-model = "gpt-4o"
-api_key = "sk-..."
-protocol = "responses"            # responses | chat_completions
-# reasoning_effort = "high"       # none|minimal|low|medium|high|xhigh|max
-# base_url = "https://api.openai.com/v1"
-# responses_compact_threshold = 160000
-
-[llm.providers.deepseek]
-model = "deepseek-chat"
-api_key = "sk-..."
-# protocol = "responses"          # otherwise chat_completions
-
-[llm.providers.kimi]
-model = "kimi-k2.5"
-api_key = "sk-..."
-models = ["kimi-k2.5", "kimi-for-coding"]
+base_url = "https://api.anthropic.com"
 
 [permission]
-mode = "default"                 # default | plan | auto
-
-[agent]
-model_context_window = 200000     # tokens; 80% auto-compact + TUI meter
-snapshot_max_items = 80
-micro_compact_enabled = false     # stub old tool results before each LLM call
-memory_enabled = true             # false: no MEMORY.md index / guidance / save_memory / load_memory
-# auto_memory_directory = "~/my-memories"   # default: per-repository
-notifications_enabled = true
-skill_body_auto_inject = false
-# skill_dirs = ["~/shared-skills", "./vendor/skills"]
-# instruction_sources = ["agents_md"]
-# instruction_sources = ["agents_md", "claude_md"]
-
-[agent.subagent]
-# provider = "deepseek"            # key from [llm.providers.*]
-# model = "deepseek-chat"
-# max_tokens = 8000
-# thinking_budget = 0
+mode = "default"
 
 [ui]
-theme = "retro"                  # ink | ink-light | retro | brutal | nord | dark | auto
-# vision_image.* only reduces tokens for attached images; it does not enable vision
-# [ui.vision_image]
-# compress = true
-# max_edge = 1280
-# jpeg_quality = 80
-
-[voice]
-enabled = false                   # macOS-first microphone input
-# provider = "openai"             # openai | google | whisper_cpp
-# api_key = "..."                 # OpenAI/Google API key; separate from LLM key
-# base_url = "https://api.openai.com/v1" # Google: https://speech.googleapis.com/v1
-# model = "gpt-4o-mini-transcribe" # Google default: latest_short
-# language = "zh"                  # Google examples: zh-CN | en-US
-# max_duration_secs = 300           # Google maximum: 60; others: 600
-# voice_keybind = "ctrl+g"
-
-[tools]
-bash_timeout_secs = 1800         # wall-clock seconds; 0 disables timeout
-bash_nice = 10                    # process niceness, 0 disables
+theme = "retro"
 ```
+
+Provider output limits and thinking settings belong to `[agent]` or the active
+provider entry. `[llm].max_tokens` is not valid and causes startup to fail with
+an error that names the replacement key.
 
 ### CLI flags (override config)
 
@@ -569,6 +543,11 @@ bash_nice = 10                    # process niceness, 0 disables
 | `--tokio-console` | Enable tokio-console debugging |
 
 ---
+
+## Documentation
+
+[`docs/README.md`](./docs/README.md) maps current reference pages, crate docs,
+desktop design material, and historical implementation records.
 
 ## License
 

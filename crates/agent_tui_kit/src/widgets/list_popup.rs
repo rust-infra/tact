@@ -4,7 +4,7 @@
 //! the scroll window, and the focused-row style. Callers supply the rows and
 //! the sizing policy; everything else is here.
 //!
-//! See `docs/superpowers/specs/2026-10-04-list-popup-component-design.md`.
+//! See `docs/tui_rendering.md`.
 
 use ratatui::{
     buffer::Buffer,

@@ -481,7 +481,7 @@ worker 与 TUI task：</p>
 <code>tact::plugin</code>；<code>tact-ui</code> 启动 worker，TUI
 在渲染前 drain plugin event。</p>
 <p><strong>分层（2026-08）：</strong> 可复用渲染面位于
-<code>crates/agent_tui_kit</code>（设计：<code>docs/superpowers/specs/2026-08-18-tui-component-library-design.md</code>）。kit
+<code>crates/agent_tui_kit</code>（当前架构：<a href="../docs/tui_rendering.md"><code>docs/tui_rendering.md</code></a>）。kit
 只依赖 <code>tact_protocol</code> +
 ratatui；它拥有纯渲染函数（<code>render::bar</code> / <code>input</code>
 / <code>log</code> / <code>popups</code> / <code>task_panel</code> /
@@ -1702,7 +1702,7 @@ timeout）：</p>
 <p>活跃 tool 行也强制重绘，使 duration 计数器在无新
 <code>AgentUpdate</code> 时仍 tick。</p>
 <h3 id="610-渲染中的主题与-i18n">6.10 渲染中的主题与 i18n</h3>
-<p>颜色来自 <code>theme.rs</code> 的 <code>Theme</code>（12 主题；config
+<p>颜色来自 <code>theme.rs</code> 的 <code>Theme</code>（14 主题；config
 默认 <code>ink</code>）。运行时 <code>/theme</code>
 打开选择器（<code>SelectKind::ThemePick</code>，开在<strong>当前主题</strong>那一行，选中的行带
 <code> *</code> 标记），<code>Ctrl+T</code>
@@ -2354,7 +2354,7 @@ visual start 推一个 cell，跳过剩余 placeholder logical 行。运行中 t
 <code>Live output</code>；行数位于卡片底部栏（截断时显示
 <code>preview/total 行</code>），只统计流式输出行数；popup/<code>detail_full</code>
 仍会前置 <code>$ &lt;command&gt;</code>，popup 用的就是这份「命令 +
-输出」内容。命令（<code>Command</code>）、文件读取（<code>FileRead</code>：<code>read_file</code>、<code>read_image</code>）、文件写入（<code>FileWrite</code>：<code>write_file</code>）与文件编辑（<code>FileEdit</code>：<code>edit_file</code>、<code>apply_patch</code>）<strong>完成后整块卡片消失</strong>：block
+输出」内容。命令（<code>Command</code>）、文件读取（<code>FileRead</code>：<code>read_file</code>、<code>read_image</code>）、文件写入（<code>FileWrite</code>：<code>write_file</code>）与文件编辑（<code>FileEdit</code>：<code>edit_file</code>）<strong>完成后整块卡片消失</strong>：block
 只剩 title + meta 两行，以 <code>StepResult.detail</code> 为准，meta
 行追加
 <code>· {n} 行 · [󰜼 打开]</code>（<code>tool_collapsed_output_hint</code>
@@ -2612,8 +2612,8 @@ skills。<code>/plugin list</code> 渲染功能表（技能 / 命令 / 代理 / 
 args（<code>theme.fg</code>）。完整发现路径与 <code>$ARGUMENTS</code>
 规则：<a href="./02_chapter_skill_zh.html">Ch 2</a>。与模型 mid-turn 调用
 <code>load_skill</code> 分离。</p>
-<p><code>theme.rs</code> 中十二个 built-in
-主题：<code>dark</code>、<code>light</code>、<code>solarized-dark/light</code>、<code>gruvbox-dark</code>、<code>nord</code>、<code>retro</code>、<code>kawaii</code>、<code>japanese</code>、<code>brutal</code>、<code>ink</code>、<code>ink-light</code>。初始主题来自
+<p><code>theme.rs</code> 中十四个 built-in
+主题：<code>dark</code>、<code>light</code>、<code>solarized-dark/light</code>、<code>gruvbox-dark</code>、<code>nord</code>、<code>retro</code>、<code>kawaii</code>、<code>japanese</code>、<code>brutal</code>、<code>ink</code>、<code>ink-light</code>、<code>claude</code>、<code>claude-dark</code>。初始主题来自
 config（<a href="./21_chapter_config_zh.html">Ch
 21</a>）；<code>/theme</code> 选择、<code>Ctrl+T</code> 循环。选完会像
 <code>/model</code> 一样问一句「将主题保存到配置文件？」（默认
@@ -2724,7 +2724,7 @@ vs interactive）</td>
 <td>Log wrap/scroll 管线、三种坐标空间</td>
 </tr>
 <tr>
-<td><code>crates/tui/src/render/log_column.rs</code></td>
+<td><code>crates/agent_tui_kit/src/render/log_column.rs</code></td>
 <td>Viewport 裁剪 <code>Renderable</code> 合成器</td>
 </tr>
 <tr>
@@ -2740,14 +2740,14 @@ vs interactive）</td>
 <td><code>AgentUpdate</code> → UI 状态</td>
 </tr>
 <tr>
-<td><code>crates/tui/src/theme.rs</code></td>
-<td>配色方案（从 kit re-export）</td>
+<td><code>crates/agent_tui_kit/src/theme.rs</code></td>
+<td>配色方案</td>
 </tr>
 <tr>
 <td><code>crates/agent_tui_kit</code></td>
 <td>可复用 agent-TUI kit：纯渲染面板、状态模型、widgets、bridge
 契约（设计
-<code>docs/superpowers/specs/2026-08-18-tui-component-library-design.md</code>）</td>
+<code>docs/tui_rendering.md</code>）</td>
 </tr>
 <tr>
 <td><code>crates/agent_tui_kit/examples/mock_agent.rs</code></td>

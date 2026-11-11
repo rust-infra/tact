@@ -596,7 +596,7 @@ const MENTIONS = [
   ["crates/tact_host/README.md", "Host integration guide", "file"],
   ["crates/protocol/src/agent.rs", "AgentUpdate and UserCommand", "file"],
   ["crates/tui/src/widgets/state/slash.rs", "Built-in slash command enum", "file"],
-  ["docs/superpowers/specs/2026-10-30-tact-desktop-prd.md", "Desktop PRD", "file"],
+  ["docs/design/tact-desktop/README.md", "Desktop design guide", "file"],
   ["docs/design/tact-desktop/prototype.html", "Current prototype", "file"],
   ["docs/design/tact-desktop/previews/light.png", "Light appearance", "image"],
   ["docs/design/tact-desktop/previews/dark.png", "Dark appearance", "image"],

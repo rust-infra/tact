@@ -86,7 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let outcome = session.run_text("hello").await?;
     println!("stopped: {:?}", outcome.stop);
     let answer = session
-        .last_assistant_message()
+        .last_final_message()
         .map(|message| message.text_content())
         .unwrap_or_default();
     println!("answer: {answer}");

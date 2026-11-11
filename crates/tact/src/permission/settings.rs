@@ -953,64 +953,46 @@ impl PermissionSettings {
     /// Errors are returned to the caller (they must not be silently converted
     /// into permission denials).
     pub fn persist_project_allow(&mut self, rule: &str) -> Result<(), PersistError> {
-        // 1. Build a candidate document from the current project_doc (clone).
-        let mut candidate = if self.project_doc.is_object() {
-            self.project_doc.clone()
-        } else {
-            Value::Object(Map::new())
+        // 1. Clone the document into an owned map. `serde_json::Map` is a
+        //    `BTreeMap` here (`preserve_order` is off), so the remove/insert
+        //    pairs below keep the serialized key order stable; enabling
+        //    `preserve_order` would only move `permissions` to the end.
+        let mut obj = match self.project_doc.clone() {
+            Value::Object(map) => map,
+            _ => Map::new(),
         };
 
-        // 2. Ensure `permissions` is an object in the candidate; replace if
-        //    incompatible.
-        {
-            let obj = candidate.as_object_mut().unwrap();
-
-            let needs_permissions_object = match obj.get("permissions") {
-                None => true,
-                Some(Value::Object(_)) => false,
-                Some(_) => {
-                    tracing::warn!(
-                        "Replacing incompatible `permissions` field in project settings"
-                    );
-                    true
-                }
-            };
-            if needs_permissions_object {
-                obj.insert("permissions".to_string(), Value::Object(Map::new()));
+        // 2. Ensure `permissions` is an object; replace if incompatible.
+        let mut permissions = match obj.remove("permissions") {
+            Some(Value::Object(map)) => map,
+            Some(_) => {
+                tracing::warn!("Replacing incompatible `permissions` field in project settings");
+                Map::new()
             }
+            None => Map::new(),
+        };
 
-            let permissions = obj.get_mut("permissions").unwrap().as_object_mut().unwrap();
-
-            // 3. Ensure `allow` is an array in the candidate; replace if
-            //    incompatible.
-            let needs_allow_array = match permissions.get("allow") {
-                None => true,
-                Some(Value::Array(_)) => false,
-                Some(_) => {
-                    tracing::warn!("Replacing incompatible `allow` field in project settings");
-                    true
-                }
-            };
-            if needs_allow_array {
-                permissions.insert("allow".to_string(), Value::Array(vec![]));
+        // 3. Ensure `allow` is an array; replace if incompatible.
+        let mut allow = match permissions.remove("allow") {
+            Some(Value::Array(items)) => items,
+            Some(_) => {
+                tracing::warn!("Replacing incompatible `allow` field in project settings");
+                Vec::new()
             }
+            None => Vec::new(),
+        };
 
-            let allow_array = permissions
-                .get_mut("allow")
-                .unwrap()
-                .as_array_mut()
-                .unwrap();
-
-            // 4. Deduplicate: only append if the exact rule string is absent.
-            let rule_str = rule.to_string();
-            let already_present = allow_array
-                .iter()
-                .any(|v| v.as_str().is_some_and(|s| s == rule_str));
-            if already_present {
-                return Ok(());
-            }
-            allow_array.push(Value::String(rule_str));
+        // 4. Deduplicate: only append if the exact rule string is absent.
+        //    A non-string entry can never equal a rule, so it is skipped
+        //    rather than treated as an error.
+        if allow.iter().any(|v| v.as_str() == Some(rule)) {
+            return Ok(());
         }
+        allow.push(Value::String(rule.to_string()));
+
+        permissions.insert("allow".to_string(), Value::Array(allow));
+        obj.insert("permissions".to_string(), Value::Object(permissions));
+        let candidate = Value::Object(obj);
 
         // 5. Serialize pretty JSON with trailing newline.
         let json_str = serde_json::to_string_pretty(&candidate)
@@ -2234,6 +2216,75 @@ mod tests {
             .unwrap();
         assert_eq!(allow.len(), 1);
         assert_eq!(allow[0].as_str(), Some("bash"));
+    }
+
+    /// Hand-written `allow` arrays may hold non-string entries; dedupe must
+    /// skip them without matching or dropping them.
+    #[test]
+    fn persist_skips_non_string_allow_entries_and_keeps_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_file = dir.path().join(".tact/settings.json");
+        std::fs::create_dir_all(dir.path().join(".tact")).unwrap();
+        std::fs::write(
+            &project_file,
+            r#"{"permissions": {"allow": [1, "read_file", null]}}"#,
+        )
+        .unwrap();
+
+        let mut settings = PermissionSettings::load_from(&project_file, None);
+        settings.persist_project_allow("read_file").unwrap();
+
+        // Already present as a string: no rewrite, no duplicate.
+        let doc: Value =
+            serde_json::from_str(&std::fs::read_to_string(&project_file).unwrap()).unwrap();
+        let allow = doc
+            .pointer("/permissions/allow")
+            .and_then(|v| v.as_array())
+            .unwrap();
+        assert_eq!(allow.len(), 3);
+
+        // A new rule appends past the non-string entries instead of replacing them.
+        settings.persist_project_allow("bash").unwrap();
+        let doc: Value =
+            serde_json::from_str(&std::fs::read_to_string(&project_file).unwrap()).unwrap();
+        let allow = doc
+            .pointer("/permissions/allow")
+            .and_then(|v| v.as_array())
+            .unwrap();
+        assert_eq!(allow.len(), 4);
+        assert_eq!(allow[0], serde_json::json!(1));
+        assert_eq!(allow[1].as_str(), Some("read_file"));
+        assert_eq!(allow[2], Value::Null);
+        assert_eq!(allow[3].as_str(), Some("bash"));
+    }
+
+    /// An `allow` of the wrong type is replaced while sibling keys survive.
+    #[test]
+    fn persist_replaces_incompatible_allow_field_and_keeps_siblings() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_file = dir.path().join(".tact/settings.json");
+        std::fs::create_dir_all(dir.path().join(".tact")).unwrap();
+        std::fs::write(
+            &project_file,
+            r#"{"permissions": {"allow": "not an array", "deny": ["rm"]}}"#,
+        )
+        .unwrap();
+
+        let mut settings = PermissionSettings::load_from(&project_file, None);
+        settings.persist_project_allow("read_file").unwrap();
+
+        let doc: Value =
+            serde_json::from_str(&std::fs::read_to_string(&project_file).unwrap()).unwrap();
+        let allow = doc
+            .pointer("/permissions/allow")
+            .and_then(|v| v.as_array())
+            .unwrap();
+        assert_eq!(allow.len(), 1);
+        assert_eq!(allow[0].as_str(), Some("read_file"));
+        assert_eq!(
+            doc.pointer("/permissions/deny/0").and_then(|v| v.as_str()),
+            Some("rm")
+        );
     }
 
     // ——— Persist updates the in-memory allow_rules —————————————

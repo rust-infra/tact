@@ -17,8 +17,10 @@ use gpui::{AnyWindowHandle, AppContext as _, Entity, VisualTestAppContext, px, s
 use gpui_component::Root;
 use tact_catalog::SettingId;
 use tact_desktop_core::{
-    Appearance, DesktopConfig, DesktopController, DesktopSnapshot, ExtensionsTab, HookItemSnapshot,
-    HookSnapshot, InspectorTab, ReaderRef, RowId, SessionPhase, SurfaceSnapshot,
+    Appearance, DesktopConfig, DesktopController, DesktopSnapshot, DesktopTheme, ExtensionsTab,
+    HookItemSnapshot, HookSnapshot, InspectorTab, LatestToolView, ReaderRef, RowBody, RowId,
+    RowStatus, RunPhase, SessionPhase, SurfaceSnapshot, ToolBody, ToolGroupItem, ToolGroupRow,
+    ToolMetaView, ToolOutputView, ToolRow, TranscriptRow, TranscriptView, transcript::ThinkingRow,
 };
 
 use crate::root::{DesktopRoot, ReaderKind};
@@ -38,15 +40,32 @@ pub struct Harness {
     root: Option<Entity<DesktopRoot>>,
     pub window: AnyWindowHandle,
     pub controller: DesktopController,
+    theme: DesktopTheme,
     data_dir: PathBuf,
 }
 
 impl Harness {
     pub fn open(appearance: Appearance, text_scale: f32) -> Result<Self> {
-        Self::open_sized(appearance, text_scale, WINDOW_WIDTH, WINDOW_HEIGHT)
+        Self::open_themed(
+            DesktopTheme::Tact,
+            appearance,
+            text_scale,
+            WINDOW_WIDTH,
+            WINDOW_HEIGHT,
+        )
     }
 
     pub fn open_sized(
+        appearance: Appearance,
+        text_scale: f32,
+        width: f32,
+        height: f32,
+    ) -> Result<Self> {
+        Self::open_themed(DesktopTheme::Tact, appearance, text_scale, width, height)
+    }
+
+    pub fn open_themed(
+        theme: DesktopTheme,
         appearance: Appearance,
         text_scale: f32,
         width: f32,
@@ -68,6 +87,7 @@ impl Harness {
         let mut config = DesktopConfig::load(data_dir.clone())
             .map_err(|error| anyhow::anyhow!("load desktop config: {error:?}"))?;
         config.appearance = appearance;
+        config.theme = theme;
         config.text_scale = text_scale;
         // The harness must not read the checkout's real `.tact` store: session
         // rows would change with the developer's history and the captures
@@ -96,8 +116,8 @@ impl Harness {
         let root_slot_for_window = root_slot.clone();
         let window = cx
             .open_offscreen_window(size(px(width), px(height)), move |window, cx| {
-                gpui_ai::init(cx);
-                crate::theme::apply(appearance, Some(window), cx);
+                gpui_component::init(cx);
+                crate::theme::apply(theme, appearance, Some(window), cx);
                 let root = cx.new(|cx| DesktopRoot::new_for_test(shutdown, window, cx));
                 *root_slot_for_window.borrow_mut() = Some(root.clone());
                 cx.new(|cx| Root::new(root, window, cx))
@@ -114,6 +134,7 @@ impl Harness {
             root: Some(root),
             window,
             controller,
+            theme,
             data_dir,
         };
         harness.seed_capture_sessions(&project_dir);
@@ -241,13 +262,27 @@ impl Harness {
     }
 
     pub fn set_appearance(&mut self, appearance: Appearance) {
+        let theme = self.theme;
         self.cx
             .update_window(self.window, |_, window, cx| {
-                crate::theme::apply(appearance, Some(window), cx);
+                crate::theme::apply(theme, appearance, Some(window), cx);
             })
             .expect("apply appearance");
         let mut snapshot = self.snapshot();
         snapshot.appearance = appearance;
+        self.set_snapshot(snapshot);
+    }
+
+    pub fn set_theme(&mut self, theme: DesktopTheme) {
+        self.theme = theme;
+        let appearance = self.snapshot().appearance;
+        self.cx
+            .update_window(self.window, |_, window, cx| {
+                crate::theme::apply(theme, appearance, Some(window), cx);
+            })
+            .expect("apply theme");
+        let mut snapshot = self.snapshot();
+        snapshot.theme = theme;
         self.set_snapshot(snapshot);
     }
 
@@ -326,6 +361,20 @@ pub fn capture_all(out: &Path) -> Result<Vec<PathBuf>> {
 
     harness.set_appearance(Appearance::Dark);
     shoot(&mut harness, "02-shell-dark")?;
+    harness.set_appearance(Appearance::Light);
+
+    harness.set_theme(DesktopTheme::Claude);
+    shoot(&mut harness, "02b-shell-claude-light")?;
+    harness.set_appearance(Appearance::Dark);
+    shoot(&mut harness, "02c-shell-claude-dark")?;
+
+    harness.set_theme(DesktopTheme::Cursor);
+    harness.set_appearance(Appearance::Light);
+    shoot(&mut harness, "02d-shell-cursor-light")?;
+    harness.set_appearance(Appearance::Dark);
+    shoot(&mut harness, "02e-shell-cursor-dark")?;
+
+    harness.set_theme(DesktopTheme::Tact);
     harness.set_appearance(Appearance::Light);
 
     harness.with_root(|root, window, cx| root.capture_open_command_center(window, cx));
@@ -542,8 +591,142 @@ pub fn capture_all(out: &Path) -> Result<Vec<PathBuf>> {
     let mut snapshot = harness.snapshot();
     snapshot.transcript = long_command;
     harness.set_snapshot(snapshot);
+    // A running process group replaces its counts with the live action and
+    // clock; the settled group keeps the elapsed time.
+    let demo = tact_desktop_core::fixtures::demo_transcript();
+    let loop_id = demo
+        .iter()
+        .find_map(|row| match &row.body {
+            RowBody::ToolGroup(group) => Some(group.loop_id),
+            _ => None,
+        })
+        .expect("demo tool group");
+    let rows = vec![
+        Arc::new(TranscriptRow {
+            id: RowId::new(0),
+            ordinal: 0,
+            loop_id: None,
+            time: None,
+            body: RowBody::Thinking(ThinkingRow {
+                markdown: Arc::from("plan"),
+                status: RowStatus::Success,
+                duration_ms: None,
+            }),
+        }),
+        Arc::new(TranscriptRow {
+            id: RowId::new(1),
+            ordinal: 1,
+            loop_id: Some(loop_id),
+            time: None,
+            body: RowBody::ToolGroup(ToolGroupRow {
+                loop_id,
+                items: Arc::from([ToolGroupItem::Tool(ToolRow {
+                    id: RowId::new(11),
+                    tool_id: Arc::from("tool-1"),
+                    name: Arc::from("edit_file"),
+                    arg_summary: Arc::from("root.rs"),
+                    arg_full: None,
+                    status: RowStatus::Running,
+                    body: ToolBody::None,
+                    output: ToolOutputView::default(),
+                    meta: ToolMetaView::default(),
+                    subagent: None,
+                    expanded: false,
+                    keep_live: false,
+                    destructive: false,
+                    duration_ms: None,
+                })]),
+                summary: Arc::from("edit_file"),
+                collapsed: true,
+                collapse_override: None,
+            }),
+        }),
+    ];
+    let mut snapshot = harness.snapshot();
+    snapshot.transcript = TranscriptView::from_rows(rows);
+    snapshot.session.phase = SessionPhase::Running;
+    snapshot.runtime.current_phase = RunPhase::RunningTools;
+    snapshot.runtime.latest_tool_detail = Some(LatestToolView {
+        tool_id: "call-1".into(),
+        group: None,
+        row: None,
+        label: "Editing root.rs".into(),
+        duration_ms: None,
+        status: RowStatus::Running,
+    });
+    harness.set_snapshot(snapshot);
+    harness.with_root(|root, _, cx| root.capture_scroll_to(0, cx));
+    shoot(&mut harness, "26f-process-summary-clock")?;
+    let mut snapshot = harness.snapshot();
+    snapshot.transcript = design_transcript();
+    harness.set_snapshot(snapshot);
+
     harness.with_root(|root, _, cx| root.capture_scroll_to(5, cx));
     shoot(&mut harness, "46-tool-group-long-command")?;
+    let mut snapshot = harness.snapshot();
+    snapshot.transcript = design_transcript();
+    harness.set_snapshot(snapshot);
+
+    // A permission gate repeats the command it asks about. A heredoc must stay
+    // a preview, or the card swallows the transcript and pushes the decision
+    // out of view.
+    let script = "export https_proxy=http://127.0.0.1:7890 http_proxy=$https_proxy\n\
+cd /tmp/btc/artifacts\n\
+python3 - <<'PY'\n\
+import json, datetime, statistics\n\
+raw=json.load(open('/tmp/mp_1y.json'))['prices']\n\
+pairs=sorted((q['time'], q['USD']) for q in raw if q.get('USD') is not None)\n\
+print('range', datetime.datetime.fromtimestamp(pairs[0][0], datetime.UTC).date(), '->', datetime.datetime.fromtimestamp(pairs[-1][0], datetime.UTC).date(), 'pts', len(pairs))\n\
+byday={}\n\
+for t,p in pairs:\n\
+    k=int(datetime.datetime.fromtimestamp(t, datetime.UTC).replace(hour=0,minute=0,second=0,microsecond=0).timestamp())\n\
+    byday[k]=p\n\
+days=sorted(byday.items())\n\
+vals=[p for _,p in days]\n\
+i_max=vals.index(max(vals)); i_min=vals.index(min(vals))\n\
+print('ATH', days[i_max], 'ATL', days[i_min])\n\
+cur=vals[-1]\n\
+print('cur %.0f drawdown from ATH %.1f%%' % (cur, (cur/max(vals)-1)*100))\n\
+def ago(n):\n\
+    return days[-1-n][1]\n\
+for n,lab in [(1,'24h'),(7,'7d'),(30,'30d'),(90,'90d'),(365,'1y')]:\n\
+    print(lab, '%.2f%%' % ((cur/ago(n)-1)*100))\n\
+json.dump({'series': days}, open('/tmp/btc/btc.json','w'))\n\
+PY";
+    let mut rows = design_transcript()
+        .iter()
+        .take(6)
+        .map(|row| (**row).clone())
+        .collect::<Vec<_>>();
+    if let tact_desktop_core::RowBody::ToolGroup(group) = &mut rows[5].body {
+        let mut items = group.items.to_vec();
+        let mut tool_id = None;
+        if let Some(tact_desktop_core::ToolGroupItem::Tool(tool)) = items.first_mut() {
+            tool.arg_summary = Arc::from("python3 - <<'PY' · btc series");
+            tool.arg_full = Some(Arc::from(script));
+            tool_id = Some(tool.tool_id.clone());
+        }
+        if let Some(tool_id) = tool_id
+            && let Some(tact_desktop_core::ToolGroupItem::Gate(gate)) = items
+                .iter_mut()
+                .find(|item| matches!(item, tact_desktop_core::ToolGroupItem::Gate(_)))
+        {
+            gate.origin = tact_desktop_core::GateOrigin::Tool { tool_id };
+            gate.prompt = Arc::from("Allow Tact to run this script?");
+        }
+        items.retain(|item| match item {
+            tact_desktop_core::ToolGroupItem::Tool(tool) => tool.name.as_ref() == "shell",
+            _ => true,
+        });
+        group.items = Arc::from(items);
+    }
+    let tool_group = rows.remove(5);
+    let long_gate = tact_desktop_core::TranscriptView::from_rows(vec![Arc::new(tool_group)]);
+    let mut snapshot = harness.snapshot();
+    snapshot.transcript = long_gate;
+    harness.set_snapshot(snapshot);
+    harness.with_root(|root, _, cx| root.capture_scroll_to(0, cx));
+    shoot(&mut harness, "33c-gate-long-command")?;
     let mut snapshot = harness.snapshot();
     snapshot.transcript = design_transcript();
     harness.set_snapshot(snapshot);
@@ -664,6 +847,11 @@ pub fn capture_all(out: &Path) -> Result<Vec<PathBuf>> {
     shoot(&mut harness, "40-help")?;
     harness.with_root(|root, _, cx| root.capture_close_overlay(cx));
 
+    let icon = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/app-icon.png");
+    harness.with_root(|root, _, cx| root.capture_attach_image(icon, cx));
+    shoot(&mut harness, "39b-attachment-thumbnail")?;
+    harness.with_root(|root, _, cx| root.capture_clear_attachments(cx));
+
     harness.simulate_keystrokes("tab");
     shoot(&mut harness, "39-focus-visible")?;
 
@@ -705,6 +893,69 @@ pub fn capture_all(out: &Path) -> Result<Vec<PathBuf>> {
     shoot(&mut tall, "37-transcript-middle-dark")?;
     tall.finish();
 
+    Ok(shots)
+}
+
+/// Renders the skill launcher and manager interactions for visual review.
+pub fn capture_skill_review(out: &Path) -> Result<Vec<PathBuf>> {
+    std::fs::create_dir_all(out)?;
+    let mut harness = Harness::open(Appearance::Light, 1.0)?;
+    let mut snapshot = harness.snapshot();
+    snapshot.extensions.snapshot.skills = vec![
+        tact_host::SkillSnapshot {
+            name: "rust-skills".into(),
+            description: "Comprehensive Rust coding guidelines".into(),
+            enabled: true,
+            path: "/skills/rust-skills/SKILL.md".into(),
+        },
+        tact_host::SkillSnapshot {
+            name: "brainstorming".into(),
+            description: "Explore requirements before building".into(),
+            enabled: false,
+            path: "/skills/brainstorming/SKILL.md".into(),
+        },
+    ];
+    harness.set_snapshot(snapshot);
+
+    let mut shots = Vec::new();
+    harness.with_root(|root, _, _| {
+        root.capture_open_extensions(ExtensionsTab::Skills);
+    });
+    shots.push(harness.capture(out, "01-popover")?);
+
+    harness.with_root(|root, window, cx| {
+        root.capture_insert_skill("rust-skills", window, cx);
+    });
+    shots.push(harness.capture(out, "02-after-insert")?);
+    let draft = harness.with_root(|root, _, cx| root.capture_prompt_draft(cx));
+    anyhow::ensure!(draft == "/skill rust-skills ", "insert draft was {draft:?}");
+
+    harness.with_root(|root, window, cx| root.capture_reset_composer(window, cx));
+    harness.with_root(|root, _, _| {
+        root.capture_open_extensions_manager(ExtensionsTab::Skills);
+    });
+    shots.push(harness.capture(out, "03-manager")?);
+
+    harness.with_root(|root, window, cx| {
+        root.capture_filter_extensions("rust", window, cx);
+    });
+    anyhow::ensure!(
+        harness.with_root(|root, _, _| root.capture_extension_manage()),
+        "skill review lost manager mode before pressing Enter"
+    );
+    harness.simulate_keystrokes("enter");
+    shots.push(harness.capture(out, "04-manager-after-search-enter")?);
+    let (draft, open, manage) = harness.with_root(|root, _, cx| {
+        (
+            root.capture_prompt_draft(cx),
+            root.capture_overlay_open(),
+            root.capture_extension_manage(),
+        )
+    });
+    anyhow::ensure!(draft.is_empty(), "manager search inserted {draft:?}");
+    anyhow::ensure!(open && manage, "manager search closed the manager");
+
+    harness.finish();
     Ok(shots)
 }
 

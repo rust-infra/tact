@@ -543,7 +543,7 @@ LLM。</p>
 <pre><code>[Earlier tool result compacted. Re-run the tool (e.g., read_file) for full content.]</code></pre>
 <h3 id="22-行为">2.2 行为</h3>
 <p>当 LLM 遇到此占位符，之后又需要该内容（例如构建
-<code>apply_patch</code> 调用）时，有两个选择：</p>
+<code>edit_file</code> 调用）时，有两个选择：</p>
 <ol type="1">
 <li><strong>重新读取文件</strong>（正确，消耗 token）</li>
 <li><strong>凭记忆编造内容</strong>（错误，但常见）</li>
@@ -559,7 +559,7 @@ LLM。</p>
 </thead>
 <tbody>
 <tr>
-<td><code>apply_patch</code> 上下文不匹配</td>
+<td>补丁上下文不匹配</td>
 <td>编造的行号或上下文字符串与真实文件不一致</td>
 </tr>
 <tr>
@@ -644,7 +644,7 @@ LLM</td>
 <tr>
 <td><strong>遇占位符强制重新读取</strong></td>
 <td>改进系统 prompt，明确要求在存在截断占位符时，任何
-<code>apply_patch</code> 或编辑前必须先 <code>read_file</code></td>
+编辑前必须先 <code>read_file</code></td>
 <td>系统 prompt 模板</td>
 </tr>
 <tr>

@@ -528,8 +528,7 @@ future
 <tr>
 <td><code>PatchFiles { … }</code></td>
 <td>从 patch 头解析目标路径</td>
-<td><code>apply_patch</code>（模块与元数据仍在，但<strong>当前没有任何
-toolset 注册它</strong>，见 §3 末）</td>
+<td>暂无工具使用（原 <code>apply_patch</code> 已移除，见 §3 末）</td>
 </tr>
 </tbody>
 </table>
@@ -586,11 +585,8 @@ barrier。新增工具不会意外引入不安全并行；要让它与别的工�
 <code>ToolMetadata.resources</code> 里显式声明 <code>ReadPath</code> /
 <code>WritePath</code> / <code>SharedState</code> /
 <code>Independent</code>。</p>
-<p><code>apply_patch</code>
-是一个现状提醒：它的模块、<code>APPLY_PATCH_METADATA</code>（<code>PatchFiles</code>）都还在，但
-<code>454367d6</code> 把它从 registry 的 import 里删掉后<strong>没有任何
-toolset 再注册它</strong>——<code>edit_file</code> 恢复后 apply_patch
-就退出了工具面，留下的元数据是孤儿。上面表格里的那一行是"若重新接线会怎样"，不是它现在能跑。</p>
+<p><code>PatchFiles</code> 目前没有工具使用：<code>apply_patch</code>
+自 <code>454367d6</code> 起就没有 toolset 注册，其模块与元数据已在清理中移除。上面表格里的那一行是"若重新接线会怎样"，不是它现在能跑。</p>
 <hr />
 <h2 id="4-权限与-hook">4. 权限与 Hook</h2>
 <p>工具进入调度前，预检先按工具<strong>元数据</strong>解析风险（<code>PermissionPolicy::resolve</code>，在

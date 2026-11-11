@@ -5,7 +5,7 @@
 //! mutation path from render code is the explicit `Vec<RenderCommand>`
 //! drained by the app after the frame.
 //!
-//! Design: `docs/superpowers/specs/2026-08-18-tui-component-library-ctx-design.md`.
+//! Architecture: `docs/tui_rendering.md`.
 
 use ratatui::{layout::Rect, style::Style};
 

@@ -1,6 +1,6 @@
 # Tact LLM SDK Feature Edges
 
-Reviewed 2026-10-29.
+Reviewed 2026-11-08.
 
 | Feature | Adds | Stable public surface |
 | --- | --- | --- |

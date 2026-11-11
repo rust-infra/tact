@@ -597,12 +597,10 @@ agent spawn。<code>save_memory</code> / <code>load_memory</code> 这一对随
 协议下不会出现在发给模型的 spec 里（见 §10）——那是
 <code>Agent::rebuild_cached_tool_specs</code> 的过滤，不是 registry
 的差别。</p>
-<p><strong>注意 <code>apply_patch</code> 不在其中。</strong>
-它的模块（<code>tool/apply_patch.rs</code>）与
-<code>APPLY_PATCH_METADATA</code> 都还在，但 <code>454367d6</code>
+<p><code>apply_patch</code> 的模块已删除：<code>454367d6</code>
 把它从 registry 的 import 中删掉后再没有任何 toolset
-注册它——模型无法调用。<code>edit_file</code>
-恢复之后它就退出了工具面，残留的元数据是孤儿（见 <a
+注册它，<code>edit_file</code> 恢复后它就退出了工具面；残留的
+handler 与元数据已在清理中移除（历史说明见 <a
 href="./11_chapter_task_zh.html">任务与工具调度</a> §3）。</p>
 <h3 id="子-agentsubagent_toolset">子
 agent（<code>subagent_toolset()</code>）</h3>
@@ -645,7 +643,7 @@ agent）。默认五件套由 <code>subagent_toolset_has_five_tools</code>
 href="./12_chapter_subagent_zh.html">Subagents</a>。</p>
 <hr />
 <h2 id="6-tool-过程宏">6. <code>#[tool]</code> 过程宏</h2>
-<p>所有 41 个内置 handler 都用 <code>tool_refactor_macros::tool</code>（<code>apply_patch</code> 的 handler 也在，只是没有 toolset 注册它）。
+<p>所有 41 个内置 handler 都用 <code>tool_refactor_macros::tool</code>。
 属性<strong>不接受参数</strong>——名字、描述、权限这些全部来自同名的
 <code>*_METADATA</code> 常量，宏只负责把 handler 包成
 <code>Tool</code>：</p>
@@ -770,7 +768,7 @@ task 操作、哪个输入字段）：</p>
 <code>wait_background</code>（差
 <code>visual_kind</code>）、<code>write_file</code> /
 <code>edit_file</code>（差 <code>visual_kind</code> +
-<code>detail</code>）、<code>sleep</code>、<code>compact</code>、<code>save_memory</code>、<code>cancel_subagent</code>、<code>apply_patch</code>、<code>ask_user</code>、<code>spawn_subagent</code>
+<code>detail</code>）、<code>sleep</code>、<code>compact</code>、<code>save_memory</code>、<code>cancel_subagent</code>、<code>ask_user</code>、<code>spawn_subagent</code>
 各写自己的字面量。</p>
 <p><strong>第四个 Goal 工具族走文件内私有构造器。</strong>
 <code>goal_read</code> / <code>goal_checkpoint</code> /
@@ -826,7 +824,7 @@ pub fn safe_path_allow_missing(work_dir: &amp;Path, path: &amp;str) -&gt; Result
 </table>
 <p>失败消息：<code>"Path escapes workspace"</code>。</p>
 <p>调用方：<code>read_file</code> / <code>read_image</code> /
-<code>edit_file</code> / <code>apply_patch</code> 用
+<code>edit_file</code> 用
 <code>safe_path</code>（只改已存在的文件），<code>write_file</code>
 用 <code>safe_path_allow_missing</code>（它随后自己
 <code>create_dir_all</code> 父目录）。<code>bash</code>
@@ -837,8 +835,8 @@ href="./01_chapter_store_zh.html">Store 与持久化</a>，守护
 <h3 id="71-shell-执行沙箱可选开启">7.1 Shell 执行沙箱（可选开启）</h3>
 <p>上面的检查约束的是走 <code>safe_path</code>
 那一层的文件工具（<code>read_file</code> / <code>read_image</code> /
-<code>write_file</code> / <code>edit_file</code> /
-<code>apply_patch</code>），并不约束 <code>bash</code>：命令一旦被
+<code>write_file</code> / <code>edit_file</code>），并不约束
+<code>bash</code>：命令一旦被
 批准就以普通宿主进程运行。可选的 OS
 级沙箱在不改动权限模型的前提下收窄这一缺口：</p>
 <pre class="text"><code>Hook → Permission → bash 工具 → Sandbox（可选）→ bwrap → sh -c → command</code></pre>
@@ -1040,7 +1038,7 @@ I/O）全在中间一段，所以并行收益正好落在该落的地方。中�
 <tr>
 <td><code>PatchFiles { … }</code></td>
 <td>从 patch 头解析目标路径</td>
-<td><code>apply_patch</code>（<strong>当前无 toolset 注册</strong>，见
+<td>暂无工具使用（原 <code>apply_patch</code> 已移除，见
 §5）</td>
 </tr>
 </tbody>
@@ -1531,11 +1529,6 @@ barrier</td>
 <code>High</code> + <code>Question</code> 摘要，<code>sleep</code> 是纯
 <code>Independent</code> 读）</td>
 </tr>
-<tr>
-<td><code>apply_patch.rs</code></td>
-<td>—（未注册）</td>
-<td>模块与元数据保留，但没有任何 toolset 注册它</td>
-</tr>
 </tbody>
 </table>
 <hr />
@@ -1634,10 +1627,9 @@ toolset 级测试</td>
 </tr>
 <tr>
 <td>router 里有、模型看不到的工具</td>
-<td>两类：<code>apply_patch</code>（没有 toolset 注册它）与
-<code>compact</code>（Responses 协议下由
-<code>rebuild_cached_tool_specs</code> 从 spec 滤掉）。前者是残留，后者是有意的路由——但两者在
-<code>ToolRouter</code> 看来没有区别</td>
+<td><code>compact</code>（Responses 协议下由
+<code>rebuild_cached_tool_specs</code> 从 spec 滤掉）：router
+里有、模型看不到，是有意的路由</td>
 </tr>
 <tr>
 <td>Goal 工具永远注册</td>

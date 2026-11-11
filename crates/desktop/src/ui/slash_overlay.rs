@@ -128,9 +128,25 @@ pub fn command_candidates(
             ))
         })
         .collect::<Vec<_>>();
-    if base == ["skill"] {
+    let skill_base = if base == ["skill"] {
+        Some(true)
+    } else if base.is_empty() && !fragment.is_empty() {
+        Some(false)
+    } else {
+        None
+    };
+    // `CommandAvailability` is what gates every builtin entry, so the dynamic
+    // skill entries ask the same question instead of trusting the caller to
+    // hand over an empty list.
+    if let Some(prefixed) = skill_base.filter(|_| availability.has_installed_skill) {
         for (name, description) in skills {
+            if name.chars().any(char::is_whitespace) {
+                continue;
+            }
             if catalog.resolve_path(&["skill", name]).is_some() {
+                continue;
+            }
+            if !prefixed && catalog.resolve_path(&[name]).is_some() {
                 continue;
             }
             let Some(score) = fuzzy_score(fragment, name) else {
@@ -215,6 +231,91 @@ mod tests {
             candidate.id == CommandId::DynamicSkill("test-driven-development".into())
                 && candidate.insertion == "/skill test-driven-development "
         }));
+    }
+
+    #[test]
+    fn root_fragment_finds_installed_skills() {
+        let skills = vec![(
+            "rust-skills".to_string(),
+            "Comprehensive Rust coding guidelines".to_string(),
+        )];
+        let candidates = command_candidates(
+            "/rust",
+            CatalogLocale::En,
+            CommandAvailability {
+                has_project: true,
+                has_installed_skill: true,
+                ..Default::default()
+            },
+            &skills,
+        );
+        assert!(candidates.iter().any(|candidate| {
+            candidate.id == CommandId::DynamicSkill("rust-skills".into())
+                && candidate.insertion == "/skill rust-skills "
+        }));
+    }
+
+    #[test]
+    fn no_installed_skills_means_no_dynamic_skill_entries() {
+        let skills = vec![("rust-skills".to_string(), "Rust guidelines".to_string())];
+        for query in ["/rust", "/skill rust"] {
+            let candidates = command_candidates(
+                query,
+                CatalogLocale::En,
+                CommandAvailability {
+                    has_project: true,
+                    has_installed_skill: false,
+                    ..Default::default()
+                },
+                &skills,
+            );
+            assert!(
+                candidates
+                    .iter()
+                    .all(|candidate| !matches!(candidate.id, CommandId::DynamicSkill(_))),
+                "{query} offered a skill entry without an installed skill"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_root_query_keeps_the_slash_menu_to_builtins() {
+        let skills = vec![("rust-skills".to_string(), "Rust guidelines".to_string())];
+        let candidates = command_candidates(
+            "/",
+            CatalogLocale::En,
+            CommandAvailability {
+                has_project: true,
+                has_installed_skill: true,
+                ..Default::default()
+            },
+            &skills,
+        );
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| matches!(candidate.id, CommandId::Builtin(_)))
+        );
+    }
+
+    #[test]
+    fn a_builtin_name_wins_over_an_installed_skill_with_the_same_name() {
+        let skills = vec![("help".to_string(), "Colliding skill".to_string())];
+        let candidates = command_candidates(
+            "/help",
+            CatalogLocale::En,
+            CommandAvailability {
+                has_project: true,
+                has_installed_skill: true,
+                ..Default::default()
+            },
+            &skills,
+        );
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| candidate.id != CommandId::DynamicSkill("help".into()))
+        );
     }
 
     #[test]

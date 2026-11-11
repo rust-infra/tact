@@ -572,6 +572,7 @@ impl App {
             | AgentUpdate::RunFinished { .. }
             | AgentUpdate::RunFailed { .. }
             | AgentUpdate::MessageStarted { .. }
+            | AgentUpdate::MessageFinished { .. }
             | AgentUpdate::ToolMeta { .. }
             | AgentUpdate::StreamChunk(_)
             | AgentUpdate::SubagentsChanged { .. }
@@ -653,6 +654,7 @@ impl App {
             | AgentUpdate::RunFinished { .. }
             | AgentUpdate::RunFailed { .. }
             | AgentUpdate::MessageStarted { .. }
+            | AgentUpdate::MessageFinished { .. }
             | AgentUpdate::ModelInfo(_)
             | AgentUpdate::ToolMeta { .. }
             | AgentUpdate::ToolProgress { .. }

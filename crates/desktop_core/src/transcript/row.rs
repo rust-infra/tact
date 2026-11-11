@@ -86,6 +86,8 @@ pub struct AssistantRow {
     pub markdown: Arc<str>,
     pub status: RowStatus,
     pub suggestions: Arc<[Arc<str>]>,
+    /// Provider phase for this assistant text, when the adapter emitted one.
+    pub phase: Option<tact_agent_api::MessagePhase>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

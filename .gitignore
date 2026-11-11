@@ -9,6 +9,8 @@ vendor/*/target/
 *.log
 .env
 .DS_Store
+# Python bytecode left by the scripts/ helpers (book-check, app-icon).
+__pycache__/
 .ideal
 .idea/
 .claude

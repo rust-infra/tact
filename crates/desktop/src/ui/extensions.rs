@@ -28,6 +28,16 @@ pub fn matches_extension(query: &str, value: &str) -> bool {
     score_extension(query, &[value]) >= 0
 }
 
+/// Whether a skill row belongs in the filtered list.
+///
+/// The popover renders this row and `Enter` inserts its first match, so both
+/// must ask the same question: a skill the list hides is a skill `Enter` must
+/// not insert. The description is part of the answer because it is visible on
+/// the row.
+pub fn matches_skill(query: &str, name: &str, description: &str) -> bool {
+    score_extension(query, &[name, description]) >= 0
+}
+
 #[cfg(test)]
 mod tests {
     use gpui::TestAppContext;

@@ -1159,6 +1159,7 @@ impl super::SessionStore for SqliteSessionStore {
             messages.push(Message {
                 role,
                 content,
+                phase: None,
                 kind: legacy_kind(&origin),
             });
         }

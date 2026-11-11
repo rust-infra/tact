@@ -226,7 +226,7 @@ mod tests {
     use tact_agent_api::{
         AgentEvent, AgentMessage, AgentRole, AgentState, CancelToken, CompactionOutcome,
         CompactionRequest, ContextError, ContextPolicy, ContextPreparation, ContextView,
-        CursorUpdate, MessageOrigin, ModelCallOptions, ModelMessage, ModelPort,
+        CursorUpdate, MessageOrigin, MessagePhase, ModelCallOptions, ModelMessage, ModelPort,
         PreparationDecision, ReasoningEffort, RunId, RunInput, RunStop, SessionRef, StoreError,
         ToolError, ToolExecutionContext, ToolExecutionResult, ToolOutcome, ToolSpec,
         TranscriptSnapshot, TranscriptStore,
@@ -790,6 +790,46 @@ mod tests {
         assert_eq!(
             session.last_assistant_message().unwrap().text_content(),
             "new"
+        );
+    }
+
+    #[test]
+    fn last_final_message_skips_commentary() {
+        let mut commentary =
+            AgentMessage::text(AgentRole::Assistant, MessageOrigin::Assistant, "checking");
+        commentary.phase = Some(MessagePhase::Commentary);
+        let mut answer =
+            AgentMessage::text(AgentRole::Assistant, MessageOrigin::Assistant, "answer");
+        answer.phase = Some(MessagePhase::FinalAnswer);
+        let state = AgentState {
+            initialized: true,
+            transcript: vec![commentary.clone(), answer],
+            ..AgentState::default()
+        };
+        let session = AgentBuilder::new(model("unused"))
+            .build_session_from_state("chat", state)
+            .unwrap();
+        assert_eq!(
+            session.last_final_message().unwrap().text_content(),
+            "answer"
+        );
+
+        let state = AgentState {
+            initialized: true,
+            transcript: vec![commentary],
+            ..AgentState::default()
+        };
+        let session = AgentBuilder::new(model("unused"))
+            .build_session_from_state("chat", state)
+            .unwrap();
+        assert!(
+            session.last_final_message().is_none(),
+            "a turn that stopped on commentary has no answer"
+        );
+        assert_eq!(
+            session.last_assistant_message().unwrap().text_content(),
+            "checking",
+            "the raw accessor still returns the last message"
         );
     }
 

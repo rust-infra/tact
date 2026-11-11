@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tact_agent_api::{
     AgentMessage, AgentRole, AgentState, CompactionOutcome, CompactionRequest, MessageOrigin,
-    RunId, RunInput, RunOutcome, SessionRef,
+    MessagePhase, RunId, RunInput, RunOutcome, SessionRef,
 };
 use tact_agent_core::KernelError;
 
@@ -71,6 +71,16 @@ impl AgentSession {
             .iter()
             .rev()
             .find(|message| message.role == AgentRole::Assistant)
+    }
+
+    /// The final answer of the latest turn.
+    ///
+    /// Uses the provider's phase when present. Unlabelled history falls back to
+    /// the last assistant message; a message explicitly labelled commentary
+    /// returns `None`, because the turn did not declare an answer.
+    pub fn last_final_message(&self) -> Option<&AgentMessage> {
+        let last = self.last_assistant_message()?;
+        (last.phase != Some(MessagePhase::Commentary)).then_some(last)
     }
 
     pub fn control(&self) -> SessionControl {

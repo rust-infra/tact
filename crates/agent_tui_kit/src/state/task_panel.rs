@@ -29,11 +29,6 @@ impl Default for TaskPanelState {
 }
 
 impl TaskPanelState {
-    #[allow(dead_code)] // retained for tests / callers that still query panel-only height
-    pub fn sticky_height(&self) -> usize {
-        sticky_height(self.expanded, &self.snapshot)
-    }
-
     pub fn apply_snapshot(&mut self, tasks: Vec<TaskSnapshot>) {
         self.scroll = 0;
         let was_visible = self.visible;
@@ -89,16 +84,6 @@ pub fn focus_subject(tasks: &[TaskSnapshot]) -> Option<&str> {
                 .find(|t| t.status == TaskStatusSnapshot::Pending)
         })
         .map(|t| t.subject.as_str())
-}
-
-#[allow(dead_code)]
-fn format_task_row(t: &TaskSnapshot) -> String {
-    let owner = if t.owner.is_empty() {
-        String::new()
-    } else {
-        format!(" ({})", t.owner)
-    };
-    format!("{} #{} {}{}", t.status.marker(), t.id, t.subject, owner)
 }
 
 /// Dependency-tree-free grouped lines: In Progress, Pending, Completed.
@@ -184,12 +169,6 @@ pub fn format_grouped_lines(
     super::sticky_panel::scroll_window(all_lines, scroll, max_visible)
 }
 
-/// Flat checklist (legacy helper / tests).
-#[allow(dead_code)]
-pub fn format_checklist_lines(tasks: &[TaskSnapshot]) -> Vec<String> {
-    tasks.iter().map(format_task_row).collect()
-}
-
 pub fn format_sticky_title_line(msgs: &Messages, tasks: &[TaskSnapshot]) -> String {
     let done = completed_count(tasks);
     let total = tasks.len();
@@ -232,16 +211,6 @@ mod tests {
         assert_eq!(sticky_height(false, &many), 1);
         // format_grouped_lines adds 1 header + N items = N+1 lines; sticky_height adds 2 (title + blank)
         assert_eq!(sticky_height(true, &many), 2 + (1 + many.len()));
-    }
-
-    #[test]
-    fn format_checklist_includes_id() {
-        let many: Vec<_> = (0..3)
-            .map(|i| snap(i, TaskStatusSnapshot::Pending))
-            .collect();
-        let lines = format_checklist_lines(&many);
-        assert!(lines[0].contains("#0"), "{lines:?}");
-        assert!(lines[2].contains("#2"), "{lines:?}");
     }
 
     #[test]

@@ -33,6 +33,10 @@ pub fn values(setting: SettingId) -> Vec<(&'static str, &'static str)> {
             vec![("Default", "default"), ("Plan", "plan"), ("Auto", "auto")]
         }
         SettingId::Theme => vec![("Light", "light"), ("Dark", "dark")],
+        SettingId::ThemeFamily => tact_desktop_core::DesktopTheme::ALL
+            .iter()
+            .map(|theme| (theme.label(), theme.value()))
+            .collect(),
         SettingId::Language => vec![("English", "en"), ("中文", "zh")],
         SettingId::Notifications
         | SettingId::HookOutput

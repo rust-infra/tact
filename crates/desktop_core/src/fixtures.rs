@@ -155,6 +155,7 @@ pub fn demo_reader_transcript() -> TranscriptView {
                 ),
                 status: RowStatus::Success,
                 suggestions: Arc::from([]),
+                phase: None,
             }),
         ),
     ];
@@ -284,6 +285,7 @@ pub fn demo_transcript() -> TranscriptView {
                     Arc::from("Explain the migration"),
                     Arc::from("Write a test"),
                 ]),
+                phase: None,
             }),
         ),
         row(

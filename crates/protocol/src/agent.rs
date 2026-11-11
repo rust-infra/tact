@@ -669,6 +669,13 @@ pub enum AgentUpdate {
     /// A model response started. It precedes that response's first delta when
     /// the provider emits an identity hint.
     MessageStarted { message_id: String },
+    /// The model response completed. `phase` labels its assistant text as
+    /// mid-turn commentary or the turn's final answer when the provider says
+    /// so; `None` leaves the consumer to infer it from turn position.
+    MessageFinished {
+        message_id: String,
+        phase: Option<tact_agent_api::MessagePhase>,
+    },
     /// A UI response arrived after its request was answered or withdrawn.
     UiResponseRejected { request_id: u64 },
     /// Informational notice (does not change state)

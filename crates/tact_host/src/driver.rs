@@ -14,7 +14,7 @@ use anyhow::Result;
 use chrono::Utc;
 use tact::background::SharedBackgroundManager;
 use tact::{
-    Agent, AgentLoopStop, extract_text,
+    Agent, AgentLoopOutcome, AgentLoopStop, extract_text,
     goal::{
         Goal, GoalCreate, GoalCriterion, GoalCriterionStatus, GoalEvent, GoalEventKind,
         GoalEventSource, GoalEvidenceUpdate, GoalPhase, GoalStatus, GoalUpdate, GoalVerification,
@@ -1349,6 +1349,22 @@ async fn update_goal_status(
     }
 }
 
+/// What the reader sees when a reply was cut off by the output limit.
+///
+/// Names the cause so the next step is obvious, and says the tail is missing
+/// rather than letting a truncated answer read as complete. It deliberately
+/// names no retry count: the budget lives in the kernel, and repeating it here
+/// would let the message and the enforcement drift apart.
+fn truncated_turn_message(outcome: AgentLoopOutcome) -> String {
+    format!(
+        "Response truncated: the model hit the output token limit after {} turn(s), and the \
+         automatic continuation retries were exhausted, so the rest of the answer was never \
+         produced. Raise the limit (Settings → Max tokens, or --max-tokens), narrow the request, \
+         or reply \"continue\" to resume where it stopped.",
+        outcome.turns
+    )
+}
+
 fn is_active_run_error(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         matches!(
@@ -2063,9 +2079,7 @@ async fn handle_user_command_with_account(
                     // A turn that produced nothing is not a finished task.
                     // `agent_loop` folds this into `Ok(())`, so the driver
                     // reported `TaskComplete("")` and both frontends froze the
-                    // turn as done — a finished task with no answer and no
-                    // error. The run still ends here; what changes is that the
-                    // reader is told why.
+                    // turn as done: a finished task with no answer and no error.
                     Ok(outcome) if outcome.stop == AgentLoopStop::EmptyTurn => {
                         agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(
                             "the model ended the turn without writing an answer; \
@@ -2073,18 +2087,20 @@ async fn handle_user_command_with_account(
                                 .to_string(),
                         )));
                     }
-                    // The reply broke off at the output limit and the
-                    // continuation budget is spent. The text that arrived is a
-                    // fragment, so reporting the task complete leaves the
-                    // reader to notice the break by eye.
-                    Ok(outcome) if outcome.stop == AgentLoopStop::MaxTokens => {
-                        agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(
-                            "the reply hit the output limit and the continuation \
-                             budget is spent; it is cut off"
-                                .to_string(),
-                        )));
-                    }
-                    Ok(_) if !agent.is_cancelled() => {
+                    Ok(outcome) if !agent.is_cancelled() => {
+                        // A truncated turn must not pass for a finished one.
+                        // `StopReason::MaxTokens` after the continuation budget
+                        // is spent means the model was cut off mid-answer, so
+                        // reporting `TaskComplete` would tell the reader the
+                        // prompt was handled when its tail was never produced.
+                        // `Error` instead: nothing is claimed complete, and both
+                        // frontends leave the busy state on it.
+                        if outcome.stop == AgentLoopStop::MaxTokens {
+                            agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(
+                                truncated_turn_message(outcome),
+                            )));
+                            break;
+                        }
                         // Turn completed normally: run Stop hooks to decide
                         // whether to keep going.
                         match agent.dispatch_stop_hooks().await {
@@ -2388,7 +2404,9 @@ mod tests {
 
     use tact::goal::GoalEventKind;
     use tact_llm::{ContentBlock, MockClient, StopReason};
-    use tact_protocol::{AgentUpdate, SurfaceQuery, SurfaceSnapshot, UpdateSink, UserCommand};
+    use tact_protocol::{
+        AgentErrorKind, AgentUpdate, SurfaceQuery, SurfaceSnapshot, UpdateSink, UserCommand,
+    };
 
     use super::handle_user_command;
     use crate::test_support::{build_test_agent, install_test_config};
@@ -2428,6 +2446,101 @@ mod tests {
             }
             other => panic!("expected SurfaceSnapshot, got {other:?}"),
         }
+    }
+
+    /// One truncated turn per model call, forever: the continuation budget can
+    /// never be satisfied, which is exactly the state that used to be reported
+    /// as a finished task.
+    fn always_truncated() -> MockClient {
+        MockClient::with_responder(|_request, _idx| {
+            Ok((
+                vec![text_block("half an answer that stops mid-")],
+                Some(StopReason::MaxTokens),
+                None,
+            ))
+        })
+    }
+
+    /// A reply cut off by the output limit must not be reported as a completed
+    /// task.
+    ///
+    /// `TaskComplete` is what tells both frontends the prompt was handled: the
+    /// TUI freezes the turn and the desktop sets `RunPhase::Complete`. A
+    /// truncated turn used to take that path too, so the UI showed "done" for
+    /// an answer whose tail was never produced.
+    #[tokio::test]
+    async fn a_truncated_turn_reports_an_error_instead_of_a_completed_task() {
+        install_test_config();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut agent, work_dir) = build_test_agent(always_truncated(), Some(tx));
+
+        handle_user_command(
+            &mut agent,
+            UserCommand::SubmitTask("explain the whole design".into()),
+            &work_dir,
+        )
+        .await;
+
+        let mut updates = Vec::new();
+        while let Ok(Some(update)) =
+            tokio::time::timeout(std::time::Duration::from_millis(250), rx.recv()).await
+        {
+            updates.push(update);
+        }
+
+        assert!(
+            !updates
+                .iter()
+                .any(|update| matches!(update, AgentUpdate::TaskComplete(_))),
+            "a truncated turn must not claim the task completed: {updates:?}"
+        );
+        let error = updates
+            .iter()
+            .find_map(|update| match update {
+                AgentUpdate::Error(AgentErrorKind::Other(message)) => Some(message.clone()),
+                _ => None,
+            })
+            .expect("a truncated turn must surface an error");
+        assert!(
+            error.contains("truncated") && error.contains("output token limit"),
+            "the error must name the cause, got {error:?}"
+        );
+    }
+
+    /// The completing path still reports completion: the check above must not
+    /// have been implemented by breaking ordinary turns.
+    #[tokio::test]
+    async fn a_completed_turn_still_reports_a_completed_task() {
+        install_test_config();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut agent, work_dir) = build_test_agent(
+            MockClient::new(vec![(
+                vec![text_block("the whole answer")],
+                Some(StopReason::EndTurn),
+            )]),
+            Some(tx),
+        );
+
+        handle_user_command(
+            &mut agent,
+            UserCommand::SubmitTask("say something".into()),
+            &work_dir,
+        )
+        .await;
+
+        let mut updates = Vec::new();
+        while let Ok(Some(update)) =
+            tokio::time::timeout(std::time::Duration::from_millis(250), rx.recv()).await
+        {
+            updates.push(update);
+        }
+
+        assert!(
+            updates
+                .iter()
+                .any(|update| matches!(update, AgentUpdate::TaskComplete(_))),
+            "a completed turn must still complete: {updates:?}"
+        );
     }
 
     fn goal_in_status(id: &str, status: tact::goal::GoalStatus) -> tact::goal::Goal {

@@ -206,8 +206,15 @@ pub fn card_visible(
             .any(|task| task.status == BackgroundTaskStatusSnapshot::Running)
 }
 
+/// The gate still waiting on the reader, if any.
+///
+/// A pending gate is the only thing on the strip that is a question rather than
+/// status, so answering it closes the reminder immediately instead of leaving it
+/// on screen until the host settles the tool.
 pub fn pending_gate(inspector_pending: &[GateCard]) -> Option<&GateCard> {
-    inspector_pending.first()
+    inspector_pending
+        .iter()
+        .find(|gate| gate.status == tact_desktop_core::GateState::Pending)
 }
 
 #[cfg(test)]

@@ -120,7 +120,12 @@ A pair that was generated but never opened is not a review.
 These tests fail when the reviewed geometry regresses:
 
 - `chrome_matches_prototype_metrics` — titlebar 58px, rail 250px, composer and
-  sticky 900px centered.
+  sticky column 900px centered.
+- `the_queue_badge_is_a_narrow_accessory_above_the_composer`,
+  `the_sticky_card_is_a_narrow_accessory_above_the_composer` and
+  `a_narrow_window_clamps_the_accessories_to_the_composer` — a composer
+  accessory is narrower than the frame, shares its left gutter, and clamps to
+  it instead of overflowing on a narrow window.
 - `overlays_match_prototype_sizes` — command palette 700px, session manager
   1040x720.
 - `scripts/ui-check.py` runs for both Light and Dark in `check-ui.sh`.
@@ -242,8 +247,12 @@ These remain visible in a pixel comparison but are product decisions, not
 unfinished work:
 
 - The permission card and the sticky warning banner can both be visible while
-  the card is on screen; the PRD requires the banner to persist until the
-  decision.
+  the card is on screen; the reviewed design requires the banner to persist
+  until the decision.
+- Composer accessories are 780px and pinned to the composer's left gutter. The
+  prototype draws the queue strip and the sticky host at the composer's own
+  900px, but a full-width accessory above the input reads as a second input box;
+  the narrower card shares the frame's left edge and settles against its top.
 - Windows taskbar badges are an overlay icon, not a number: the platform has
   no numeric badge API, so the gate banner and notification carry the count.
 
@@ -278,10 +287,11 @@ record them:
 | Session rail | Titles truncate without ellipsis; one UUID fallback observed | Fixed: `truncate()` on the row label |
 | Composer | Permission picker is a separate full-width row; `@`/`/` are a separate button row; no single composer bar | Fixed: one footer row inside `PromptBar` |
 | Sticky strip | One-line text bar; no task card, Goals/Agents counts, or background entry | Fixed: task card with header, counts, progress, rows |
-| Title bar | No branch/worktree or account avatar (PRD §title bar) | Fixed: branch pill from `.git/HEAD` (avatar is tracked separately) |
+| Title bar | No branch/worktree or account avatar in the reviewed design | Fixed: branch pill from `.git/HEAD` (avatar is tracked separately) |
 | Inspector | Fixed 318px; values were clipped under the scrollbar (now padded, still cramped) | Fixed: scrollbar padding + truncation |
 | Command Center | Flat list; no groups, icons, recent section, or per-row shortcut hints | Fixed: group subtitle, group icon, `/command` hint, count caption |
 | Session Manager | No project grouping/chips, archive badge, or keyboard hints | Fixed: project chips include All projects; archived rows carry a badge |
+| Session list | Date buckets only showed the active project's recent sessions | Fixed: registered projects are loaded together and grouped by project |
 | Extensions | Empty tabs render nothing; `Refresh MCP` is a bare link | Fixed: MCP shows `No MCP servers yet` above Refresh |
 | Transcript | Hook context rendered as bare markdown; tool groups and diff were outside the capture window | Fixed: hook context card; captures now cover tool cards (`26c`) and the transcript tail |
 | Inspector | Run tab was a flat key/value list with no current step or signal rows | Fixed: Run map header, gauge, Current step, Thread signals, Latest activity |

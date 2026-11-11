@@ -23,6 +23,8 @@ pub type LlmRequestBody = Vec<u8>;
 pub struct LlmResponse {
     /// Content blocks produced by the model.
     pub blocks: Vec<ContentBlock>,
+    /// Provider label for the assistant text, when the provider emits one.
+    pub phase: Option<tact_agent_api::MessagePhase>,
     /// Why the model stopped generating.
     pub stop_reason: Option<StopReason>,
     /// Token usage reported by the provider (when available).
@@ -38,6 +40,7 @@ impl std::fmt::Debug for LlmResponse {
         formatter
             .debug_struct("LlmResponse")
             .field("blocks", &self.blocks)
+            .field("phase", &self.phase)
             .field("stop_reason", &self.stop_reason)
             .field("usage", &self.usage)
             .field(
@@ -195,6 +198,7 @@ mod tests {
     fn unchanged_provider_response_has_explicit_state_update() {
         let response = LlmResponse {
             blocks: Vec::new(),
+            phase: None,
             stop_reason: None,
             usage: None,
             request_body: None,
@@ -254,6 +258,7 @@ mod tests {
     fn llm_response_debug_redacts_request_body() {
         let response = LlmResponse {
             blocks: Vec::new(),
+            phase: None,
             stop_reason: None,
             usage: None,
             request_body: Some(b"SECRET-BODY".to_vec()),

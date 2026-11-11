@@ -1,6 +1,6 @@
 # Tact LLM SDK Redaction Inventory
 
-Reviewed 2026-10-29. The stable provider never renders request bodies,
+Reviewed 2026-11-08. The stable provider never renders request bodies,
 response bodies, raw SSE frames, tool arguments, credentials, authorization
 headers, or provider-state payloads through `Debug`, `Display`, error chains,
 or tracing.

@@ -4,7 +4,7 @@
 //! when visible). A band-background pill that says the reader has scrolled
 //! away and new output may have arrived.
 //!
-//! Design: `docs/superpowers/specs/2026-10-10-scroll-back-to-bottom-pill-design.md`.
+//! Design context: `book/23_chapter_tui_zh.html`.
 
 use ratatui::{
     Frame,

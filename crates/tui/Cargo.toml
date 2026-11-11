@@ -2,7 +2,9 @@
 name = "tui"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.91"
+# Inherited, not pinned: this crate depends on `tact`, which already requires the
+# workspace MSRV, so a lower number here is a promise cargo cannot keep.
+rust-version.workspace = true
 
 [features]
 test-support = []

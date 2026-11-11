@@ -1,5 +1,4 @@
 [workspace]
-exclude = ["vendor/gpui-ai"]
 members = [
     "crates/protocol",
     "crates/agent_tui_kit",
@@ -101,12 +100,8 @@ gpui_platform = { package = "gpui-pre-platform", version = "=0.3.3" }
 gpui_component = { package = "gpui-component", version = "=0.6.0" }
 gpui_base = { package = "gpui-base", version = "=0.6.0" }
 gpui_component_assets = { package = "gpui-kit-assets", version = "=0.6.0" }
-gpui-ai = "=0.8.0"
 gpui-component-macros = "=0.6.0"
 im = "15"
-
-[patch.crates-io]
-gpui-ai = { path = "vendor/gpui-ai" }
 
 # Keep the dev build fast to compile and small on disk. This workspace has ~30
 # bin/test units per crate and Cargo stores every unit's artifacts in its own

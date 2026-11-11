@@ -7,7 +7,6 @@
 //! so the component stays free of host rendering concerns.
 
 use crossterm::event::KeyEvent;
-use ratatui::style::Color;
 
 use crate::{Component, Ctx, i18n::Messages, protocol::AgentUpdate, state::StreamState};
 
@@ -86,11 +85,6 @@ impl Component for StreamComponent {
         self
     }
 }
-
-/// Silence the unused-Color import warning on platforms where the compiler
-/// cannot prove the theme default; kept for parity with other components.
-#[allow(dead_code)]
-const _: Option<(Color, Messages)> = None;
 
 #[cfg(test)]
 mod tests {

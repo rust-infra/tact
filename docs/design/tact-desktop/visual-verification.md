@@ -113,11 +113,11 @@ produced:
 
 | Target | Asset | Verified payload |
 |---|---|---|
-| `aarch64-apple-darwin` | `tact-desktop-v2.0.0-aarch64-apple-darwin.zip` | `Tact Desktop.app`, Mach-O arm64, Info.plist 2.0.0 |
-| `x86_64-apple-darwin` | `tact-desktop-v2.0.0-x86_64-apple-darwin.zip` | `Tact Desktop.app`, Mach-O x86_64, Info.plist 2.0.0 |
-| `x86_64-unknown-linux-gnu` | `tact-desktop-v2.0.0-x86_64-unknown-linux-gnu.tar.gz` | ELF x86-64, licenses, Cargo.lock |
-| `aarch64-unknown-linux-gnu` | `tact-desktop-v2.0.0-aarch64-unknown-linux-gnu.tar.gz` | ELF aarch64, licenses, Cargo.lock |
-| `x86_64-pc-windows-msvc` | `tact-desktop-v2.0.0-x86_64-pc-windows-msvc.zip` | PE32+ GUI `tact-desktop.exe` + console `tact-ui.exe` |
+| `aarch64-apple-darwin` | `tact-desktop-v2.0.4-aarch64-apple-darwin.zip` | `Tact Desktop.app`, Mach-O arm64, Info.plist 2.0.4 |
+| `x86_64-apple-darwin` | `tact-desktop-v2.0.4-x86_64-apple-darwin.zip` | `Tact Desktop.app`, Mach-O x86_64, Info.plist 2.0.4 |
+| `x86_64-unknown-linux-gnu` | `tact-desktop-v2.0.4-x86_64-unknown-linux-gnu.tar.gz` | ELF x86-64, licenses, Cargo.lock |
+| `aarch64-unknown-linux-gnu` | `tact-desktop-v2.0.4-aarch64-unknown-linux-gnu.tar.gz` | ELF aarch64, licenses, Cargo.lock |
+| `x86_64-pc-windows-msvc` | `tact-desktop-v2.0.4-x86_64-pc-windows-msvc.zip` | PE32+ GUI `tact-desktop.exe` + console `tact-ui.exe` |
 
 Each job runs the packaged binary from a clean app-data directory
 (`TACT_DESKTOP_SMOKE=1`); Linux uses Mesa lavapipe under `xvfb-run` because the
@@ -156,9 +156,8 @@ controls (`compact`, `cancel`, `save`, `subagent_cancel`) still show their
 loading/disabled state because the walkthrough host has no configured model
 provider; they are covered by the seeded off-screen captures in section 1.
 
-## Manual test and review records
+## Test records
 
-- `docs/design/tact-desktop/manual-test-report.md` maps every PRD flow and
-  entry-matrix item to a capture or test.
-- `docs/reviews/2026-10-31-tact-desktop-final-review.md` records the final
-  review verdict, findings, and residual follow-ups.
+The current verification commands and capture matrix live in this document.
+Point-in-time review records are kept in Git history rather than maintained as
+separate current documents.

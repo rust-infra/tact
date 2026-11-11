@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Tact Desktop
+GenericName=AI Coding Agent
+Comment=Native desktop shell for the Tact agent
+Exec=tact-desktop
+Icon=tact-desktop
+Terminal=false
+Categories=Development;IDE;
+Keywords=tact;agent;ai;coding;
+StartupNotify=true
+# X11 and Wayland match the running window to this entry through the class /
+# app_id the shell sets in its window options.
+StartupWMClass=tact-desktop

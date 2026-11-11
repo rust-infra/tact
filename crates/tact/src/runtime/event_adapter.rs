@@ -189,7 +189,20 @@ impl TactEventBridge {
                     message_id: message_id.to_string(),
                 });
             }
-            AgentEvent::MessageFinished { .. } => {}
+            AgentEvent::MessageFinished {
+                message_id,
+                message,
+            } => {
+                // Metadata-only: emit it when the provider labelled the text.
+                // Without a phase there is nothing for the consumer to apply,
+                // and the baseline's frozen update order stays untouched.
+                if let Some(phase) = message.phase {
+                    self.events.send(AgentUpdate::MessageFinished {
+                        message_id: message_id.to_string(),
+                        phase: Some(phase),
+                    });
+                }
+            }
             AgentEvent::TurnStarted {
                 run_id,
                 turn,
@@ -229,12 +242,20 @@ impl TactEventBridge {
                     self.events.send_progress(AgentUpdate::StreamChunk(delta));
                 }
                 MessageDelta::Thinking { phase } => {
-                    self.events
-                        .send_progress(AgentUpdate::ThinkingChunk(match phase {
-                            ThinkingDelta::Started => ThinkingChunk::Started,
-                            ThinkingDelta::Delta { delta } => ThinkingChunk::Delta(delta),
-                            ThinkingDelta::Finished => ThinkingChunk::Finished,
-                        }));
+                    // The lifecycle bounds a transcript row, so it must survive
+                    // a full progress lane; only the text is advisory.
+                    let lifecycle =
+                        matches!(phase, ThinkingDelta::Started | ThinkingDelta::Finished);
+                    let update = AgentUpdate::ThinkingChunk(match phase {
+                        ThinkingDelta::Started => ThinkingChunk::Started,
+                        ThinkingDelta::Delta { delta } => ThinkingChunk::Delta(delta),
+                        ThinkingDelta::Finished => ThinkingChunk::Finished,
+                    });
+                    if lifecycle {
+                        self.events.send(update);
+                    } else {
+                        self.events.send_progress(update);
+                    }
                 }
             },
             AgentEvent::ProviderActivity { activity } => {
@@ -1176,5 +1197,47 @@ mod tests {
         ));
         assert!(matches!(updates[8], AgentUpdate::SubagentFinished { .. }));
         assert!(matches!(updates[9], AgentUpdate::SubagentsChanged { .. }));
+    }
+
+    #[tokio::test]
+    async fn a_full_progress_lane_keeps_the_thinking_lifecycle() {
+        use tact_protocol::update_channel;
+
+        let (tx, mut rx) = update_channel(1);
+        let bridge = TactEventBridge::new(UpdateSink::from_ui_sender(Some(tx.clone())));
+        // Fill the advisory lane so the next progress update is dropped.
+        tx.send_progress(AgentUpdate::StreamChunk("filler".into()))
+            .expect("filler progress");
+        bridge.emit(AgentEvent::MessageDelta {
+            message_id: MessageId::new("m1"),
+            delta: MessageDelta::Thinking {
+                phase: ThinkingDelta::Started,
+            },
+        });
+        bridge.emit(AgentEvent::TurnStarted {
+            run_id: tact_agent_api::RunId::new("run-1"),
+            turn: 1,
+            activation_turn: 1,
+            max_total_turns: None,
+        });
+
+        let mut updates = Vec::new();
+        while let Ok(Some(update)) =
+            tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
+        {
+            updates.push(update);
+        }
+        assert!(
+            updates
+                .iter()
+                .any(|update| matches!(update, AgentUpdate::ThinkingChunk(ThinkingChunk::Started))),
+            "the thinking row must not depend on a droppable update: {updates:?}"
+        );
+        assert!(
+            updates
+                .iter()
+                .any(|update| matches!(update, AgentUpdate::TurnStats { .. })),
+            "the terminal update still arrives: {updates:?}"
+        );
     }
 }

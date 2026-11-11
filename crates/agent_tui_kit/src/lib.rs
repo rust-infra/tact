@@ -11,8 +11,7 @@
 //! The kit depends only on `tact_protocol` (the types-only wire contract) and
 //! the ratatui/crossterm family. It never depends on a concrete agent.
 //!
-//! Design doc: `docs/superpowers/specs/2026-08-18-tui-component-library-design.md`.
-//! Execution plan: `docs/superpowers/plans/2026-08-18-tui-component-library.md`.
+//! Rendering architecture: `docs/tui_rendering.md`.
 //!
 //! # Status
 //!
@@ -54,7 +53,7 @@ pub struct Ctx<'a> {
 }
 
 /// Shared-log ownership + model (priority-0 component), re-exported at the
-/// crate root for the `Ctx` / prelude.
+/// crate root because hosts build a [`Ctx`] from them.
 pub use state::{InputMode, LogCoordinator, LogItem, LogItemKind, SystemMsgStyle};
 
 /// A message queued while the agent is busy (Codex-style submit-on-idle).
@@ -132,11 +131,4 @@ impl<U: 'static> Component<U> for Box<dyn Component<U>> {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         (**self).as_any_mut()
     }
-}
-
-/// Re-export surface for hosts.
-pub mod prelude {
-    pub use crate::bridge::{AgentBridge, BridgeExtension, Command, ExtensionEvent};
-    pub use crate::protocol::*;
-    pub use crate::{Component, Ctx, InputMode, LogCoordinator, PendingMessage, PendingQueue};
 }

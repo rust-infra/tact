@@ -2,7 +2,7 @@
 
 This document describes the overall architecture, core data flow, and terminal UI layout of `tact` using Mermaid diagrams. It reflects the current implementation rather than the original MVP design.
 
-For detailed state-machine diagrams (TUI status, input mode, task lifecycle, permissions, hooks, etc.), see [`docs/state_machines.md`](./docs/state_machines.md). For the TUI rendering architecture (layout, log panel, popups), see [`docs/tui_rendering.md`](./docs/tui_rendering.md). For tool invocation UI (3-tier blocks, concurrent active tools, popups), see [`docs/tool_rendering.md`](./docs/tool_rendering.md).
+For current state enums and transition owners, see [`docs/state_machines.md`](./docs/state_machines.md). For the TUI and `agent_tui_kit` rendering split, see [`docs/tui_rendering.md`](./docs/tui_rendering.md). For tool cards and detail surfaces, see [`docs/tool_rendering.md`](./docs/tool_rendering.md). The full document map is in [`docs/README.md`](./docs/README.md).
 
 ---
 
@@ -12,20 +12,20 @@ This project is a Cargo Workspace containing the following crates:
 
 | Directory                     | Package                | Version             | Responsibility                                                                                                                                                                                                                                          |
 | ----------------------------- | ---------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `crates/protocol`             | `tact_protocol`        | `2.0.0` (workspace) | Host/TUI wire types: `AgentUpdate`, `UserCommand`, `PlanStep`, `StepResult`, `StepStatus`, `ModelCallParams`, `BalanceInfo`. Its `Agent` module is legacy and is not part of the runtime path.                                                          |
-| `crates/agent_api`            | `tact_agent_api`       | `2.0.0` (workspace) | Provider-neutral contracts for state, model streams, context, tools, gates, transcript/usage persistence, and events. No product or infrastructure implementation lives here.                                                                           |
-| `crates/agent_core`           | `tact_agent_core`      | `2.0.0` (workspace) | Bounded, provider-neutral agent kernel. `AgentKernel::run` owns one activation over injected `KernelDeps`; it has no SQLite, MCP transport, provider SDK, or TUI dependency.                                                                            |
-| `crates/agent_sdk`            | `tact_agent_sdk`       | `2.0.0` (workspace) | Ergonomic SDK facade over the neutral API and kernel: safe defaults, static tool composition, session state ownership, cancellation, and optional tracing telemetry. It has no product, provider HTTP, MCP, storage, or UI dependency.                  |
+| `crates/protocol`             | `tact_protocol`        | `2.0.0` | Host/TUI wire types: `AgentUpdate`, `UserCommand`, `PlanStep`, `StepResult`, `StepStatus`, `ModelCallParams`, `BalanceInfo`. Its `Agent` module is legacy and is not part of the runtime path.                                                          |
+| `crates/agent_api`            | `tact_agent_api`       | `2.0.4` (workspace) | Provider-neutral contracts for state, model streams, context, tools, gates, transcript/usage persistence, and events. No product or infrastructure implementation lives here.                                                                           |
+| `crates/agent_core`           | `tact_agent_core`      | `2.0.4` (workspace) | Bounded, provider-neutral agent kernel. `AgentKernel::run` owns one activation over injected `KernelDeps`; it has no SQLite, MCP transport, provider SDK, or TUI dependency.                                                                            |
+| `crates/agent_sdk`            | `tact_agent_sdk`       | `2.0.4` (workspace) | Ergonomic SDK facade over the neutral API and kernel: safe defaults, static tool composition, session state ownership, cancellation, and optional tracing telemetry. It has no product, provider HTTP, MCP, storage, or UI dependency.                  |
 | `crates/tui`                  | `tui`                  | `0.1.0` (local)     | Terminal UI built with `ratatui`.                                                                                                                                                                                                                       |
 | `crates/agent_tui_kit`        | `agent_tui_kit`        | `0.1.0` (local)     | Reusable host-protocol rendering kit for thinking/tool/log/popup widgets.                                                                                                                                                                               |
-| `crates/tact`                 | `tact`                 | `2.0.0` (workspace) | Product composition root and compatibility facade: tool router, MCP client, hooks, permissions, prompt/compaction policy, persistence adapters, and kernel wiring.                                                                                      |
-| `crates/tact_host`            | `tact_host`            | `2.0.0` (workspace) | UI-independent host services: session bootstrap/locking, command loop, Goal runner, account polling, permission mapping, and input normalization.                                                                                                       |
-| `crates/catalog`              | `tact_catalog`         | `2.0.0` (workspace) | Frontend-neutral slash/CLI/setting command catalog, localization, canonical action IDs, and fuzzy matching shared by the TUI and desktop.                                                                                                               |
-| `crates/desktop_core`         | `tact_desktop_core`    | `2.0.0` (workspace) | GPUI-free desktop controller, transcript reducer, typed snapshots, project/session catalog, desktop settings, and host-session orchestration.                                                                                                           |
-| `crates/desktop`              | `tact-desktop`         | `2.0.0` (workspace) | Native GPUI desktop shell for macOS, Windows, and Linux. Thin UI over `tact_desktop_core` and `tact_catalog`, with gpui-ai/gpui-component leaf surfaces.                                                                                                |
-| `crates/tact-ui`              | `tact-ui`              | `2.0.0` (workspace) | TUI adapter and CLI: terminal rendering/input plus headless CLI, consuming `tact_host` for shared orchestration.                                                                                                                                        |
-| `crates/tact_llm`             | `tact_llm`             | `2.0.0` (workspace) | Stable provider SDK and `tact_agent_api::ModelPort` implementation. `core` exposes the facade, builder, endpoint/limit/auth types, and a lazy stream; protocol adapters are feature-isolated behind `anthropic`, `openai-chat`, and `openai-responses`. |
-| `crates/tool_refactor_macros` | `tool_refactor_macros` | `2.0.0` (workspace) | Proc-macro `#[tool]` that generates `Tool` trait implementations from async functions.                                                                                                                                                                  |
+| `crates/tact`                 | `tact`                 | `2.0.4` (workspace) | Product composition root and compatibility facade: tool router, MCP client, hooks, permissions, prompt/compaction policy, persistence adapters, and kernel wiring.                                                                                      |
+| `crates/tact_host`            | `tact_host`            | `2.0.4` (workspace) | UI-independent host services: session bootstrap/locking, command loop, Goal runner, account polling, permission mapping, and input normalization.                                                                                                       |
+| `crates/catalog`              | `tact_catalog`         | `2.0.4` (workspace) | Frontend-neutral slash/CLI/setting command catalog, localization, canonical action IDs, and fuzzy matching shared by the TUI and desktop.                                                                                                               |
+| `crates/desktop_core`         | `tact_desktop_core`    | `2.0.4` (workspace) | GPUI-free desktop controller, transcript reducer, typed snapshots, project/session catalog, desktop settings, and host-session orchestration.                                                                                                           |
+| `crates/desktop`              | `tact-desktop`         | `2.0.4` (workspace) | Native GPUI desktop shell for macOS, Windows, and Linux. Thin UI over `tact_desktop_core` and `tact_catalog`, with Tact-owned gpui-component surfaces.                                                                                                  |
+| `crates/tact-ui`              | `tact-ui`              | `2.0.4` (workspace) | TUI adapter and CLI: terminal rendering/input plus headless CLI, consuming `tact_host` for shared orchestration.                                                                                                                                        |
+| `crates/tact_llm`             | `tact_llm`             | `2.0.4` (workspace) | Stable provider SDK and `tact_agent_api::ModelPort` implementation. `core` exposes the facade, builder, endpoint/limit/auth types, and a lazy stream; protocol adapters are feature-isolated behind `anthropic`, `openai-chat`, and `openai-responses`. |
+| `crates/tool_refactor_macros` | `tool_refactor_macros` | `2.0.4` (workspace) | Proc-macro `#[tool]` that generates `Tool` trait implementations from async functions.                                                                                                                                                                  |
 
 Dependency graph:
 
@@ -38,7 +38,6 @@ flowchart TB
     tact_host --> tact_protocol
     tact_desktop["tact-desktop"] --> tact_desktop_core["tact_desktop_core"]
     tact_desktop --> tact_catalog
-    tact_desktop --> gpui_ai["gpui-ai (vendored localization fork)"]
     tact_desktop_core --> tact_host
     tact_desktop_core --> tact_catalog
     tact_desktop_core --> tact_protocol
@@ -158,7 +157,6 @@ flowchart TB
         PERM["permission/<br/>CapabilityRisk, PermissionManager"]
         HOOK["hook/<br/>lifecycle hooks + shared queues"]
         MCP["mcp/<br/>PluginLoader, McpClient, McpCatalogHandle"]
-        LSP["lsp/<br/>LspClient, LspManager"]
         COMP["compact/<br/>compaction policy + state"]
         STORE["store/<br/>StoreRoot, Store, CollectionStore"]
         TASK["task/<br/>persistent task manager"]
@@ -186,11 +184,11 @@ flowchart TB
     subgraph tui_crate["tui crate — Terminal UI"]
         T["lib.rs<br/>event loop"]
         TH["handlers/<br/>mode-specific key handling"]
-        TR["render/<br/>panel rendering"]
-        TS["state/<br/>App state"]
-        TT["theme.rs<br/>11 color themes"]
-        TI18N["i18n.rs<br/>EN / 中文"]
-        TW["widgets/<br/>history, select popups"]
+        TR["render/<br/>app wrappers and prepare phases"]
+        TS["widgets/state/app/<br/>App state"]
+        TT["agent_tui_kit/theme.rs<br/>14 color themes"]
+        TI18N["agent_tui_kit/i18n.rs<br/>EN / 中文"]
+        TW["agent_tui_kit/render/<br/>pure panels and popups"]
     end
 
     B1 --> DRV
@@ -223,7 +221,6 @@ flowchart TB
     TOOL --> TASK
     TOOL --> TEAM
     TOOL --> BG
-    TOOL --> CRON
     TOOL --> MEM
     TOOL --> SKILL
     TOOL --> WT
@@ -840,9 +837,10 @@ If you are reading older branches or notes, the following major evolutions have 
 
 | Document | Focus |
 |---|---|
-| [`docs/state_machines.md`](./docs/state_machines.md) | Detailed state-machine diagrams for the TUI, tasks, background jobs, permissions, hooks, and recovery. |
-| [`docs/tui_rendering.md`](./docs/tui_rendering.md) | TUI rendering architecture: layout, log panel, popups, Markdown, cells, performance optimization. |
-| [`docs/tool_rendering.md`](./docs/tool_rendering.md) | Tool block design: ToolWidget → ToolCell pipeline, concurrent tools, detail cards, DiffPopup. |
-| [`docs/tool_rendering.md`](./docs/tool_rendering.md) | Tool invocation UI (3-tier blocks, concurrent active tools, popups). |
+| [`docs/README.md`](./docs/README.md) | Documentation map and ownership rules. |
+| [`docs/state_machines.md`](./docs/state_machines.md) | Current state enums and transition owners across the runtime and both frontends. |
+| [`docs/tui_rendering.md`](./docs/tui_rendering.md) | TUI and `agent_tui_kit` rendering split, frame flow, caches, and popup ownership. |
+| [`docs/tool_rendering.md`](./docs/tool_rendering.md) | Tool cards, grouped tools, live output, detail popups, and click targets. |
 | [`docs/compaction.md`](./docs/compaction.md) | Context compaction behavior and tuning. |
+| [`docs/parallel_tool_execution.md`](./docs/parallel_tool_execution.md) | Tool resource conflicts and wave scheduling. |
 | [`docs/token_usage_schema.md`](./docs/token_usage_schema.md) | SQLite `token_usages` schema, cache metrics, `request_body` debug column. |

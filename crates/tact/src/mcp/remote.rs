@@ -1277,6 +1277,21 @@ mod tests {
             .saturating_sub(seconds)
     }
 
+    /// A URL on a loopback port that was just released, so a request to it is
+    /// refused immediately.
+    ///
+    /// Tests that need "the network was attempted, and failed" use this rather
+    /// than a `.invalid` host: `.invalid` depends on the resolver returning an
+    /// error, which a proxy in `HTTPS_PROXY` can turn into a multi-minute
+    /// hang instead. A closed loopback port fails the same way on every
+    /// machine, proxy or not.
+    fn refused_url() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let port = listener.local_addr().expect("local addr").port();
+        drop(listener);
+        format!("https://127.0.0.1:{port}/mcp")
+    }
+
     #[tokio::test]
     async fn a_fresh_stored_token_is_used_without_touching_the_network() {
         // The point of the fast path: no metadata discovery. The URL is
@@ -1314,21 +1329,13 @@ mod tests {
     #[tokio::test]
     async fn an_expired_token_still_goes_through_the_oauth_manager() {
         // The fast path must not swallow the refresh: an expired token has to
-        // reach `AuthorizationManager`, which here fails on the `.invalid`
-        // host — the error is the evidence that discovery was attempted.
+        // reach `AuthorizationManager`, which here fails because nothing is
+        // listening — the error is the evidence that discovery was attempted.
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("hosted.json");
         write_credentials(&path, Some(60), Some(epoch_secs_ago(3_600))).await;
 
-        // Discovery resolves a `.invalid` host. On a slow or proxy-less
-        // resolver that can hang for minutes, so bound it: a timeout means
-        // the request went out, not that the fast path swallowed the refresh.
-        let outcome = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            stored_access_token_at(&path, "hosted", "https://example.invalid/mcp"),
-        )
-        .await
-        .expect("discovery must settle instead of hanging");
+        let outcome = stored_access_token_at(&path, "hosted", &refused_url()).await;
         assert!(
             outcome.is_err(),
             "an expired token must go through the manager, not be handed back: {outcome:?}"

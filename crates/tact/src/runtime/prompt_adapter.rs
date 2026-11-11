@@ -11,12 +11,15 @@ use std::{
 };
 
 use anyhow::{Context as _, Result};
-use tact_agent_api::ContextView;
+use tact_agent_api::{AgentContentBlock, AgentMessage, ContextView};
 
 use crate::{
     ToolSpec,
     agent::{assemble_agents_md_prompt, cached_md_section, load_dynamic_context},
-    compact::{approx_text_tokens, context_pressure_advisory},
+    compact::{
+        BLOCK_OVERHEAD_TOKENS, IMAGE_TOKEN_ESTIMATE, MESSAGE_OVERHEAD_TOKENS, approx_text_tokens,
+        context_pressure_advisory,
+    },
     config::AgentSettings,
     mcp::McpCatalogHandle,
     memory::MEMORY_GUIDANCE,
@@ -208,16 +211,69 @@ impl SystemPromptAssembler {
     }
 }
 
-pub(crate) fn estimate_agent_context_tokens(messages: &[tact_agent_api::AgentMessage]) -> usize {
-    match serde_json::to_string(messages) {
-        Ok(serialized) => approx_text_tokens(&serialized),
-        Err(error) => {
-            tracing::warn!(
-                %error,
-                message_count = messages.len(),
-                "failed to serialize logical context for token estimation"
-            );
-            usize::MAX / 2
-        }
+pub(crate) fn estimate_agent_context_tokens(messages: &[AgentMessage]) -> usize {
+    messages
+        .iter()
+        .map(estimate_agent_message_tokens)
+        .fold(0usize, usize::saturating_add)
+}
+
+fn estimate_agent_message_tokens(message: &AgentMessage) -> usize {
+    MESSAGE_OVERHEAD_TOKENS.saturating_add(
+        message
+            .content
+            .iter()
+            .map(estimate_agent_block_tokens)
+            .fold(0usize, usize::saturating_add),
+    )
+}
+
+fn estimate_agent_block_tokens(block: &AgentContentBlock) -> usize {
+    let tokens = match block {
+        AgentContentBlock::Text { text } => approx_text_tokens(text),
+        AgentContentBlock::Image { .. } => IMAGE_TOKEN_ESTIMATE,
+        AgentContentBlock::ToolUse { id, name, input } => approx_text_tokens(id)
+            .saturating_add(approx_text_tokens(name))
+            .saturating_add(
+                serde_json::to_string(input)
+                    .map(|serialized| approx_text_tokens(&serialized))
+                    .unwrap_or(usize::MAX / 2),
+            ),
+        AgentContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            ..
+        } => approx_text_tokens(tool_use_id).saturating_add(approx_text_tokens(content)),
+        AgentContentBlock::Thinking {
+            thinking,
+            signature,
+        } => approx_text_tokens(thinking).saturating_add(approx_text_tokens(signature)),
+        AgentContentBlock::RedactedThinking { data } => approx_text_tokens(data),
+    };
+    BLOCK_OVERHEAD_TOKENS.saturating_add(tokens)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tact_agent_api::{AgentImageSource, AgentRole, MessageOrigin};
+
+    #[test]
+    fn agent_images_use_a_vision_budget_not_base64_length() {
+        let message = AgentMessage::new(
+            AgentRole::User,
+            MessageOrigin::User,
+            vec![AgentContentBlock::Image {
+                source: AgentImageSource {
+                    type_: "base64".into(),
+                    media_type: "image/png".into(),
+                    data: "A".repeat(400_000),
+                },
+            }],
+        );
+        assert!(
+            estimate_agent_context_tokens(&[message])
+                <= MESSAGE_OVERHEAD_TOKENS + BLOCK_OVERHEAD_TOKENS + IMAGE_TOKEN_ESTIMATE
+        );
     }
 }

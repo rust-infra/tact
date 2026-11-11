@@ -11,7 +11,7 @@ host should select exactly the protocol it needs:
 
 ```toml
 tact_llm = {
-  version = "2.0.0",
+  version = "2.0.4",
   default-features = false,
   features = ["openai-responses"]
 }
@@ -22,14 +22,13 @@ Until the registry release is available, use the same repository tag:
 ```toml
 tact_llm = {
   git = "https://github.com/rust-infra/tact",
-  branch = "codex/agent-kernel-design",
+  tag = "v2.0.4",
   default-features = false,
   features = ["openai-chat"]
 }
 ```
 
-Use the `v2.0.0` tag after that release is published; the branch form above is
-the pre-release path for this tree.
+Use the same tag or commit as the host application.
 
 ## Build and run
 
@@ -100,5 +99,5 @@ All dependencies are registry-resolvable. Publish `tact_agent_api` before
 `tact_llm`; the local path in `Cargo.toml` becomes a versioned crates.io
 dependency in the packaged crate.
 
-This crate declares Rust 1.88 as its minimum supported version. CI also checks
+This crate declares Rust 1.99 as its minimum supported version. CI also checks
 the stable `openai-chat` and `openai-responses` paths on that toolchain.

@@ -22,7 +22,7 @@ tact implements **three-tier progressive compaction**:
 
 ```mermaid
 flowchart TB
-    Entry([agent_loop entry]) --> EntryEst{should_auto_compact?<br/>reserve incoming}
+    Entry([AgentKernel activation]) --> EntryEst{should_auto_compact?<br/>reserve incoming}
     EntryEst -->|yes| EntryCH[compact_history]
     EntryCH --> Push[push user turn]
     EntryEst -->|no| Push
@@ -70,7 +70,8 @@ Each artifact directory retains at most the 100 newest files after a write.
 
 ## Tier 2: Micro Compaction
 
-**Trigger**: Start of each `agent_loop` iteration when `agent.micro_compact_enabled` is true.
+**Trigger**: Before each model dispatch when the product context policy enables
+`agent.micro_compact_enabled`.
 
 1. Collect all `ToolResult` blocks (user messages), chronological order  
 2. Keep the last `KEEP_RECENT_TOOL_RESULTS` (12) intact  
@@ -95,8 +96,8 @@ Short results stay (high density, low cost). Assistant / thinking / user text ar
 - **Entry**: before pushing the user turn, `should_auto_compact` with `incoming_turn` reserved
 - **Each loop iteration**: after `micro_compact`, `should_auto_compact` with `incoming = 0`:
   - **Primary:** `last_token_total + estimate_message_tokens(incoming) >= 80% of agent.model_context_window` (default **200,000** tokens)
-  - **Fallback:** estimated context + incoming tokens reaches the same 80% threshold; ASCII is estimated at ~4 chars/token, non-ASCII conservatively at 1 char/token
-  - **Responses exception:** `Agent::auto_compact_due` uses the provider-reported `last_token_total` only — the logical-context estimate is deliberately excluded, because native compaction shrinks the wire baseline, not the logical context, so an estimate-driven trigger would re-fire forever. No usage yet ⇒ no trigger
+  - **Fallback / post-usage growth:** structured context + incoming tokens reaches the same 80% threshold. Text is estimated at ~4 ASCII chars/token and 1 token per non-ASCII character. Images use a fixed 1,600-token vision budget, never their base64-encoded length — an encoded screenshot is not a 30k-token text block.
+  - **Responses exception:** the product context policy uses the provider-reported `last_token_total` only. The logical-context estimate is deliberately excluded because native compaction shrinks the wire baseline, not the logical context. An estimate-driven trigger would re-fire forever. No usage yet means no trigger.
 - Provider prompt-too-long recovery ([Ch 6](../book/06_chapter_recovery_zh.html))
 - Successful manual `compact` tool (after tool results are appended; failed invocations do not rewrite history)
 
@@ -110,7 +111,7 @@ Short results stay (high density, low cost). Assistant / thinking / user text ar
 
 ### Recent files
 
-`CompactState.recent_files`: last 5 paths from successful `read_file`, `write_file`, `edit_file`, and non-dry-run `apply_patch` calls (dedupe, LRU). Injected into the summarizer prompt and final summary.
+`CompactState.recent_files`: last 5 paths from successful `read_file`, `write_file`, and `edit_file` calls (dedupe, LRU). Injected into the summarizer prompt and final summary.
 
 ---
 

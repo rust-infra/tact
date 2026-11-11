@@ -1,6 +1,6 @@
 //! Read-only projection supplied to lifecycle hooks.
 
-use tact_agent_api::AgentMessage;
+use tact_agent_api::{AgentMessage, MessagePhase};
 use tact_llm::{Message, Role};
 
 use super::services::TactSharedServices;
@@ -150,6 +150,36 @@ impl<'a> TactActivationView<'a> {
                 .filter(|text| !text.is_empty()),
         }
     }
+
+    /// The latest turn's final answer, when the provider labelled one.
+    ///
+    /// Unlabelled history falls back to the last assistant text; a message
+    /// labelled commentary returns `None`.
+    pub fn last_final_message(&self) -> Option<String> {
+        match self.transcript.as_ref()? {
+            TranscriptView::Llm(messages) => messages
+                .iter()
+                .rev()
+                .find(|message| matches!(message.role, Role::Assistant))
+                .filter(|message| message.phase != Some(MessagePhase::Commentary))
+                .map(|message| crate::extract_text(&message.content))
+                .filter(|text| !text.is_empty()),
+            TranscriptView::Agent(messages) => messages
+                .iter()
+                .rev()
+                .find(|message| message.role == tact_agent_api::AgentRole::Assistant)
+                .filter(|message| message.phase != Some(MessagePhase::Commentary))
+                .map(AgentMessage::text_content)
+                .filter(|text| !text.is_empty()),
+        }
+    }
+
+    /// The text a lifecycle hook should report: the final answer when labelled,
+    /// otherwise the last assistant text (the legacy behavior).
+    pub fn last_answer(&self) -> Option<String> {
+        self.last_final_message()
+            .or_else(|| self.last_assistant_message())
+    }
 }
 
 #[cfg(test)]
@@ -208,6 +238,45 @@ mod tests {
         assert_eq!(view.turns_taken(), 3);
         assert_eq!(view.remaining_turns(), Some(1));
         assert_eq!(view.last_assistant_message().as_deref(), Some("assistant"));
+    }
+
+    #[test]
+    fn final_answer_skips_commentary() {
+        let services = services(PermissionMode::Plan);
+        let model = ModelIdentity {
+            name: "model".to_string(),
+        };
+        let mut commentary = Message::new_text(Role::Assistant, "checking");
+        commentary.phase = Some(MessagePhase::Commentary);
+        let mut answer = Message::new_text(Role::Assistant, "answer");
+        answer.phase = Some(MessagePhase::FinalAnswer);
+
+        let transcript = vec![commentary.clone(), answer];
+        let view = TactActivationView::new(
+            &services,
+            Some(&transcript),
+            SessionIdentity { id: None },
+            model.clone(),
+            1,
+            None,
+            SessionStartSource::Resume,
+        );
+        assert_eq!(view.last_final_message().as_deref(), Some("answer"));
+        assert_eq!(view.last_answer().as_deref(), Some("answer"));
+
+        let transcript = vec![commentary];
+        let view = TactActivationView::new(
+            &services,
+            Some(&transcript),
+            SessionIdentity { id: None },
+            model,
+            1,
+            None,
+            SessionStartSource::Resume,
+        );
+        assert!(view.last_final_message().is_none());
+        assert_eq!(view.last_answer().as_deref(), Some("checking"));
+        assert_eq!(view.last_assistant_message().as_deref(), Some("checking"));
     }
 
     #[tokio::test]

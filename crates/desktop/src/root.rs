@@ -1,7 +1,7 @@
 use std::{
     cell::{Cell, RefCell},
-    collections::{HashMap, HashSet},
-    path::PathBuf,
+    collections::{HashMap, HashSet, VecDeque},
+    path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
     time::Duration,
@@ -9,12 +9,11 @@ use std::{
 
 use gpui::{
     Anchor, Animation, AnimationExt as _, AnyElement, AppContext as _, ClickEvent, Context, Entity,
-    FollowMode, InteractiveElement as _, IntoElement, ListAlignment, ListOffset, ListState,
-    ParentElement as _, PathBuilder, Render, Role, ScrollHandle, SharedString,
-    StatefulInteractiveElement as _, Styled, Task, WeakEntity, Window, canvas, div, list, point,
-    prelude::FluentBuilder as _, px,
+    FollowMode, InteractiveElement as _, IntoElement, KeyDownEvent, ListAlignment, ListOffset,
+    ListState, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _,
+    PathBuilder, Render, Role, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled,
+    Task, WeakEntity, Window, canvas, div, list, point, prelude::FluentBuilder as _, px,
 };
-use gpui_ai::prelude::*;
 use gpui_base::FocusTrapElement as _;
 use gpui_component::popover::Popover;
 use gpui_component::scroll::ScrollableElement as _;
@@ -31,25 +30,81 @@ use tact_catalog::{
 };
 use tact_desktop_core::{
     Appearance, ArchiveFilter, CommandAvailability, CommandForm, DesktopController, DesktopEffect,
-    DesktopEvent, DesktopIntent, DesktopSnapshot, ExtensionsTab, GateCard, GateKind, GateResponse,
-    GateSelection, GateState, InspectorTab, PermissionModeView, ProjectId, ReaderRef, RowBody,
-    RowId, RowStatus, SectionMask, SessionId, SessionPhase, SettingValue, Submission,
+    DesktopEvent, DesktopIntent, DesktopSnapshot, DesktopTheme, ExtensionsTab, GateCard, GateKind,
+    GateResponse, GateSelection, GateState, InspectorTab, PermissionModeView, ProjectId, ReaderRef,
+    RowBody, RowId, RowStatus, SectionMask, SessionId, SessionPhase, SettingValue, Submission,
     SurfaceSnapshot, ToolGroupItem, ToolRow, TrajectoryRecordId, TrajectoryView, TranscriptRow,
     TranscriptView, is_enabled,
 };
 use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr as _};
 
 use crate::i18n::{self, TextKey};
+use crate::ui::command_search::{
+    CommandSearch, CommandSearchEvent, CommandSearchItem, CommandSearchLabels,
+};
+use crate::ui::diff_table::{
+    DiffCell, DiffChangeKind, DiffColumn, DiffProposalAction, DiffProposalState, DiffRow,
+    DiffTable, DiffTableEvent, DiffTableLabels,
+};
+use crate::ui::file_links;
+use crate::ui::filter_table::{
+    FilterCell, FilterColumn, FilterDefinition, FilterRow, FilterTable, FilterTableEvent,
+};
+use crate::ui::leaf::{
+    AttachmentItem, AttachmentStrip, ContextCard, ContextCardEvent, ContextMeter, ContextUsage,
+    LoadingState, Orbs, Suggestion, Suggestions, SuggestionsEvent, Toggle, ToggleEvent,
+    ToggleShape, ToolChip, ToolStatus, is_image_path,
+};
+use crate::ui::plan_card::{PlanCard, PlanCardLabels, PlanState, PlanStep, PlanStepStatus};
+use crate::ui::process::{
+    ProcessGroup, ProcessLayout, ProcessRowRole, answers_only_visible, build_process_layout,
+    is_process_row, process_summary_text, row_starts_at_message_column, yielded_plans_of,
+};
+use crate::ui::prompt_bar::{
+    ProgressState, PromptBar, PromptBarEvent, PromptBarLabels, PromptCommand, PromptMention,
+    PromptModel, PromptSubmit,
+};
+use crate::ui::question_flow::{ChoiceOption, Question, QuestionFlow, QuestionFlowEvent};
+use crate::ui::reader_components::{
+    Artifact, ArtifactKind, ArtifactPanel, ArtifactPanelEvent, ArtifactView, CodeBlock, CodeDiff,
+    DiffFile, InsightCard, MessageQueue, MessageQueueLabels, QueueEvent, QueuedMessage,
+    SearchResult, SearchResults, SearchResultsEvent,
+};
+use crate::ui::row_scroll::RowScroll;
+use crate::ui::selection_actions::{SelectionAction, SelectionActions, SelectionActionsEvent};
 use crate::ui::shell::{RunTab, TrajectoryDetailTab};
+use crate::ui::sidebar_nav::{
+    SidebarNav, SidebarNavEvent, SidebarNavItem, SidebarNavLabels, SidebarNavPresentation,
+    SidebarSection,
+};
+use crate::ui::status::{
+    background_status_label, goal_phase_label, goal_status_label, localized_wait_reason,
+    mcp_status_label, run_phase_label, subagent_status_label,
+};
 use crate::ui::sticky::GroupStatus;
+use crate::ui::surface;
 use crate::ui::trajectory as trajectory_page;
+use crate::ui::transcript_components::{
+    StreamedContent, StreamingText, Thinking, ThinkingEvent, ThinkingLabels, ToolCall,
+    ToolCallEvent, ToolCallLabels, ToolGroup, ToolGroupEvent,
+};
 use crate::ui::{ansi, diff_review, mermaid, web_search};
 use crate::{keymap, theme};
+
+const TRANSCRIPT_SESSION_CACHE: usize = 6;
+
+/// A permission gate repeats the command it asks about. Past this many lines
+/// the preview scrolls instead of growing, so the decision stays in view.
+const GATE_COMMAND_PREVIEW_LINES: usize = 8;
+const GATE_COMMAND_MAX_HEIGHT: f32 = 168.;
 
 /// One row of a picker menu, in pixels.
 const MODEL_PICKER_ROW_HEIGHT: f32 = 30.;
 /// Rows a model picker shows before it scrolls.
 const MODEL_PICKER_VISIBLE_ROWS: usize = 8;
+/// Informational notifications disappear on their own; errors stay until the
+/// user dismisses them.
+const TOAST_HIDE_DELAY: Duration = Duration::from_secs(3);
 #[cfg(not(test))]
 const SCROLL_COALESCE_INTERVAL: Duration = Duration::from_millis(24);
 #[cfg(test)]
@@ -59,6 +114,19 @@ const SCROLL_COALESCE_INTERVAL: Duration = Duration::ZERO;
 struct Toast {
     title: SharedString,
     body: SharedString,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DividerSide {
+    Rail,
+    Inspector,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DividerDrag {
+    side: DividerSide,
+    pointer_x: f32,
+    width: f32,
 }
 
 #[derive(Clone)]
@@ -149,6 +217,7 @@ enum FormAction {
     McpAddChoose(String),
     McpAddCommand(String),
     McpPrompt { server: String, name: String },
+    RemoveProject(ProjectId),
     ConfirmCancelRun,
 }
 
@@ -181,9 +250,23 @@ struct TranscriptRowView {
     assistant_selection: Option<Entity<SelectionActions>>,
     /// Inline expansion state for a thinking row.
     thinking_open: bool,
+    /// This row is a plan card that yields to the run's tool group.
+    plan_yields: bool,
     /// The first action of a pending gate tracks this handle, so Review can
     /// move focus onto the primary allow option without selecting it.
     gate_focus: gpui::FocusHandle,
+}
+
+/// One assistant row's selectable prose.
+///
+/// The row Arc is the cache key: the reducer replaces it only when the
+/// message changed, so a frame with no edits skips stripping Mermaid blocks
+/// and re-laying-out every answer in the transcript.
+struct AssistantSelection {
+    row: Arc<TranscriptRow>,
+    selection: Entity<SelectionActions>,
+    language: tact_catalog::CatalogLocale,
+    appearance: Appearance,
 }
 
 impl Render for TranscriptRowView {
@@ -193,9 +276,12 @@ impl Render for TranscriptRowView {
             &self.snapshot,
             self.root.clone(),
             self.assistant_selection.clone(),
-            false,
-            Some(&self.gate_focus),
-            self.thinking_open,
+            RowViewState {
+                read_only: false,
+                gate_focus: Some(&self.gate_focus),
+                thinking_open: self.thinking_open,
+                plan_yields: self.plan_yields,
+            },
         )
     }
 }
@@ -379,19 +465,44 @@ struct TranscriptScrollerView {
     scroller: Entity<TranscriptListState>,
     rows: Arc<Vec<Entity<TranscriptRowView>>>,
     root: WeakEntity<DesktopRoot>,
+    session_id: SessionId,
     language: tact_catalog::CatalogLocale,
     tail_following: bool,
     new_activity: bool,
     wheel_enabled: bool,
+    answers_only: bool,
+    /// Current live activity label ("Running · edit_file bridge.rs").
+    live_label: Option<String>,
+    /// When each active process group started.
+    group_started: HashMap<RowId, chrono::DateTime<chrono::Utc>>,
+    /// Elapsed time retained for a settled process group.
+    group_elapsed: HashMap<RowId, String>,
+    activity_timer: Option<Task<()>>,
+    /// One layout pass: fold roles, groups, and the plans that yield to them.
+    process_layout: Arc<ProcessLayout>,
+    expanded_process_groups: HashSet<RowId>,
     pending_scroll: Rc<Cell<f32>>,
     scroll_scheduled: Rc<Cell<bool>>,
     scroll_task: Rc<RefCell<Option<Task<()>>>>,
+}
+
+/// Per-frame inputs the root hands the transcript scroller. Bundled so the
+/// setter keeps one argument per concern as the shell grows.
+struct TranscriptViewState {
+    rows: Vec<Entity<TranscriptRowView>>,
+    /// The fold layout for `rows`, computed once while building them.
+    process_layout: Arc<ProcessLayout>,
+    new_activity: bool,
+    wheel_enabled: bool,
+    answers_only: bool,
+    live_label: Option<String>,
 }
 
 impl TranscriptScrollerView {
     fn new(
         scroller: Entity<TranscriptListState>,
         root: WeakEntity<DesktopRoot>,
+        session_id: SessionId,
         language: tact_catalog::CatalogLocale,
         tail_following: bool,
     ) -> Self {
@@ -399,10 +510,18 @@ impl TranscriptScrollerView {
             scroller,
             rows: Arc::new(Vec::new()),
             root,
+            session_id,
             language,
             tail_following,
             new_activity: false,
             wheel_enabled: true,
+            answers_only: false,
+            live_label: None,
+            group_started: HashMap::new(),
+            group_elapsed: HashMap::new(),
+            activity_timer: None,
+            process_layout: Arc::new(ProcessLayout::default()),
+            expanded_process_groups: HashSet::new(),
             pending_scroll: Rc::new(Cell::new(0.)),
             scroll_scheduled: Rc::new(Cell::new(false)),
             scroll_task: Rc::new(RefCell::new(None)),
@@ -411,31 +530,100 @@ impl TranscriptScrollerView {
 
     fn set_state(
         &mut self,
-        rows: Vec<Entity<TranscriptRowView>>,
-        language: tact_catalog::CatalogLocale,
-        tail_following: bool,
-        new_activity: bool,
-        wheel_enabled: bool,
+        state: TranscriptViewState,
+        session_id: &SessionId,
+        snapshot: &DesktopSnapshot,
         cx: &mut Context<Self>,
     ) -> bool {
+        let TranscriptViewState {
+            rows,
+            process_layout,
+            new_activity,
+            wheel_enabled,
+            answers_only,
+            live_label,
+        } = state;
+        let language = snapshot.language;
+        let tail_following = snapshot.tail_following;
         let rows_changed = self.rows.len() != rows.len()
             || self
                 .rows
                 .iter()
                 .zip(rows.iter())
                 .any(|(current, next)| current.entity_id() != next.entity_id());
-        let changed = rows_changed
-            || self.language != language
-            || self.tail_following != tail_following
-            || self.new_activity != new_activity
-            || self.wheel_enabled != wheel_enabled;
+        let session_changed = self.session_id != *session_id;
+        if session_changed {
+            self.session_id = session_id.clone();
+            self.expanded_process_groups.clear();
+            self.group_started.clear();
+            self.group_elapsed.clear();
+        }
         if rows_changed {
             self.rows = Arc::new(rows);
         }
+        let layout_changed = self.process_layout.as_ref() != process_layout.as_ref();
+        self.process_layout = process_layout;
+        if !session_changed {
+            let now = chrono::Utc::now();
+            // A group that pauses between tool batches is not finished: the
+            // next thinking chunk reopens it. Keep its clock until the run
+            // ends or a newer group takes over.
+            let run_active = matches!(
+                snapshot.session.phase,
+                SessionPhase::Running | SessionPhase::Starting | SessionPhase::Opening
+            );
+            let current_group = self
+                .process_layout
+                .groups
+                .last()
+                .map(|group| group.first_row);
+            let mut settled = Vec::new();
+            for (row, started) in &self.group_started {
+                let active = self
+                    .process_layout
+                    .groups
+                    .iter()
+                    .any(|group| group.first_row == *row && group.active);
+                let live = run_active && current_group == Some(*row);
+                if !active && !live {
+                    settled.push((*row, *started));
+                }
+            }
+            for (row, started) in settled {
+                self.group_started.remove(&row);
+                self.group_elapsed.insert(row, format_elapsed(started));
+            }
+            for group in self
+                .process_layout
+                .groups
+                .iter()
+                .filter(|group| group.active)
+            {
+                self.group_started.entry(group.first_row).or_insert(now);
+            }
+        }
+        self.ensure_activity_timer(cx);
+        self.expanded_process_groups.retain(|row| {
+            self.process_layout
+                .groups
+                .iter()
+                .any(|group| &group.first_row == row)
+        });
+        let changed = rows_changed
+            || session_changed
+            || layout_changed
+            || self.language != language
+            || self.tail_following != tail_following
+            || self.new_activity != new_activity
+            || self.wheel_enabled != wheel_enabled
+            || self.answers_only != answers_only
+            || self.live_label != live_label;
         self.language = language;
         self.tail_following = tail_following;
         self.new_activity = new_activity;
         self.wheel_enabled = wheel_enabled;
+        self.answers_only = answers_only;
+        self.live_label = live_label;
         if !wheel_enabled {
             self.pending_scroll.set(0.);
         }
@@ -443,6 +631,51 @@ impl TranscriptScrollerView {
             cx.notify();
         }
         changed
+    }
+
+    /// Repaints the summary clock once a second while a group's clock runs.
+    fn ensure_activity_timer(&mut self, cx: &mut Context<Self>) {
+        let live = !self.group_started.is_empty();
+        if !live {
+            self.activity_timer = None;
+            return;
+        }
+        if self.activity_timer.is_some() {
+            return;
+        }
+        self.activity_timer = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let keep = this
+                    .update(cx, |this, cx| {
+                        cx.notify();
+                        !this.group_started.is_empty()
+                    })
+                    .unwrap_or(false);
+                if !keep {
+                    break;
+                }
+            }
+        }));
+    }
+
+    fn toggle_process_group(&mut self, first_row: RowId, cx: &mut Context<Self>) {
+        let Some(group) = self
+            .process_layout
+            .groups
+            .iter()
+            .find(|group| group.first_row == first_row)
+            .cloned()
+        else {
+            return;
+        };
+        if !self.expanded_process_groups.remove(&first_row) {
+            self.expanded_process_groups.insert(first_row);
+        }
+        self.scroller.update(cx, |state, cx| {
+            state.remeasure_items(group.first_index..group.end_index, cx);
+        });
+        cx.notify();
     }
 
     fn back_to_bottom(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -521,24 +754,191 @@ impl TranscriptScrollerView {
     }
 }
 
+/// The summary row's text: the elapsed duration leads, followed by the live
+/// action while the group runs or the counts once it settles.
+fn process_summary_label(
+    group: &ProcessGroup,
+    live: Option<&str>,
+    elapsed: Option<&str>,
+    language: tact_catalog::CatalogLocale,
+) -> String {
+    if group.active
+        && let Some(live) = live
+    {
+        return match elapsed {
+            Some(elapsed) => format!("{elapsed} · {live}"),
+            None => live.to_string(),
+        };
+    }
+    let counts = process_summary_text(group, language);
+    match elapsed {
+        Some(elapsed) => format!("{elapsed} · {counts}"),
+        None => counts,
+    }
+}
+
+fn process_summary_element(
+    group: &ProcessGroup,
+    expanded: bool,
+    language: tact_catalog::CatalogLocale,
+    live: Option<&str>,
+    elapsed: Option<&str>,
+    weak: WeakEntity<TranscriptScrollerView>,
+    cx: &gpui::App,
+) -> AnyElement {
+    let label = process_summary_label(group, live, elapsed, language);
+    let first_row = group.first_row;
+    let ordinal = group.first_ordinal;
+    h_flex()
+        .id(SharedString::from(format!("process-summary-{ordinal}")))
+        .debug_selector(move || format!("transcript-process-summary-{ordinal}"))
+        .role(Role::Button)
+        .aria_label(label.clone())
+        .aria_expanded(expanded)
+        .focusable()
+        .tab_stop(true)
+        .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
+        .cursor_pointer()
+        .gap_1()
+        .items_center()
+        .rounded(px(6.))
+        .px_1()
+        .py_1()
+        .hover(|style| style.bg(cx.theme().muted.opacity(0.5)))
+        .child(
+            Icon::new(if expanded {
+                IconName::ChevronDown
+            } else {
+                IconName::ChevronRight
+            })
+            .xsmall()
+            .text_color(cx.theme().muted_foreground),
+        )
+        .when(group.active, |row| row.child(Orbs::new().diameter(px(12.))))
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .truncate()
+                .text_size(px(13.))
+                .text_color(cx.theme().muted_foreground)
+                .child(label),
+        )
+        .on_click(move |_, _, cx| {
+            let _ = weak.update(cx, |view, cx| {
+                view.toggle_process_group(first_row, cx);
+            });
+        })
+        .into_any_element()
+}
+
 impl Render for TranscriptScrollerView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let rows = self.rows.clone();
+        let answers_only = self.answers_only;
+        let live_label = self.live_label.clone();
+        let group_started = self.group_started.clone();
+        let group_elapsed = self.group_elapsed.clone();
+        let process_layout = self.process_layout.clone();
+        let expanded_process_groups = self.expanded_process_groups.clone();
+        let language = self.language;
+        let process_weak = cx.weak_entity();
         let list_state = self.scroller.read(cx).list_state.clone();
         let item_count = list_state.item_count();
-        let list = list(list_state.clone(), move |index, _, _| {
+        let list = list(list_state.clone(), move |index, _, cx| {
+            if answers_only
+                && rows
+                    .get(index)
+                    .is_some_and(|view| !answers_only_visible(&view.read(cx).row.body))
+            {
+                return div().into_any_element();
+            }
+            let role = process_layout
+                .roles
+                .get(index)
+                .copied()
+                .unwrap_or(ProcessRowRole::Normal);
+            let process_group = match role {
+                ProcessRowRole::Summary(group) | ProcessRowRole::Hidden(group) => {
+                    process_layout.groups.get(group)
+                }
+                ProcessRowRole::Normal => None,
+            };
+            let process_expanded = process_group
+                .is_some_and(|group| expanded_process_groups.contains(&group.first_row));
+            let summary_live = process_group
+                .filter(|group| group.active)
+                .and_then(|_| live_label.clone());
+            let summary_elapsed = process_group.and_then(|group| {
+                group_started
+                    .get(&group.first_row)
+                    .map(|started| format_elapsed(*started))
+                    .or_else(|| group_elapsed.get(&group.first_row).cloned())
+            });
+            if matches!(role, ProcessRowRole::Hidden(_)) && !process_expanded {
+                return div().into_any_element();
+            }
+            // Every item owned by a process group uses the stream rhythm,
+            // including transparent plan rows that render no content. Letting
+            // those invisible items pay the prose gap opened a blank band
+            // between consecutive thinking and tool rows.
+            let tight_process_gap = !matches!(role, ProcessRowRole::Normal)
+                || process_layout
+                    .roles
+                    .get(index + 1)
+                    .is_some_and(|next| !matches!(next, ProcessRowRole::Normal))
+                || (rows
+                    .get(index)
+                    .is_some_and(|view| is_process_row(&view.read(cx).row.body))
+                    && rows
+                        .get(index + 1)
+                        .is_some_and(|view| is_process_row(&view.read(cx).row.body)));
+            let row_element = rows
+                .get(index)
+                .cloned()
+                .map(IntoElement::into_any_element)
+                .unwrap_or_else(|| div().into_any_element());
+            let (content, tight) = match (role, process_group) {
+                (ProcessRowRole::Summary(_), Some(group)) if !process_expanded => (
+                    process_summary_element(
+                        group,
+                        false,
+                        language,
+                        summary_live.as_deref(),
+                        summary_elapsed.as_deref(),
+                        process_weak.clone(),
+                        cx,
+                    ),
+                    false,
+                ),
+                (ProcessRowRole::Summary(_), Some(group)) => (
+                    v_flex()
+                        .w_full()
+                        .gap(px(2.))
+                        .child(process_summary_element(
+                            group,
+                            true,
+                            language,
+                            summary_live.as_deref(),
+                            summary_elapsed.as_deref(),
+                            process_weak.clone(),
+                            cx,
+                        ))
+                        .child(row_element)
+                        .into_any_element(),
+                    tight_process_gap,
+                ),
+                _ => (row_element, tight_process_gap),
+            };
             div()
                 .w_full()
                 .min_w_0()
                 .px_3()
-                .when(index + 1 < item_count, |this| this.pb_8())
                 .refine_style(&transcript_row_style())
-                .child(
-                    rows.get(index)
-                        .cloned()
-                        .map(IntoElement::into_any_element)
-                        .unwrap_or_else(|| div().into_any_element()),
-                )
+                .when(index + 1 < item_count, |this| {
+                    this.pb(px(if tight { 0. } else { 12. }))
+                })
+                .child(content)
                 .into_any_element()
         })
         .size_full()
@@ -551,8 +951,7 @@ impl Render for TranscriptScrollerView {
             .size_full()
             .min_h_0()
             .min_w_0()
-            .child(list)
-            .vertical_scrollbar(&list_state);
+            .child(list);
         let scroll_weak = cx.weak_entity();
         let scroll = coalesced_wheel_canvas(
             self.pending_scroll.clone(),
@@ -565,7 +964,7 @@ impl Render for TranscriptScrollerView {
                 });
             },
         );
-        let show_back_to_bottom = self.scroller.read(cx).is_scrolled_up() || !self.tail_following;
+        let show_back_to_bottom = self.scroller.read(cx).is_scrolled_up();
         div()
             .relative()
             .size_full()
@@ -586,13 +985,14 @@ pub(crate) struct DesktopRoot {
     prompt: Entity<PromptBar>,
     sidebar_nav: Entity<SidebarNav>,
     extensions_table: Entity<FilterTable>,
-    assistant_selections: HashMap<(String, RowId), Entity<SelectionActions>>,
-    transcript_rows: HashMap<RowId, Entity<TranscriptRowView>>,
+    assistant_selections: HashMap<(String, SessionId, RowId), AssistantSelection>,
+    transcript_rows: HashMap<(SessionId, RowId), Entity<TranscriptRowView>>,
     pending_row_updates: HashSet<RowId>,
     /// Thinking rows the reader expanded inline. The `Thinking` component is
     /// controlled, so the shell owns this state and the trace stays in the
     /// transcript instead of opening a reader.
-    expanded_thinking: HashSet<RowId>,
+    expanded_thinking: HashSet<(SessionId, RowId)>,
+    transcript_session_cache: VecDeque<SessionId>,
     command_search: Entity<CommandSearch>,
     command_scope: Option<CommandId>,
     command_hit_count: usize,
@@ -607,6 +1007,7 @@ pub(crate) struct DesktopRoot {
     focus_restore_pending: bool,
     focus_composer_on_ready: bool,
     _events_task: Option<Task<()>>,
+    run_clock_timer: Option<Task<()>>,
     left_visible: bool,
     right_visible: bool,
     overlay: Option<Overlay>,
@@ -616,6 +1017,7 @@ pub(crate) struct DesktopRoot {
     slash_overlay: Option<SlashOverlayState>,
     slash_dismissed_for: Option<String>,
     permission_picker_open: bool,
+    effort_picker_open: bool,
     model_picker_cursor: usize,
     /// Quick filter for the model pickers. A provider's index can hold dozens
     /// of ids, so the list is searchable and navigable rather than scrolled
@@ -624,7 +1026,7 @@ pub(crate) struct DesktopRoot {
     model_picker_query: String,
     /// Scroll owner for the model rows, so keyboard selection can bring the
     /// highlighted row into view.
-    model_picker_scroll: ScrollHandle,
+    model_picker_scroll: RowScroll,
     /// Bumped whenever an overlay opens, so the entrance animation plays for
     /// each one instead of only for the first.
     overlay_epoch: u64,
@@ -641,6 +1043,8 @@ pub(crate) struct DesktopRoot {
     platform_prompts: std::sync::atomic::AtomicUsize,
     queue_cursor: usize,
     queue_expanded: bool,
+    /// Hide process rows and keep only the user's messages and final answers.
+    answers_only: bool,
     recent_commands: Vec<CommandId>,
     sticky_tasks_collapsed: bool,
     /// First row the expanded strip paints. The strip shows at most
@@ -658,8 +1062,14 @@ pub(crate) struct DesktopRoot {
     pending_voice_text: Option<String>,
     history_cursor: Option<usize>,
     session_project_filter: Option<ProjectId>,
+    collapsed_session_projects: HashSet<ProjectId>,
     reset_session_search_on_open: bool,
+    reset_extension_search_on_open: bool,
     toast: Option<Toast>,
+    toast_epoch: u64,
+    rail_width: f32,
+    inspector_width: f32,
+    divider_drag: Option<DividerDrag>,
     focus_restore: crate::ui::shell::FocusRestoration<gpui::FocusHandle>,
     last_surface_revision: Option<String>,
     /// The transcript row whose reader request is in flight.
@@ -668,6 +1078,7 @@ pub(crate) struct DesktopRoot {
     last_badge: usize,
     last_commit_revision: u64,
     last_appearance: Appearance,
+    last_theme: DesktopTheme,
     last_language: tact_catalog::CatalogLocale,
     mentions_root: Option<PathBuf>,
     prompt_mentions: Vec<PromptMention>,
@@ -740,10 +1151,16 @@ impl DesktopRoot {
         };
         let scroller = cx.new(|_| TranscriptListState::new(snapshot.transcript.len()));
         let root_weak = cx.weak_entity();
+        let initial_session_id = snapshot
+            .session
+            .id
+            .clone()
+            .unwrap_or_else(|| SessionId(format!("epoch-{}", snapshot.session.epoch.0)));
         let transcript_scroller = cx.new(|_| {
             TranscriptScrollerView::new(
                 scroller.clone(),
                 root_weak.clone(),
+                initial_session_id,
                 snapshot.language,
                 snapshot.tail_following,
             )
@@ -818,11 +1235,14 @@ impl DesktopRoot {
         let trajectory_search_subscription = cx.subscribe_in(
             &trajectory_search,
             window,
-            |this, _, event: &gpui_component::input::InputEvent, window, cx| {
-                if matches!(event, gpui_component::input::InputEvent::Change) {
+            |this, _, event: &gpui_component::input::InputEvent, window, cx| match event {
+                gpui_component::input::InputEvent::Change => {
                     let query = this.trajectory_search.read(cx).value().to_string();
                     this.set_trajectory_query(query, window, cx);
                 }
+                gpui_component::input::InputEvent::Focus
+                | gpui_component::input::InputEvent::Blur => cx.notify(),
+                gpui_component::input::InputEvent::PressEnter { .. } => {}
             },
         );
         let editor_subscription = cx.subscribe_in(
@@ -842,7 +1262,7 @@ impl DesktopRoot {
         let sidebar_subscription = cx.subscribe_in(
             &sidebar_nav,
             window,
-            |this, _, event: &SidebarNavEvent, _, cx| match event {
+            |this, _, event: &SidebarNavEvent, window, cx| match event {
                 SidebarNavEvent::Selected { item_id, .. } => {
                     this.dispatch(DesktopIntent::ResumeSession {
                         session_id: SessionId(item_id.to_string()),
@@ -855,14 +1275,68 @@ impl DesktopRoot {
                     this.sidebar_query = query.to_string();
                     cx.notify();
                 }
+                SidebarNavEvent::SectionToggled {
+                    section_id,
+                    collapsed,
+                    ..
+                } => {
+                    if let Some(project_id) = section_id.strip_prefix("sessions-project-") {
+                        let project_id = ProjectId(project_id.to_string());
+                        if *collapsed {
+                            this.collapsed_session_projects.insert(project_id);
+                        } else {
+                            this.collapsed_session_projects.remove(&project_id);
+                        }
+                        cx.notify();
+                    }
+                }
+                SidebarNavEvent::SectionActionRequested { section_id, .. } => {
+                    if let Some(project_id) = section_id.strip_prefix("sessions-project-") {
+                        this.open_remove_project(ProjectId(project_id.to_string()), window, cx);
+                    }
+                }
+                SidebarNavEvent::SectionNewSessionRequested { section_id, .. } => {
+                    if let Some(project_id) = section_id.strip_prefix("sessions-project-") {
+                        this.dispatch(DesktopIntent::NewSessionInProject {
+                            project_id: ProjectId(project_id.to_string()),
+                        });
+                    }
+                }
+                SidebarNavEvent::ItemActionRequested { item_id, .. } => {
+                    if let Some(session) = this
+                        .snapshot
+                        .sessions
+                        .items
+                        .iter()
+                        .find(|session| session.id == item_id.as_ref())
+                    {
+                        let archived = session.archived_at.is_none();
+                        this.dispatch(DesktopIntent::SetSessionArchived {
+                            session_id: SessionId(item_id.to_string()),
+                            archived,
+                        });
+                    }
+                }
+                SidebarNavEvent::ItemNewSessionRequested { item_id, .. } => {
+                    let project_id = this
+                        .snapshot
+                        .sessions
+                        .items
+                        .iter()
+                        .find(|session| session.id == item_id.as_ref())
+                        .map(|session| session.project_id.clone());
+                    if let Some(project_id) = project_id {
+                        this.dispatch(DesktopIntent::NewSessionInProject { project_id });
+                    }
+                }
                 SidebarNavEvent::CollapsedChanged { .. } => {}
             },
         );
         let rail_search_subscription = cx.subscribe_in(
             &rail_search,
             window,
-            |this, _, event: &gpui_component::input::InputEvent, window, cx| {
-                if matches!(event, gpui_component::input::InputEvent::Change) {
+            |this, _, event: &gpui_component::input::InputEvent, window, cx| match event {
+                gpui_component::input::InputEvent::Change => {
                     let query = this.rail_search.read(cx).value().to_string();
                     this.sidebar_query = query.clone();
                     this.sidebar_nav.update(cx, |nav, cx| {
@@ -870,6 +1344,9 @@ impl DesktopRoot {
                     });
                     cx.notify();
                 }
+                gpui_component::input::InputEvent::Focus
+                | gpui_component::input::InputEvent::Blur => cx.notify(),
+                gpui_component::input::InputEvent::PressEnter { .. } => {}
             },
         );
         let extensions_table_subscription = cx.subscribe_in(
@@ -925,16 +1402,7 @@ impl DesktopRoot {
                             });
                         }
                         ("skill", "toggle") => {
-                            this.dispatch(DesktopIntent::SetSkillEnabled {
-                                name: target.to_string(),
-                                enabled: !this
-                                    .snapshot
-                                    .extensions
-                                    .snapshot
-                                    .skills
-                                    .iter()
-                                    .any(|skill| skill.name == target && skill.enabled),
-                            });
+                            this.toggle_skill(target);
                         }
                         ("plugin", "update") => {
                             this.dispatch(DesktopIntent::InvokeCommand {
@@ -961,34 +1429,47 @@ impl DesktopRoot {
         let session_search_subscription = cx.subscribe_in(
             &session_search,
             window,
-            |this, _, event: &gpui_component::input::InputEvent, _, cx| {
-                if matches!(event, gpui_component::input::InputEvent::Change) {
+            |this, _, event: &gpui_component::input::InputEvent, _, cx| match event {
+                gpui_component::input::InputEvent::Change => {
                     let query = this.session_search.read(cx).value().to_string();
                     this.dispatch(DesktopIntent::SetSessionQuery(query));
                 }
+                gpui_component::input::InputEvent::Focus
+                | gpui_component::input::InputEvent::Blur => cx.notify(),
+                gpui_component::input::InputEvent::PressEnter { .. } => {}
             },
         );
         let extension_search_subscription = cx.subscribe_in(
             &extension_search,
             window,
-            |this, _, event: &gpui_component::input::InputEvent, _, cx| {
-                if matches!(event, gpui_component::input::InputEvent::Change) {
+            |this, _, event: &gpui_component::input::InputEvent, window, cx| match event {
+                gpui_component::input::InputEvent::Change => {
                     this.extension_query = this.extension_search.read(cx).value().to_string();
                     cx.notify();
                 }
+                gpui_component::input::InputEvent::PressEnter { .. } => {
+                    this.activate_extension_search_result(window, cx);
+                }
+                gpui_component::input::InputEvent::Focus
+                | gpui_component::input::InputEvent::Blur => cx.notify(),
             },
         );
         let model_search_subscription = cx.subscribe_in(
             &model_search,
             window,
             |this, _, event: &gpui_component::input::InputEvent, _, cx| {
-                if matches!(event, gpui_component::input::InputEvent::Change) {
-                    this.model_picker_query = this.model_search.read(cx).value().to_string();
-                    // A query change reorders nothing but rebuilds the visible
-                    // set, so the old cursor would point at a different model.
-                    this.model_picker_cursor = 0;
-                    this.model_picker_scroll.set_offset(point(px(0.), px(0.)));
-                    cx.notify();
+                match event {
+                    gpui_component::input::InputEvent::Change => {
+                        this.model_picker_query = this.model_search.read(cx).value().to_string();
+                        // A query change reorders nothing but rebuilds the visible
+                        // set, so the old cursor would point at a different model.
+                        this.model_picker_cursor = 0;
+                        this.model_picker_scroll.reset();
+                        cx.notify();
+                    }
+                    gpui_component::input::InputEvent::Focus
+                    | gpui_component::input::InputEvent::Blur => cx.notify(),
+                    _ => {}
                 }
             },
         );
@@ -1019,6 +1500,7 @@ impl DesktopRoot {
             transcript_rows: HashMap::new(),
             pending_row_updates: HashSet::new(),
             expanded_thinking: HashSet::new(),
+            transcript_session_cache: VecDeque::new(),
             command_search,
             command_scope: None,
             command_hit_count: 0,
@@ -1033,6 +1515,7 @@ impl DesktopRoot {
             focus_restore_pending: false,
             focus_composer_on_ready: false,
             _events_task: events_task,
+            run_clock_timer: None,
             left_visible: true,
             right_visible: false,
             overlay: None,
@@ -1042,10 +1525,11 @@ impl DesktopRoot {
             slash_overlay: None,
             slash_dismissed_for: None,
             permission_picker_open: false,
+            effort_picker_open: false,
             model_picker_cursor: 0,
             model_search,
             model_picker_query: String::new(),
-            model_picker_scroll: ScrollHandle::new(),
+            model_picker_scroll: RowScroll::default(),
             overlay_epoch: 0,
             submitted_gates: HashSet::new(),
             #[cfg(test)]
@@ -1054,6 +1538,7 @@ impl DesktopRoot {
             platform_prompts: std::sync::atomic::AtomicUsize::new(0),
             queue_cursor: 0,
             queue_expanded: false,
+            answers_only: false,
             recent_commands: Vec::new(),
             sticky_tasks_collapsed: true,
             sticky_tasks_scroll: 0,
@@ -1062,14 +1547,21 @@ impl DesktopRoot {
             pending_voice_text: None,
             history_cursor: None,
             session_project_filter: None,
+            collapsed_session_projects: HashSet::new(),
             reset_session_search_on_open: false,
+            reset_extension_search_on_open: false,
             toast: None,
+            toast_epoch: 0,
+            rail_width: crate::ui::layout::RAIL_WIDTH,
+            inspector_width: crate::ui::layout::INSPECTOR_WIDTH,
+            divider_drag: None,
             focus_restore: crate::ui::shell::FocusRestoration::default(),
             last_surface_revision: None,
             pending_reader: None,
             last_badge: 0,
             last_commit_revision: initial_revision,
             last_appearance: Appearance::Light,
+            last_theme: DesktopTheme::Tact,
             last_language: initial_language,
             mentions_root: None,
             prompt_mentions: Vec::new(),
@@ -1100,6 +1592,7 @@ impl DesktopRoot {
             trajectory_detail_scroll: gpui::ScrollHandle::new(),
         };
         root.last_appearance = root.snapshot.appearance;
+        root.last_theme = root.snapshot.theme;
         root.sync_prompt_commands(cx);
         root.sync_prompt_state(cx);
         root.rebuild_command_search(window, cx, "");
@@ -1271,68 +1764,103 @@ impl DesktopRoot {
         )
     }
 
+    fn toggle_session_project(&mut self, project_id: ProjectId) {
+        if !self.collapsed_session_projects.remove(&project_id) {
+            self.collapsed_session_projects.insert(project_id);
+        }
+    }
+
     fn sync_sidebar_nav(&self, window: &mut Window, cx: &mut Context<Self>) {
         let today = chrono::Local::now().date_naive();
-        let yesterday = today - chrono::Duration::days(1);
-        let mut buckets: [Vec<SidebarNavItem>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+        let mut groups: Vec<(ProjectId, String, String, Vec<SidebarNavItem>)> = Vec::new();
+        // `sessions.selected` is set when the click lands, before the new host
+        // has produced a snapshot. Prefer it so the rail answers immediately;
+        // `session.id` still covers the startup frame where no row is selected.
+        let selected = self.snapshot.sessions.selected.as_ref();
+        let active_id = selected.or(self.snapshot.session.id.as_ref());
+        let new_session_label = self.text(TextKey::NewSession).to_string();
         for session in &self.snapshot.sessions.items {
             let title = self.session_title(session);
-            let locked = session.locked
-                && self.snapshot.session.id.as_ref() != Some(&SessionId(session.id.clone()));
+            let locked = session.locked && active_id != Some(&SessionId(session.id.clone()));
             let detail = crate::ui::session_rail::session_detail(
                 session,
                 chrono::Utc::now(),
                 self.snapshot.language,
             );
             let updated = session.updated_at.with_timezone(&chrono::Local);
-            let day = updated.date_naive();
-            let bucket = if day >= today {
-                0
-            } else if day == yesterday {
-                1
-            } else {
-                2
-            };
-            let trailing = if bucket == 0 {
+            let trailing = if updated.date_naive() >= today {
                 updated.format("%H:%M").to_string()
             } else {
                 updated.format("%b %-d").to_string()
             };
+            let project_name = self
+                .snapshot
+                .projects
+                .iter()
+                .find(|project| project.id.as_ref() == Some(&session.project_id))
+                .map(project_identity_label)
+                .or_else(|| {
+                    (self.snapshot.project.id.as_ref() == Some(&session.project_id))
+                        .then(|| project_identity_label(&self.snapshot.project))
+                })
+                .or_else(|| {
+                    session
+                        .root_dir
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .map(str::to_owned)
+                })
+                .unwrap_or_else(|| self.text(TextKey::Projects).to_string());
             let item = SidebarNavItem::new(session.id.clone(), title)
                 .detail(detail)
-                .trailing(trailing)
-                .disabled(locked);
+                .trailing(trailing);
             let item = if locked {
-                item.badge(self.text(TextKey::Locked).to_string())
+                item.disabled(true)
+                    .badge(self.text(TextKey::Locked).to_string())
+                    .new_session_action(new_session_label.clone())
             } else {
-                item
+                item.context_action(
+                    self.text(if session.archived_at.is_some() {
+                        TextKey::Restore
+                    } else {
+                        TextKey::Archive
+                    })
+                    .to_string(),
+                )
+                .new_session_action(new_session_label.clone())
             };
-            buckets[bucket].push(item);
+            let group_id = format!("sessions-project-{}", session.project_id.0);
+            if let Some((_, _, _, items)) = groups
+                .iter_mut()
+                .find(|(project_id, _, _, _)| project_id == &session.project_id)
+            {
+                items.push(item);
+            } else {
+                groups.push((
+                    session.project_id.clone(),
+                    group_id,
+                    project_name,
+                    vec![item],
+                ));
+            }
         }
         let (labels, active) = (
             sidebar_nav_labels(self.snapshot.language),
-            self.snapshot.session.id.as_ref().map(|id| id.0.clone()),
+            active_id.map(|id| id.0.clone()),
         );
-        let (today_label, yesterday_label, earlier_label) = match self.snapshot.language {
-            tact_catalog::CatalogLocale::En => ("TODAY", "YESTERDAY", "EARLIER"),
-            tact_catalog::CatalogLocale::Zh => ("今天", "昨天", "更早"),
-        };
-        let mut sections = Vec::new();
-        for (index, label) in [today_label, yesterday_label, earlier_label]
+        let mut sections: Vec<SidebarSection> = groups
             .into_iter()
-            .enumerate()
-        {
-            if buckets[index].is_empty() {
-                continue;
-            }
-            sections.push(
-                SidebarSection::new(
-                    SharedString::from(format!("sessions-{index}")),
-                    SharedString::from(label),
-                )
-                .items(std::mem::take(&mut buckets[index])),
-            );
-        }
+            .map(|(project_id, id, label, items)| {
+                let count = items.len();
+                SidebarSection::new(SharedString::from(id), SharedString::from(label.clone()))
+                    .leading(project_initials(&label))
+                    .meta(count.to_string())
+                    .action(self.text(TextKey::RemoveProject))
+                    .new_session_action(new_session_label.clone())
+                    .collapsed(self.collapsed_session_projects.contains(&project_id))
+                    .items(items)
+            })
+            .collect();
         if sections.is_empty() {
             sections.push(
                 SidebarSection::new("sessions", self.text(TextKey::Sessions)).items(Vec::new()),
@@ -1344,8 +1872,93 @@ impl DesktopRoot {
             nav.set_sections(sections, cx);
             if let Some(active) = active {
                 nav.set_active_item(active, cx);
+            } else {
+                nav.clear_active_item(cx);
             }
         });
+    }
+
+    fn activate_extension_search_result(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.extension_manage {
+            return;
+        }
+        if matches!(
+            self.overlay.as_ref(),
+            Some(Overlay::Extensions(ExtensionsTab::Skills))
+        ) {
+            self.insert_first_matching_skill(window, cx);
+        }
+    }
+
+    /// The skills the Extensions popover lists for the current query, best
+    /// match first.
+    ///
+    /// The list and the popover's `Enter` both start here, so a skill the
+    /// popover hides is exactly a skill `Enter` will not insert.
+    fn visible_skills(&self) -> Vec<&tact_host::SkillSnapshot> {
+        let query = self.extension_query.trim().to_string();
+        let mut matched = self
+            .snapshot
+            .extensions
+            .snapshot
+            .skills
+            .iter()
+            .filter(|skill| {
+                crate::ui::extensions::matches_skill(&query, &skill.name, &skill.description)
+            })
+            .collect::<Vec<_>>();
+        matched.sort_by_key(|skill| {
+            (
+                std::cmp::Reverse(crate::ui::extensions::score_extension(
+                    &query,
+                    &[&skill.name, &skill.description],
+                )),
+                skill.name.to_lowercase(),
+            )
+        });
+        matched
+    }
+
+    fn insert_first_matching_skill(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // An empty query lists every skill, so "the first match" would be an
+        // arbitrary alphabetically-first pick rather than a choice the reader
+        // made. Clicking a row is the way to insert without typing.
+        if self.extension_query.trim().is_empty() {
+            return;
+        }
+        let first = self
+            .visible_skills()
+            .first()
+            .map(|skill| skill.name.clone());
+        if let Some(name) = first {
+            self.insert_skill(&name, window, cx);
+        }
+    }
+
+    fn toggle_skill(&mut self, name: &str) {
+        let enabled = self
+            .snapshot
+            .extensions
+            .snapshot
+            .skills
+            .iter()
+            .any(|skill| skill.name == name && skill.enabled);
+        self.dispatch(DesktopIntent::SetSkillEnabled {
+            name: name.to_string(),
+            enabled: !enabled,
+        });
+    }
+
+    fn insert_skill(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.overlay = None;
+        self.overlay_stack.clear();
+        self.prompt.update(cx, |prompt, cx| {
+            prompt.set_draft_at_end(format!("/skill {name} "), window, cx);
+            prompt.focus(window, cx);
+        });
+        self.slash_overlay = None;
+        self.slash_dismissed_for = None;
+        cx.notify();
     }
 
     fn sync_extensions_table(
@@ -1446,10 +2059,10 @@ impl DesktopRoot {
             }
             best
         };
-        mcp.sort_by_key(|row| -score(row));
-        skills.sort_by_key(|row| -score(row));
-        plugins.sort_by_key(|row| -score(row));
-        hooks.sort_by_key(|row| -score(row));
+        mcp.sort_by_key(|row| (std::cmp::Reverse(score(row)), row.label().to_lowercase()));
+        skills.sort_by_key(|row| (std::cmp::Reverse(score(row)), row.label().to_lowercase()));
+        plugins.sort_by_key(|row| (std::cmp::Reverse(score(row)), row.label().to_lowercase()));
+        hooks.sort_by_key(|row| (std::cmp::Reverse(score(row)), row.label().to_lowercase()));
         let filters = [
             FilterDefinition::new("mcp", self.text(TextKey::Mcp), mcp.len())
                 .active(tab == ExtensionsTab::Mcp),
@@ -1472,7 +2085,14 @@ impl DesktopRoot {
             tact_catalog::CatalogLocale::En => ("Name", "Detail", "Status"),
             tact_catalog::CatalogLocale::Zh => ("名称", "详情", "状态"),
         };
-        let open_label = self.text(TextKey::Open);
+        let open_label = if tab == ExtensionsTab::Skills {
+            match self.snapshot.language {
+                tact_catalog::CatalogLocale::En => "Toggle",
+                tact_catalog::CatalogLocale::Zh => "切换",
+            }
+        } else {
+            self.text(TextKey::Open)
+        };
         let filters_label = match self.snapshot.language {
             tact_catalog::CatalogLocale::En => {
                 format!("Filters for {}", self.text(TextKey::Extensions))
@@ -1508,7 +2128,7 @@ impl DesktopRoot {
                 window,
                 cx,
             );
-            table.set_rows(Progressive::complete(Arc::from(rows)), cx);
+            table.set_rows(Arc::from(rows), cx);
         });
         has_rows
     }
@@ -1522,6 +2142,12 @@ impl DesktopRoot {
     fn open_overlay(&mut self, overlay: Overlay) {
         if matches!(overlay, Overlay::Extensions(_)) {
             self.extension_manage = false;
+            // The filter belongs to the popover, not to the app: reopening it
+            // must not show a list silently narrowed by a query the reader
+            // typed last time, where `Enter` would insert the only visible
+            // row. The manager carries its query in through `Manage` instead.
+            self.extension_query.clear();
+            self.reset_extension_search_on_open = true;
         }
         if let Some(current) = self.overlay.take() {
             self.overlay_stack.push(current);
@@ -1588,14 +2214,14 @@ impl DesktopRoot {
                 );
                 let commit_gap = commit.revision > self.last_commit_revision.saturating_add(1);
                 let epoch_changed = self.snapshot.session.epoch != commit.snapshot.session.epoch;
+                if epoch_changed {
+                    self.pending_row_updates.clear();
+                }
                 self.pending_row_updates
                     .extend(commit.dirty_rows.iter().copied());
-                if commit_gap || epoch_changed {
+                if commit_gap && !epoch_changed {
                     self.pending_row_updates
                         .extend(commit.snapshot.transcript.iter().map(|row| row.id));
-                }
-                if epoch_changed {
-                    self.transcript_rows.clear();
                 }
                 if epoch_changed {
                     self.submitted_gates.clear();
@@ -1631,13 +2257,8 @@ impl DesktopRoot {
                 let became_ready = self.snapshot.session.phase != SessionPhase::Ready
                     && commit.snapshot.session.phase == SessionPhase::Ready;
                 let appearance_changed = self.snapshot.appearance != commit.snapshot.appearance;
-                let session_changed = self.snapshot.session.epoch != commit.snapshot.session.epoch;
+                let theme_changed = self.snapshot.theme != commit.snapshot.theme;
                 self.snapshot = commit.snapshot;
-                if session_changed {
-                    // Row ids restart per session; an expansion from the old
-                    // session must not open a same-numbered row here.
-                    self.expanded_thinking.clear();
-                }
                 let pending_gates = self.snapshot.pending_gates.len();
                 if pending_gates != self.last_badge {
                     self.last_badge = pending_gates;
@@ -1657,9 +2278,14 @@ impl DesktopRoot {
                         form.required = false;
                     }
                 }
-                if appearance_changed || self.snapshot.appearance != self.last_appearance {
+                if appearance_changed
+                    || theme_changed
+                    || self.snapshot.appearance != self.last_appearance
+                    || self.snapshot.theme != self.last_theme
+                {
                     self.last_appearance = self.snapshot.appearance;
-                    theme::apply(self.snapshot.appearance, None, cx);
+                    self.last_theme = self.snapshot.theme;
+                    theme::apply(self.snapshot.theme, self.snapshot.appearance, None, cx);
                 }
                 self.sync_prompt_state(cx);
                 self.refresh_typed_reader();
@@ -1684,10 +2310,14 @@ impl DesktopRoot {
                     VoiceEvent::Error(message) => {
                         self.voice.listening = false;
                         self.voice.transcribing = false;
-                        self.toast = Some(Toast {
-                            title: self.text(TextKey::VoiceInput).into(),
-                            body: message.into(),
-                        });
+                        self.show_toast(
+                            Toast {
+                                title: self.text(TextKey::VoiceInput).into(),
+                                body: message.into(),
+                            },
+                            false,
+                            cx,
+                        );
                     }
                     VoiceEvent::Cancelled => {
                         self.voice.listening = false;
@@ -1698,11 +2328,14 @@ impl DesktopRoot {
             }
             DesktopEvent::Effect(effect) => self.handle_effect(effect, cx),
             DesktopEvent::Fatal(failure) => {
-                self.toast = Some(Toast {
-                    title: self.text(TextKey::TactStopped).into(),
-                    body: failure.message.to_string().into(),
-                });
-                cx.notify();
+                self.show_toast(
+                    Toast {
+                        title: self.text(TextKey::TactStopped).into(),
+                        body: failure.message.to_string().into(),
+                    },
+                    false,
+                    cx,
+                );
             }
         }
     }
@@ -1743,10 +2376,14 @@ impl DesktopRoot {
                         actions: Vec::new(),
                     });
                 }
-                self.toast = Some(Toast {
-                    title: title.into(),
-                    body: body.into(),
-                });
+                self.show_toast(
+                    Toast {
+                        title: title.into(),
+                        body: body.into(),
+                    },
+                    true,
+                    cx,
+                );
             }
             DesktopEffect::SaveTranscript {
                 markdown,
@@ -1765,17 +2402,40 @@ impl DesktopRoot {
                     if let Ok(Ok(Some(path))) = receiver.await {
                         let _ = std::fs::write(&path, markdown);
                         let _ = weak.update(cx, |this, cx| {
-                            this.toast = Some(Toast {
-                                title: this.text(TextKey::TranscriptSaved).into(),
-                                body: path.display().to_string().into(),
-                            });
-                            cx.notify();
+                            this.show_toast(
+                                Toast {
+                                    title: this.text(TextKey::TranscriptSaved).into(),
+                                    body: path.display().to_string().into(),
+                                },
+                                false,
+                                cx,
+                            );
                         });
                     }
                 })
                 .detach();
             }
             DesktopEffect::WindowCloseRequested => cx.quit(),
+        }
+        cx.notify();
+    }
+
+    fn show_toast(&mut self, toast: Toast, auto_hide: bool, cx: &mut Context<Self>) {
+        self.toast = Some(toast);
+        self.toast_epoch = self.toast_epoch.wrapping_add(1);
+        if auto_hide {
+            let epoch = self.toast_epoch;
+            let weak = cx.weak_entity();
+            cx.spawn(async move |_, cx| {
+                cx.background_executor().timer(TOAST_HIDE_DELAY).await;
+                let _ = weak.update(cx, |this, cx| {
+                    if this.toast_epoch == epoch {
+                        this.toast = None;
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
         }
         cx.notify();
     }
@@ -1915,7 +2575,8 @@ impl DesktopRoot {
 
     #[cfg(feature = "ui-capture")]
     pub(crate) fn capture_expand_thinking(&mut self, row: RowId, cx: &mut Context<Self>) {
-        self.expanded_thinking.insert(row);
+        let session_id = self.transcript_session_id();
+        self.expanded_thinking.insert((session_id, row));
         self.pending_row_updates.insert(row);
         cx.notify();
     }
@@ -1934,6 +2595,45 @@ impl DesktopRoot {
     pub(crate) fn capture_open_extensions_manager(&mut self, tab: ExtensionsTab) {
         self.open_overlay(Overlay::Extensions(tab));
         self.extension_manage = true;
+    }
+
+    #[cfg(feature = "ui-capture")]
+    pub(crate) fn capture_insert_skill(
+        &mut self,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.insert_skill(name, window, cx);
+    }
+
+    #[cfg(feature = "ui-capture")]
+    pub(crate) fn capture_filter_extensions(
+        &mut self,
+        query: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.extension_query = query.to_string();
+        self.extension_search.update(cx, |input, cx| {
+            input.set_value(query, window, cx);
+            input.focus(window, cx);
+        });
+    }
+
+    #[cfg(feature = "ui-capture")]
+    pub(crate) fn capture_prompt_draft(&self, cx: &gpui::App) -> String {
+        self.prompt.read(cx).draft(cx).to_string()
+    }
+
+    #[cfg(feature = "ui-capture")]
+    pub(crate) fn capture_overlay_open(&self) -> bool {
+        self.overlay.is_some()
+    }
+
+    #[cfg(feature = "ui-capture")]
+    pub(crate) fn capture_extension_manage(&self) -> bool {
+        self.extension_manage
     }
 
     #[cfg(feature = "ui-capture")]
@@ -1982,6 +2682,18 @@ impl DesktopRoot {
         self.prompt
             .update(cx, |prompt, cx| prompt.set_draft("", window, cx));
         cx.notify();
+    }
+
+    #[cfg(feature = "ui-capture")]
+    pub(crate) fn capture_attach_image(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.attachments.push(path);
+        self.sync_prompt_attachments(cx);
+    }
+
+    #[cfg(feature = "ui-capture")]
+    pub(crate) fn capture_clear_attachments(&mut self, cx: &mut Context<Self>) {
+        self.attachments.clear();
+        self.sync_prompt_attachments(cx);
     }
 
     #[cfg(feature = "ui-capture")]
@@ -2227,6 +2939,12 @@ impl DesktopRoot {
                 self.refresh_slash_overlay(&draft, cx);
             }
             PromptBarEvent::AttachRequested { .. } => self.pick_attachments(cx),
+            PromptBarEvent::ImagePasted { path, .. } => {
+                if !self.attachments.contains(path) {
+                    self.attachments.push(path.clone());
+                    self.sync_prompt_attachments(cx);
+                }
+            }
             PromptBarEvent::AttachmentRemoved { attachment_id, .. } => {
                 self.attachments
                     .retain(|path| path.display().to_string() != attachment_id.as_ref());
@@ -2240,11 +2958,14 @@ impl DesktopRoot {
                 });
             }
             PromptBarEvent::EnhanceRequested { .. } => {
-                self.toast = Some(Toast {
-                    title: self.text(TextKey::PromptEnhancement).into(),
-                    body: self.text(TextKey::PromptEnhancementUnavailable).into(),
-                });
-                cx.notify();
+                self.show_toast(
+                    Toast {
+                        title: self.text(TextKey::PromptEnhancement).into(),
+                        body: self.text(TextKey::PromptEnhancementUnavailable).into(),
+                    },
+                    false,
+                    cx,
+                );
             }
         }
     }
@@ -2427,7 +3148,7 @@ impl DesktopRoot {
             return;
         };
         self.prompt.update(cx, |prompt, cx| {
-            prompt.set_draft(suggestion.insertion.clone(), window, cx);
+            prompt.set_draft_at_end(suggestion.insertion.clone(), window, cx);
             prompt.focus(window, cx);
         });
         self.refresh_slash_overlay(&suggestion.insertion, cx);
@@ -2643,11 +3364,14 @@ impl DesktopRoot {
                 .update(cx, |prompt, cx| prompt.set_draft("", window, cx));
             return;
         }
-        self.toast = Some(Toast {
-            title: self.text(TextKey::UnknownCommand).into(),
-            body: text.to_string().into(),
-        });
-        cx.notify();
+        self.show_toast(
+            Toast {
+                title: self.text(TextKey::UnknownCommand).into(),
+                body: text.to_string().into(),
+            },
+            false,
+            cx,
+        );
     }
 
     fn execute_command(
@@ -2661,11 +3385,14 @@ impl DesktopRoot {
         if let Some(descriptor) = tact_catalog::builtins().get(&id)
             && !is_enabled(descriptor, availability)
         {
-            self.toast = Some(Toast {
-                title: self.text(TextKey::CommandUnavailable).into(),
-                body: descriptor.description.get(self.snapshot.language).into(),
-            });
-            cx.notify();
+            self.show_toast(
+                Toast {
+                    title: self.text(TextKey::CommandUnavailable).into(),
+                    body: descriptor.description.get(self.snapshot.language).into(),
+                },
+                false,
+                cx,
+            );
             return;
         }
         self.remember_focus(window, cx);
@@ -2757,10 +3484,14 @@ impl DesktopRoot {
                 tact_catalog::ComposerAction::MentionFile => self.pick_files(cx),
                 tact_catalog::ComposerAction::AttachImage => self.pick_attachments(cx),
                 tact_catalog::ComposerAction::Voice => {
-                    self.toast = Some(Toast {
-                        title: self.text(TextKey::VoiceInput).into(),
-                        body: self.text(TextKey::VoiceInputUnavailable).into(),
-                    });
+                    self.show_toast(
+                        Toast {
+                            title: self.text(TextKey::VoiceInput).into(),
+                            body: self.text(TextKey::VoiceInputUnavailable).into(),
+                        },
+                        false,
+                        cx,
+                    );
                 }
                 tact_catalog::ComposerAction::Queue => {
                     let draft = self.prompt.read(cx).draft(cx).to_string();
@@ -2978,7 +3709,7 @@ impl DesktopRoot {
         };
         // Each opening starts from the unfiltered list, at the selected model.
         self.model_picker_query.clear();
-        self.model_picker_scroll.set_offset(point(px(0.), px(0.)));
+        self.model_picker_scroll.reset();
         self.model_picker_cursor = models
             .iter()
             .position(|model| model.as_ref() == selected)
@@ -3013,29 +3744,14 @@ impl DesktopRoot {
 
     /// Keeps the keyboard cursor on screen after it moves.
     ///
-    /// Rows are a fixed height, so the visible band is arithmetic rather than
-    /// a query to the scroll view. The scroll offset is read back on every
-    /// move, which is what lets the pointer and the keyboard share the list:
-    /// a wheel scroll is respected, not undone by the next arrow key.
+    /// Rows are a fixed height, so the visible band is a row window rather
+    /// than a pixel scroll. Wheel and keyboard share the same top row.
     fn reveal_model_cursor(&self, cx: &mut Context<Self>) {
-        let count = self.model_picker_len();
-        if count == 0 {
-            return;
-        }
-        let row = px(MODEL_PICKER_ROW_HEIGHT);
-        let visible = px(MODEL_PICKER_ROW_HEIGHT * MODEL_PICKER_VISIBLE_ROWS as f32);
-        let top = self.model_picker_scroll.offset().y;
-        let cursor_top = row * self.model_picker_cursor as f32;
-        let cursor_bottom = cursor_top + row;
-        let offset = if cursor_top < top {
-            Some(cursor_top)
-        } else if cursor_bottom > top + visible {
-            Some(cursor_bottom - visible)
-        } else {
-            None
-        };
-        if let Some(offset) = offset {
-            self.model_picker_scroll.set_offset(point(px(0.), offset));
+        if self.model_picker_scroll.scroll_to(
+            self.model_picker_cursor,
+            self.model_picker_len(),
+            MODEL_PICKER_VISIBLE_ROWS,
+        ) {
             cx.notify();
         }
     }
@@ -3382,6 +4098,7 @@ impl DesktopRoot {
                     cx,
                 );
             }
+            FormAction::RemoveProject(_) => {}
             FormAction::ConfirmCancelRun => {}
             FormAction::McpAddChoose(_) => {}
             FormAction::Command(id) => {
@@ -3469,6 +4186,15 @@ impl DesktopRoot {
             }
             FormAction::McpAddChoose(_) => {}
             FormAction::McpAddTransport(_) | FormAction::McpAddCommand(_) => {}
+            FormAction::RemoveProject(project_id) => {
+                if value == "remove" {
+                    if self.session_project_filter.as_ref() == Some(&project_id) {
+                        self.session_project_filter = None;
+                    }
+                    self.collapsed_session_projects.remove(&project_id);
+                    self.dispatch(DesktopIntent::RemoveProject { project_id });
+                }
+            }
             FormAction::ConfirmCancelRun => {
                 if value == "stop" {
                     self.dispatch(DesktopIntent::CancelRun);
@@ -3772,13 +4498,16 @@ impl DesktopRoot {
             .attachments
             .iter()
             .map(|path| {
-                PromptAttachment::new(
+                let mut item = AttachmentItem::new(
                     path.display().to_string(),
                     path.file_name()
                         .and_then(|name| name.to_str())
                         .unwrap_or(self.text(TextKey::Attachment)),
-                )
-                .size_bytes(std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0))
+                );
+                if is_image_path(path) {
+                    item = item.image(path.clone());
+                }
+                item.size_bytes(std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0))
             })
             .collect::<Vec<_>>();
         self.prompt.update(cx, |prompt, cx| {
@@ -3910,13 +4639,38 @@ impl DesktopRoot {
         .detach();
     }
 
-    fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let project = self
+    fn open_remove_project(
+        &mut self,
+        project_id: ProjectId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let name = self
             .snapshot
-            .project
-            .repository
-            .clone()
-            .unwrap_or_else(|| self.snapshot.project.display_name.clone());
+            .projects
+            .iter()
+            .find(|project| project.id.as_ref() == Some(&project_id))
+            .map(project_identity_label)
+            .unwrap_or_else(|| project_id.0.clone());
+        self.remember_focus(window, cx);
+        self.set_form(
+            FormState {
+                title: self.text(TextKey::RemoveProject).into(),
+                action: FormAction::RemoveProject(project_id),
+                field: Some(format!("{name}\n{}", self.text(TextKey::RemoveProjectHint))),
+                required: false,
+                choice: Some(vec![
+                    (self.text(TextKey::Remove).into(), "remove".into()),
+                    (self.text(TextKey::Cancel).into(), "cancel".into()),
+                ]),
+            },
+            window,
+            cx,
+        );
+    }
+
+    fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let project = project_identity_label(&self.snapshot.project);
         let session_label = self
             .snapshot
             .session
@@ -4027,6 +4781,7 @@ impl DesktopRoot {
                     .child(
                         h_flex()
                             .id("workspace-switcher")
+                            .debug_selector(|| "workspace-switcher".into())
                             .role(Role::Button)
                             .focusable()
                             .tab_stop(true)
@@ -4218,32 +4973,70 @@ impl DesktopRoot {
             )
     }
 
-    fn render_session_rail(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let geometry = crate::ui::shell::geometry(self.snapshot.appearance);
+    fn render_divider(&self, side: DividerSide, cx: &mut Context<Self>) -> AnyElement {
+        let id = match side {
+            DividerSide::Rail => "rail-divider",
+            DividerSide::Inspector => "inspector-divider",
+        };
+        let label = match (self.snapshot.language, side) {
+            (tact_catalog::CatalogLocale::Zh, DividerSide::Rail) => "拖动调整会话栏宽度",
+            (tact_catalog::CatalogLocale::Zh, DividerSide::Inspector) => "拖动调整检查器宽度",
+            (_, DividerSide::Rail) => "Resize session rail",
+            (_, DividerSide::Inspector) => "Resize inspector",
+        };
+        let active = self.divider_drag.is_some_and(|drag| drag.side == side);
+        div()
+            .id(id)
+            .debug_selector(move || id.into())
+            .role(Role::Button)
+            .aria_label(label)
+            .flex_none()
+            .w(px(7.))
+            .h_full()
+            .relative()
+            .cursor_col_resize()
+            .hover(|style| style.bg(cx.theme().muted.opacity(0.55)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                    this.divider_drag = Some(DividerDrag {
+                        side,
+                        pointer_x: f32::from(event.position.x),
+                        width: match side {
+                            DividerSide::Rail => this.rail_width,
+                            DividerSide::Inspector => this.inspector_width,
+                        },
+                    });
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left(px(3.))
+                    .top_0()
+                    .h_full()
+                    .w(px(1.))
+                    .bg(if active {
+                        cx.theme().primary
+                    } else {
+                        cx.theme().border
+                    }),
+            )
+            .into_any_element()
+    }
+
+    fn render_session_rail(
+        &self,
+        width: gpui::Pixels,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         // The session list is the rail's main content: it stretches to fill
         // whatever the pinned blocks below leave, so every pixel the removed
         // DURABLE block freed goes to the sessions. Their height is
         // `flex_none` chrome; the list's `min_h` keeps a short window usable.
-        let project = self
-            .snapshot
-            .project
-            .repository
-            .clone()
-            .unwrap_or_else(|| self.snapshot.project.display_name.clone());
-        let session_count = self.snapshot.sessions.items.len();
-        let project_meta = match (
-            self.snapshot.project.branch.as_deref(),
-            self.snapshot.language,
-        ) {
-            (Some(branch), tact_catalog::CatalogLocale::En) => {
-                format!("{session_count} sessions · {branch}")
-            }
-            (Some(branch), tact_catalog::CatalogLocale::Zh) => {
-                format!("{session_count} 个会话 · {branch}")
-            }
-            (None, tact_catalog::CatalogLocale::En) => format!("{session_count} sessions"),
-            (None, tact_catalog::CatalogLocale::Zh) => format!("{session_count} 个会话"),
-        };
         self.sync_sidebar_nav(window, cx);
 
         v_flex()
@@ -4251,138 +5044,14 @@ impl DesktopRoot {
             .debug_selector(|| "session-rail".into())
             .role(Role::Navigation)
             .aria_label(self.text(TextKey::ProjectsAndSessions))
-            .w(px(f32::from(geometry.rail_width) * self.snapshot.text_scale))
+            .w(width)
             .h_full()
-            .flex_none()
             .pt(px(14.))
             .px(px(12.))
             .pb(px(12.))
             .gap_1()
             .font_family(theme::native_font_family())
-            .border_r(px(theme::border_width()))
-            .border_color(cx.theme().border)
-            .bg(cx.theme().sidebar)
-            .child(
-                h_flex()
-                    .id("open-project")
-                    .role(Role::Button)
-                    .focusable()
-                    .tab_stop(true)
-                    .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
-                    .aria_label(self.text(TextKey::OpenProject))
-                    .cursor_pointer()
-                    .items_center()
-                    .gap(px(9.))
-                    .rounded(px(8.))
-                    .border_1()
-                    .border_color(cx.theme().sidebar_border)
-                    .bg(cx.theme().popover)
-                    .px(px(8.))
-                    .py(px(5.))
-                    .hover(|style| style.bg(cx.theme().muted))
-                    .child(
-                        div()
-                            .flex_none()
-                            .size(px(29.))
-                            .rounded(px(8.))
-                            .bg(cx.theme().accent)
-                            .text_size(px(10.))
-                            .font_family("Lilex")
-                            .font_semibold()
-                            .text_color(cx.theme().link)
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(project_initials(project.as_ref())),
-                    )
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .gap_0()
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(px(11.))
-                                    .font_semibold()
-                                    .child(project.to_string()),
-                            )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(px(10.))
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(project_meta.clone()),
-                            ),
-                    )
-                    .when(!self.snapshot.project.available, |row| {
-                        row.child(
-                            div()
-                                .flex_none()
-                                .rounded_full()
-                                .bg(cx.theme().danger)
-                                .px_2()
-                                .py_0p5()
-                                .text_xs()
-                                .text_color(cx.theme().primary_foreground)
-                                .child(self.text(TextKey::Unavailable)),
-                        )
-                    })
-                    .child(
-                        Icon::new(IconName::ChevronsUpDown)
-                            .size(px(13.))
-                            .text_color(cx.theme().muted_foreground),
-                    )
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.open_project_picker(cx);
-                    })),
-            )
-            .child(
-                h_flex()
-                    .id("new-run")
-                    .debug_selector(|| "new-run".into())
-                    .role(Role::Button)
-                    .focusable()
-                    .tab_stop(true)
-                    .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
-                    .aria_label(self.text(TextKey::NewSession))
-                    .cursor_pointer()
-                    .w_full()
-                    .h(px(37.))
-                    .mt(px(8.))
-                    .rounded(px(7.))
-                    .bg(cx.theme().primary)
-                    .text_color(cx.theme().primary_foreground)
-                    .px(px(10.))
-                    .gap(px(9.))
-                    .items_center()
-                    .child(Icon::new(IconName::Plus).size(px(15.)))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .whitespace_nowrap()
-                            .text_sm()
-                            .font_semibold()
-                            .child(self.text(TextKey::NewRun)),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .rounded(px(5.))
-                            .bg(gpui::rgba(0xffffff33))
-                            .px(px(5.))
-                            .py(px(1.))
-                            .text_size(px(10.))
-                            .font_family("Lilex")
-                            .child(keymap::new_session_hint()),
-                    )
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.dispatch(DesktopIntent::NewSession);
-                        cx.notify();
-                    })),
-            )
+            .bg(cx.theme().background)
             .child(
                 h_flex()
                     .id("rail-search")
@@ -4390,35 +5059,28 @@ impl DesktopRoot {
                     .w_full()
                     .h(px(33.))
                     .mt(px(8.))
-                    .gap(px(8.))
                     .items_center()
-                    .rounded(px(7.))
-                    .border_1()
-                    .border_color(cx.theme().sidebar_border)
-                    .bg(cx.theme().popover)
-                    .px(px(10.))
                     .child(
-                        Icon::new(IconName::Search)
-                            .size(px(13.))
-                            .text_color(cx.theme().muted_foreground),
-                    )
-                    .child(
-                        div().flex_1().min_w_0().child(
-                            Input::new(&self.rail_search)
-                                .aria_label(self.text(TextKey::SearchSessions)),
-                        ),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .rounded(px(5.))
-                            .bg(cx.theme().muted)
-                            .px(px(5.))
-                            .py(px(1.))
-                            .text_size(px(10.))
-                            .font_family("Lilex")
-                            .text_color(cx.theme().muted_foreground)
-                            .child("/"),
+                        surface::quiet_search_input(&self.rail_search, window, cx)
+                            .w_full()
+                            .prefix(
+                                Icon::new(IconName::Search)
+                                    .size(px(13.))
+                                    .text_color(cx.theme().muted_foreground),
+                            )
+                            .suffix(
+                                div()
+                                    .flex_none()
+                                    .rounded(px(5.))
+                                    .bg(cx.theme().popover)
+                                    .px(px(5.))
+                                    .py(px(1.))
+                                    .text_size(px(10.))
+                                    .font_family("Lilex")
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("/"),
+                            )
+                            .aria_label(self.text(TextKey::SearchSessions)),
                     ),
             )
             .child(
@@ -4502,8 +5164,8 @@ impl DesktopRoot {
                     .debug_selector(|| "session-list".into())
                     .min_h_0()
                     // The list absorbs every pixel the rail has left once the
-                    // pinned blocks are placed: extensions, quota and Settings
-                    // sit at the bottom, so spare height is the sessions'.
+                    // pinned blocks are placed: quota and Settings sit at the
+                    // bottom, so spare height is the sessions'.
                     .flex_1()
                     .min_h(px(36. * self.snapshot.text_scale))
                     .mt(px(6.))
@@ -4537,90 +5199,6 @@ impl DesktopRoot {
                         this.overlay_focus_pending = false;
                         cx.notify();
                     })),
-            )
-            // Extensions hug the rail's bottom, above the quota card and
-            // Settings. They are the least-used block, so the height above
-            // them belongs to the session list, which stretches to fill it.
-            .child(
-                v_flex()
-                    .id("rail-extensions")
-                    .debug_selector(|| "rail-extensions".into())
-                    .gap_1()
-                    .border_t_1()
-                    .border_color(cx.theme().sidebar_border)
-                    .pt(px(14.))
-                    .child(
-                        div()
-                            .px(px(10.))
-                            .text_size(px(10.))
-                            .font_family("Lilex")
-                            .text_color(cx.theme().muted_foreground)
-                            .child(self.text(TextKey::Extensions).to_uppercase()),
-                    )
-                    .child(
-                        extension_rail_row(
-                            "extensions-mcp",
-                            IconName::Network,
-                            self.text(TextKey::Mcp),
-                            self.snapshot
-                                .surface
-                                .as_ref()
-                                .and_then(|surface| match surface {
-                                    SurfaceSnapshot::McpServers(servers) => Some(servers.len()),
-                                    _ => None,
-                                })
-                                .map(|count| count.to_string()),
-                            cx,
-                        )
-                        .on_click(cx.listener(
-                            |this, _: &ClickEvent, window, cx| {
-                                this.remember_focus(window, cx);
-                                this.open_overlay(Overlay::Extensions(ExtensionsTab::Mcp));
-                                this.dispatch(DesktopIntent::InvokeCommand {
-                                    id: CommandId::Builtin(BuiltinCommand::Mcp),
-                                    args: CommandArguments::default(),
-                                });
-                            },
-                        )),
-                    )
-                    .child(
-                        extension_rail_row(
-                            "extensions-skills",
-                            IconName::LayoutDashboard,
-                            self.text(TextKey::Skills),
-                            Some(self.snapshot.extensions.snapshot.skills.len().to_string()),
-                            cx,
-                        )
-                        .on_click(cx.listener(
-                            |this, _: &ClickEvent, window, cx| {
-                                this.remember_focus(window, cx);
-                                this.open_overlay(Overlay::Extensions(ExtensionsTab::Skills));
-                                this.dispatch(DesktopIntent::InvokeCommand {
-                                    id: CommandId::Builtin(BuiltinCommand::Skill),
-                                    args: CommandArguments::default(),
-                                });
-                            },
-                        )),
-                    )
-                    .child(
-                        extension_rail_row(
-                            "extensions-plugins",
-                            IconName::Bot,
-                            self.text(TextKey::Plugins),
-                            Some(self.snapshot.extensions.snapshot.plugins.len().to_string()),
-                            cx,
-                        )
-                        .on_click(cx.listener(
-                            |this, _: &ClickEvent, window, cx| {
-                                this.remember_focus(window, cx);
-                                this.open_overlay(Overlay::Extensions(ExtensionsTab::Plugins));
-                                this.dispatch(DesktopIntent::InvokeCommand {
-                                    id: CommandId::Builtin(BuiltinCommand::Plugin),
-                                    args: CommandArguments::default(),
-                                });
-                            },
-                        )),
-                    ),
             )
             .when_some(
                 self.account_summary(),
@@ -4660,9 +5238,7 @@ impl DesktopRoot {
                                     .child(
                                         div()
                                             .h_full()
-                                            .w(px((f32::from(geometry.rail_width) - 36.0)
-                                                * self.snapshot.text_scale
-                                                * ratio.clamp(0.0, 1.0)))
+                                            .w(gpui::relative(ratio.clamp(0.0, 1.0)))
                                             .rounded_full()
                                             .bg(cx.theme().success),
                                     ),
@@ -4755,27 +5331,129 @@ impl DesktopRoot {
         }
     }
 
+    fn transcript_session_id(&self) -> SessionId {
+        self.snapshot
+            .session
+            .id
+            .clone()
+            .unwrap_or_else(|| SessionId(format!("epoch-{}", self.snapshot.session.epoch.0)))
+    }
+
+    fn touch_transcript_session_cache(&mut self, session_id: &SessionId) {
+        self.transcript_session_cache
+            .retain(|cached| cached != session_id);
+        self.transcript_session_cache.push_front(session_id.clone());
+        while self.transcript_session_cache.len() > TRANSCRIPT_SESSION_CACHE {
+            let Some(evicted) = self.transcript_session_cache.pop_back() else {
+                break;
+            };
+            self.assistant_selections
+                .retain(|(_, cached_session, _), _| cached_session != &evicted);
+            self.transcript_rows
+                .retain(|(cached_session, _), _| cached_session != &evicted);
+            self.expanded_thinking
+                .retain(|(cached_session, _)| cached_session != &evicted);
+        }
+    }
+
     fn sync_assistant_selections(
         &mut self,
         transcript: &tact_desktop_core::TranscriptView,
         scope: &str,
+        session_id: &SessionId,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> HashMap<(String, RowId), Entity<SelectionActions>> {
+    ) -> HashMap<(String, SessionId, RowId), Entity<SelectionActions>> {
+        fn assistant_text_style(appearance: Appearance) -> TextViewStyle {
+            TextViewStyle {
+                paragraph_gap: gpui::rems(0.56),
+                heading_font_size: Some(std::sync::Arc::new(|level, _base| match level {
+                    1 => px(21.),
+                    2 => px(18.),
+                    3 => px(16.),
+                    _ => px(13.),
+                })),
+                is_dark: appearance == Appearance::Dark,
+                ..Default::default()
+            }
+        }
+
+        fn configure_selection(
+            selection: &Entity<SelectionActions>,
+            language: tact_catalog::CatalogLocale,
+            appearance: Appearance,
+            cx: &mut Context<DesktopRoot>,
+        ) {
+            selection.update(cx, |selection, cx| {
+                selection.set_toolbar_label(i18n::text(language, TextKey::SelectionActions), cx);
+                selection.set_actions(
+                    [
+                        SelectionAction::new("ask", i18n::text(language, TextKey::Ask)),
+                        SelectionAction::new("explain", i18n::text(language, TextKey::Explain)),
+                        SelectionAction::new("rewrite", i18n::text(language, TextKey::Rewrite)),
+                    ],
+                    cx,
+                );
+                selection.set_text_style(assistant_text_style(appearance), cx);
+            });
+        }
+
+        let language = self.snapshot.language;
+        let appearance = self.snapshot.appearance;
         let mut live = HashSet::new();
+        let mut selections = HashMap::new();
         for row in transcript.iter() {
             let RowBody::Assistant(assistant) = &row.body else {
                 continue;
             };
             live.insert(row.id);
-            let display_markdown = mermaid::strip_blocks(&assistant.markdown);
-            let key = (scope.to_string(), row.id);
-            if let Some(selection) = self.assistant_selections.get(&key) {
+            let key = (scope.to_string(), session_id.clone(), row.id);
+            let cached = self.assistant_selections.get(&key).map(|entry| {
+                (
+                    entry.row.clone(),
+                    entry.selection.clone(),
+                    entry.language,
+                    entry.appearance,
+                )
+            });
+            if let Some((cached_row, selection, cached_language, cached_appearance)) = cached {
+                if Arc::ptr_eq(&cached_row, row) {
+                    if cached_language != language || cached_appearance != appearance {
+                        configure_selection(&selection, language, appearance, cx);
+                        if let Some(entry) = self.assistant_selections.get_mut(&key) {
+                            entry.language = language;
+                            entry.appearance = appearance;
+                        }
+                    }
+                    selections.insert(key, selection);
+                    continue;
+                }
+                let display_markdown = assistant_display_markdown(
+                    &assistant.markdown,
+                    self.snapshot.project.root.as_deref(),
+                );
                 selection.update(cx, |selection, cx| {
-                    selection.set_markdown(display_markdown.clone(), cx);
+                    selection.set_markdown(display_markdown, cx);
                 });
+                if cached_language != language || cached_appearance != appearance {
+                    configure_selection(&selection, language, appearance, cx);
+                }
+                self.assistant_selections.insert(
+                    key.clone(),
+                    AssistantSelection {
+                        row: row.clone(),
+                        selection: selection.clone(),
+                        language,
+                        appearance,
+                    },
+                );
+                selections.insert(key, selection);
                 continue;
             }
+            let display_markdown = assistant_display_markdown(
+                &assistant.markdown,
+                self.snapshot.project.root.as_deref(),
+            );
             let selection = cx.new(|cx| {
                 SelectionActions::new(
                     format!("assistant-selection-{}", row.ordinal),
@@ -4788,37 +5466,8 @@ impl DesktopRoot {
                 // a surface.
                 .frameless()
                 .natural_height()
-                .text_style(TextViewStyle {
-                    paragraph_gap: gpui::rems(0.56),
-                    heading_font_size: Some(std::sync::Arc::new(|level, _base| match level {
-                        1 => px(21.),
-                        2 => px(18.),
-                        3 => px(16.),
-                        _ => px(13.),
-                    })),
-                    is_dark: self.snapshot.appearance == Appearance::Dark,
-                    ..Default::default()
-                })
             });
-            selection.update(cx, |selection, cx| {
-                selection.set_actions(
-                    [
-                        SelectionAction::new(
-                            "ask",
-                            i18n::text(self.snapshot.language, TextKey::Ask),
-                        ),
-                        SelectionAction::new(
-                            "explain",
-                            i18n::text(self.snapshot.language, TextKey::Explain),
-                        ),
-                        SelectionAction::new(
-                            "rewrite",
-                            i18n::text(self.snapshot.language, TextKey::Rewrite),
-                        ),
-                    ],
-                    cx,
-                );
-            });
+            configure_selection(&selection, language, appearance, cx);
             let subscription = cx.subscribe_in(
                 &selection,
                 window,
@@ -4840,11 +5489,22 @@ impl DesktopRoot {
                 },
             );
             self._subscriptions.push(subscription);
-            self.assistant_selections.insert(key, selection);
+            self.assistant_selections.insert(
+                key.clone(),
+                AssistantSelection {
+                    row: row.clone(),
+                    selection: selection.clone(),
+                    language,
+                    appearance,
+                },
+            );
+            selections.insert(key, selection);
         }
         self.assistant_selections
-            .retain(|(key_scope, row_id), _| key_scope != scope || live.contains(row_id));
-        self.assistant_selections.clone()
+            .retain(|(key_scope, key_session, row_id), _| {
+                key_session != session_id || key_scope != scope || live.contains(row_id)
+            });
+        selections
     }
 
     /// The run room's page tabs: the conversation and the trajectory ledger
@@ -4895,6 +5555,40 @@ impl DesktopRoot {
                         this.select_run_tab(tab, cx);
                     }))
             }))
+            .when(self.run_tab == RunTab::Chat, |strip| {
+                strip.child(div().flex_1()).child(
+                    div()
+                        .id("run-tab-answers-only")
+                        .debug_selector(|| "run-tab-answers-only".into())
+                        .role(Role::Button)
+                        .aria_label(self.text(TextKey::AnswersOnly))
+                        .aria_selected(self.answers_only)
+                        .focusable()
+                        .tab_stop(true)
+                        .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
+                        .cursor_pointer()
+                        .mr(px(8.))
+                        .px(px(8.))
+                        .py(px(3.))
+                        .rounded(px(5.))
+                        .text_size(px(11.))
+                        .when(self.answers_only, |button| {
+                            button
+                                .bg(cx.theme().muted)
+                                .text_color(cx.theme().foreground)
+                        })
+                        .when(!self.answers_only, |button| {
+                            button
+                                .text_color(cx.theme().muted_foreground)
+                                .hover(|style| style.text_color(cx.theme().foreground))
+                        })
+                        .child(self.text(TextKey::AnswersOnly))
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.answers_only = !this.answers_only;
+                            cx.notify();
+                        })),
+                )
+            })
             .into_any_element()
     }
 
@@ -4903,6 +5597,7 @@ impl DesktopRoot {
     fn render_trajectory_summary(
         &self,
         view: &TrajectoryView,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let line = trajectory_page::SummaryLine::new(view.summary(), self.text(TextKey::Measured));
@@ -4937,10 +5632,7 @@ impl DesktopRoot {
             .child(metric(self.text(TextKey::RecordPrefix), line.records, cx))
             .child(div().flex_1())
             .child(
-                // One box: the Input draws its own border, background and
-                // focus ring. Wrapping it in a second bordered container left
-                // two frames plus an outer ring crowding a 20px-tall field.
-                Input::new(&self.trajectory_search)
+                surface::quiet_search_input(&self.trajectory_search, window, cx)
                     .prefix(
                         Icon::new(IconName::Search)
                             .size(px(12.))
@@ -4953,40 +5645,24 @@ impl DesktopRoot {
             .into_any_element()
     }
 
-    /// The Firefox-Network-style overview: every record as one block in the
-    /// lane its kind belongs to, with a rule at each turn boundary.
-    /// The Chrome-Network-style overview: every record as one block in the
-    /// lane its kind belongs to, with a rule at each turn boundary.
+    /// The network-plot-style overview: every record as one block in the lane
+    /// its kind belongs to, with a rule at each turn boundary.
     ///
     /// The plot is one `canvas`: paints are cheap for a ledger of hundreds of
-    /// records, and a single hit test keeps the click target identical to what
-    /// was drawn.
+    /// records. Paint and click both use `TimelineLayout`, so the visible block
+    /// and its hit target cannot drift apart.
     fn render_trajectory_overview(
         &mut self,
-        view: &TrajectoryView,
+        view: &Arc<TrajectoryView>,
         matches: Option<&[usize]>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let match_set: Option<HashSet<usize>> =
             matches.map(|matches| matches.iter().map(|index| index - 1).collect());
-        let spans: Vec<(usize, bool, bool)> = view
-            .spans()
-            .iter()
-            .map(|span| {
-                (
-                    span.lane.row(),
-                    span.is_error,
-                    match_set
-                        .as_ref()
-                        .is_some_and(|matches| matches.contains(&span.index)),
-                )
-            })
-            .collect();
         let has_filter = match_set.is_some();
-        let boundaries = view.boundaries().to_vec();
-        let count = spans.len();
         let selected = self.trajectory_selected.and_then(|id| view.position_of(id));
         let palette = TrajectoryPalette::new(cx);
+        let layout_view = Arc::clone(view);
         let track = self.trajectory_track.clone();
         let plot = canvas(
             move |bounds, _, _| {
@@ -4996,14 +5672,14 @@ impl DesktopRoot {
             move |bounds, _, window, _| {
                 let track_left = bounds.origin.x + px(trajectory_page::LABELS_WIDTH);
                 let track_width = f32::from(bounds.size.width) - trajectory_page::LABELS_WIDTH;
-                if track_width <= 0. || count == 0 {
+                if track_width <= 0. || layout_view.is_empty() {
                     return;
                 }
-                let slot_width = track_width / count as f32;
+                let layout = trajectory_page::TimelineLayout::new(&layout_view, track_width);
                 // Turn rules sit behind the blocks so a boundary reads as a
                 // divider, not as another record.
-                for boundary in &boundaries {
-                    let left = track_left + px(*boundary as f32 * slot_width);
+                for boundary in &layout.turn_marks {
+                    let left = track_left + px(layout.offset_of(*boundary));
                     window.paint_quad(paint_rect(
                         left,
                         bounds.origin.y,
@@ -5014,44 +5690,38 @@ impl DesktopRoot {
                         None,
                     ));
                 }
-                for (index, (lane, is_error, matched)) in spans.iter().enumerate() {
-                    let color = if *is_error {
+                for span in &layout.boxes {
+                    let Some(source) = layout_view.spans().get(span.index) else {
+                        continue;
+                    };
+                    let matched = match_set
+                        .as_ref()
+                        .is_some_and(|matches| matches.contains(&source.index));
+                    let color = if source.is_error {
                         palette.error
                     } else {
-                        palette.lanes[*lane]
+                        palette.lanes[source.lane.row()]
                     };
-                    let color = if has_filter && !*matched {
+                    let color = if has_filter && !matched {
                         palette.dim(color)
                     } else {
                         color
                     };
-                    let left = track_left
-                        + px(index as f32 * slot_width + trajectory_page::BLOCK_GAP / 2.);
-                    let width = px((slot_width - trajectory_page::BLOCK_GAP)
-                        .max(trajectory_page::MIN_SPAN_WIDTH));
-                    let top = bounds.origin.y
-                        + px(
-                            trajectory_page::LANE_TOP + *lane as f32 * trajectory_page::LANE_HEIGHT
-                        );
                     window.paint_quad(paint_rect(
-                        left,
-                        top,
-                        width,
+                        track_left + px(span.left),
+                        bounds.origin.y + px(span.top),
+                        px(span.width),
                         px(trajectory_page::BLOCK_HEIGHT),
                         color,
                         px(1.),
                         None,
                     ));
                 }
-                if let Some(selected) = selected {
-                    let left = track_left
-                        + px(selected as f32 * slot_width + trajectory_page::BLOCK_GAP / 2.);
-                    let width = px((slot_width - trajectory_page::BLOCK_GAP)
-                        .max(trajectory_page::MIN_SPAN_WIDTH));
+                if let Some(span) = selected.and_then(|index| layout.boxes.get(index)) {
                     window.paint_quad(paint_rect(
-                        left,
+                        track_left + px(span.left),
                         bounds.origin.y,
-                        width,
+                        px(span.width),
                         bounds.size.height,
                         palette.selection,
                         px(1.),
@@ -5134,7 +5804,11 @@ impl DesktopRoot {
     ///
     /// Everything here is derived from the same transcript the Chat page
     /// renders, so the two pages can never disagree about what the run did.
-    fn render_trajectory_page(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_trajectory_page(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let view = self.trajectory_view();
         if view.is_empty() {
             return v_flex()
@@ -5195,7 +5869,7 @@ impl DesktopRoot {
         })
         .size_full()
         .min_h_0();
-        let summary = self.render_trajectory_summary(&view, cx);
+        let summary = self.render_trajectory_summary(&view, window, cx);
         let overview = self.render_trajectory_overview(&view, visible.as_deref(), cx);
         let trajectory_detail = self.render_trajectory_detail(&view, cx);
         let subtitle = if self.trajectory_query.trim().is_empty() {
@@ -5269,7 +5943,12 @@ impl DesktopRoot {
         let line = trajectory_page::StatsLine::new(
             view.summary(),
             trajectory_page::StatsLabels {
+                turn: self.text(TextKey::TurnLabel),
                 turns: self.text(TextKey::TurnsUnit),
+                step: match self.snapshot.language {
+                    tact_catalog::CatalogLocale::En => "step",
+                    tact_catalog::CatalogLocale::Zh => self.text(TextKey::Steps),
+                },
                 steps: self.text(TextKey::Steps),
                 tokens: self.text(TextKey::Tokens),
                 cache_hit: self.text(TextKey::CacheHit),
@@ -5688,22 +6367,36 @@ impl DesktopRoot {
                 )
                 .into_any_element();
         }
-        let assistant_selections = self.sync_assistant_selections(&transcript, "main", window, cx);
+        let session_id = self.transcript_session_id();
+        self.touch_transcript_session_cache(&session_id);
+        let process_rows = transcript.iter().cloned().collect::<Vec<_>>();
+        let process_layout = Arc::new(build_process_layout(&process_rows));
+        let assistant_selections =
+            self.sync_assistant_selections(&transcript, "main", &session_id, window, cx);
         let row_views = self.sync_transcript_row_views(
             &transcript,
+            &session_id,
             snapshot.clone(),
             &assistant_selections,
+            &process_layout.yielded_plans,
             cx,
         );
         let new_activity = self.new_activity;
         let wheel_enabled = self.overlay.is_none();
+        let answers_only = self.answers_only;
+        let live_label = self.live_activity_label();
         let scroller_changed = self.transcript_scroller.update(cx, |view, cx| {
             view.set_state(
-                row_views,
-                snapshot.language,
-                snapshot.tail_following,
-                new_activity,
-                wheel_enabled,
+                TranscriptViewState {
+                    process_layout,
+                    rows: row_views,
+                    new_activity,
+                    wheel_enabled,
+                    answers_only,
+                    live_label,
+                },
+                &session_id,
+                &snapshot,
                 cx,
             )
         });
@@ -5732,7 +6425,8 @@ impl DesktopRoot {
         let elapsed = self
             .snapshot
             .runtime
-            .run_started_at
+            .turn_started_at
+            .or(self.snapshot.runtime.run_started_at)
             .map(format_elapsed)
             .unwrap_or_else(|| "0s".to_string());
         let turns = self.snapshot.runtime.turns_taken;
@@ -5749,19 +6443,20 @@ impl DesktopRoot {
             .min_w_0()
             .h_full()
             .w_full()
-            .max_w(px(900.))
+            .max_w(px(crate::ui::layout::COMPOSER_WIDTH))
             .mx_auto()
             .child(
                 v_flex()
                     .flex_none()
-                    .gap_2()
+                    .gap_1()
                     .px_0()
-                    .pt(px(50.))
-                    .pb(px(28.))
+                    .pt(px(14.))
+                    .pb(px(18.))
                     .border_b_1()
                     .border_color(cx.theme().border)
                     .child(
                         h_flex()
+                            .debug_selector(|| "transcript-run-meta".into())
                             .gap_2()
                             .items_center()
                             .text_size(px(10.))
@@ -5787,11 +6482,11 @@ impl DesktopRoot {
                             ))),
                     )
                     .child({
-                        // The design's hero is `clamp(24px, 2.25vw, 32px)`;
-                        // CJK uses 1.12 line height and an 840px measure.
+                        // Keep the run title subordinate to the conversation:
+                        // compact at `clamp(18px, 1.6vw, 23px)`.
                         let cjk_title = is_cjk_title(self.snapshot.language, &title);
-                        let headline = (f32::from(window.viewport_size().width) * 0.0225)
-                            .clamp(24., 32.)
+                        let headline = (f32::from(window.viewport_size().width) * 0.016)
+                            .clamp(18., 23.)
                             * self.snapshot.text_scale;
                         div()
                             .max_w(px(900.))
@@ -5801,12 +6496,12 @@ impl DesktopRoot {
                                 title
                                     .max_w(px(840. * self.snapshot.text_scale))
                                     .text_size(px(headline))
-                                    .line_height(px(headline * 1.12))
+                                    .line_height(px(headline * 1.15))
                             })
                             .when(!cjk_title, |title| {
                                 title
                                     .text_size(px(headline))
-                                    .line_height(px(headline * 1.24))
+                                    .line_height(px(headline * 1.2))
                             })
                             .child(title)
                     })
@@ -5814,8 +6509,8 @@ impl DesktopRoot {
                         column.child(
                             div()
                                 .max_w(px(900.))
-                                .text_size(px(14.))
-                                .line_height(px(23.))
+                                .text_size(px(13.))
+                                .line_height(px(20.))
                                 .text_color(cx.theme().muted_foreground)
                                 .child(subtitle),
                         )
@@ -5846,32 +6541,50 @@ impl DesktopRoot {
     fn sync_transcript_row_views(
         &mut self,
         transcript: &TranscriptView,
+        session_id: &SessionId,
         snapshot: Arc<DesktopSnapshot>,
-        assistant_selections: &HashMap<(String, RowId), Entity<SelectionActions>>,
+        assistant_selections: &HashMap<(String, SessionId, RowId), Entity<SelectionActions>>,
+        yielded_plans: &HashSet<RowId>,
         cx: &mut Context<Self>,
     ) -> Vec<Entity<TranscriptRowView>> {
         let live = transcript.iter().map(|row| row.id).collect::<HashSet<_>>();
-        self.transcript_rows.retain(|id, _| live.contains(id));
+        self.transcript_rows.retain(|(cached_session, row_id), _| {
+            cached_session != session_id || live.contains(row_id)
+        });
         let mut views = Vec::with_capacity(transcript.len());
         for row in transcript.iter() {
+            let key = (session_id.clone(), row.id);
             let selection = assistant_selections
-                .get(&("main".to_string(), row.id))
+                .get(&("main".to_string(), session_id.clone(), row.id))
                 .cloned();
-            let thinking_open = self.expanded_thinking.contains(&row.id);
+            let thinking_open = self
+                .expanded_thinking
+                .contains(&(session_id.clone(), row.id));
+            let plan_yields = yielded_plans.contains(&row.id);
+            let cached_view = self.transcript_rows.get(&key).cloned();
             let needs_update = self.pending_row_updates.contains(&row.id)
-                || !self.transcript_rows.contains_key(&row.id);
-            let view = if let Some(view) = self.transcript_rows.get(&row.id).cloned() {
-                let context_changed = view.read(cx).snapshot.appearance != snapshot.appearance
-                    || view.read(cx).snapshot.language != snapshot.language
-                    || view.read(cx).snapshot.show_hook_output != snapshot.show_hook_output
-                    || view.read(cx).thinking_open != thinking_open;
-                if needs_update || context_changed {
+                || cached_view
+                    .as_ref()
+                    .is_none_or(|view| !Arc::ptr_eq(&view.read(cx).row, row));
+            let view = if let Some(view) = cached_view {
+                let cached = view.read(cx);
+                let snapshot_changed = !Arc::ptr_eq(&cached.snapshot, &snapshot);
+                let context_changed = cached.snapshot.appearance != snapshot.appearance
+                    || cached.snapshot.language != snapshot.language
+                    || cached.snapshot.show_hook_output != snapshot.show_hook_output
+                    || (needs_update && cached.snapshot.session.epoch != snapshot.session.epoch)
+                    || cached.thinking_open != thinking_open
+                    || cached.plan_yields != plan_yields;
+                if needs_update || context_changed || snapshot_changed {
                     view.update(cx, |view, cx| {
                         view.row = row.clone();
                         view.snapshot = snapshot.clone();
                         view.assistant_selection = selection;
                         view.thinking_open = thinking_open;
-                        cx.notify();
+                        view.plan_yields = plan_yields;
+                        if needs_update || context_changed {
+                            cx.notify();
+                        }
                     });
                 }
                 view
@@ -5883,9 +6596,10 @@ impl DesktopRoot {
                     root,
                     assistant_selection: selection,
                     thinking_open,
+                    plan_yields,
                     gate_focus: cx.focus_handle(),
                 });
-                self.transcript_rows.insert(row.id, view.clone());
+                self.transcript_rows.insert(key, view.clone());
                 view
             };
             views.push(view);
@@ -5894,8 +6608,11 @@ impl DesktopRoot {
         views
     }
 
-    fn render_inspector(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let geometry = crate::ui::shell::geometry(self.snapshot.appearance);
+    fn render_inspector(
+        &mut self,
+        width: gpui::Pixels,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         // Labels are bare: the counts already sit in the sticky strip and the
         // rail on the same screen, and duplicating them costs the width the
         // fifth tab needs.
@@ -5974,17 +6691,12 @@ impl DesktopRoot {
             .debug_selector(|| "run-inspector".into())
             .role(Role::Complementary)
             .aria_label(self.text(TextKey::RunInspector))
-            .w(px(
-                f32::from(geometry.inspector_width) * self.snapshot.text_scale
-            ))
+            .w(width)
             .h_full()
-            .flex_none()
             .p(px(16.))
             .gap(px(14.))
             .font_family(theme::native_font_family())
-            .border_l(px(theme::border_width()))
-            .border_color(cx.theme().border)
-            .bg(cx.theme().popover)
+            .bg(cx.theme().background)
             .child(
                 v_flex()
                     .gap(px(2.))
@@ -7245,7 +7957,11 @@ impl DesktopRoot {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         h_flex()
+            .debug_selector(|| "gate-banner".into())
             .w_full()
+            // Shares the accessory width with the task card below it, so the
+            // strip has one right edge instead of two.
+            .max_w(px(crate::ui::layout::ACCESSORY_WIDTH))
             .min_w_0()
             .gap_2()
             .rounded_md()
@@ -7260,7 +7976,7 @@ impl DesktopRoot {
                     .min_w_0()
                     .truncate()
                     .text_sm()
-                    .child(gate.prompt.to_string()),
+                    .child(gate_prompt_line(&gate.prompt).to_string()),
             )
             .child(
                 div()
@@ -7332,11 +8048,14 @@ impl DesktopRoot {
                             // choosing it, the way the prototype's review
                             // action does. The row owns the handle so it
                             // survives the transcript's row virtualization.
-                            if let Some(row) = this.snapshot.transcript.get(index)
-                                && let Some(view) = this.transcript_rows.get(&row.id).cloned()
-                            {
-                                let focus = view.read(cx).gate_focus.clone();
-                                focus.focus(window, cx);
+                            if let Some(row) = this.snapshot.transcript.get(index) {
+                                let session_id = this.transcript_session_id();
+                                if let Some(view) =
+                                    this.transcript_rows.get(&(session_id, row.id)).cloned()
+                                {
+                                    let focus = view.read(cx).gate_focus.clone();
+                                    focus.focus(window, cx);
+                                }
                             }
                         }
                         if let Some((group_id, collapsed, tool_to_expand)) = group {
@@ -7521,159 +8240,182 @@ impl DesktopRoot {
             .role(Role::Status)
             .aria_label(self.text(TextKey::RunStatus))
             .w_full()
-            .max_w(px(900.))
-            .mx_auto()
-            .gap_2()
+            // The same gutter the composer area applies, so the strip's content
+            // box is the composer's content box at every window width. The
+            // narrower card is then pinned to that gutter by `items_start`
+            // further in: centering it here would give the strip a second axis,
+            // which is what made it float away from the composer.
+            .px(px(crate::ui::layout::COMPOSER_PADDING_X))
             .pt_2()
-            .pb(px(6.))
-            .when_some(pending, |strip, gate| {
-                strip.child(self.render_gate_banner(gate, cx))
-            })
-            .when(card_visible, |strip| {
-                strip.child(
-                    v_flex()
-                        .id("sticky-task-card")
-                        .debug_selector(|| "sticky-task-card".into())
-                        .w_full()
-                        .min_w_0()
-                        .rounded_lg()
-                        .border_1()
-                        .border_color(cx.theme().border)
-                        .bg(cx.theme().popover)
-                        .p_3()
-                        .gap_2()
-                        .child(
-                            h_flex()
+            .pb(px(crate::ui::layout::ACCESSORY_GAP))
+            .child(
+                v_flex()
+                    .id("sticky-column")
+                    .debug_selector(|| "sticky-column".into())
+                    .w_full()
+                    .max_w(px(crate::ui::layout::COMPOSER_WIDTH))
+                    .mx_auto()
+                    .items_start()
+                    .gap_2()
+                    .when_some(pending, |strip, gate| {
+                        strip.child(self.render_gate_banner(gate, cx))
+                    })
+                    .when(card_visible, |strip| {
+                        strip.child(
+                            v_flex()
+                                .id("sticky-task-card")
+                                .debug_selector(|| "sticky-task-card".into())
                                 .w_full()
+                                .max_w(px(crate::ui::layout::ACCESSORY_WIDTH))
+                                .flex_none()
                                 .min_w_0()
-                                .items_center()
+                                .rounded_lg()
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .bg(cx.theme().popover)
+                                .p_3()
                                 .gap_2()
                                 .child(
-                                    div()
-                                        .flex_none()
-                                        .text_xs()
-                                        .font_semibold()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(format!(
-                                            "{} {completed}/{task_total}",
-                                            self.text(TextKey::Tasks).to_uppercase()
-                                        )),
-                                )
-                                .when_some(current, |header, task| {
-                                    header.child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .truncate()
-                                            .text_sm()
-                                            .font_semibold()
-                                            .child(task.subject.to_string()),
-                                    )
-                                })
-                                .when(current.is_none(), |header| header.child(div().flex_1()))
-                                .child(sticky_count(
-                                    self.text(TextKey::Goals),
-                                    goals,
-                                    InspectorTab::Goals,
-                                    cx,
-                                ))
-                                .child(sticky_count(
-                                    self.text(TextKey::Subagents),
-                                    agents,
-                                    InspectorTab::Subagents,
-                                    cx,
-                                ))
-                                .when(background > 0, |header| {
-                                    header.child(sticky_count(
-                                        self.text(TextKey::Background),
-                                        background,
-                                        InspectorTab::Background,
-                                        cx,
-                                    ))
-                                })
-                                .child(
-                                    div()
-                                        .id("toggle-sticky-tasks")
-                                        .debug_selector(|| "toggle-sticky-tasks".into())
-                                        .role(Role::Button)
-                                        .focusable()
-                                        .tab_stop(true)
-                                        .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
-                                        .aria_label(if self.sticky_tasks_collapsed {
-                                            self.text(TextKey::ExpandStickyTasks)
-                                        } else {
-                                            self.text(TextKey::CollapseStickyTasks)
-                                        })
-                                        .cursor_pointer()
-                                        .rounded_md()
-                                        .p_1()
-                                        .hover(|style| style.bg(cx.theme().muted))
+                                    h_flex()
+                                        .w_full()
+                                        .min_w_0()
+                                        .items_center()
+                                        .gap_2()
                                         .child(
-                                            Icon::new(chevron)
-                                                .size(px(13.))
-                                                .text_color(cx.theme().muted_foreground),
+                                            div()
+                                                .flex_none()
+                                                .text_xs()
+                                                .font_semibold()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(format!(
+                                                    "{} {completed}/{task_total}",
+                                                    self.text(TextKey::Tasks).to_uppercase()
+                                                )),
                                         )
-                                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                            this.sticky_tasks_collapsed =
-                                                !this.sticky_tasks_collapsed;
-                                            // A collapsed strip shows one row, so
-                                            // a remembered offset would reopen
-                                            // mid-list with no way to see the
-                                            // rows above.
-                                            this.sticky_tasks_scroll = 0;
-                                            cx.notify();
-                                        })),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .h(px(3.))
-                                .w_full()
-                                .rounded_full()
-                                .bg(cx.theme().muted)
+                                        .when_some(current, |header, task| {
+                                            header.child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .truncate()
+                                                    .text_sm()
+                                                    .font_semibold()
+                                                    .child(task.subject.to_string()),
+                                            )
+                                        })
+                                        .when(current.is_none(), |header| {
+                                            header.child(div().flex_1())
+                                        })
+                                        .child(sticky_count(
+                                            self.text(TextKey::Goals),
+                                            goals,
+                                            InspectorTab::Goals,
+                                            cx,
+                                        ))
+                                        .child(sticky_count(
+                                            self.text(TextKey::Subagents),
+                                            agents,
+                                            InspectorTab::Subagents,
+                                            cx,
+                                        ))
+                                        .when(background > 0, |header| {
+                                            header.child(sticky_count(
+                                                self.text(TextKey::Background),
+                                                background,
+                                                InspectorTab::Background,
+                                                cx,
+                                            ))
+                                        })
+                                        .child(
+                                            div()
+                                                .id("toggle-sticky-tasks")
+                                                .debug_selector(|| "toggle-sticky-tasks".into())
+                                                .role(Role::Button)
+                                                .focusable()
+                                                .tab_stop(true)
+                                                .focus_visible(|style| {
+                                                    style.bg(gpui::rgba(0x007aff22))
+                                                })
+                                                .aria_label(if self.sticky_tasks_collapsed {
+                                                    self.text(TextKey::ExpandStickyTasks)
+                                                } else {
+                                                    self.text(TextKey::CollapseStickyTasks)
+                                                })
+                                                .cursor_pointer()
+                                                .rounded_md()
+                                                .p_1()
+                                                .hover(|style| style.bg(cx.theme().muted))
+                                                .child(
+                                                    Icon::new(chevron)
+                                                        .size(px(13.))
+                                                        .text_color(cx.theme().muted_foreground),
+                                                )
+                                                .on_click(cx.listener(
+                                                    |this, _: &ClickEvent, _, cx| {
+                                                        this.sticky_tasks_collapsed =
+                                                            !this.sticky_tasks_collapsed;
+                                                        // A collapsed strip shows one row, so
+                                                        // a remembered offset would reopen
+                                                        // mid-list with no way to see the
+                                                        // rows above.
+                                                        this.sticky_tasks_scroll = 0;
+                                                        cx.notify();
+                                                    },
+                                                )),
+                                        ),
+                                )
                                 .child(
                                     div()
-                                        .h_full()
-                                        .w(gpui::relative(progress))
+                                        .h(px(3.))
+                                        .w_full()
                                         .rounded_full()
-                                        .bg(if completed == task_total {
-                                            cx.theme().success
-                                        } else {
-                                            cx.theme().primary
-                                        }),
-                                ),
+                                        .bg(cx.theme().muted)
+                                        .child(
+                                            div()
+                                                .h_full()
+                                                .w(gpui::relative(progress))
+                                                .rounded_full()
+                                                .bg(if completed == task_total {
+                                                    cx.theme().success
+                                                } else {
+                                                    cx.theme().primary
+                                                }),
+                                        ),
+                                )
+                                .when(!self.sticky_tasks_collapsed || task_total == 1, |card| {
+                                    card.child(
+                                        v_flex()
+                                            .w_full()
+                                            .min_w_0()
+                                            .gap_1()
+                                            .children(grouped)
+                                            // The strip is a summary, so its overflow
+                                            // scrolls inside it rather than growing the
+                                            // card over the transcript above.
+                                            .on_scroll_wheel(cx.listener(
+                                                |this, event: &gpui::ScrollWheelEvent, _, cx| {
+                                                    let delta = f32::from(
+                                                        event.delta.pixel_delta(px(20.)).y,
+                                                    );
+                                                    if delta == 0. {
+                                                        return;
+                                                    }
+                                                    let step = delta.signum() as i64;
+                                                    let next = (this.sticky_tasks_scroll as i64
+                                                        - step)
+                                                        .max(0)
+                                                        as usize;
+                                                    if next != this.sticky_tasks_scroll {
+                                                        this.sticky_tasks_scroll = next;
+                                                        cx.notify();
+                                                    }
+                                                },
+                                            )),
+                                    )
+                                }),
                         )
-                        .when(!self.sticky_tasks_collapsed || task_total == 1, |card| {
-                            card.child(
-                                v_flex()
-                                    .w_full()
-                                    .min_w_0()
-                                    .gap_1()
-                                    .children(grouped)
-                                    // The strip is a summary, so its overflow
-                                    // scrolls inside it rather than growing the
-                                    // card over the transcript above.
-                                    .on_scroll_wheel(cx.listener(
-                                        |this, event: &gpui::ScrollWheelEvent, _, cx| {
-                                            let delta =
-                                                f32::from(event.delta.pixel_delta(px(20.)).y);
-                                            if delta == 0. {
-                                                return;
-                                            }
-                                            let step = delta.signum() as i64;
-                                            let next = (this.sticky_tasks_scroll as i64 - step)
-                                                .max(0)
-                                                as usize;
-                                            if next != this.sticky_tasks_scroll {
-                                                this.sticky_tasks_scroll = next;
-                                                cx.notify();
-                                            }
-                                        },
-                                    )),
-                            )
-                        }),
-                )
-            })
+                    }),
+            )
             .into_any_element()
     }
 
@@ -7837,6 +8579,128 @@ impl DesktopRoot {
                             this.dispatch(DesktopIntent::RetryProvider);
                         })),
                 )
+            })
+            .into_any_element()
+    }
+
+    /// The composer's live reasoning-effort picker.
+    ///
+    /// Effort belongs beside the model it applies to, not behind the settings
+    /// pane: the same model can want a different tier per task.
+    fn render_effort_picker(&self, cx: &mut Context<Self>) -> AnyElement {
+        let locale = self.snapshot.language;
+        let selected = self.snapshot.composer.effort.as_deref().map(str::to_string);
+        let choices = setting_choices(SettingId::ReasoningEffort, locale);
+        let current_label = selected.as_ref().and_then(|value| {
+            choices
+                .iter()
+                .find(|(_, choice)| choice == value)
+                .map(|(label, _)| label.clone())
+        });
+        let label = i18n::text(locale, TextKey::Reasoning);
+        let aria = match &current_label {
+            Some(value) => format!("{label}: {value}"),
+            None => label.to_string(),
+        };
+        let menu_selected = selected.clone();
+        let weak = cx.weak_entity();
+        let open_weak = weak.clone();
+        Popover::new("effort-picker-popover")
+            // The effort chip sits on the composer's bottom edge, beside the
+            // permission chip; anchor its menu above like that one.
+            .anchor(Anchor::BottomLeft)
+            .open(self.effort_picker_open)
+            .on_open_change(move |open, _, cx| {
+                let _ = open_weak.update(cx, |this, cx| {
+                    this.effort_picker_open = *open;
+                    cx.notify();
+                });
+            })
+            .trigger(
+                gpui_base::Button::new("effort-picker-trigger")
+                    .debug_selector(|| "effort-picker".into())
+                    .role(Role::Button)
+                    .tab_stop(true)
+                    .aria_label(aria)
+                    .selected(false)
+                    .cursor_pointer()
+                    .rounded(px(5.))
+                    .px(px(4.))
+                    .py(px(2.))
+                    .text_size(px(11.))
+                    .text_color(cx.theme().muted_foreground)
+                    .hover(|style| style.bg(cx.theme().muted))
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap(px(5.))
+                            .child(label)
+                            .when_some(current_label, |row, value| {
+                                row.child(
+                                    div()
+                                        .flex_none()
+                                        .text_color(cx.theme().foreground)
+                                        .child(format!("· {value}")),
+                                )
+                            })
+                            .child(
+                                Icon::new(IconName::ChevronDown)
+                                    .xsmall()
+                                    .text_color(cx.theme().muted_foreground),
+                            ),
+                    ),
+            )
+            .content(move |_, _, _| {
+                let weak = weak.clone();
+                let rows = choices
+                    .iter()
+                    .map(|(choice_label, choice_value)| {
+                        let weak = weak.clone();
+                        let value = choice_value.clone();
+                        let option_label = choice_label.clone();
+                        let is_selected = menu_selected.as_deref() == Some(choice_value.as_str());
+                        gpui_base::Button::new(SharedString::from(format!(
+                            "effort-choice-{choice_value}"
+                        )))
+                        .debug_selector({
+                            let value = choice_value.clone();
+                            move || format!("effort-choice-{value}")
+                        })
+                        .role(Role::RadioButton)
+                        .tab_stop(true)
+                        .aria_label(option_label.clone())
+                        .selected(is_selected)
+                        .cursor_pointer()
+                        .w_full()
+                        .rounded_md()
+                        .px_2()
+                        .h(px(24.))
+                        .py_0()
+                        .text_xs()
+                        .when(is_selected, |button| button.bg(gpui::rgba(0x007aff22)))
+                        .child(div().w_full().min_w_0().truncate().child(option_label))
+                        .on_click(move |_, _, cx| {
+                            let value = value.clone();
+                            let _ = weak.update(cx, |this, cx| {
+                                this.effort_picker_open = false;
+                                this.dispatch(DesktopIntent::SetSetting {
+                                    id: SettingId::ReasoningEffort,
+                                    value: SettingValue::Choice(value),
+                                });
+                                cx.notify();
+                            });
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                v_flex()
+                    .id("effort-picker-menu")
+                    .debug_selector(|| "effort-picker-menu".into())
+                    .role(Role::Menu)
+                    .aria_label(label)
+                    .w(px(168.))
+                    .gap(px(2.))
+                    .children(rows)
+                    .into_any_element()
             })
             .into_any_element()
     }
@@ -8122,7 +8986,10 @@ impl DesktopRoot {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        vec![self.render_permission_picker(cx)]
+        vec![
+            self.render_effort_picker(cx),
+            self.render_permission_picker(cx),
+        ]
     }
 
     fn render_voice_status(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -8203,6 +9070,69 @@ impl DesktopRoot {
                 )
             })
             .into_any_element()
+    }
+
+    /// Whether a run is active, so the transcript summary shows its clock.
+    fn live_activity_visible(&self) -> bool {
+        matches!(
+            self.snapshot.session.phase,
+            SessionPhase::Running | SessionPhase::Starting | SessionPhase::Opening
+        )
+    }
+
+    /// Repaints the run header once a second while its elapsed clock is live.
+    ///
+    /// The transcript's process-clock timer repaints only its own entity. The
+    /// header belongs to `DesktopRoot`, so without this timer it freezes after
+    /// the last host event even though the run is still in flight.
+    fn ensure_run_clock_timer(&mut self, cx: &mut Context<Self>) {
+        if !self.live_activity_visible() {
+            self.run_clock_timer = None;
+            return;
+        }
+        if self.run_clock_timer.is_some() {
+            return;
+        }
+        self.run_clock_timer = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let keep = this
+                    .update(cx, |this, cx| {
+                        cx.notify();
+                        this.live_activity_visible()
+                    })
+                    .unwrap_or(false);
+                if !keep {
+                    break;
+                }
+            }
+        }));
+    }
+
+    /// The current activity label for the process summary.
+    fn live_activity_label(&self) -> Option<String> {
+        if !self.live_activity_visible() {
+            return None;
+        }
+        let tool = self
+            .snapshot
+            .runtime
+            .latest_tool_detail
+            .clone()
+            .filter(|tool| matches!(tool.status, RowStatus::Running | RowStatus::Pending));
+        Some(match tool {
+            Some(tool) => format!(
+                "{} · {}",
+                self.text(TextKey::Running),
+                truncate_display_text(&tool.label, 60)
+            ),
+            None => match self.snapshot.runtime.current_phase {
+                tact_desktop_core::RunPhase::Thinking => {
+                    format!("{}…", self.text(TextKey::Thinking))
+                }
+                _ => self.text(TextKey::Running).to_string(),
+            },
+        })
     }
 
     fn render_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -8290,78 +9220,116 @@ impl DesktopRoot {
             .id("composer-area")
             .debug_selector(|| "composer-area".into())
             .w_full()
-            .gap_2()
-            .px(px(22.))
+            .px(px(crate::ui::layout::COMPOSER_PADDING_X))
             .pb(px(18.))
+            // The gap separates the voice banner and the slash overlay from the
+            // composer. The queue is *inside* the stack and uses the tighter
+            // `ACCESSORY_GAP`, so this no longer widens the badge's gap.
+            .gap_2()
             .when(self.voice.listening || self.voice.transcribing, |area| {
                 area.child(self.render_voice_status(cx))
-            })
-            .when(!self.snapshot.composer.queue.is_empty(), |area| {
-                area.child(
-                    div()
-                        .id("composer-queue-toggle")
-                        .role(Role::Button)
-                        .focusable()
-                        .tab_stop(true)
-                        .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
-                        .aria_label(format!(
-                            "{} {} {queue_len}",
-                            self.text(TextKey::Queue),
-                            self.text(TextKey::Expand)
-                        ))
-                        .cursor_pointer()
-                        .rounded_full()
-                        .border_1()
-                        .border_color(cx.theme().border)
-                        .px_2()
-                        .py_1()
-                        .text_xs()
-                        .text_color(cx.theme().link)
-                        .bg(cx.theme().accent)
-                        .child(format!(
-                            "{} {queue_len}",
-                            self.text(TextKey::Queued).to_uppercase()
-                        ))
-                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                            this.queue_expanded = !this.queue_expanded;
-                            cx.notify();
-                        })),
-                )
-                .when(self.queue_expanded, |area| {
-                    area.child(
-                        div()
-                            .track_focus(&self.queue_focus)
-                            .key_context("Queue")
-                            .w_full()
-                            // The queue is a composer accessory, not a
-                            // dialog: it stays a step narrower than the
-                            // composer frame and never taller than a few
-                            // rows. A long queue scrolls instead of
-                            // pushing the transcript off screen. The cap
-                            // belongs on this wrapper: on the scroll
-                            // content it would clamp the content itself
-                            // and nothing past the first screenful could
-                            // be reached.
-                            .max_w(px(820.))
-                            .max_h(px(240.))
-                            .mx_auto()
-                            .child(div().w_full().overflow_y_scrollbar().child(queue_view)),
-                    )
-                })
             })
             .when_some(self.slash_overlay.clone(), |area, overlay| {
                 area.key_context("SlashOverlay")
                     .child(self.render_slash_overlay(&overlay, cx))
             })
+            // One column owns the composer and everything stacked above it, so
+            // an accessory shares the composer's left gutter instead of
+            // centering itself into a second axis. `items_start` is what pins
+            // the narrower accessories to that gutter.
+            .child(
+                v_flex()
+                    .id("composer-stack")
+                    .debug_selector(|| "composer-stack".into())
+                    .w_full()
+                    .max_w(px(crate::ui::layout::COMPOSER_WIDTH))
+                    .mx_auto()
+                    .items_start()
+                    .gap(px(crate::ui::layout::ACCESSORY_GAP))
+                    .when(!self.snapshot.composer.queue.is_empty(), |stack| {
+                        stack.child(self.render_queue_accessory(queue_view, cx))
+                    })
+                    .child(
+                        div()
+                            .id("composer-frame")
+                            .debug_selector(|| "composer-frame".into())
+                            // The stack already caps and centers the column;
+                            // re-centering the frame here would give it a
+                            // second axis inside it.
+                            .w_full()
+                            .child(self.prompt.clone()),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// The queued-prompt badge and, when expanded, its list.
+    ///
+    /// A composer accessory rather than a second input: it is narrower than the
+    /// composer frame and shares its left gutter, and its last row sits one
+    /// tight gap above the frame so it reads as attached to the input.
+    fn render_queue_accessory(
+        &self,
+        queue_view: MessageQueue,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let queue_len = self.snapshot.composer.queue.len();
+        v_flex()
+            .id("composer-queue-accessory")
+            .debug_selector(|| "composer-queue-accessory".into())
+            .w_full()
+            .max_w(px(crate::ui::layout::ACCESSORY_WIDTH))
+            // `items_start` is what keeps the badge at its own text width; a
+            // stretched child would make a two-word badge as wide as the
+            // composer.
+            .items_start()
+            .gap(px(crate::ui::layout::ACCESSORY_GAP))
             .child(
                 div()
-                    .id("composer-frame")
-                    .debug_selector(|| "composer-frame".into())
-                    .w_full()
-                    .max_w(px(900.))
-                    .mx_auto()
-                    .child(self.prompt.clone()),
+                    .id("composer-queue-toggle")
+                    .debug_selector(|| "composer-queue-toggle".into())
+                    .role(Role::Button)
+                    .focusable()
+                    .tab_stop(true)
+                    .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
+                    .aria_label(format!(
+                        "{} {} {queue_len}",
+                        self.text(TextKey::Queue),
+                        self.text(TextKey::Expand)
+                    ))
+                    .cursor_pointer()
+                    .rounded_full()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .px_2()
+                    .py_1()
+                    .text_xs()
+                    .text_color(cx.theme().link)
+                    .bg(cx.theme().accent)
+                    .child(format!(
+                        "{} {queue_len}",
+                        self.text(TextKey::Queued).to_uppercase()
+                    ))
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.queue_expanded = !this.queue_expanded;
+                        cx.notify();
+                    })),
             )
+            .when(self.queue_expanded, |accessory| {
+                accessory.child(
+                    div()
+                        .track_focus(&self.queue_focus)
+                        .key_context("Queue")
+                        .w_full()
+                        // Never taller than a few rows: a long queue scrolls
+                        // instead of pushing the transcript off screen. The cap
+                        // belongs on this wrapper — on the scroll content it
+                        // would clamp the content itself and nothing past the
+                        // first screenful could be reached.
+                        .max_h(px(240.))
+                        .child(div().w_full().overflow_y_scrollbar().child(queue_view)),
+                )
+            })
             .into_any_element()
     }
 
@@ -8457,9 +9425,14 @@ impl DesktopRoot {
                 let can_submit =
                     form.choice.is_none() && (!form.required || !entered.trim().is_empty());
                 let input_label = form.field.clone().unwrap_or_else(|| form.title.to_string());
+                let show_field = form
+                    .field
+                    .as_deref()
+                    .is_some_and(|field| field != form.title.as_ref());
                 Some(
                     v_flex()
                         .id("command-form-overlay")
+                        .debug_selector(|| "command-form-overlay".into())
                         .role(Role::Dialog)
                         .aria_label(form.title.clone())
                         .w(overlay_width(window, 480.))
@@ -8470,13 +9443,18 @@ impl DesktopRoot {
                         .border_color(cx.theme().border)
                         .bg(cx.theme().popover)
                         .shadow_lg()
-                        .child(div().font_semibold().child(form.title.clone()))
-                        .when_some(form.field.clone(), |panel, field| {
+                        .child(
+                            div()
+                                .text_size(px(16.))
+                                .font_semibold()
+                                .child(form.title.clone()),
+                        )
+                        .when(show_field, |panel| {
                             panel.child(
                                 div()
                                     .text_sm()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child(field),
+                                    .child(form.field.clone().unwrap_or_default()),
                             )
                         })
                         .when(form.choice.is_none(), |panel| {
@@ -8499,6 +9477,10 @@ impl DesktopRoot {
                                     gpui_base::Button::new(SharedString::from(format!(
                                         "form-choice-{value}"
                                     )))
+                                    .debug_selector({
+                                        let selector = format!("form-choice-{value}");
+                                        move || selector.clone()
+                                    })
                                     .aria_label(label.clone())
                                     .rounded_md()
                                     .border_1()
@@ -8541,7 +9523,11 @@ impl DesktopRoot {
                                         .px_2()
                                         .py_1()
                                         .child(self.text(TextKey::Confirm))
-                                        .when(!can_submit, |button| button.opacity(0.45))
+                                        .when(!can_submit, |button| {
+                                            button
+                                                .bg(cx.theme().muted)
+                                                .text_color(cx.theme().muted_foreground)
+                                        })
                                         .when(can_submit, |button| {
                                             button.on_click(cx.listener(
                                                 |this, _: &ClickEvent, window, cx| {
@@ -8591,14 +9577,37 @@ impl DesktopRoot {
             stored.diff_applied = reader.diff_applied;
         }
         let title = reader.title.clone();
+        let help = matches!(title.as_ref(), "Keyboard Shortcuts" | "键盘快捷键");
+        let balance = reader.typed == Some(ReaderKind::Balance);
+        let contents = reader.markdown.lines().count().max(1) as f32;
+        let content_height = (180.0 + contents * 22.0).clamp(340.0, 640.0);
+        let balance_height = (180.0 + contents * 22.0).clamp(300.0, 480.0);
         Some(
             v_flex()
                 .id("reader-overlay")
                 .debug_selector(|| "reader-overlay".into())
                 .role(Role::Dialog)
                 .aria_label(title.clone())
-                .w(overlay_width(window, 760.))
-                .h(overlay_height(window, 640.))
+                .w(overlay_width(
+                    window,
+                    if help {
+                        560.
+                    } else if balance {
+                        520.
+                    } else {
+                        760.
+                    },
+                ))
+                .h(overlay_height(
+                    window,
+                    if help {
+                        520.
+                    } else if balance {
+                        balance_height
+                    } else {
+                        content_height
+                    },
+                ))
                 .p_4()
                 .gap_3()
                 .overflow_hidden()
@@ -8655,7 +9664,7 @@ impl DesktopRoot {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if reader.typed == Some(ReaderKind::Balance) {
-            return InsightCard::new("balance-reader-card", reader.title.to_string())
+            return InsightCard::untitled("balance-reader-card")
                 .body(reader.markdown.to_string())
                 .into_any_element();
         }
@@ -8703,7 +9712,7 @@ impl DesktopRoot {
                             } else {
                                 tool.arg_summary.to_string()
                             },
-                            StreamedContent::done(text.to_string()),
+                            text.to_string(),
                         )
                         .kind(kind);
                         if let Some(language) = language {
@@ -8842,9 +9851,16 @@ impl DesktopRoot {
             let label = self.text(TextKey::ChangedFiles);
             let table = cx.new(|cx| DiffTable::new("reader-diff", label, window, cx));
             table.update(cx, |table, cx| {
+                table.set_labels(
+                    DiffTableLabels {
+                        accept: self.text(TextKey::Accept).into(),
+                        reject: self.text(TextKey::Reject).into(),
+                    },
+                    cx,
+                );
                 table.set_columns(
                     [
-                        DiffColumn::new("file", "File").width_in_rems(20.),
+                        DiffColumn::new("file", self.text(TextKey::File)).width_in_rems(20.),
                         DiffColumn::new("added", "+").fixed(true).width_in_rems(3.5),
                         DiffColumn::new("removed", "−")
                             .fixed(true)
@@ -8880,13 +9896,33 @@ impl DesktopRoot {
             self._subscriptions.push(subscription);
             reader.diff_table = Some(table);
             reader.diff_applied = reader.diff_epoch;
-        } else if reader.diff_epoch != reader.diff_applied {
-            if let Some(table) = &reader.diff_table {
+        } else if let Some(table) = &reader.diff_table {
+            table.update(cx, |table, cx| {
+                table.set_labels(
+                    DiffTableLabels {
+                        accept: self.text(TextKey::Accept).into(),
+                        reject: self.text(TextKey::Reject).into(),
+                    },
+                    cx,
+                );
+                table.set_columns(
+                    [
+                        DiffColumn::new("file", self.text(TextKey::File)).width_in_rems(20.),
+                        DiffColumn::new("added", "+").fixed(true).width_in_rems(3.5),
+                        DiffColumn::new("removed", "−")
+                            .fixed(true)
+                            .width_in_rems(3.5),
+                    ],
+                    window,
+                    cx,
+                );
+            });
+            if reader.diff_epoch != reader.diff_applied {
                 table.update(cx, |table, cx| {
                     table.set_rows(diff_rows(files, &reader.decisions), window, cx);
                 });
+                reader.diff_applied = reader.diff_epoch;
             }
-            reader.diff_applied = reader.diff_epoch;
         }
         div()
             .h(px(260.))
@@ -8913,9 +9949,16 @@ impl DesktopRoot {
         } else {
             self.text(TextKey::Model)
         };
+        let model_count = models.len();
+        let model_start = self
+            .model_picker_scroll
+            .start(model_count, MODEL_PICKER_VISIBLE_ROWS);
+        let visible_rows = model_count.min(MODEL_PICKER_VISIBLE_ROWS);
         let rows = models
             .iter()
             .enumerate()
+            .skip(model_start)
+            .take(MODEL_PICKER_VISIBLE_ROWS)
             .map(|(index, model)| {
                 let value = model.to_string();
                 let active = index == self.model_picker_cursor;
@@ -8926,24 +9969,40 @@ impl DesktopRoot {
                 .role(Role::RadioButton)
                 .tab_stop(true)
                 .aria_label(value.clone())
+                .aria_selected(chosen)
                 .selected(chosen)
                 .cursor_pointer()
                 .w_full()
                 .rounded_md()
-                .border_1()
-                .border_color(if active {
-                    cx.theme().primary
-                } else {
-                    cx.theme().border
-                })
                 .px_2()
                 // A fixed row height is what lets the keyboard keep its
                 // cursor on screen without measuring: the visible band is
                 // arithmetic.
-                .h(px(MODEL_PICKER_ROW_HEIGHT - 2.))
+                .h(px(MODEL_PICKER_ROW_HEIGHT))
                 .py_0()
-                .when(chosen, |row| row.bg(cx.theme().accent))
-                .child(div().w_full().min_w_0().truncate().child(value.clone()))
+                .bg(surface::selection_fill(chosen, active, false, cx))
+                .hover(|style| style.bg(surface::selection_hover_fill(chosen, false, cx)))
+                .child(
+                    h_flex()
+                        .w_full()
+                        .min_w_0()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_none()
+                                .size(px(14.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .when(chosen, |slot| {
+                                    slot.child(
+                                        div().size(px(5.)).rounded_full().bg(cx.theme().primary),
+                                    )
+                                }),
+                        )
+                        .child(div().min_w_0().flex_1().truncate().child(value.clone())),
+                )
                 .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                     this.model_picker_cursor = index;
                     this.activate_model_picker(window, cx);
@@ -8951,8 +10010,9 @@ impl DesktopRoot {
                 .into_any_element()
             })
             .collect::<Vec<_>>();
-        let list_height =
-            MODEL_PICKER_ROW_HEIGHT * rows.len().min(MODEL_PICKER_VISIBLE_ROWS) as f32;
+        let list_height = MODEL_PICKER_ROW_HEIGHT * visible_rows as f32;
+        let list_scroll = self.model_picker_scroll.clone();
+        let weak_for_list = cx.weak_entity();
         v_flex()
             .id("model-picker-overlay")
             .role(Role::Dialog)
@@ -8969,7 +10029,7 @@ impl DesktopRoot {
             .child(
                 h_flex()
                     .justify_between()
-                    .child(div().font_semibold().child(title))
+                    .child(div().text_size(px(18.)).font_semibold().child(title))
                     .child(
                         div()
                             .id("close-model-picker")
@@ -8987,7 +10047,7 @@ impl DesktopRoot {
                             .child(self.text(TextKey::Close)),
                     ),
             )
-            .child(Input::new(&self.model_search))
+            .child(surface::quiet_search_input(&self.model_search, window, cx))
             .when(rows.is_empty(), |dialog| {
                 dialog.child(
                     div()
@@ -9010,13 +10070,22 @@ impl DesktopRoot {
                         div()
                             .id("model-picker-scroll")
                             .size_full()
-                            .overflow_y_scroll()
-                            .track_scroll(&self.model_picker_scroll)
-                            .child(v_flex().w_full().gap(px(2.)).children(rows)),
-                    )
-                    .child(gpui_component::scroll::Scrollbar::vertical(
-                        &self.model_picker_scroll,
-                    )),
+                            .overflow_hidden()
+                            .on_scroll_wheel(move |event, _, cx| {
+                                let delta: f32 = event.delta.pixel_delta(px(20.)).y.into();
+                                if list_scroll.wheel(
+                                    delta,
+                                    model_count,
+                                    MODEL_PICKER_VISIBLE_ROWS,
+                                    MODEL_PICKER_ROW_HEIGHT,
+                                ) {
+                                    let weak = weak_for_list.clone();
+                                    let _ = weak.update(cx, |_, cx| cx.notify());
+                                }
+                                cx.stop_propagation();
+                            })
+                            .child(v_flex().w_full().gap_0().children(rows)),
+                    ),
             )
             .into_any_element()
     }
@@ -9041,9 +10110,16 @@ impl DesktopRoot {
                     .flatten()
             })
         });
+        let session_id = self.transcript_session_id();
+        let yielded_plans = transcript
+            .as_ref()
+            .map(yielded_plans_of)
+            .unwrap_or_default();
         let selections = transcript
             .as_ref()
-            .map(|transcript| self.sync_assistant_selections(transcript, &child_id, window, cx))
+            .map(|transcript| {
+                self.sync_assistant_selections(transcript, &child_id, &session_id, window, cx)
+            })
             .unwrap_or_default();
         let rows = transcript
             .as_ref()
@@ -9051,27 +10127,26 @@ impl DesktopRoot {
                 transcript
                     .iter()
                     .map(|row| {
-                        let selection = selections.get(&(child_id.clone(), row.id)).cloned();
+                        let selection = selections
+                            .get(&(child_id.clone(), session_id.clone(), row.id))
+                            .cloned();
                         transcript_row_element(
                             row,
                             &self.snapshot,
                             weak.clone(),
                             selection,
-                            true,
-                            None,
-                            false,
+                            RowViewState {
+                                read_only: true,
+                                gate_focus: None,
+                                thinking_open: false,
+                                plan_yields: yielded_plans.contains(&row.id),
+                            },
                         )
                     })
                     .collect::<Vec<_>>()
             })
-            .unwrap_or_else(|| {
-                vec![
-                    div()
-                        .text_sm()
-                        .child(self.text(TextKey::NoLiveTranscript))
-                        .into_any_element(),
-                ]
-            });
+            .unwrap_or_default();
+        let empty = transcript.is_none();
         let phase = run_phase_label(self.snapshot.runtime.current_phase, self.snapshot.language);
         v_flex()
             .id("subagent-overlay")
@@ -9180,7 +10255,22 @@ impl DesktopRoot {
                             ),
                     ),
             )
-            .child(
+            .child(if empty {
+                v_flex()
+                    .id("subagent-transcript")
+                    .flex_1()
+                    .min_h_0()
+                    .items_center()
+                    .justify_center()
+                    .p(px(20.))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(self.text(TextKey::NoLiveTranscript)),
+                    )
+                    .into_any_element()
+            } else {
                 v_flex()
                     .id("subagent-transcript")
                     .flex_1()
@@ -9188,8 +10278,9 @@ impl DesktopRoot {
                     .gap_2()
                     .p(px(20.))
                     .overflow_y_scroll()
-                    .children(rows),
-            )
+                    .children(rows)
+                    .into_any_element()
+            })
             .into_any_element()
     }
 
@@ -9217,13 +10308,15 @@ impl DesktopRoot {
                     .cursor_pointer()
                     .rounded_md()
                     .px_2()
-                    .py_2()
+                    .py(px(6.))
                     .hover(|style| style.bg(cx.theme().muted))
                     .child(
                         h_flex()
                             .justify_between()
                             .child(
                                 v_flex()
+                                    .min_w_0()
+                                    .flex_1()
                                     .gap_0p5()
                                     .child(div().text_sm().child(label))
                                     .child(
@@ -9234,18 +10327,21 @@ impl DesktopRoot {
                                     ),
                             )
                             .child(
-                                v_flex()
-                                    .items_end()
-                                    .gap_0p5()
+                                h_flex()
+                                    .flex_none()
+                                    .items_center()
+                                    .gap(px(8.))
                                     .child(
                                         div()
+                                            .max_w(px(140.))
+                                            .truncate()
                                             .text_xs()
                                             .font_semibold()
                                             .child(setting_display_value(setting, &self.snapshot)),
                                     )
                                     .child(
                                         div()
-                                            .text_xs()
+                                            .text_size(px(10.))
                                             .text_color(cx.theme().muted_foreground)
                                             .child(setting_mode_label(
                                                 setting,
@@ -9270,9 +10366,9 @@ impl DesktopRoot {
             .role(Role::Dialog)
             .aria_label(self.text(TextKey::Settings))
             .w(overlay_width(window, 680.))
-            .max_h(px(680.))
+            .max_h(px(620.))
             .p_4()
-            .gap_3()
+            .gap_2()
             .rounded_lg()
             .border_1()
             .border_color(cx.theme().border)
@@ -9281,7 +10377,12 @@ impl DesktopRoot {
             .child(
                 h_flex()
                     .justify_between()
-                    .child(div().font_semibold().child(self.text(TextKey::Settings)))
+                    .child(
+                        div()
+                            .text_size(px(20.))
+                            .font_semibold()
+                            .child(self.text(TextKey::Settings)),
+                    )
                     .child(
                         div()
                             .id("close-settings")
@@ -9325,7 +10426,7 @@ impl DesktopRoot {
         };
         let sources = group_hook_sources(&trusted, &pending);
         let pending_sources = sources.iter().filter(|(_, _, trusted)| !trusted).count();
-        let height = (f32::from(window.viewport_size().height) - 100.0).clamp(320.0, 620.0);
+        let height = (210.0 + sources.len() as f32 * 66.0).clamp(360.0, 620.0);
         let rows = sources
             .iter()
             .map(|(source, items, trusted)| {
@@ -10016,36 +11117,54 @@ impl DesktopRoot {
                 );
             }
             ExtensionsTab::Skills => {
-                let mut matched = self
-                    .snapshot
-                    .extensions
-                    .snapshot
-                    .skills
-                    .iter()
-                    .filter(|skill| matches(&skill.name))
-                    .collect::<Vec<_>>();
-                matched.sort_by_key(|skill| {
-                    -crate::ui::extensions::score_extension(
-                        &query,
-                        &[&skill.name, &skill.description],
-                    )
-                });
-                for skill in matched {
+                for skill in self.visible_skills() {
                     let name = skill.name.clone();
                     let enabled = skill.enabled;
+                    let row_selector = format!("skill-row-{name}");
+                    let row_name = name.clone();
+                    let row_key_name = name.clone();
+                    let toggle_name = name.clone();
+                    let toggle_key_name = name.clone();
+                    let toggle_selector = format!("skill-toggle-{name}");
                     rows.push(
                         h_flex()
+                            .id(SharedString::from(row_selector.clone()))
+                            .debug_selector(move || row_selector.clone())
+                            .role(Role::ListItem)
+                            .aria_label(name.clone())
+                            .focusable()
+                            .tab_stop(true)
+                            .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
+                            .cursor_pointer()
+                            .hover(|style| style.bg(cx.theme().muted))
                             .justify_between()
+                            .w_full()
                             .rounded_md()
                             .border_1()
                             .border_color(cx.theme().border)
                             .p_2()
+                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                this.insert_skill(&row_name, window, cx);
+                                cx.stop_propagation();
+                            }))
+                            .on_key_down(cx.listener(
+                                move |this, event: &KeyDownEvent, window, cx| {
+                                    if event.keystroke.key.as_str() != "enter" {
+                                        return;
+                                    }
+                                    this.insert_skill(&row_key_name, window, cx);
+                                    cx.stop_propagation();
+                                },
+                            ))
                             .child(
                                 v_flex()
+                                    .flex_1()
+                                    .min_w_0()
                                     .gap_0p5()
-                                    .child(div().text_sm().child(skill.name.clone()))
+                                    .child(div().truncate().text_sm().child(skill.name.clone()))
                                     .child(
                                         div()
+                                            .truncate()
                                             .text_xs()
                                             .text_color(cx.theme().muted_foreground)
                                             .child(skill.description.clone()),
@@ -10053,11 +11172,15 @@ impl DesktopRoot {
                             )
                             .child(
                                 div()
-                                    .id(SharedString::from(format!("skill-toggle-{name}")))
-                                    .role(Role::Button)
+                                    .id(SharedString::from(toggle_selector.clone()))
+                                    .debug_selector(move || toggle_selector.clone())
+                                    .role(Role::Switch)
+                                    .aria_toggled(enabled.into())
                                     .focusable()
                                     .tab_stop(true)
                                     .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
+                                    .flex_none()
+                                    .pl_2()
                                     .aria_label(if enabled {
                                         self.text(TextKey::DisableSkill)
                                     } else {
@@ -10070,12 +11193,21 @@ impl DesktopRoot {
                                     } else {
                                         self.text(TextKey::Enable)
                                     })
-                                    .on_click(cx.listener(move |this, _: &ClickEvent, _, _| {
-                                        this.dispatch(DesktopIntent::SetSkillEnabled {
-                                            name: name.clone(),
-                                            enabled: !enabled,
-                                        });
-                                    })),
+                                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                        this.toggle_skill(&toggle_name);
+                                        cx.stop_propagation();
+                                    }))
+                                    .on_key_down(cx.listener(
+                                        move |this, event: &KeyDownEvent, _, cx| {
+                                            if matches!(
+                                                event.keystroke.key.as_str(),
+                                                "enter" | "space"
+                                            ) {
+                                                this.toggle_skill(&toggle_key_name);
+                                                cx.stop_propagation();
+                                            }
+                                        },
+                                    )),
                             )
                             .into_any_element(),
                     );
@@ -10350,7 +11482,12 @@ impl DesktopRoot {
             }
         }
 
-        let manager_height = (f32::from(window.viewport_size().height) - 100.0).clamp(320.0, 620.0);
+        let visible_rows = if manage {
+            self.extensions_table.read(cx).row_count()
+        } else {
+            0
+        };
+        let manager_height = (210.0 + visible_rows as f32 * 40.0).clamp(360.0, 620.0);
         v_flex()
             .id("extensions-overlay")
             .debug_selector(|| "extensions-overlay".into())
@@ -10443,11 +11580,19 @@ impl DesktopRoot {
                     .items_center()
                     .gap(px(10.))
                     .when(self.extension_manage, |row| {
-                        row.child(div().w(px(360.)).child(Input::new(&self.extension_search)))
-                            .child(div().flex_1())
+                        row.child(div().w(px(360.)).child(surface::quiet_search_input(
+                            &self.extension_search,
+                            window,
+                            cx,
+                        )))
+                        .child(div().flex_1())
                     })
                     .when(!self.extension_manage, |row| {
-                        row.child(div().flex_1().child(Input::new(&self.extension_search)))
+                        row.child(div().flex_1().child(surface::quiet_search_input(
+                            &self.extension_search,
+                            window,
+                            cx,
+                        )))
                     }),
             )
             .child(if self.extension_manage {
@@ -10461,6 +11606,7 @@ impl DesktopRoot {
                 } else {
                     div()
                         .id("extensions-empty")
+                        .debug_selector(|| "extensions-empty".into())
                         .role(Role::Status)
                         .min_h(px(120.))
                         .items_center()
@@ -10482,6 +11628,7 @@ impl DesktopRoot {
             } else if rows.is_empty() {
                 div()
                     .id("extensions-empty")
+                    .debug_selector(|| "extensions-empty".into())
                     .role(Role::Status)
                     .min_h(px(96.))
                     .flex()
@@ -10513,7 +11660,30 @@ impl DesktopRoot {
                             .font_family("Lilex")
                             .text_color(cx.theme().muted_foreground)
                             .child(if manage {
-                                self.text(TextKey::ChangesApply).to_string()
+                                if tab == ExtensionsTab::Skills {
+                                    match self.snapshot.language {
+                                        tact_catalog::CatalogLocale::En => {
+                                            "Enter or Space toggles · hidden skills stay runnable"
+                                        }
+                                        tact_catalog::CatalogLocale::Zh => {
+                                            "Enter 或 Space 切换 · 隐藏后仍可运行"
+                                        }
+                                    }
+                                    .to_string()
+                                } else {
+                                    self.text(TextKey::ChangesApply).to_string()
+                                }
+                            } else if tab == ExtensionsTab::Skills {
+                                match self.snapshot.language {
+                                    tact_catalog::CatalogLocale::En => {
+                                        format!("{enabled_count} enabled · Type to filter, Enter inserts the first match")
+                                    }
+                                    tact_catalog::CatalogLocale::Zh => {
+                                        format!(
+                                            "{enabled_count} 已启用 · 输入筛选，Enter 插入第一个匹配项"
+                                        )
+                                    }
+                                }
                             } else {
                                 format!(
                                     "{enabled_count} {}",
@@ -10597,9 +11767,155 @@ impl DesktopRoot {
             &manager_view,
         );
         let visible_count = filtered.len();
+        let mut project_counts: HashMap<ProjectId, usize> = HashMap::new();
+        for session in &filtered {
+            *project_counts
+                .entry(session.project_id.clone())
+                .or_default() += 1;
+        }
+        let query_active = !self.snapshot.sessions.query.trim().is_empty();
+        let mut previous_project = None;
         let rows = filtered
             .into_iter()
-            .map(|session| {
+            .flat_map(|session| {
+                let mut output = Vec::new();
+                let collapsed = !query_active
+                    && self
+                        .collapsed_session_projects
+                        .contains(&session.project_id);
+                if previous_project.as_ref() != Some(&session.project_id) {
+                    let project_name = self
+                        .snapshot
+                        .projects
+                        .iter()
+                        .find(|project| project.id.as_ref() == Some(&session.project_id))
+                        .map(project_identity_label)
+                        .or_else(|| {
+                            (self.snapshot.project.id.as_ref() == Some(&session.project_id))
+                                .then(|| project_identity_label(&self.snapshot.project))
+                        })
+                        .or_else(|| {
+                            session
+                                .root_dir
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .map(str::to_owned)
+                        })
+                        .unwrap_or_else(|| "—".into());
+                    let count = project_counts
+                        .get(&session.project_id)
+                        .copied()
+                        .unwrap_or_default();
+                    let group_label = match self.snapshot.language {
+                        tact_catalog::CatalogLocale::En => {
+                            format!("{project_name}, {count} sessions")
+                        }
+                        tact_catalog::CatalogLocale::Zh => {
+                            format!("{project_name}，{count} 个会话")
+                        }
+                    };
+                    let initials = project_initials(&project_name);
+                    let toggle_project = session.project_id.clone();
+                    let toggle_key_project = toggle_project.clone();
+                    output.push(
+                        h_flex()
+                            .id(SharedString::from(format!(
+                                "manager-project-group-{}",
+                                session.project_id.0
+                            )))
+                            .debug_selector({
+                                let id = session.project_id.0.clone();
+                                move || format!("manager-project-group-{id}")
+                            })
+                            .role(Role::Button)
+                            .aria_label(group_label)
+                            .aria_expanded(!collapsed)
+                            .focusable()
+                            .tab_stop(true)
+                            .w_full()
+                            .items_center()
+                            .gap(px(7.))
+                            .rounded(px(6.))
+                            .px(px(12.))
+                            .pt(px(12.))
+                            .pb(px(4.))
+                            .cursor_pointer()
+                            .hover(|style| style.bg(cx.theme().muted))
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                this.toggle_session_project(toggle_project.clone());
+                                cx.notify();
+                            }))
+                            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+                                if event.keystroke.key == "enter" || event.keystroke.key == "space"
+                                {
+                                    this.toggle_session_project(toggle_key_project.clone());
+                                    cx.stop_propagation();
+                                    cx.notify();
+                                }
+                            }))
+                            .child(
+                                div()
+                                    .debug_selector({
+                                        let id = session.project_id.0.clone();
+                                        move || format!("manager-project-group-chevron-{id}")
+                                    })
+                                    .flex_none()
+                                    .child(
+                                        Icon::new(if collapsed {
+                                            IconName::ChevronRight
+                                        } else {
+                                            IconName::ChevronDown
+                                        })
+                                        .size(px(12.))
+                                        .text_color(cx.theme().muted_foreground),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .debug_selector({
+                                        let id = session.project_id.0.clone();
+                                        move || format!("manager-project-group-leading-{id}")
+                                    })
+                                    .flex_none()
+                                    .size(px(20.))
+                                    .rounded(px(5.))
+                                    .bg(cx.theme().secondary)
+                                    .font_family(cx.theme().mono_font_family.clone())
+                                    .text_size(px(8.))
+                                    .font_semibold()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(initials),
+                            )
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .flex_1()
+                                    .truncate()
+                                    .text_size(px(11.))
+                                    .font_semibold()
+                                    .child(project_name),
+                            )
+                            .child(
+                                div()
+                                    .debug_selector({
+                                        let id = session.project_id.0.clone();
+                                        move || format!("manager-project-group-count-{id}")
+                                    })
+                                    .flex_none()
+                                    .font_family(cx.theme().mono_font_family.clone())
+                                    .text_size(px(9.))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(count.to_string()),
+                            )
+                            .into_any_element(),
+                    );
+                    previous_project = Some(session.project_id.clone());
+                }
+                if collapsed {
+                    return output;
+                }
                 let session_id = SessionId(session.id.clone());
                 let rename_id = session_id.clone();
                 let archive_id = session_id.clone();
@@ -10611,9 +11927,21 @@ impl DesktopRoot {
                 let resume_id = session_id.clone();
                 let short_id = session.id.rsplit('-').next().unwrap_or(&session.id);
                 let short_id = &short_id[..short_id.len().min(4)];
+                let branch = self
+                    .snapshot
+                    .projects
+                    .iter()
+                    .find(|project| project.id.as_ref() == Some(&session.project_id))
+                    .and_then(|project| project.branch.as_deref())
+                    .or_else(|| {
+                        (self.snapshot.project.id.as_ref() == Some(&session.project_id))
+                            .then_some(self.snapshot.project.branch.as_deref())
+                            .flatten()
+                    })
+                    .unwrap_or("—");
                 let subtitle = format!(
                     "{} · {} {}",
-                    self.snapshot.project.branch.as_deref().unwrap_or("—"),
+                    branch,
                     self.text(TextKey::SessionShort),
                     short_id
                 );
@@ -10672,6 +12000,10 @@ impl DesktopRoot {
                     "archive-session-{}",
                     session.id
                 )))
+                .debug_selector({
+                    let selector = format!("archive-session-{}", session.id);
+                    move || selector.clone()
+                })
                 .role(Role::Button)
                 .tab_stop(true)
                 .aria_label(if archived {
@@ -10693,105 +12025,135 @@ impl DesktopRoot {
                         archived: !archived,
                     });
                 }));
-                h_flex()
-                    .id(SharedString::from(format!(
-                        "manager-session-{}",
-                        session.id
-                    )))
-                    .debug_selector({
-                        let selector = format!("manager-session-{}", session.id);
-                        move || selector.clone()
-                    })
-                    .w_full()
-                    .min_w_0()
-                    .items_center()
-                    .gap(px(10.))
-                    .h(px(44.))
-                    .px(px(12.))
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .when(current, |row| row.bg(cx.theme().accent))
-                    .child(div().flex_none().size(px(6.)).rounded_full().bg(dot))
-                    .child(
-                        v_flex()
-                            .id(SharedString::from(format!("resume-session-{}", session.id)))
-                            .role(Role::Button)
-                            .focusable()
-                            .tab_stop(!locked)
-                            .aria_label(row_label.clone())
-                            .flex_1()
-                            .min_w_0()
-                            .gap(px(1.))
-                            .when(!locked && !switching, |area| {
-                                area.cursor_pointer().on_click(cx.listener({
-                                    let resume_id = resume_id.clone();
-                                    move |this, _: &ClickEvent, window, cx| {
-                                        this.dispatch(DesktopIntent::ResumeSession {
-                                            session_id: resume_id.clone(),
-                                        });
-                                        this.close_overlay();
-                                        this.restore_focus(window, cx);
-                                        cx.notify();
-                                    }
-                                }))
-                            })
-                            .child(
-                                h_flex()
-                                    .items_center()
-                                    .gap(px(6.))
-                                    .child(
-                                        div()
-                                            .min_w_0()
-                                            .truncate()
-                                            .text_size(px(13.))
-                                            .font_semibold()
-                                            .child(title.clone()),
-                                    )
-                                    .when(archived, |row| {
-                                        row.child(
+                output.push(
+                    div()
+                        .w_full()
+                        .pl(px(14.))
+                        .child(
+                            div()
+                                .w_full()
+                                .pl(px(10.))
+                                .border_l(px(1.))
+                                .border_color(cx.theme().border)
+                                .child(
+                                    h_flex()
+                                        .id(SharedString::from(format!(
+                                            "manager-session-{}",
+                                            session.id
+                                        )))
+                                        .debug_selector({
+                                            let selector =
+                                                format!("manager-session-{}", session.id);
+                                            move || selector.clone()
+                                        })
+                                        .w_full()
+                                        .min_w_0()
+                                        .items_center()
+                                        .gap(px(10.))
+                                        .h(px(44.))
+                                        .px(px(12.))
+                                        .border_b_1()
+                                        .border_color(cx.theme().border)
+                                        .when(current, |row| row.bg(cx.theme().accent))
+                                        .child(
+                                            div().flex_none().size(px(6.)).rounded_full().bg(dot),
+                                        )
+                                        .child(
+                                            v_flex()
+                                                .id(SharedString::from(format!(
+                                                    "resume-session-{}",
+                                                    session.id
+                                                )))
+                                                .role(Role::Button)
+                                                .focusable()
+                                                .tab_stop(!locked)
+                                                .aria_label(row_label.clone())
+                                                .flex_1()
+                                                .min_w_0()
+                                                .gap(px(1.))
+                                                .when(!locked && !switching, |area| {
+                                                    area.cursor_pointer().on_click(cx.listener({
+                                                        let resume_id = resume_id.clone();
+                                                        move |this, _: &ClickEvent, window, cx| {
+                                                            this.dispatch(
+                                                                DesktopIntent::ResumeSession {
+                                                                    session_id: resume_id.clone(),
+                                                                },
+                                                            );
+                                                            this.close_overlay();
+                                                            this.restore_focus(window, cx);
+                                                            cx.notify();
+                                                        }
+                                                    }))
+                                                })
+                                                .child(
+                                                    h_flex()
+                                                        .items_center()
+                                                        .gap(px(6.))
+                                                        .child(
+                                                            div()
+                                                                .min_w_0()
+                                                                .truncate()
+                                                                .text_size(px(13.))
+                                                                .font_semibold()
+                                                                .child(title.clone()),
+                                                        )
+                                                        .when(archived, |row| {
+                                                            row.child(
+                                                                div()
+                                                                    .flex_none()
+                                                                    .rounded_full()
+                                                                    .bg(cx.theme().muted)
+                                                                    .px(px(6.))
+                                                                    .py(px(1.))
+                                                                    .text_size(px(9.))
+                                                                    .text_color(
+                                                                        cx.theme().muted_foreground,
+                                                                    )
+                                                                    .child(
+                                                                        self.text(
+                                                                            TextKey::Archived,
+                                                                        ),
+                                                                    ),
+                                                            )
+                                                        }),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .truncate()
+                                                        .text_size(px(10.))
+                                                        .font_family("Lilex")
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child(subtitle.clone()),
+                                                ),
+                                        )
+                                        .child(
                                             div()
                                                 .flex_none()
-                                                .rounded_full()
-                                                .bg(cx.theme().muted)
-                                                .px(px(6.))
-                                                .py(px(1.))
-                                                .text_size(px(9.))
+                                                .w(px(72.))
+                                                .text_right()
+                                                .text_size(px(10.))
+                                                .font_family("Lilex")
                                                 .text_color(cx.theme().muted_foreground)
-                                                .child(self.text(TextKey::Archived)),
+                                                .child(when.clone()),
                                         )
-                                    }),
-                            )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(px(10.))
-                                    .font_family("Lilex")
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(subtitle.clone()),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .w(px(72.))
-                            .text_right()
-                            .text_size(px(10.))
-                            .font_family("Lilex")
-                            .text_color(cx.theme().muted_foreground)
-                            .child(when.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .w(px(56.))
-                            .text_right()
-                            .text_size(px(10.))
-                            .font_family("Lilex")
-                            .text_color(cx.theme().muted_foreground)
-                            .child(messages.clone()),
-                    )
-                    .child(rename_button)
-                    .child(archive_button)
+                                        .child(
+                                            div()
+                                                .flex_none()
+                                                .w(px(56.))
+                                                .text_right()
+                                                .text_size(px(10.))
+                                                .font_family("Lilex")
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(messages.clone()),
+                                        )
+                                        .child(rename_button)
+                                        .child(archive_button),
+                                ),
+                        )
+                        .into_any_element(),
+                );
+                output
             })
             .collect::<Vec<_>>();
         let all_projects_label = match self.snapshot.language {
@@ -10799,7 +12161,7 @@ impl DesktopRoot {
             tact_catalog::CatalogLocale::Zh => "全部项目",
         };
         let all_projects_selected = self.session_project_filter.is_none();
-        let mut project_rows = vec![
+        let mut project_rows: Vec<AnyElement> = vec![
             gpui_base::Button::new("manager-project-all")
                 .selected(all_projects_selected)
                 .aria_label(all_projects_label)
@@ -10857,22 +12219,23 @@ impl DesktopRoot {
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.session_project_filter = None;
                     cx.notify();
-                })),
+                }))
+                .into_any_element(),
         ];
         project_rows.extend(self.snapshot.projects.iter().map(|project| {
             let selected = project.id == self.session_project_filter;
-            let root = project.root.clone();
             let project_id = project.id.clone();
-            // Only the active project's sessions are loaded; showing a count
-            // for any other project would render a false zero.
-            let count = project.id.as_ref().and_then(|id| {
-                crate::ui::session_manager::project_session_count(
-                    id,
-                    self.snapshot.project.id.as_ref(),
-                    &self.snapshot.sessions.items,
-                )
+            let remove_project_id = project_id.clone().expect("registered project has an id");
+            let project_key = project
+                .id
+                .as_ref()
+                .map(|id| id.0.clone())
+                .unwrap_or_else(|| "none".into());
+            let count = project.id.as_ref().filter(|_| project.available).map(|id| {
+                crate::ui::session_manager::project_session_count(id, &self.snapshot.sessions.items)
             });
-            let initials = initials_from_name(&project.display_name);
+            let project_label = project_identity_label(project);
+            let initials = project_initials(&project_label);
             let detail = match (self.snapshot.language, count) {
                 (tact_catalog::CatalogLocale::Zh, Some(count)) => {
                     format!("{count} 个会话")
@@ -10883,17 +12246,18 @@ impl DesktopRoot {
                 }
                 (tact_catalog::CatalogLocale::En, None) => "No sessions loaded".to_string(),
             };
-            gpui_base::Button::new(SharedString::from(format!(
+            let project_button = gpui_base::Button::new(SharedString::from(format!(
                 "manager-project-{}",
-                project
-                    .id
-                    .as_ref()
-                    .map(|id| id.0.as_str())
-                    .unwrap_or("none")
+                project_key
             )))
+            .debug_selector({
+                let project_key = project_key.clone();
+                move || format!("manager-project-{project_key}")
+            })
             .selected(selected)
-            .aria_label(project.display_name.to_string())
-            .w_full()
+            .aria_label(project_label.clone())
+            .flex_1()
+            .min_w_0()
             .justify_start()
             .rounded(px(8.))
             .bg(if selected {
@@ -10931,7 +12295,7 @@ impl DesktopRoot {
                                     .truncate()
                                     .text_size(px(12.))
                                     .font_semibold()
-                                    .child(project.display_name.to_string()),
+                                    .child(project_label.clone()),
                             )
                             .child(
                                 div()
@@ -10952,16 +12316,45 @@ impl DesktopRoot {
                         )
                     }),
             )
-            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 this.session_project_filter = project_id.clone();
-                if this.snapshot.project.id != project_id
-                    && let Some(root) = root.clone()
-                {
-                    this.dispatch(DesktopIntent::OpenProject { root });
-                    this.close_overlay();
-                    this.restore_focus(window, cx);
-                }
-            }))
+                cx.notify();
+            }));
+            h_flex()
+                .w_full()
+                .items_center()
+                .gap(px(2.))
+                .child(project_button)
+                .child(
+                    div()
+                        .id(SharedString::from(format!(
+                            "manager-remove-project-{project_key}"
+                        )))
+                        .debug_selector({
+                            let project_key = project_key.clone();
+                            move || format!("manager-remove-project-{project_key}")
+                        })
+                        .role(Role::Button)
+                        .focusable()
+                        .tab_stop(true)
+                        .aria_label(self.text(TextKey::RemoveProject))
+                        .cursor_pointer()
+                        .size(px(28.))
+                        .rounded(px(6.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .hover(|style| style.bg(cx.theme().muted))
+                        .child(
+                            Icon::new(IconName::Close)
+                                .xsmall()
+                                .text_color(cx.theme().muted_foreground),
+                        )
+                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            this.open_remove_project(remove_project_id.clone(), window, cx);
+                        })),
+                )
+                .into_any_element()
         }));
         project_rows.push(
             gpui_base::Button::new("manager-add-project")
@@ -11016,7 +12409,8 @@ impl DesktopRoot {
                     this.close_overlay();
                     this.restore_focus(window, cx);
                     this.open_project_picker(cx);
-                })),
+                }))
+                .into_any_element(),
         );
 
         let height = (f32::from(window.viewport_size().height) - 100.0).clamp(320.0, 720.0);
@@ -11129,12 +12523,13 @@ impl DesktopRoot {
                                     .w_full()
                                     .items_center()
                                     .gap(px(10.))
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .child(Input::new(&self.session_search)),
-                                    )
+                                    .child(div().flex_1().min_w_0().child(
+                                        surface::quiet_search_input(
+                                            &self.session_search,
+                                            window,
+                                            cx,
+                                        ),
+                                    ))
                                     .child(
                                         h_flex()
                                             .flex_none()
@@ -11169,7 +12564,7 @@ impl DesktopRoot {
                                 let group_label = if self.session_project_filter.is_none() {
                                     all_projects_label.to_string()
                                 } else {
-                                    self.snapshot.project.display_name.to_string()
+                                    project_identity_label(&self.snapshot.project)
                                 };
                                 h_flex()
                                     .w_full()
@@ -11285,6 +12680,7 @@ impl DesktopRoot {
 
 impl Render for DesktopRoot {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ensure_run_clock_timer(cx);
         if self.focus_restore_pending {
             self.focus_restore_pending = false;
             self.restore_focus(window, cx);
@@ -11335,6 +12731,11 @@ impl Render for DesktopRoot {
         if self.overlay_focus_pending && self.overlay.is_some() {
             self.overlay_focus_pending = false;
             if matches!(self.overlay, Some(Overlay::Extensions(_))) {
+                if self.reset_extension_search_on_open {
+                    self.extension_search
+                        .update(cx, |input, cx| input.set_value(String::new(), window, cx));
+                    self.reset_extension_search_on_open = false;
+                }
                 self.extension_search
                     .update(cx, |input, cx| input.focus(window, cx));
             } else if matches!(self.overlay, Some(Overlay::ModelPicker(_))) {
@@ -11371,8 +12772,6 @@ impl Render for DesktopRoot {
         ) && f32::from(window.viewport_size().height) >= 500.;
         let popover_overlay =
             matches!(self.overlay, Some(Overlay::Extensions(_))) && !self.extension_manage;
-        let rail_edge = f32::from(crate::ui::shell::geometry(self.snapshot.appearance).rail_width)
-            * self.snapshot.text_scale;
         // Overlays arrive with one restrained fade and rise rather than
         // appearing between two frames. Reduced motion resolves to the settled
         // frame, as every other transition here does.
@@ -11380,18 +12779,23 @@ impl Render for DesktopRoot {
         let overlay_direct_motion = crate::ui::shell::motion_policy(self.snapshot.motion)
             .direct_state_changes
             || cx.reduce_motion();
-        let mut left_panel = self
-            .left_visible
-            .then(|| self.render_session_rail(window, cx).into_any_element());
+        let scale = self.snapshot.text_scale;
+        let rail_width = px(self.rail_width * scale);
+        let inspector_width = px(self.inspector_width * scale);
+        let mut left_panel = self.left_visible.then(|| {
+            self.render_session_rail(rail_width, window, cx)
+                .into_any_element()
+        });
         let inline_left = if shell_layout.rail_inline {
             left_panel.take()
         } else {
             None
         };
         let scrim_left = (!shell_layout.rail_inline).then_some(left_panel).flatten();
-        let mut right_panel = self
-            .right_visible
-            .then(|| self.render_inspector(cx).into_any_element());
+        let mut right_panel = self.right_visible.then(|| {
+            self.render_inspector(inspector_width, cx)
+                .into_any_element()
+        });
         let inline_right = if shell_layout.inspector_inline {
             right_panel.take()
         } else {
@@ -11557,55 +12961,99 @@ impl Render for DesktopRoot {
             .on_action(cx.listener(|this, _: &keymap::Dismiss, window, cx| {
                 this.dismiss_topmost(window, cx);
             }))
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                let Some(drag) = this.divider_drag else {
+                    return;
+                };
+                if event.pressed_button != Some(MouseButton::Left) {
+                    this.divider_drag = None;
+                    cx.notify();
+                    return;
+                }
+                let scale = this.snapshot.text_scale;
+                let delta = (f32::from(event.position.x) - drag.pointer_x) / scale;
+                match drag.side {
+                    DividerSide::Rail => {
+                        this.rail_width = (drag.width + delta).clamp(
+                            crate::ui::layout::RAIL_MIN_WIDTH,
+                            crate::ui::layout::RAIL_MAX_WIDTH,
+                        );
+                    }
+                    DividerSide::Inspector => {
+                        this.inspector_width = (drag.width - delta).clamp(
+                            crate::ui::layout::INSPECTOR_MIN_WIDTH,
+                            crate::ui::layout::INSPECTOR_MAX_WIDTH,
+                        );
+                    }
+                }
+                cx.notify();
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    if this.divider_drag.take().is_some() {
+                        cx.notify();
+                    }
+                }),
+            )
             .child(self.render_title_bar(cx))
             .child(
-                h_flex()
+                div()
                     .flex_1()
                     .min_h_0()
-                    .when_some(inline_left, |row, left| row.child(left))
+                    .relative()
                     .child(
-                        v_flex()
-                            .id("run-room")
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .child(self.render_run_tabs(cx))
+                        h_flex()
+                            .size_full()
+                            .when_some(inline_left, |row, left| row.child(left))
+                            .when(shell_layout.rail_inline, |row| {
+                                row.child(self.render_divider(DividerSide::Rail, cx))
+                            })
                             .child(
-                                h_flex()
+                                v_flex()
+                                    .id("run-room")
+                                    .debug_selector(|| "run-room".into())
                                     .flex_1()
-                                    .min_h_0()
+                                    .min_w_0()
+                                    .h_full()
+                                    .child(self.render_run_tabs(cx))
                                     .child(
-                                        v_flex()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .h_full()
-                                            .child(div().flex_1().min_h_0().relative().child(
-                                                match self.run_tab {
-                                                    RunTab::Chat => {
-                                                        self.render_transcript(window, cx)
-                                                    }
-                                                    RunTab::Trajectory => {
-                                                        self.render_trajectory_page(cx)
-                                                    }
-                                                },
-                                            ))
-                                            .when(
-                                                self.snapshot.failure.is_some()
-                                                    && self.run_tab == RunTab::Chat,
-                                                |column| column.child(self.render_failure(cx)),
-                                            )
-                                            // The ledger is evidence, not a place to
-                                            // continue the conversation: the sticky
-                                            // task panel and composer belong to the
-                                            // Chat page only.
-                                            .when(self.run_tab == RunTab::Chat, |column| {
-                                                column
-                                                    .child(self.render_sticky(cx))
-                                                    .child(self.render_composer(window, cx))
-                                            }),
-                                    )
-                                    .when_some(inline_right, |row, right| row.child(right)),
-                            ),
+                                        h_flex().flex_1().min_h_0().child(
+                                            v_flex()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .h_full()
+                                                .child(div().flex_1().min_h_0().relative().child(
+                                                    match self.run_tab {
+                                                        RunTab::Chat => {
+                                                            self.render_transcript(window, cx)
+                                                        }
+                                                        RunTab::Trajectory => {
+                                                            self.render_trajectory_page(window, cx)
+                                                        }
+                                                    },
+                                                ))
+                                                .when(
+                                                    self.snapshot.failure.is_some()
+                                                        && self.run_tab == RunTab::Chat,
+                                                    |column| column.child(self.render_failure(cx)),
+                                                )
+                                                // The ledger is evidence, not a place to
+                                                // continue the conversation: the sticky
+                                                // task panel and composer belong to the
+                                                // Chat page only.
+                                                .when(self.run_tab == RunTab::Chat, |column| {
+                                                    column
+                                                        .child(self.render_sticky(cx))
+                                                        .child(self.render_composer(window, cx))
+                                                }),
+                                        ),
+                                    ),
+                            )
+                            .when(shell_layout.inspector_inline, |row| {
+                                row.child(self.render_divider(DividerSide::Inspector, cx))
+                            })
+                            .when_some(inline_right, |row, right| row.child(right)),
                     )
                     .when_some(scrim_right, |row, right| {
                         row.child(
@@ -11623,12 +13071,11 @@ impl Render for DesktopRoot {
                                 .child(
                                     v_flex()
                                         .id("inspector-scrim")
-                                        .w(px(crate::ui::layout::INSPECTOR_WIDTH
-                                            * self.snapshot.text_scale))
+                                        .w(inspector_width)
                                         .h_full()
                                         .border_l_1()
                                         .border_color(cx.theme().border)
-                                        .bg(cx.theme().sidebar)
+                                        .bg(cx.theme().background)
                                         .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
                                             cx.stop_propagation()
                                         })
@@ -11651,12 +13098,11 @@ impl Render for DesktopRoot {
                                 .child(
                                     v_flex()
                                         .id("rail-scrim")
-                                        .w(px(crate::ui::layout::RAIL_WIDTH
-                                            * self.snapshot.text_scale))
+                                        .w(rail_width)
                                         .h_full()
                                         .border_r_1()
                                         .border_color(cx.theme().border)
-                                        .bg(cx.theme().sidebar)
+                                        .bg(cx.theme().background)
                                         .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
                                             cx.stop_propagation()
                                         })
@@ -11669,6 +13115,7 @@ impl Render for DesktopRoot {
                 root.child(
                     h_flex()
                         .id("desktop-toast")
+                        .debug_selector(|| "desktop-toast".into())
                         .role(Role::Status)
                         .aria_label(toast.title.clone())
                         .justify_between()
@@ -11739,11 +13186,7 @@ impl Render for DesktopRoot {
                         .inset_0()
                         .when(drawer_overlay, |scrim| scrim.items_end().justify_end())
                         .when(popover_overlay, |scrim| {
-                            scrim
-                                .items_start()
-                                .justify_end()
-                                .pl(px(rail_edge))
-                                .pb(px(12.))
+                            scrim.items_center().justify_center()
                         })
                         .when(
                             !drawer_overlay && !popover_overlay && top_biased_overlay,
@@ -11930,6 +13373,7 @@ fn setting_display_value(id: SettingId, snapshot: &DesktopSnapshot) -> String {
             Appearance::Light => "light".into(),
             Appearance::Dark => "dark".into(),
         },
+        SettingId::ThemeFamily => snapshot.theme.label().into(),
         SettingId::Language => match snapshot.language {
             tact_catalog::CatalogLocale::En => "English".into(),
             tact_catalog::CatalogLocale::Zh => "中文".into(),
@@ -12019,42 +13463,12 @@ fn project_initials(project: &str) -> String {
     letters.to_uppercase()
 }
 
-fn extension_rail_row(
-    id: &'static str,
-    icon: IconName,
-    label: &'static str,
-    count: Option<String>,
-    cx: &mut Context<DesktopRoot>,
-) -> gpui::Stateful<gpui::Div> {
-    h_flex()
-        .id(id)
-        .role(Role::Button)
-        .focusable()
-        .tab_stop(true)
-        .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
-        .aria_label(label)
-        .cursor_pointer()
-        .items_center()
-        .gap(px(9.))
-        .rounded(px(6.))
-        .h(px(29.))
-        .px(px(10.))
-        .hover(|style| style.bg(cx.theme().muted))
-        .child(
-            Icon::new(icon)
-                .size(px(14.))
-                .text_color(cx.theme().muted_foreground),
-        )
-        .child(div().flex_1().text_xs().child(label))
-        .when_some(count, |row, count| {
-            row.child(
-                div()
-                    .text_size(px(10.))
-                    .font_family("Lilex")
-                    .text_color(cx.theme().muted_foreground)
-                    .child(count),
-            )
-        })
+fn project_identity_label(project: &tact_desktop_core::ProjectView) -> String {
+    project
+        .repository
+        .as_ref()
+        .map(|repository| repository.to_string())
+        .unwrap_or_else(|| project.display_name.to_string())
 }
 
 fn action_button(
@@ -12266,87 +13680,6 @@ fn metric(label: &'static str, value: &str, cx: &mut Context<DesktopRoot>) -> im
         )
 }
 
-fn run_phase_label(
-    phase: tact_desktop_core::RunPhase,
-    locale: tact_catalog::CatalogLocale,
-) -> &'static str {
-    use tact_desktop_core::RunPhase as P;
-    match phase {
-        P::Idle => i18n::text(locale, TextKey::Ready),
-        P::Waiting => i18n::text(locale, TextKey::Queue),
-        P::Thinking => i18n::text(locale, TextKey::Thinking),
-        P::Streaming => i18n::text(locale, TextKey::Running),
-        P::RunningTools => i18n::text(locale, TextKey::Tool),
-        P::WaitingForGate => i18n::text(locale, TextKey::PermissionOrQuestionGate),
-        P::Cancelling => i18n::text(locale, TextKey::Stopping),
-        P::Complete => i18n::text(locale, TextKey::Completed),
-        P::Failed => i18n::text(locale, TextKey::Failed),
-    }
-}
-
-fn goal_status_label(
-    status: tact_desktop_core::GoalStatusSnapshot,
-    locale: tact_catalog::CatalogLocale,
-) -> &'static str {
-    use tact_desktop_core::GoalStatusSnapshot as S;
-    match status {
-        S::Draft => i18n::text(locale, TextKey::Queue),
-        S::Queued => i18n::text(locale, TextKey::Queue),
-        S::Running => i18n::text(locale, TextKey::Running),
-        S::Paused => i18n::text(locale, TextKey::Pause),
-        S::WaitingUser | S::WaitingPermission => {
-            i18n::text(locale, TextKey::PermissionOrQuestionGate)
-        }
-        S::Verifying => i18n::text(locale, TextKey::Review),
-        S::Succeeded => i18n::text(locale, TextKey::Completed),
-        S::Failed => i18n::text(locale, TextKey::Failed),
-        S::Cancelled => i18n::text(locale, TextKey::Cancelled),
-    }
-}
-
-fn goal_phase_label(
-    phase: tact_desktop_core::GoalPhaseSnapshot,
-    locale: tact_catalog::CatalogLocale,
-) -> &'static str {
-    match phase {
-        tact_desktop_core::GoalPhaseSnapshot::Planning => i18n::text(locale, TextKey::Thinking),
-        tact_desktop_core::GoalPhaseSnapshot::Execution => i18n::text(locale, TextKey::Running),
-        tact_desktop_core::GoalPhaseSnapshot::Verification => i18n::text(locale, TextKey::Review),
-    }
-}
-
-fn subagent_status_label(
-    status: tact_desktop_core::SubagentStatusSnapshot,
-    locale: tact_catalog::CatalogLocale,
-) -> &'static str {
-    match status {
-        tact_desktop_core::SubagentStatusSnapshot::Running => i18n::text(locale, TextKey::Running),
-        tact_desktop_core::SubagentStatusSnapshot::Completed => {
-            i18n::text(locale, TextKey::Completed)
-        }
-        tact_desktop_core::SubagentStatusSnapshot::Failed => i18n::text(locale, TextKey::Failed),
-        tact_desktop_core::SubagentStatusSnapshot::Cancelled => {
-            i18n::text(locale, TextKey::Cancelled)
-        }
-    }
-}
-
-fn localized_wait_reason(reason: &str, locale: tact_catalog::CatalogLocale) -> String {
-    match (reason, locale) {
-        ("paused by user", tact_catalog::CatalogLocale::Zh) => "用户已暂停".into(),
-        ("waiting for user", tact_catalog::CatalogLocale::Zh) => "等待用户".into(),
-        ("waiting for permission", tact_catalog::CatalogLocale::Zh) => "等待权限确认".into(),
-        ("run interrupted: lease holder is gone", tact_catalog::CatalogLocale::Zh) => {
-            "运行中断：租约持有者已消失".into()
-        }
-        ("lease holder is gone", tact_catalog::CatalogLocale::Zh) => "租约持有者已消失".into(),
-        ("needs acceptance", tact_catalog::CatalogLocale::Zh) => "待验收".into(),
-        ("needs explicit acceptance", tact_catalog::CatalogLocale::Zh) => "待明确验收".into(),
-        ("review", tact_catalog::CatalogLocale::Zh) => "待复核".into(),
-        _ => reason.to_string(),
-    }
-}
-
 fn prompt_bar_labels(locale: tact_catalog::CatalogLocale) -> PromptBarLabels {
     match locale {
         tact_catalog::CatalogLocale::En => PromptBarLabels {
@@ -12355,6 +13688,8 @@ fn prompt_bar_labels(locale: tact_catalog::CatalogLocale) -> PromptBarLabels {
             model_prefix: "Model: ".into(),
             no_models: "No models available".into(),
             available_models: "Available models".into(),
+            search_models: "Search models".into(),
+            no_matching_models: "No matching models".into(),
             running: "Running; cancel is available".into(),
             ready: "Ready for another prompt".into(),
             failed_prefix: "Failed: ".into(),
@@ -12371,6 +13706,8 @@ fn prompt_bar_labels(locale: tact_catalog::CatalogLocale) -> PromptBarLabels {
             model_prefix: "模型：".into(),
             no_models: "尚未配置模型".into(),
             available_models: "可用模型".into(),
+            search_models: "搜索模型".into(),
+            no_matching_models: "没有匹配的模型".into(),
             running: "运行中；可取消".into(),
             ready: "可以继续输入".into(),
             failed_prefix: "失败：".into(),
@@ -12618,43 +13955,6 @@ fn tool_call_labels(locale: tact_catalog::CatalogLocale) -> ToolCallLabels {
     }
 }
 
-fn background_status_label(
-    status: tact_desktop_core::BackgroundTaskStatusSnapshot,
-    locale: tact_catalog::CatalogLocale,
-) -> &'static str {
-    match status {
-        tact_desktop_core::BackgroundTaskStatusSnapshot::Running => {
-            i18n::text(locale, TextKey::Running)
-        }
-        tact_desktop_core::BackgroundTaskStatusSnapshot::Completed => {
-            i18n::text(locale, TextKey::Completed)
-        }
-        tact_desktop_core::BackgroundTaskStatusSnapshot::Error => {
-            i18n::text(locale, TextKey::Failed)
-        }
-    }
-}
-
-fn mcp_status_label(
-    status: &tact_desktop_core::McpServerStatusSnapshot,
-    locale: tact_catalog::CatalogLocale,
-) -> String {
-    match status {
-        tact_desktop_core::McpServerStatusSnapshot::Connected { tools } => {
-            format!("{} ({tools})", i18n::text(locale, TextKey::Ready))
-        }
-        tact_desktop_core::McpServerStatusSnapshot::NeedsAuthorization => {
-            i18n::text(locale, TextKey::Authorize).to_string()
-        }
-        tact_desktop_core::McpServerStatusSnapshot::NotConnected => {
-            i18n::text(locale, TextKey::Disconnected).to_string()
-        }
-        tact_desktop_core::McpServerStatusSnapshot::Disabled => {
-            i18n::text(locale, TextKey::Off).to_string()
-        }
-    }
-}
-
 /// Colours the Trajectory overview needs and the theme does not name.
 ///
 /// The lanes borrow the shell's state colours instead of introducing a second
@@ -12672,25 +13972,17 @@ impl TrajectoryPalette {
     fn new(cx: &Context<DesktopRoot>) -> Self {
         let theme = cx.theme();
         let dark = theme.is_dark();
-        let input = if dark {
-            gpui::rgba(0x30d158b0).into()
-        } else {
-            gpui::rgba(0x34c759c0).into()
-        };
+        let input = theme.success.opacity(if dark { 0.69 } else { 0.75 });
         let model = if dark {
             gpui::rgba(0xbf8bffc4).into()
         } else {
             gpui::rgba(0xa06be0c8).into()
         };
-        let tools = if dark {
-            gpui::rgba(0xff9f0ae0).into()
-        } else {
-            gpui::rgba(0xf08a1ed8).into()
-        };
+        let tools = theme.warning.opacity(if dark { 0.88 } else { 0.85 });
         Self {
             lanes: [input, model, tools],
             rule: theme.border,
-            selection: gpui::rgba(0x0a84ff1f).into(),
+            selection: theme.primary.opacity(0.12),
             accent: theme.primary,
             error: theme.danger,
         }
@@ -12914,11 +14206,10 @@ impl LedgerPalette {
                 gpui::Hsla::from(gpui::rgba((label << 8) | 0xff)),
             )
         };
-        let (user, user_label) = if dark {
-            chip(0x0a84ff, 0x64b5ff, 0x38)
-        } else {
-            chip(0x0a84ff, 0x0a5ec7, 0x22)
-        };
+        let (user, user_label) = (
+            theme.primary.opacity(if dark { 0.22 } else { 0.13 }),
+            theme.primary,
+        );
         let (context, context_label) = if dark {
             chip(0x30d158, 0x63e07f, 0x38)
         } else {
@@ -12961,21 +14252,13 @@ impl LedgerPalette {
             error: (error, error_label),
             other: (other, other_label),
             rule: theme.border,
-            selected_row: if dark {
-                gpui::rgba(0x0a84ff33).into()
-            } else {
-                gpui::rgba(0x0a84ff1a).into()
-            },
+            selected_row: theme.primary.opacity(if dark { 0.20 } else { 0.10 }),
             hover_row: if dark {
                 gpui::rgba(0xffffff0f).into()
             } else {
                 gpui::rgba(0x0000000a).into()
             },
-            danger_chip: if dark {
-                gpui::rgba(0xff453a38).into()
-            } else {
-                gpui::rgba(0xff453a1f).into()
-            },
+            danger_chip: theme.danger.opacity(if dark { 0.22 } else { 0.12 }),
         }
     }
 
@@ -12993,15 +14276,39 @@ impl LedgerPalette {
     }
 }
 
+/// Per-row rendering context that the row's own data cannot answer.
+///
+/// Grouped so the element builder keeps one argument per independent decision
+/// instead of growing a boolean tail (`read_only`, focus, expansion, yield).
+#[derive(Clone, Copy)]
+struct RowViewState<'a> {
+    read_only: bool,
+    /// Focus handle for the first action of this row's pending gate.
+    gate_focus: Option<&'a gpui::FocusHandle>,
+    /// Inline expansion state for a thinking row.
+    thinking_open: bool,
+    /// This row is a plan card that yields to the run's tool group.
+    plan_yields: bool,
+}
+
 fn transcript_row_element(
     row: &TranscriptRow,
     snapshot: &DesktopSnapshot,
     weak: WeakEntity<DesktopRoot>,
     assistant_selection: Option<Entity<SelectionActions>>,
-    read_only: bool,
-    gate_focus: Option<&gpui::FocusHandle>,
-    thinking_open: bool,
+    state: RowViewState<'_>,
 ) -> AnyElement {
+    let RowViewState {
+        read_only,
+        gate_focus,
+        thinking_open,
+        plan_yields,
+    } = state;
+    let session_id = snapshot
+        .session
+        .id
+        .clone()
+        .unwrap_or_else(|| SessionId(format!("epoch-{}", snapshot.session.epoch.0)));
     if !crate::ui::transcript::visible_row(row, snapshot) {
         return div().into_any_element();
     }
@@ -13031,25 +14338,13 @@ fn transcript_row_element(
                     .items_end()
                     .gap_1()
                     .child(
-                        h_flex()
-                            .items_baseline()
-                            .gap(px(7.))
-                            .child(
-                                div()
-                                    .text_size(px(11.))
-                                    .font_semibold()
-                                    .text_color(snapshot_ink(snapshot))
-                                    .child(i18n::text(snapshot.language, TextKey::You)),
-                            )
-                            .when_some(row.time.clone(), |line, time| {
-                                line.child(
-                                    div()
-                                        .text_size(px(10.))
-                                        .font_family("Lilex")
-                                        .text_color(snapshot_row_muted(snapshot))
-                                        .child(time.to_string()),
-                                )
-                            }),
+                        h_flex().items_baseline().gap(px(7.)).child(
+                            div()
+                                .text_size(px(11.))
+                                .font_semibold()
+                                .text_color(snapshot_ink(snapshot))
+                                .child(i18n::text(snapshot.language, TextKey::You)),
+                        ),
                     )
                     .child(
                         div()
@@ -13073,20 +14368,63 @@ fn transcript_row_element(
                             AttachmentStrip::new(format!("user-attachments-{id}"))
                                 .label(i18n::text(snapshot.language, TextKey::Attachment))
                                 .items(user.attachments.iter().map(|path| {
-                                    PromptAttachment::new(
+                                    let mut item = AttachmentItem::new(
                                         path.display().to_string(),
                                         path.file_name().and_then(|name| name.to_str()).unwrap_or(
                                             i18n::text(snapshot.language, TextKey::Attachment),
                                         ),
-                                    )
-                                    .size_bytes(
+                                    );
+                                    if is_image_path(path) {
+                                        item = item.image(path.clone());
+                                    }
+                                    item.size_bytes(
                                         std::fs::metadata(path)
                                             .map(|metadata| metadata.len())
                                             .unwrap_or(0),
                                     )
                                 })),
                         )
-                    }),
+                    })
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .mt(px(4.))
+                            .gap(px(8.))
+                            .when_some(row.time.clone(), |line, time| {
+                                line.child(
+                                    div()
+                                        .debug_selector(move || format!("user-time-{id}"))
+                                        .text_size(px(10.))
+                                        .font_family("Lilex")
+                                        .text_color(snapshot_row_muted(snapshot))
+                                        .child(time.to_string()),
+                                )
+                            })
+                            .child(
+                                gpui_base::Button::new(("copy-user", id))
+                                    .debug_selector(move || format!("copy-user-{id}"))
+                                    .role(Role::Button)
+                                    .aria_label(i18n::text(snapshot.language, TextKey::CopyMessage))
+                                    .cursor_pointer()
+                                    .rounded(px(4.))
+                                    .p(px(3.))
+                                    .focus(|style| style.bg(gpui::rgba(0x007aff22)))
+                                    .hover(|style| style.bg(snapshot_row_border(snapshot)))
+                                    .child(
+                                        Icon::new(IconName::Copy)
+                                            .xsmall()
+                                            .text_color(snapshot_row_muted(snapshot)),
+                                    )
+                                    .on_click({
+                                        let text = user.text.to_string();
+                                        move |_, _, cx| {
+                                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                                text.clone(),
+                                            ));
+                                        }
+                                    }),
+                            ),
+                    ),
             )
             .child(
                 div()
@@ -13105,7 +14443,8 @@ fn transcript_row_element(
             )
             .into_any_element(),
         RowBody::Assistant(assistant) => {
-            let display_markdown = mermaid::strip_blocks(&assistant.markdown);
+            let display_markdown =
+                assistant_display_markdown(&assistant.markdown, snapshot.project.root.as_deref());
             let diagrams: Vec<mermaid::Diagram> = mermaid::blocks(&assistant.markdown)
                 .iter()
                 .filter_map(|source| mermaid::parse(source))
@@ -13232,8 +14571,9 @@ fn transcript_row_element(
             // A plan made only of tool calls would draw every command twice:
             // once here and once in the execution group below. The tool rows
             // carry the status, output and disclosure, so the plan card yields
-            // when every step is already represented in this run.
-            if plan_is_tool_execution(row, plan, &snapshot.transcript) {
+            // when every step is already represented in this run. The layout
+            // pass decides that once per row instead of rescanning here.
+            if plan_yields {
                 return div().into_any_element();
             }
             let steps = plan.steps.iter().enumerate().map(|(index, step)| {
@@ -13404,17 +14744,14 @@ fn transcript_row_element(
                 .into_any_element()
         }
         RowBody::Thinking(thinking) => {
-            let mut trace = ThinkingTrace::new().prose(thinking.markdown.to_string());
-            if let Some(duration_ms) = thinking.duration_ms {
-                trace = trace.thought_for(Duration::from_millis(duration_ms));
-            }
-            let progressive = progressive(trace, thinking.status, snapshot.language);
             let reader_weak = weak.clone();
             v_flex()
                 .id(SharedString::from(format!("row-thinking-{id}")))
                 .debug_selector(move || format!("transcript-row-thinking-{id}"))
                 .child(
-                    Thinking::new(format!("thinking-{id}"), &progressive)
+                    Thinking::new(format!("thinking-{id}"), thinking.markdown.to_string())
+                        .status(thinking.status)
+                        .duration_ms(thinking.duration_ms)
                         .labels(thinking_labels(snapshot.language))
                         // The trace expands in place. It opens on its own
                         // while reasoning runs and afterwards stays where the
@@ -13429,11 +14766,12 @@ fn transcript_row_element(
                         .on_event(move |event, _, cx| {
                             let ThinkingEvent::Toggled { open, .. } = event;
                             let open = *open;
+                            let thinking_key = (session_id.clone(), row_id);
                             let _ = reader_weak.update(cx, |this, cx| {
                                 if open {
-                                    this.expanded_thinking.insert(row_id);
+                                    this.expanded_thinking.insert(thinking_key.clone());
                                 } else {
-                                    this.expanded_thinking.remove(&row_id);
+                                    this.expanded_thinking.remove(&thinking_key);
                                 }
                                 this.pending_row_updates.insert(row_id);
                                 cx.notify();
@@ -13478,27 +14816,30 @@ fn transcript_row_element(
                 .collect::<Vec<_>>();
             let group_id = row.id;
             let group_weak = weak.clone();
+            let active = matches!(group.status(), RowStatus::Running | RowStatus::Pending);
+            let quiet = group.items.len() == 1 && group.collapsed && !active;
             div()
                 .debug_selector(move || format!("transcript-row-tool-group-{id}"))
                 // The design makes the group the card: one border, one
                 // radius, and the calls as rows inside it.
                 .w_full()
                 .min_w_0()
-                .rounded(px(12.))
-                .border_1()
-                .border_color(snapshot_row_border(snapshot))
-                .bg(snapshot_row_surface(snapshot))
-                .shadow_sm()
-                .overflow_hidden()
+                .when(quiet, |card| card.rounded(px(6.)))
+                .when(!quiet, |card| {
+                    card.rounded(px(12.))
+                        .border_1()
+                        .border_color(snapshot_row_border(snapshot))
+                        .bg(snapshot_row_surface(snapshot))
+                        .shadow_sm()
+                        .overflow_hidden()
+                })
                 .child(
                     ToolGroup::new(format!("tool-group-{id}"))
                         .title(tool_group_title(group, snapshot.language))
                         .count(tool_count)
                         .compact()
-                        .active(matches!(
-                            group.status(),
-                            RowStatus::Running | RowStatus::Pending
-                        ))
+                        .quiet(quiet)
+                        .active(active)
                         .open(!group.collapsed)
                         .on_event(move |event, _, cx| {
                             if matches!(event, ToolGroupEvent::Toggled { .. }) {
@@ -13839,6 +15180,15 @@ fn gate_tool_preview(
     })
 }
 
+/// The first line of a gate prompt.
+///
+/// Command prompts embed the whole script after the first line; the preview
+/// block and the Review surface carry the rest, so a prompt row never grows
+/// with the command it quotes.
+fn gate_prompt_line(prompt: &str) -> &str {
+    prompt.lines().next().unwrap_or_default().trim()
+}
+
 /// The command a gate prompt quotes in backticks, when the group has no tool
 /// to borrow it from.
 fn gate_prompt_command(prompt: &str) -> Option<SharedString> {
@@ -13992,35 +15342,36 @@ fn tool_row_element(
     weak: WeakEntity<DesktopRoot>,
 ) -> AnyElement {
     let output = tool_body_markdown(tool, locale);
-    let mut invocation = ToolInvocation::new(tool.tool_id.to_string(), tool.name.to_string())
+    let mut call = ToolCall::new(tool.tool_id.to_string(), tool.name.to_string())
         .summary(tact_desktop_core::one_line_summary(&tool.arg_summary))
         .input(tool.arg_full.as_deref().unwrap_or(&tool.arg_summary))
-        // Gate decisions are rendered as first-class gate cards; this inline
-        // tool surface must not imply a second, disconnected approval action.
-        .approval(ToolApproval::NotRequired);
+        .status(tool.status)
+        .labels(tool_call_labels(locale))
+        .grouped()
+        .open(tool.expanded);
     if !output.is_empty() {
-        invocation = invocation.output(output);
+        call = call.output(output);
     }
-    let invocation = progressive(invocation, tool.status, locale);
+    if tool.name.as_ref() == "read_image"
+        && let Some(image) = read_image_output(tool_output_text(tool))
+        && image.path.is_file()
+        && is_image_path(&image.path)
+    {
+        call = call.image_path(image.path);
+    }
     let call_weak = weak.clone();
     let reader_weak = weak;
     let tool_id = tool.id;
-    let mut row = v_flex().gap_1().child(
-        ToolCall::new(&invocation)
-            .labels(tool_call_labels(locale))
-            .grouped()
-            .open(tool.expanded)
-            .on_event(move |event, _, cx| {
-                if matches!(event, ToolCallEvent::Toggled { .. }) {
-                    let _ = call_weak.update(cx, |this, _| {
-                        this.dispatch(DesktopIntent::ToggleTool {
-                            group: group_id,
-                            tool: tool_id,
-                        });
-                    });
-                }
-            }),
-    );
+    let mut row = v_flex().gap_1().child(call.on_event(move |event, _, cx| {
+        if matches!(event, ToolCallEvent::Toggled { .. }) {
+            let _ = call_weak.update(cx, |this, _| {
+                this.dispatch(DesktopIntent::ToggleTool {
+                    group: group_id,
+                    tool: tool_id,
+                });
+            });
+        }
+    }));
     if !tool.output.preview.is_empty() || tool.output.detail.is_some() {
         row = row.child(
             div()
@@ -14111,10 +15462,7 @@ fn compact_markdown_line(line: &str) -> String {
 }
 
 /// Builds the `DiffTable` rows for a multi-file patch.
-fn diff_rows(
-    files: &[diff_review::FileDiff],
-    decisions: &[DiffProposalState],
-) -> Progressive<Arc<[DiffRow]>> {
+fn diff_rows(files: &[diff_review::FileDiff], decisions: &[DiffProposalState]) -> Arc<[DiffRow]> {
     let rows: Arc<[DiffRow]> = files
         .iter()
         .enumerate()
@@ -14138,10 +15486,15 @@ fn diff_rows(
         })
         .collect::<Vec<_>>()
         .into();
-    Progressive::complete(rows)
+    rows
 }
 
 fn tool_body_markdown(tool: &ToolRow, locale: tact_catalog::CatalogLocale) -> String {
+    if tool.name.as_ref() == "read_image"
+        && let Some(image) = read_image_output(tool_output_text(tool))
+    {
+        return image.summary;
+    }
     let body = match &tool.body {
         tact_desktop_core::ToolBody::Code { language, text } => {
             let original = language.as_deref().unwrap_or("text");
@@ -14176,30 +15529,46 @@ fn tool_body_markdown(tool: &ToolRow, locale: tact_catalog::CatalogLocale) -> St
     }
 }
 
-fn progress_state(status: RowStatus, locale: tact_catalog::CatalogLocale) -> ProgressState {
-    match status {
-        RowStatus::Pending => ProgressState::Pending,
-        RowStatus::Running => ProgressState::Running,
-        RowStatus::Failed => ProgressState::Failed(i18n::text(locale, TextKey::ToolFailed).into()),
-        RowStatus::Success | RowStatus::Resolved => ProgressState::Complete,
-        RowStatus::Cancelled => ProgressState::Cancelled,
-        RowStatus::Unknown => ProgressState::Unknown,
-    }
+fn tool_output_text(tool: &ToolRow) -> &str {
+    tool.output
+        .detail
+        .as_deref()
+        .unwrap_or(&tool.output.preview)
 }
 
-fn progressive<T>(
-    content: T,
-    status: RowStatus,
-    locale: tact_catalog::CatalogLocale,
-) -> Progressive<T> {
-    match progress_state(status, locale) {
-        ProgressState::Pending => Progressive::pending(content),
-        ProgressState::Running => Progressive::running(content),
-        ProgressState::Complete => Progressive::complete(content),
-        ProgressState::Cancelled => Progressive::cancelled(content),
-        ProgressState::Unknown => Progressive::unknown(content),
-        ProgressState::Failed(reason) => Progressive::failed(content, reason),
+/// Assistant prose keeps its original Markdown; only the display copy turns
+/// existing absolute paths into compact, clickable file links.
+fn assistant_display_markdown(markdown: &str, root: Option<&Path>) -> String {
+    let stripped = mermaid::strip_blocks(markdown);
+    file_links::linkify_paths(&stripped, root)
+}
+
+/// The structurally useful parts of a `read_image` envelope. The base64 image
+/// block is never read here; the original envelope stays in the reader.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ReadImageOutput {
+    path: PathBuf,
+    summary: String,
+}
+
+/// `read_image` returns a small XML-ish envelope whose blank lines used to
+/// render as a large empty output box. Keep the transcript line compact; the
+/// reader still opens the untouched envelope.
+fn read_image_output(text: &str) -> Option<ReadImageOutput> {
+    let path = text.split_once("<path>")?.1.split_once("</path>")?.0.trim();
+    let metadata = text
+        .lines()
+        .find(|line| line.contains("image/") && line.contains(" px,"))?
+        .trim()
+        .replace(" image, ", " · ")
+        .replace(" px, ", " px · ");
+    if path.is_empty() || metadata.is_empty() {
+        return None;
     }
+    Some(ReadImageOutput {
+        path: PathBuf::from(path),
+        summary: format!("`{path}` · {metadata}"),
+    })
 }
 
 fn streamed_text(
@@ -14230,6 +15599,18 @@ fn streamed_text(
         RowStatus::Success | RowStatus::Resolved => {}
     }
     content
+}
+
+#[cfg(test)]
+fn progress_state(status: RowStatus, locale: tact_catalog::CatalogLocale) -> ProgressState {
+    match status {
+        RowStatus::Pending => ProgressState::Pending,
+        RowStatus::Running => ProgressState::Running,
+        RowStatus::Failed => ProgressState::Failed(i18n::text(locale, TextKey::ToolFailed).into()),
+        RowStatus::Success | RowStatus::Resolved => ProgressState::Complete,
+        RowStatus::Cancelled => ProgressState::Cancelled,
+        RowStatus::Unknown => ProgressState::Unknown,
+    }
 }
 
 fn gate_option_label(
@@ -14321,13 +15702,13 @@ fn gate_element(
         let summary = if gate.status == GateState::Cancelled {
             format!(
                 "{} · {}",
-                gate.prompt,
+                gate_prompt_line(&gate.prompt),
                 i18n::text(locale, TextKey::Cancelled)
             )
         } else if let Some(ref settled) = settled {
-            format!("{} · {settled}", gate.prompt)
+            format!("{} · {settled}", gate_prompt_line(&gate.prompt))
         } else {
-            gate.prompt.to_string()
+            gate_prompt_line(&gate.prompt).to_string()
         };
         let request_id = gate.request_id.0;
         let (mark, tone) = match gate.status {
@@ -14383,7 +15764,7 @@ fn gate_element(
                     .truncate()
                     .text_size(px(10.))
                     .text_color(snapshot_row_muted(snapshot))
-                    .child(gate.prompt.to_string()),
+                    .child(gate_prompt_line(&gate.prompt).to_string()),
             )
             .when_some(settled, |row, outcome| {
                 row.child(
@@ -14418,12 +15799,18 @@ fn gate_element(
                 .p_2()
                 .rounded_md()
                 .border_1()
-                .border_color(gpui::rgb(0x5f6673))
-                .child(div().text_sm().child(gate.prompt.to_string()))
+                .border_color(theme::palette(snapshot.theme, snapshot.appearance).border)
+                .child(
+                    div()
+                        .text_sm()
+                        .child(gate_prompt_line(&gate.prompt).to_string()),
+                )
                 .child(
                     div()
                         .text_xs()
-                        .text_color(gpui::rgb(0x98a2b3))
+                        .text_color(
+                            theme::palette(snapshot.theme, snapshot.appearance).muted_foreground,
+                        )
                         .child(origin),
                 )
                 .child(
@@ -14492,7 +15879,8 @@ fn gate_element(
                         .child(option_label)
                         .when_some(hint, |line, hint| {
                             let hint_color = if index == 0 {
-                                gpui::Hsla::from(gpui::rgb(0xffffff))
+                                theme::palette(snapshot.theme, snapshot.appearance)
+                                    .primary_foreground
                             } else if deny {
                                 snapshot_theme_danger(snapshot)
                             } else {
@@ -14530,7 +15918,9 @@ fn gate_element(
             if index == 0 {
                 action = action
                     .bg(snapshot_theme_primary(snapshot))
-                    .text_color(gpui::Hsla::from(gpui::rgb(0xffffff)))
+                    .text_color(
+                        theme::palette(snapshot.theme, snapshot.appearance).primary_foreground,
+                    )
                     .font_semibold();
                 if let Some(focus) = gate_focus {
                     action = action.track_focus(focus);
@@ -14579,7 +15969,7 @@ fn gate_element(
                     .text_size(px(19.))
                     .font_semibold()
                     .text_color(snapshot_ink(snapshot))
-                    .child(gate.prompt.to_string()),
+                    .child(gate_prompt_line(&gate.prompt).to_string()),
             )
             .when_some(command_description, |card, description| {
                 card.child(
@@ -14590,18 +15980,28 @@ fn gate_element(
                 )
             })
             .when_some(prompt_command, |card, command| {
+                let clamped = command.lines().count() > GATE_COMMAND_PREVIEW_LINES;
                 card.child(
                     div()
+                        .debug_selector(|| "gate-command-preview".into())
+                        .w_full()
+                        .min_w_0()
                         .rounded(px(8.))
                         .border_1()
                         .border_color(snapshot_row_border(snapshot))
                         .bg(snapshot_row_background(snapshot))
-                        .px(px(12.))
-                        .py(px(8.))
-                        .text_size(px(12.))
-                        .font_family("Lilex")
-                        .text_color(snapshot_ink(snapshot))
-                        .child(command),
+                        .when(clamped, |block| block.h(px(GATE_COMMAND_MAX_HEIGHT)))
+                        .child(
+                            div()
+                                .w_full()
+                                .overflow_y_scrollbar()
+                                .px(px(12.))
+                                .py(px(8.))
+                                .text_size(px(12.))
+                                .font_family("Lilex")
+                                .text_color(snapshot_ink(snapshot))
+                                .child(command),
+                        ),
                 )
             })
             .child(actions);
@@ -14888,7 +16288,10 @@ fn gate_element(
                                     .disabled(default_choices.is_empty())
                                     .rounded(px(5.))
                                     .bg(snapshot_theme_primary(snapshot))
-                                    .text_color(gpui::Hsla::from(gpui::rgb(0xffffff)))
+                                    .text_color(
+                                        theme::palette(snapshot.theme, snapshot.appearance)
+                                            .primary_foreground,
+                                    )
                                     .px(px(10.))
                                     .h(px(26.))
                                     .text_size(px(11.))
@@ -14936,17 +16339,11 @@ fn format_elapsed(started: chrono::DateTime<chrono::Utc>) -> String {
 }
 
 fn snapshot_row_background(snapshot: &DesktopSnapshot) -> gpui::Hsla {
-    match snapshot.appearance {
-        Appearance::Light => gpui::rgb(0xececf1).into(),
-        Appearance::Dark => gpui::rgb(0x2c2c2e).into(),
-    }
+    theme::palette(snapshot.theme, snapshot.appearance).muted
 }
 
 fn snapshot_row_border(snapshot: &DesktopSnapshot) -> gpui::Hsla {
-    match snapshot.appearance {
-        Appearance::Light => gpui::rgba(0x3c3c4324).into(),
-        Appearance::Dark => gpui::rgba(0xffffff1a).into(),
-    }
+    theme::palette(snapshot.theme, snapshot.appearance).border
 }
 
 /// Groups hook items by source; a source with any pending item needs review.
@@ -15007,57 +16404,6 @@ fn transcript_row_style() -> gpui::StyleRefinement {
     style
 }
 
-/// Whether a plan row only repeats tool calls already visible in this run.
-///
-/// The runtime emits a plan step for every concrete tool call. Drawing that
-/// plan beside the execution group duplicates every command; the tool rows are
-/// the richer surface, so the plan yields when all of its steps have a
-/// `tool_id` present in the same run. A plan with a conceptual step (no tool
-/// id) keeps its card because the tool group cannot represent that step.
-fn plan_is_tool_execution(
-    row: &TranscriptRow,
-    plan: &tact_desktop_core::PlanRow,
-    transcript: &TranscriptView,
-) -> bool {
-    if plan.steps.is_empty() {
-        return false;
-    }
-    let rows: Vec<&TranscriptRow> = transcript.iter().map(|row| row.as_ref()).collect();
-    let Some(index) = rows.iter().position(|candidate| candidate.id == row.id) else {
-        return false;
-    };
-    // One run owns one execution group, and a later turn in that run gets a
-    // fresh loop id while appending to the same group. Compare within the run
-    // (the rows between the user turns that surround the plan) rather than by
-    // loop id, so the group still absorbs its plan.
-    let start = rows[..index]
-        .iter()
-        .rposition(|candidate| matches!(&candidate.body, RowBody::User(_)))
-        .map(|position| position + 1)
-        .unwrap_or(0);
-    let end = rows[index..]
-        .iter()
-        .position(|candidate| matches!(&candidate.body, RowBody::User(_)))
-        .map(|offset| index + offset)
-        .unwrap_or(rows.len());
-    let mut run_tool_ids = std::collections::HashSet::new();
-    for candidate in &rows[start..end] {
-        let RowBody::ToolGroup(group) = &candidate.body else {
-            continue;
-        };
-        for item in group.items.iter() {
-            if let ToolGroupItem::Tool(tool) = item {
-                run_tool_ids.insert(tool.tool_id.as_ref());
-            }
-        }
-    }
-    plan.steps.iter().all(|step| {
-        step.tool_id
-            .as_deref()
-            .is_some_and(|tool_id| run_tool_ids.contains(tool_id))
-    })
-}
-
 /// The rail's quick-filter placeholder, short enough for the 250px rail in
 /// both locales.
 fn rail_search_placeholder(locale: tact_catalog::CatalogLocale) -> &'static str {
@@ -15065,16 +16411,6 @@ fn rail_search_placeholder(locale: tact_catalog::CatalogLocale) -> &'static str 
         tact_catalog::CatalogLocale::En => "Find a session",
         tact_catalog::CatalogLocale::Zh => "查找会话",
     }
-}
-
-/// Whether a row's content starts at the message column rather than at the
-/// transcript's left edge.
-///
-/// The design's row grid gives every row a 31px avatar column and a 12px gap;
-/// user and assistant rows draw a mark there, while plan, thinking, tool,
-/// diff, gate and notice rows are content that belongs beside the message.
-fn row_starts_at_message_column(body: &RowBody) -> bool {
-    !matches!(body, RowBody::User(_) | RowBody::Assistant(_))
 }
 
 /// The plan card's status pill.
@@ -15138,27 +16474,18 @@ fn initials_from_name(name: &str) -> String {
 }
 
 fn snapshot_row_surface(snapshot: &DesktopSnapshot) -> gpui::Hsla {
-    match snapshot.appearance {
-        Appearance::Light => gpui::rgb(0xffffff).into(),
-        Appearance::Dark => gpui::rgb(0x2c2c2e).into(),
-    }
+    theme::palette(snapshot.theme, snapshot.appearance).popover
 }
 
 /// The design's `--ink`: message labels and the user's avatar fill.
 fn snapshot_ink(snapshot: &DesktopSnapshot) -> gpui::Hsla {
-    match snapshot.appearance {
-        Appearance::Light => gpui::rgb(0x1d1d1f).into(),
-        Appearance::Dark => gpui::rgb(0xf5f5f7).into(),
-    }
+    theme::palette(snapshot.theme, snapshot.appearance).foreground
 }
 
 /// The design's `--canvas`: the transcript background, used as the user
 /// avatar's ink so the mark reads as a solid stamp in both appearances.
 fn snapshot_canvas(snapshot: &DesktopSnapshot) -> gpui::Hsla {
-    match snapshot.appearance {
-        Appearance::Light => gpui::rgb(0xf5f5f7).into(),
-        Appearance::Dark => gpui::rgb(0x1c1c1e).into(),
-    }
+    theme::palette(snapshot.theme, snapshot.appearance).background
 }
 
 /// The run title drops a leading URL, matching the design's headline.
@@ -15176,42 +16503,27 @@ fn strip_leading_url(text: &str) -> String {
 }
 
 fn snapshot_theme_primary(snapshot: &DesktopSnapshot) -> gpui::Hsla {
-    match snapshot.appearance {
-        Appearance::Light => gpui::rgb(0x007aff).into(),
-        Appearance::Dark => gpui::rgb(0x0a84ff).into(),
-    }
+    theme::palette(snapshot.theme, snapshot.appearance).primary
 }
 
 fn snapshot_theme_success(snapshot: &DesktopSnapshot) -> gpui::Hsla {
-    match snapshot.appearance {
-        Appearance::Light => gpui::rgb(0x34c759).into(),
-        Appearance::Dark => gpui::rgb(0x30d158).into(),
-    }
+    theme::palette(snapshot.theme, snapshot.appearance).success
 }
 
 fn snapshot_theme_danger(snapshot: &DesktopSnapshot) -> gpui::Hsla {
-    match snapshot.appearance {
-        Appearance::Light => gpui::rgb(0xff453a).into(),
-        Appearance::Dark => gpui::rgb(0xff453a).into(),
-    }
+    theme::palette(snapshot.theme, snapshot.appearance).danger
 }
 
-fn snapshot_theme_warning(_snapshot: &DesktopSnapshot) -> gpui::Hsla {
-    gpui::rgb(0xff9f0a).into()
+fn snapshot_theme_warning(snapshot: &DesktopSnapshot) -> gpui::Hsla {
+    theme::palette(snapshot.theme, snapshot.appearance).warning
 }
 
 fn snapshot_row_muted(snapshot: &DesktopSnapshot) -> gpui::Hsla {
-    match snapshot.appearance {
-        Appearance::Light => gpui::rgb(0x6e6e73).into(),
-        Appearance::Dark => gpui::rgb(0x98989d).into(),
-    }
+    theme::palette(snapshot.theme, snapshot.appearance).muted_foreground
 }
 
 fn snapshot_accent(snapshot: &DesktopSnapshot) -> gpui::Hsla {
-    match snapshot.appearance {
-        Appearance::Light => gpui::rgb(0x007aff).into(),
-        Appearance::Dark => gpui::rgb(0x0a84ff).into(),
-    }
+    theme::palette(snapshot.theme, snapshot.appearance).primary
 }
 
 fn goal_create_arguments(objective: &str, criteria: &str) -> CommandArguments {
@@ -15285,11 +16597,14 @@ fn composer_voice_button(
         )
         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
             if !this.voice.enabled || this.voice.missing_api_key {
-                this.toast = Some(Toast {
-                    title: this.text(TextKey::VoiceInput).into(),
-                    body: this.text(TextKey::VoiceInputUnavailable).into(),
-                });
-                cx.notify();
+                this.show_toast(
+                    Toast {
+                        title: this.text(TextKey::VoiceInput).into(),
+                        body: this.text(TextKey::VoiceInputUnavailable).into(),
+                    },
+                    false,
+                    cx,
+                );
                 return;
             }
             if this.voice.transcribing {
@@ -15468,6 +16783,10 @@ fn choice_values(id: CommandId, snapshot: &DesktopSnapshot) -> Vec<(String, Stri
                 (i18n::text(locale, TextKey::Light).into(), "light".into()),
                 (i18n::text(locale, TextKey::Dark).into(), "dark".into()),
             ],
+            tact_catalog::FixedChoiceSet::ThemeFamily => DesktopTheme::ALL
+                .iter()
+                .map(|theme| (theme.label().into(), theme.value().into()))
+                .collect(),
             tact_catalog::FixedChoiceSet::Language => vec![
                 (i18n::text(locale, TextKey::English).into(), "en".into()),
                 ("中文".into(), "zh".into()),
@@ -15525,6 +16844,10 @@ fn setting_choices(id: SettingId, locale: tact_catalog::CatalogLocale) -> Vec<(S
             (i18n::text(locale, TextKey::Light).into(), "light".into()),
             (i18n::text(locale, TextKey::Dark).into(), "dark".into()),
         ],
+        SettingId::ThemeFamily => DesktopTheme::ALL
+            .iter()
+            .map(|theme| (theme.label().to_string(), theme.value().to_string()))
+            .collect(),
         SettingId::Language => vec![
             (i18n::text(locale, TextKey::English).into(), "en".into()),
             ("中文".into(), "zh".into()),
@@ -15559,6 +16882,7 @@ fn setting_value(id: SettingId, text: &str) -> FormValue {
         SettingId::ReasoningEffort
         | SettingId::PermissionMode
         | SettingId::Theme
+        | SettingId::ThemeFamily
         | SettingId::Language => FormValue::Setting(id, SettingValue::Choice(text.trim().into())),
         _ => FormValue::Setting(id, SettingValue::Text(text.trim().into())),
     }
@@ -15624,15 +16948,89 @@ mod tests {
     use gpui::{Element as _, Focusable as _, TestAppContext, VisualTestContext, px, size};
     use gpui_component::Root;
     use tact_desktop_core::{
-        DesktopConfig, LatestToolView, SessionEpoch, StateCommit, ToolBody, ToolMetaView,
-        ToolOutputView,
+        DesktopConfig, LatestToolView, MessagePhase, SessionEpoch, StateCommit, ToolBody,
+        ToolMetaView, ToolOutputView,
     };
 
     use super::*;
 
+    use crate::ui::process::yielded_plans;
+
     fn install_test_config(config: &DesktopConfig) {
         static INSTALL: std::sync::Once = std::sync::Once::new();
         INSTALL.call_once(|| config.install_process_config().unwrap());
+    }
+
+    fn install_two_project_sessions(this: &mut DesktopRoot, cx: &mut Context<DesktopRoot>) {
+        let first_project = tact_desktop_core::ProjectId("project-a".into());
+        let second_project = tact_desktop_core::ProjectId("project-b".into());
+        let mut snapshot = (*this.snapshot).clone();
+        snapshot.project = tact_desktop_core::ProjectView {
+            id: Some(first_project.clone()),
+            root: Some("/tmp/project-a".into()),
+            display_name: "Project A".into(),
+            branch: Some("main".into()),
+            repository: None,
+            available: true,
+        };
+        snapshot.projects = vec![
+            snapshot.project.clone(),
+            tact_desktop_core::ProjectView {
+                id: Some(second_project.clone()),
+                root: Some("/tmp/project-b".into()),
+                display_name: "Project B".into(),
+                branch: Some("feature".into()),
+                repository: None,
+                available: true,
+            },
+        ]
+        .into();
+        let now = chrono::Utc::now();
+        snapshot.sessions.items = vec![
+            tact_desktop_core::SessionSummaryView {
+                id: "session-a".into(),
+                project_id: first_project,
+                root_dir: "/tmp/project-a".into(),
+                title: "Session A".into(),
+                updated_at: now,
+                archived_at: None,
+                locked: false,
+                message_count: 1,
+                search_score: 0,
+            },
+            tact_desktop_core::SessionSummaryView {
+                id: "session-b".into(),
+                project_id: second_project,
+                root_dir: "/tmp/project-b".into(),
+                title: "Session B".into(),
+                updated_at: now - chrono::Duration::hours(1),
+                archived_at: None,
+                locked: false,
+                message_count: 1,
+                search_score: 0,
+            },
+        ];
+        snapshot.sessions.selected = None;
+        this.snapshot = Arc::new(snapshot);
+        cx.notify();
+    }
+
+    fn set_transcript_session(
+        this: &mut DesktopRoot,
+        session_id: &str,
+        epoch: u64,
+        transcript: &TranscriptView,
+        cx: &mut Context<DesktopRoot>,
+    ) {
+        let mut snapshot = (*this.snapshot).clone();
+        snapshot.session.id = Some(SessionId(session_id.into()));
+        snapshot.session.epoch = SessionEpoch(epoch);
+        snapshot.transcript = transcript.clone();
+        this.snapshot = Arc::new(snapshot);
+        this.pending_row_updates.clear();
+        let count = transcript.len();
+        this.scroller.update(cx, |state, cx| state.reset(count, cx));
+        cx.notify();
     }
 
     #[test]
@@ -15687,8 +17085,8 @@ mod tests {
         let (controller, _events) = DesktopController::start(config).unwrap();
         let shutdown = controller.clone();
         let (root, window) = cx.add_window_view(move |window, cx| {
-            gpui_ai::init(cx);
-            crate::theme::apply(Appearance::Light, Some(window), cx);
+            gpui_component::init(cx);
+            crate::theme::apply(DesktopTheme::Tact, Appearance::Light, Some(window), cx);
             DesktopRoot::new_for_test(controller, window, cx)
         });
         window.update(|window, cx| {
@@ -15748,6 +17146,60 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn theme_family_setting_offers_every_desktop_family() {
+        assert_eq!(
+            setting_choices(SettingId::ThemeFamily, tact_catalog::CatalogLocale::En),
+            vec![
+                ("Tact".to_string(), "tact".to_string()),
+                ("Claude".to_string(), "claude".to_string()),
+                ("Cursor".to_string(), "cursor".to_string()),
+            ]
+        );
+        assert!(matches!(
+            setting_value(SettingId::ThemeFamily, "claude"),
+            FormValue::Setting(SettingId::ThemeFamily, SettingValue::Choice(value))
+                if value == "claude"
+        ));
+
+        let data_dir = probe_dir("theme-family-value");
+        let config = DesktopConfig::load(data_dir.clone()).unwrap();
+        let mut snapshot = DesktopSnapshot::empty(&config);
+        snapshot.theme = DesktopTheme::Cursor;
+        assert_eq!(
+            setting_display_value(SettingId::ThemeFamily, &snapshot),
+            "Cursor"
+        );
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn accepting_a_slash_command_leaves_the_caret_at_the_end(cx: &mut TestAppContext) {
+        let (root, window, _shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                root.prompt
+                    .update(cx, |prompt, cx| prompt.set_draft("/the", window, cx));
+                root.refresh_slash_overlay("/the", cx);
+                let active = root
+                    .slash_overlay
+                    .as_ref()
+                    .expect("the /theme command is a candidate")
+                    .suggestions
+                    .iter()
+                    .position(|suggestion| suggestion.insertion == "/theme")
+                    .expect("theme is in the catalog");
+                root.slash_overlay.as_mut().expect("overlay").active = active;
+
+                root.accept_slash_suggestion(false, window, cx);
+
+                assert_eq!(root.prompt.read(cx).draft(cx).as_ref(), "/theme");
+                assert_eq!(root.prompt.read(cx).cursor(cx), "/theme".len());
+            });
+        });
+        let _ = std::fs::remove_dir_all(data_dir);
     }
 
     #[test]
@@ -15971,7 +17423,9 @@ mod tests {
         // the lower-case `turns` the reference uses, not the summary bar's
         // capitalised column heading.
         let labels = crate::ui::trajectory::StatsLabels {
+            turn: "turn",
             turns: i18n::text(tact_catalog::CatalogLocale::En, TextKey::TurnsUnit),
+            step: "step",
             steps: i18n::text(tact_catalog::CatalogLocale::En, TextKey::Steps),
             tokens: i18n::text(tact_catalog::CatalogLocale::En, TextKey::Tokens),
             cache_hit: i18n::text(tact_catalog::CatalogLocale::En, TextKey::CacheHit),
@@ -16010,7 +17464,9 @@ mod tests {
                 ..tact_desktop_core::TrajectorySummary::default()
             },
             crate::ui::trajectory::StatsLabels {
+                turn: "turn",
                 turns: "turns",
+                step: "step",
                 steps: "steps",
                 tokens: "tok",
                 cache_hit: "Cache hit",
@@ -16329,8 +17785,8 @@ mod tests {
             Default::default();
         let slot = root_slot.clone();
         let (_, window) = cx.add_window_view(move |window, cx| {
-            gpui_ai::init(cx);
-            crate::theme::apply(Appearance::Light, Some(window), cx);
+            gpui_component::init(cx);
+            crate::theme::apply(DesktopTheme::Tact, Appearance::Light, Some(window), cx);
             let root = cx.new(|cx| DesktopRoot::new_for_test(controller, window, cx));
             *slot.borrow_mut() = Some(root.clone());
             Root::new(root, window, cx)
@@ -16393,18 +17849,65 @@ mod tests {
                 detail: Some(Arc::from("shell")),
             }]);
         }
-        let RowBody::Plan(plan_body) = &plan_row.body else {
-            unreachable!("the row stays a plan");
-        };
-        let same_run = TranscriptView::from_rows(vec![group.clone(), Arc::new(plan_row.clone())]);
+        let same_run = [group.clone(), Arc::new(plan_row.clone())];
         assert!(
-            plan_is_tool_execution(&plan_row, plan_body, &same_run),
+            yielded_plans(&same_run).contains(&plan_row.id),
             "a later turn's plan belongs to the run's existing group"
         );
-        let next_run = TranscriptView::from_rows(vec![group, user, Arc::new(plan_row.clone())]);
+        let next_run = [group, user, Arc::new(plan_row.clone())];
         assert!(
-            !plan_is_tool_execution(&plan_row, plan_body, &next_run),
+            !yielded_plans(&next_run).contains(&plan_row.id),
             "a group from an earlier run must not hide a new run's plan"
+        );
+    }
+
+    /// The layout classifies each run independently: a plan that only repeats
+    /// its own run's tools yields, while an identical plan in the next run —
+    /// whose tools do not exist yet — keeps its card.
+    #[test]
+    fn only_the_run_that_owns_the_tools_yields_its_plan() {
+        let demo = tact_desktop_core::fixtures::demo_transcript();
+        let group = demo
+            .iter()
+            .find(|row| matches!(&row.body, RowBody::ToolGroup(_)))
+            .cloned()
+            .expect("tool group");
+        let user = demo
+            .iter()
+            .find(|row| matches!(&row.body, RowBody::User(_)))
+            .cloned()
+            .expect("user turn");
+        let plan = demo
+            .iter()
+            .find(|row| matches!(&row.body, RowBody::Plan(_)))
+            .cloned()
+            .expect("plan");
+        let mut first = (*plan).clone();
+        first.body = RowBody::Plan(tact_desktop_core::PlanRow {
+            title: Arc::from("Execution plan"),
+            steps: Arc::from([tact_desktop_core::PlanStep {
+                tool_id: Some(Arc::from("tool-4")),
+                label: Arc::from("run the tests"),
+                status: RowStatus::Pending,
+                detail: Some(Arc::from("shell")),
+            }]),
+        });
+        let mut second = first.clone();
+        second.id = tact_desktop_core::RowId::new(second.id.value() + 1);
+        let rows = [
+            group,
+            Arc::new(first.clone()),
+            user,
+            Arc::new(second.clone()),
+        ];
+        let yielded = yielded_plans(&rows);
+        assert!(
+            yielded.contains(&first.id),
+            "the plan whose tools this run already has yields its card"
+        );
+        assert!(
+            !yielded.contains(&second.id),
+            "the same plan in the next run has no tool group yet and keeps its card"
         );
     }
 
@@ -16426,15 +17929,9 @@ mod tests {
             &files,
             &[DiffProposalState::Accepted, DiffProposalState::Pending],
         );
-        assert_eq!(rows.content().len(), 2);
-        assert_eq!(
-            rows.content()[0].proposal_state(),
-            DiffProposalState::Accepted
-        );
-        assert_eq!(
-            rows.content()[1].proposal_state(),
-            DiffProposalState::Pending
-        );
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].state_value(), DiffProposalState::Accepted);
+        assert_eq!(rows[1].state_value(), DiffProposalState::Pending);
     }
 
     #[test]
@@ -16747,7 +18244,7 @@ mod tests {
             reader
                 .selection
                 .as_ref()
-                .map(|selection| selection.read(cx).selected_text().to_string())
+                .map(|selection| selection.read(cx).selected_text(cx).to_string())
         });
         assert_eq!(
             reader_selection.as_deref(),
@@ -16777,7 +18274,7 @@ mod tests {
             reader
                 .selection
                 .as_ref()
-                .map(|selection| selection.read(cx).selected_text().to_string())
+                .map(|selection| selection.read(cx).selected_text(cx).to_string())
         });
         assert!(
             !selected.trim().is_empty()
@@ -16810,7 +18307,7 @@ mod tests {
             reader
                 .selection
                 .as_ref()
-                .map(|selection| selection.read(cx).selected_text().to_string())
+                .map(|selection| selection.read(cx).selected_text(cx).to_string())
         });
         assert!(
             selected.is_empty() && reader_selection.as_deref() == Some(""),
@@ -16821,19 +18318,278 @@ mod tests {
     }
 
     #[gpui::test]
-    fn thinking_expands_inline_without_a_reader(cx: &mut TestAppContext) {
+    fn cached_assistant_selection_follows_language_and_appearance(cx: &mut TestAppContext) {
         let (root, window, shutdown, data_dir) = probe_root(cx);
-        window.update(|window, cx| {
+        let (row_id, selection) = window.update(|window, cx| {
             root.update(cx, |this, cx| {
                 let mut snapshot = (*this.snapshot).clone();
                 snapshot.transcript = tact_desktop_core::fixtures::demo_transcript();
                 this.snapshot = Arc::new(snapshot);
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+            let this = root.read(cx);
+            let row_id = this
+                .snapshot
+                .transcript
+                .iter()
+                .find(|row| matches!(&row.body, RowBody::Assistant(_)))
+                .expect("assistant fixture")
+                .id;
+            let session_id = this.transcript_session_id();
+            let selection = this
+                .assistant_selections
+                .get(&("main".to_string(), session_id, row_id))
+                .expect("cached assistant selection")
+                .selection
+                .clone();
+            (row_id, selection)
+        });
+        let labels = window.update(|_, cx| selection.read(cx).action_labels());
+        assert_eq!(
+            labels.iter().map(SharedString::as_ref).collect::<Vec<_>>(),
+            ["Ask", "Explain", "Rewrite"]
+        );
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.language = tact_catalog::CatalogLocale::Zh;
+                snapshot.appearance = Appearance::Dark;
+                this.snapshot = Arc::new(snapshot);
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        let (labels, toolbar_label, dark) = window.update(|_, cx| {
+            let selection = root
+                .read(cx)
+                .assistant_selections
+                .get(&(
+                    "main".to_string(),
+                    root.read(cx).transcript_session_id(),
+                    row_id,
+                ))
+                .expect("cached assistant selection")
+                .selection
+                .read(cx);
+            (
+                selection.action_labels(),
+                selection.toolbar_label_text().clone(),
+                selection.text_is_dark(),
+            )
+        });
+        assert_eq!(
+            labels.iter().map(SharedString::as_ref).collect::<Vec<_>>(),
+            ["询问", "解释", "重写"]
+        );
+        assert_eq!(
+            toolbar_label.as_ref(),
+            i18n::text(tact_catalog::CatalogLocale::Zh, TextKey::SelectionActions)
+        );
+        assert!(dark, "cached selection style follows dark appearance");
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn switching_back_to_a_cached_session_reuses_its_ui_state(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        let transcript = tact_desktop_core::fixtures::demo_transcript();
+        let alpha = SessionId("cache-alpha".into());
+        let beta = SessionId("cache-beta".into());
+        let row_id = transcript
+            .iter()
+            .find(|row| matches!(&row.body, RowBody::Assistant(_)))
+            .expect("assistant fixture")
+            .id;
+
+        let (alpha_view, alpha_selection) = window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                set_transcript_session(this, "cache-alpha", 70, &transcript, cx);
+            });
+            window.draw(cx).clear(cx);
+            let this = root.read(cx);
+            (
+                this.transcript_rows
+                    .get(&(alpha.clone(), row_id))
+                    .expect("alpha row view")
+                    .clone(),
+                this.assistant_selections
+                    .get(&("main".to_string(), alpha.clone(), row_id))
+                    .expect("alpha selection")
+                    .selection
+                    .clone(),
+            )
+        });
+
+        let beta_view = window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                set_transcript_session(this, "cache-beta", 71, &transcript, cx);
+            });
+            window.draw(cx).clear(cx);
+            let this = root.read(cx);
+            let beta_view = this
+                .transcript_rows
+                .get(&(beta.clone(), row_id))
+                .expect("beta row view")
+                .clone();
+            assert_ne!(
+                beta_view.entity_id(),
+                alpha_view.entity_id(),
+                "row ids must not be shared across sessions"
+            );
+            assert!(
+                this.transcript_rows.contains_key(&(alpha.clone(), row_id)),
+                "switching away must keep the cached session intact"
+            );
+            beta_view
+        });
+
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                set_transcript_session(this, "cache-alpha", 72, &transcript, cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+        window.update(|_, cx| {
+            let this = root.read(cx);
+            let view = this
+                .transcript_rows
+                .get(&(alpha.clone(), row_id))
+                .expect("alpha row view after return");
+            let selection = this
+                .assistant_selections
+                .get(&("main".to_string(), alpha.clone(), row_id))
+                .expect("alpha selection after return");
+            assert_eq!(
+                view.entity_id(),
+                alpha_view.entity_id(),
+                "returning must reuse the row view"
+            );
+            assert_eq!(
+                selection.selection.entity_id(),
+                alpha_selection.entity_id(),
+                "returning must reuse the selection surface"
+            );
+            assert_eq!(
+                view.read(cx).snapshot.session.epoch,
+                SessionEpoch(72),
+                "the reused view must carry the adopted session epoch"
+            );
+            assert_eq!(
+                this.transcript_rows
+                    .get(&(beta.clone(), row_id))
+                    .expect("beta row view after return")
+                    .entity_id(),
+                beta_view.entity_id(),
+                "the other warm session's cache must survive"
+            );
+        });
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn transcript_cache_keeps_six_sessions_and_evicts_all_their_state(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        let transcript = tact_desktop_core::fixtures::demo_transcript();
+        let row_id = transcript
+            .iter()
+            .find(|row| matches!(&row.body, RowBody::Assistant(_)))
+            .expect("assistant fixture")
+            .id;
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                set_transcript_session(this, "cache-seed", 90, &transcript, cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+        window.update(|_, cx| {
+            root.update(cx, |this, cx| {
+                let seed = SessionId("cache-seed".into());
+                let row = this
+                    .transcript_rows
+                    .get(&(seed.clone(), row_id))
+                    .expect("seed row")
+                    .read(cx)
+                    .row
+                    .clone();
+                let view = this
+                    .transcript_rows
+                    .get(&(seed.clone(), row_id))
+                    .expect("seed row")
+                    .clone();
+                let selection = this
+                    .assistant_selections
+                    .get(&("main".to_string(), seed, row_id))
+                    .expect("seed selection")
+                    .selection
+                    .clone();
                 this.transcript_rows.clear();
-                let count = this.snapshot.transcript.len();
-                this.scroller.update(cx, |state, cx| {
-                    state.reset(count, cx);
-                    state.scroll_to_item(2, cx);
-                });
+                this.assistant_selections.clear();
+                this.expanded_thinking.clear();
+                this.transcript_session_cache.clear();
+                for index in 0..7 {
+                    let session = SessionId(format!("cache-{index}"));
+                    this.transcript_rows
+                        .insert((session.clone(), row_id), view.clone());
+                    this.assistant_selections.insert(
+                        ("main".to_string(), session.clone(), row_id),
+                        AssistantSelection {
+                            row: row.clone(),
+                            selection: selection.clone(),
+                            language: this.snapshot.language,
+                            appearance: this.snapshot.appearance,
+                        },
+                    );
+                    this.expanded_thinking.insert((session.clone(), row_id));
+                    this.touch_transcript_session_cache(&session);
+                }
+                assert_eq!(
+                    this.transcript_session_cache.len(),
+                    TRANSCRIPT_SESSION_CACHE
+                );
+                let evicted = SessionId("cache-0".into());
+                assert!(
+                    !this
+                        .transcript_rows
+                        .keys()
+                        .any(|(session, _)| session == &evicted)
+                );
+                assert!(
+                    !this
+                        .assistant_selections
+                        .keys()
+                        .any(|(_, session, _)| session == &evicted)
+                );
+                assert!(
+                    !this
+                        .expanded_thinking
+                        .iter()
+                        .any(|(session, _)| session == &evicted)
+                );
+                assert!(
+                    this.transcript_rows
+                        .contains_key(&(SessionId("cache-1".into()), row_id)),
+                    "the next session stays cached"
+                );
+            });
+        });
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn thinking_expands_inline_without_a_reader(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        let transcript = tact_desktop_core::fixtures::demo_transcript();
+        let alpha = SessionId("thinking-alpha".into());
+        let beta = SessionId("thinking-beta".into());
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                set_transcript_session(this, "thinking-alpha", 80, &transcript, cx);
+                this.scroller
+                    .update(cx, |state, cx| state.scroll_to_item(2, cx));
             });
             window.draw(cx).clear(cx);
         });
@@ -16850,7 +18606,8 @@ mod tests {
         window.update(|_, cx| {
             let root = root.read(cx);
             assert!(
-                root.expanded_thinking.contains(&RowId::new(2)),
+                root.expanded_thinking
+                    .contains(&(alpha.clone(), RowId::new(2))),
                 "the thought expands in place"
             );
             assert!(
@@ -16858,13 +18615,78 @@ mod tests {
                 "expanding a thought must not open a reader"
             );
         });
+        let (alpha_view, alpha_row) = window.update(|_, cx| {
+            let root = root.read(cx);
+            let view = root
+                .transcript_rows
+                .get(&(alpha.clone(), RowId::new(2)))
+                .expect("alpha thinking view")
+                .clone();
+            (view.entity_id(), view.read(cx).row.clone())
+        });
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                set_transcript_session(this, "thinking-beta", 81, &transcript, cx);
+                this.scroller
+                    .update(cx, |state, cx| state.scroll_to_item(2, cx));
+            });
+            window.draw(cx).clear(cx);
+        });
+        window.update(|_, cx| {
+            let root = root.read(cx);
+            let beta_view = root
+                .transcript_rows
+                .get(&(beta, RowId::new(2)))
+                .expect("beta thinking view");
+            assert!(
+                !beta_view.read(cx).thinking_open,
+                "one session's disclosure must not expand another session"
+            );
+            assert!(
+                root.transcript_rows
+                    .get(&(alpha.clone(), RowId::new(2)))
+                    .expect("alpha thinking view after switch")
+                    .read(cx)
+                    .thinking_open,
+                "switching away must preserve the open thought"
+            );
+        });
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                set_transcript_session(this, "thinking-alpha", 82, &transcript, cx);
+                this.scroller
+                    .update(cx, |state, cx| state.scroll_to_item(2, cx));
+            });
+            window.draw(cx).clear(cx);
+        });
+        window.update(|_, cx| {
+            let root = root.read(cx);
+            let view = root
+                .transcript_rows
+                .get(&(alpha.clone(), RowId::new(2)))
+                .expect("alpha thinking view after return");
+            assert_eq!(
+                view.entity_id(),
+                alpha_view,
+                "the expanded row must be the cached view"
+            );
+            assert!(
+                Arc::ptr_eq(&view.read(cx).row, &alpha_row),
+                "returning with unchanged content must not rebuild the row"
+            );
+            assert!(
+                view.read(cx).thinking_open,
+                "the session's expansion state must survive the round trip"
+            );
+        });
         window.simulate_click(toggle, gpui::Modifiers::default());
         window.update(|window, cx| {
             window.draw(cx).clear(cx);
         });
         window.update(|_, cx| {
+            let root = root.read(cx);
             assert!(
-                !root.read(cx).expanded_thinking.contains(&RowId::new(2)),
+                !root.expanded_thinking.contains(&(alpha, RowId::new(2))),
                 "a second click collapses the thought"
             );
         });
@@ -16902,6 +18724,190 @@ mod tests {
             thinking.origin.y - (user.origin.y + user.size.height),
             px(12.),
             "activity rows sit on the shell's tight rhythm, not the scroller default"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn process_runs_fold_to_one_line_and_expand_to_a_tight_stream(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(1600.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let demo = tact_desktop_core::fixtures::demo_transcript();
+                let mut rows = demo
+                    .iter()
+                    .filter(|row| matches!(row.ordinal, 2 | 3))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if let Some(row) = rows.iter_mut().find(|row| row.ordinal == 3) {
+                    let mut clean = (**row).clone();
+                    if let RowBody::ToolGroup(group) = &mut clean.body {
+                        group.items = Arc::from(
+                            group
+                                .items
+                                .iter()
+                                .filter(|item| !matches!(item, ToolGroupItem::Gate(_)))
+                                .cloned()
+                                .collect::<Vec<_>>(),
+                        );
+                        group.collapsed = true;
+                    }
+                    *row = Arc::new(clean);
+                }
+                let tool_id = rows
+                    .iter()
+                    .find_map(|row| match &row.body {
+                        RowBody::ToolGroup(group) => group.items.iter().find_map(|item| {
+                            let ToolGroupItem::Tool(tool) = item else {
+                                return None;
+                            };
+                            Some(tool.tool_id.clone())
+                        }),
+                        _ => None,
+                    })
+                    .expect("tool id for the transparent plan");
+                rows.insert(
+                    1,
+                    Arc::new(TranscriptRow {
+                        id: RowId::new(20),
+                        ordinal: 20,
+                        loop_id: None,
+                        time: None,
+                        body: RowBody::Plan(tact_desktop_core::PlanRow {
+                            title: Arc::from("execution"),
+                            steps: Arc::from([tact_desktop_core::PlanStep {
+                                tool_id: Some(tool_id),
+                                label: Arc::from("read the chart"),
+                                status: RowStatus::Success,
+                                detail: None,
+                            }]),
+                        }),
+                    }),
+                );
+                let mut next_thinking = (**rows
+                    .first()
+                    .expect("thinking row before the transparent plan"))
+                .clone();
+                next_thinking.id = RowId::new(21);
+                next_thinking.ordinal = 21;
+                rows.push(Arc::new(next_thinking));
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = tact_desktop_core::TranscriptView::from_rows(rows);
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+                this.scroller
+                    .update(cx, |state, cx| state.scroll_to_item(0, cx));
+            });
+            window.draw(cx).clear(cx);
+        });
+        let summary = window
+            .debug_bounds("transcript-process-summary-2")
+            .expect("process summary");
+        assert!(
+            window.debug_bounds("transcript-row-thinking-2").is_none()
+                && window.debug_bounds("transcript-row-tool-group-3").is_none(),
+            "a collapsed process run must show one summary row, not each child"
+        );
+        window.simulate_click(summary.center(), gpui::Modifiers::default());
+        window.run_until_parked();
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        let thinking = window
+            .debug_bounds("transcript-row-thinking-2")
+            .expect("thinking row");
+        let tools = window
+            .debug_bounds("transcript-row-tool-group-3")
+            .expect("tool group");
+        assert!(
+            tools.origin.y - thinking.bottom() <= px(8.),
+            "thinking and tool cards in one process stream must not pay the full row gap: \
+             thinking={thinking:?}, tools={tools:?}"
+        );
+        let next_thinking = window
+            .debug_bounds("transcript-row-thinking-21")
+            .expect("next thinking row");
+        assert!(
+            next_thinking.origin.y - tools.bottom() <= px(8.),
+            "the tool-to-thinking handoff must keep the same stream rhythm: \
+             tools={tools:?}, next_thinking={next_thinking:?}"
+        );
+        let expanded_summary = window
+            .debug_bounds("transcript-process-summary-2")
+            .expect("expanded process summary");
+        window.simulate_click(expanded_summary.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            window.debug_bounds("transcript-row-thinking-2").is_none()
+                && window.debug_bounds("transcript-row-tool-group-3").is_none(),
+            "collapsing the summary must hide the process children again"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn pending_gate_rows_are_never_hidden_by_a_process_summary(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(1200.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let demo = tact_desktop_core::fixtures::demo_transcript();
+                let rows = demo
+                    .iter()
+                    .filter(|row| matches!(row.ordinal, 2 | 3))
+                    .map(|row| {
+                        let mut row = (**row).clone();
+                        if let RowBody::ToolGroup(group) = &mut row.body {
+                            let mut items = group.items.to_vec();
+                            for item in &mut items {
+                                if let ToolGroupItem::Tool(tool) = item {
+                                    tool.status = RowStatus::Success;
+                                }
+                            }
+                            group.items = Arc::from(items);
+                        }
+                        Arc::new(row)
+                    })
+                    .collect::<Vec<_>>();
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = tact_desktop_core::TranscriptView::from_rows(rows);
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+                this.scroller
+                    .update(cx, |state, cx| state.scroll_to_item(0, cx));
+            });
+            window.draw(cx).clear(cx);
+        });
+        window.run_until_parked();
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            window
+                .debug_bounds("transcript-process-summary-2")
+                .is_some(),
+            "the thinking and tool rows share one timed summary"
+        );
+        let layout = window.update(|_, cx| {
+            root.read(cx)
+                .transcript_scroller
+                .read(cx)
+                .process_layout
+                .clone()
+        });
+        let (groups, roles) = (&layout.groups, &layout.roles);
+        assert_eq!(groups.len(), 1);
+        assert!(
+            groups[0].active,
+            "the pending gate keeps the block's clock running"
+        );
+        assert_eq!(groups[0].commands, 1);
+        assert_eq!(groups[0].files_changed, 1);
+        assert_eq!(
+            roles[1],
+            ProcessRowRole::Normal,
+            "the actionable gate row stays outside the fold"
+        );
+        assert!(
+            window.debug_bounds("transcript-row-tool-group-3").is_some(),
+            "a pending approval must never be folded behind that summary"
         );
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
@@ -16987,6 +18993,61 @@ mod tests {
         assert!(
             bubble.origin.x > row.origin.x + row.size.width / 2.,
             "a short message stays on the right half"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn a_user_message_footer_shows_the_time_and_copies_the_text(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        let text = "summarize the migration";
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = tact_desktop_core::TranscriptView::from_rows(vec![Arc::new(
+                    tact_desktop_core::TranscriptRow {
+                        id: RowId::new(0),
+                        ordinal: 0,
+                        loop_id: None,
+                        time: Some(Arc::from("10:42")),
+                        body: tact_desktop_core::RowBody::User(
+                            tact_desktop_core::transcript::UserRow {
+                                text: Arc::from(text),
+                                attachments: Arc::from([]),
+                            },
+                        ),
+                    },
+                )]);
+                this.snapshot = Arc::new(snapshot);
+                this.transcript_rows.clear();
+                this.scroller.update(cx, |state, cx| state.reset(1, cx));
+            });
+            window.draw(cx).clear(cx);
+        });
+        let time = window
+            .debug_bounds("user-time-0")
+            .expect("the message time");
+        let bubble = window.debug_bounds("user-message-0").expect("user bubble");
+        assert!(
+            time.origin.y > bubble.origin.y,
+            "the time sits below the message, not in its header"
+        );
+        let copy = window
+            .debug_bounds("copy-user-0")
+            .expect("the copy control");
+        window.simulate_click(copy.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        let copied = window
+            .update(|_, cx| cx.read_from_clipboard())
+            .and_then(|item| match item.entries.into_iter().next() {
+                Some(gpui::ClipboardEntry::String(entry)) => Some(entry.text),
+                _ => None,
+            });
+        assert_eq!(
+            copied.as_deref(),
+            Some(text),
+            "the copy control writes the message text"
         );
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
@@ -17393,8 +19454,8 @@ mod tests {
         let (controller, _events) = DesktopController::start(config).unwrap();
         let shutdown = controller.clone();
         let (_, window) = cx.add_window_view(move |window, cx| {
-            gpui_ai::init(cx);
-            crate::theme::apply(Appearance::Light, Some(window), cx);
+            gpui_component::init(cx);
+            crate::theme::apply(DesktopTheme::Tact, Appearance::Light, Some(window), cx);
             let root = cx.new(|cx| DesktopRoot::new_for_test(controller, window, cx));
             PermissionHarness { root }
         });
@@ -17417,6 +19478,61 @@ mod tests {
         assert!(
             menu.origin.y >= px(0.0) && menu.origin.y + menu.size.height <= viewport.height,
             "permission menu must fit above the composer trigger: menu={menu:?}, viewport={viewport:?}"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn effort_picker_opens_and_takes_a_choice(cx: &mut TestAppContext) {
+        struct EffortHarness {
+            root: Entity<DesktopRoot>,
+        }
+
+        impl Render for EffortHarness {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                self.root
+                    .update(cx, |root, cx| root.render_effort_picker(cx))
+            }
+        }
+
+        let data_dir = probe_dir("effort-picker");
+        let config = DesktopConfig::load(data_dir.clone()).unwrap();
+        install_test_config(&config);
+        let (controller, _events) = DesktopController::start(config).unwrap();
+        let shutdown = controller.clone();
+        let (_, window) = cx.add_window_view(move |window, cx| {
+            gpui_component::init(cx);
+            crate::theme::apply(DesktopTheme::Tact, Appearance::Light, Some(window), cx);
+            let root = cx.new(|cx| DesktopRoot::new_for_test(controller, window, cx));
+            EffortHarness { root }
+        });
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            window.debug_bounds("effort-picker-menu").is_none(),
+            "the effort choices must start collapsed"
+        );
+        let trigger = window
+            .debug_bounds("effort-picker")
+            .expect("effort picker trigger");
+        window.simulate_click(trigger.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        let menu = window
+            .debug_bounds("effort-picker-menu")
+            .expect("clicking the effort trigger must open the anchored menu");
+        let viewport = window.update(|window, _| window.viewport_size());
+        assert!(
+            menu.origin.y >= px(0.0) && menu.origin.y + menu.size.height <= viewport.height,
+            "effort menu must fit above the composer trigger: menu={menu:?}, viewport={viewport:?}"
+        );
+        let choice = window
+            .debug_bounds("effort-choice-max")
+            .expect("the effort menu offers max");
+        window.simulate_click(choice.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            window.debug_bounds("effort-picker-menu").is_none(),
+            "choosing an effort must close the menu"
         );
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
@@ -17462,6 +19578,105 @@ mod tests {
     }
 
     #[gpui::test]
+    fn a_long_gate_command_preview_stays_bounded(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        let script = (0..60)
+            .map(|line| format!("echo line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let rows = tact_desktop_core::fixtures::demo_transcript()
+            .iter()
+            .map(|row| {
+                let mut row = (**row).clone();
+                if let RowBody::ToolGroup(group) = &mut row.body {
+                    let mut items = group.items.to_vec();
+                    let mut tool_id = None;
+                    if let Some(ToolGroupItem::Tool(tool)) = items.first_mut() {
+                        tool.arg_summary = Arc::from("bash · long script");
+                        tool.arg_full = Some(Arc::from(script.as_str()));
+                        tool_id = Some(tool.tool_id.clone());
+                    }
+                    if let Some(tool_id) = tool_id
+                        && let Some(ToolGroupItem::Gate(gate)) = items
+                            .iter_mut()
+                            .find(|item| matches!(item, ToolGroupItem::Gate(_)))
+                    {
+                        gate.origin = tact_desktop_core::GateOrigin::Tool { tool_id };
+                        gate.prompt = Arc::from("Allow Tact to run this script?");
+                    }
+                    group.items = Arc::from(items);
+                }
+                Arc::new(row)
+            })
+            .collect::<Vec<_>>();
+        let transcript = TranscriptView::from_rows(rows);
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = transcript;
+                this.snapshot = Arc::new(snapshot);
+                this.pending_row_updates
+                    .extend(this.snapshot.transcript.iter().map(|row| row.id));
+                let count = this.snapshot.transcript.len();
+                this.scroller.update(cx, |state, cx| {
+                    state.reset(count, cx);
+                    state.scroll_to_item(5, cx);
+                });
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+            window.draw(cx).clear(cx);
+        });
+        let preview = window
+            .debug_bounds("gate-command-preview")
+            .expect("the gate repeats the command it asks about");
+        assert!(
+            preview.size.height <= px(GATE_COMMAND_MAX_HEIGHT),
+            "the command preview is bounded so the decision stays in view: {:.1}px",
+            preview.size.height.as_f32()
+        );
+        assert!(
+            preview.size.height >= px(100.),
+            "the bounded preview still shows the command: {:.1}px",
+            preview.size.height.as_f32()
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn a_multiline_gate_prompt_keeps_the_banner_one_line(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        let mut gate = tact_desktop_core::fixtures::demo_gate();
+        gate.prompt = Arc::from("Run command: python3 - <<'PY'\nimport json\nprint('x')\nPY");
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = tact_desktop_core::fixtures::demo_transcript();
+                snapshot.pending_gates = Arc::from([gate.clone()]);
+                this.snapshot = Arc::new(snapshot);
+                this.pending_row_updates
+                    .extend(this.snapshot.transcript.iter().map(|row| row.id));
+                let count = this.snapshot.transcript.len();
+                this.scroller.update(cx, |state, cx| {
+                    state.reset(count, cx);
+                });
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+            window.draw(cx).clear(cx);
+        });
+        let banner = window.debug_bounds("gate-banner").expect("gate banner");
+        assert!(
+            banner.size.height <= px(60.),
+            "a command prompt stays one line in the banner: {:.1}px",
+            banner.size.height.as_f32()
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
     fn gate_review_focuses_the_primary_allow_option(cx: &mut TestAppContext) {
         let (root, window, shutdown, data_dir) = probe_root(cx);
         let gate = tact_desktop_core::fixtures::demo_gate();
@@ -17493,7 +19708,11 @@ mod tests {
                 .iter()
                 .find(|row| matches!(row.body, RowBody::Gate(_)))
                 .expect("gate row");
-            let view = root.transcript_rows.get(&row.id).expect("row view");
+            let session_id = root.transcript_session_id();
+            let view = root
+                .transcript_rows
+                .get(&(session_id, row.id))
+                .expect("row view");
             (window.focused(cx), view.read(cx).gate_focus.clone())
         });
         assert_eq!(
@@ -17612,7 +19831,18 @@ mod tests {
                     .filter_map(|index| transcript.iter().find(|row| row.ordinal == index).cloned())
                     .collect::<Vec<_>>();
                 v_flex().size_full().children(rows.into_iter().map(|row| {
-                    transcript_row_element(&row, &snapshot, weak.clone(), None, true, None, false)
+                    transcript_row_element(
+                        &row,
+                        &snapshot,
+                        weak.clone(),
+                        None,
+                        RowViewState {
+                            read_only: true,
+                            gate_focus: None,
+                            thinking_open: false,
+                            plan_yields: false,
+                        },
+                    )
                 }))
             }
         }
@@ -17623,8 +19853,8 @@ mod tests {
         let (controller, _events) = DesktopController::start(config).unwrap();
         let shutdown = controller.clone();
         let (_, window) = cx.add_window_view(move |window, cx| {
-            gpui_ai::init(cx);
-            crate::theme::apply(Appearance::Light, Some(window), cx);
+            gpui_component::init(cx);
+            crate::theme::apply(DesktopTheme::Tact, Appearance::Light, Some(window), cx);
             let root = cx.new(|cx| DesktopRoot::new_for_test(controller, window, cx));
             ReadOnlyTranscriptProbe { root }
         });
@@ -17709,8 +19939,8 @@ mod tests {
         let controller_for_shutdown = controller.clone();
 
         let (_, cx) = cx.add_window_view(move |window, cx| {
-            gpui_ai::init(cx);
-            crate::theme::apply(Appearance::Light, Some(window), cx);
+            gpui_component::init(cx);
+            crate::theme::apply(DesktopTheme::Tact, Appearance::Light, Some(window), cx);
             drop(events);
             let root = cx.new(|cx| DesktopRoot::new_for_test(controller, window, cx));
             Root::new(root, window, cx)
@@ -17777,9 +20007,9 @@ mod tests {
         let view_all = window
             .debug_bounds("view-all-sessions")
             .expect("view all sessions bounds");
-        let extensions = window
-            .debug_bounds("rail-extensions")
-            .expect("rail extensions bounds");
+        let settings = window
+            .debug_bounds("open-settings")
+            .expect("rail settings row");
         let list_bottom = list.origin.y + list.size.height;
         assert!(
             view_all.origin.y - list_bottom <= px(12.),
@@ -17788,8 +20018,62 @@ mod tests {
             view_all.origin.y
         );
         assert!(
-            view_all.origin.y + view_all.size.height <= extensions.origin.y + px(12.),
-            "view-all row overlaps the extensions section"
+            view_all.origin.y + view_all.size.height <= settings.origin.y + px(12.),
+            "view-all row overlaps the Settings entry"
+        );
+        assert!(
+            window.debug_bounds("rail-extensions").is_none(),
+            "the extensions block belongs to the Settings surface, not the rail"
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn the_rail_highlights_the_clicked_session_before_the_switch_lands(cx: &mut TestAppContext) {
+        use tact_desktop_core::{ProjectId, SessionId, SessionSummaryView};
+
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        let items = ["session-a", "session-b"]
+            .into_iter()
+            .map(|id| SessionSummaryView {
+                id: id.to_string(),
+                project_id: ProjectId("tact".into()),
+                root_dir: data_dir.clone(),
+                title: id.to_string(),
+                updated_at: chrono::Utc::now(),
+                archived_at: None,
+                locked: false,
+                message_count: 1,
+                search_score: 0,
+            })
+            .collect();
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                let mut snapshot = (*root.snapshot).clone();
+                snapshot.sessions.items = items;
+                // The click lands before the new host reports its own id, so
+                // the selection and the open session disagree for one frame.
+                snapshot.session.id = Some(SessionId("session-a".into()));
+                snapshot.session.phase = SessionPhase::Ready;
+                snapshot.sessions.selected = Some(SessionId("session-b".into()));
+                root.set_snapshot_for_capture(Arc::new(snapshot), cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        assert!(
+            window
+                .debug_bounds("sidebar-nav-active-session-b")
+                .is_some(),
+            "the row the reader clicked must be highlighted immediately"
+        );
+        assert!(
+            window
+                .debug_bounds("sidebar-nav-active-session-a")
+                .is_none(),
+            "the previous session must not keep the rail's active fill"
         );
 
         shutdown.shutdown_blocking().unwrap();
@@ -17850,9 +20134,11 @@ mod tests {
                     },
                 ]));
                 this.snapshot = Arc::new(snapshot);
-                this.extension_query = "filesystem".into();
                 this.open_overlay(Overlay::Extensions(ExtensionsTab::Mcp));
                 this.extension_manage = true;
+                // Opening resets the popover filter, so a test that wants a
+                // filtered manager must type into it after it opens.
+                this.extension_query = "filesystem".into();
                 cx.notify();
             });
             window.draw(cx).clear(cx);
@@ -17898,6 +20184,128 @@ mod tests {
         assert!(
             window.debug_bounds("queue-item-composer-queue-0").is_none(),
             "queued prompts should start collapsed behind the count badge"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// The queue badge is a composer accessory, not a second input: it keeps
+    /// its own text width and shares the composer's left gutter.
+    #[gpui::test]
+    fn the_queue_badge_is_a_narrow_accessory_above_the_composer(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(840.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.composer.queue = Arc::from([tact_desktop_core::QueuedPromptView {
+                    id: 0,
+                    text: Arc::from("first queued prompt"),
+                    attachments: Arc::from([]),
+                }]);
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+        let badge = window
+            .debug_bounds("composer-queue-toggle")
+            .expect("queue badge");
+        let composer = window
+            .debug_bounds("composer-frame")
+            .expect("composer frame");
+        assert!(
+            badge.size.width < composer.size.width / 2.,
+            "the badge keeps its own text width instead of stretching to the composer: badge={badge:?}, composer={composer:?}"
+        );
+        assert_eq!(
+            badge.origin.x, composer.origin.x,
+            "the badge shares the composer's left gutter"
+        );
+        assert_eq!(
+            composer.origin.y - badge.bottom(),
+            px(crate::ui::layout::ACCESSORY_GAP),
+            "the queue sits one tight gap above the composer: badge={badge:?}, composer={composer:?}"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// A window too narrow for the accessory's own width must clamp it, not
+    /// overflow the composer column.
+    #[gpui::test]
+    fn a_narrow_window_clamps_the_accessories_to_the_composer(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(900.), px(700.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.composer.queue = Arc::from([tact_desktop_core::QueuedPromptView {
+                    id: 0,
+                    text: Arc::from("first queued prompt"),
+                    attachments: Arc::from([]),
+                }]);
+                snapshot.inspector = tact_desktop_core::fixtures::demo_inspector();
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+                this.sticky_tasks_collapsed = false;
+            });
+            window.draw(cx).clear(cx);
+        });
+        let composer = window
+            .debug_bounds("composer-frame")
+            .expect("composer frame");
+        let badge = window
+            .debug_bounds("composer-queue-toggle")
+            .expect("queue badge");
+        let card = window
+            .debug_bounds("sticky-task-card")
+            .expect("sticky task card");
+        for (name, bounds) in [("badge", badge), ("sticky card", card)] {
+            assert!(
+                bounds.size.width <= composer.size.width,
+                "the {name} must clamp to the composer, not overflow it: {bounds:?} vs {composer:?}"
+            );
+            assert!(
+                bounds.right() <= composer.right(),
+                "the {name} must not extend past the composer's right edge: {bounds:?} vs {composer:?}"
+            );
+        }
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// The sticky strip is the composer's accessory: its card shares the
+    /// composer's gutter, is narrower than it, and settles against it.
+    #[gpui::test]
+    fn the_sticky_card_is_a_narrow_accessory_above_the_composer(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(840.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.inspector = tact_desktop_core::fixtures::demo_inspector();
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+                this.sticky_tasks_collapsed = false;
+            });
+            window.draw(cx).clear(cx);
+        });
+        let card = window
+            .debug_bounds("sticky-task-card")
+            .expect("sticky task card");
+        let composer = window
+            .debug_bounds("composer-frame")
+            .expect("composer frame");
+        assert!(
+            card.size.width < composer.size.width,
+            "the card is narrower than the composer it belongs to: card={card:?}, composer={composer:?}"
+        );
+        assert_eq!(
+            card.origin.x, composer.origin.x,
+            "the card shares the composer's left gutter"
+        );
+        assert_eq!(
+            composer.origin.y - card.bottom(),
+            px(crate::ui::layout::ACCESSORY_GAP),
+            "the card settles one tight gap above the composer: card={card:?}, composer={composer:?}"
         );
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
@@ -18147,6 +20555,53 @@ mod tests {
     }
 
     #[test]
+    fn read_image_output_keeps_metadata_and_exposes_the_file_path() {
+        let tool = ToolRow {
+            id: RowId::new(1),
+            tool_id: "image-1".into(),
+            name: "read_image".into(),
+            arg_summary: "charts/crop_bottom.png".into(),
+            arg_full: None,
+            status: RowStatus::Success,
+            body: ToolBody::None,
+            output: ToolOutputView {
+                preview: Arc::from(""),
+                detail: Some(
+                    "<path>/home/rg/Work/charts/crop_bottom.png</path>\n\
+                     <type>image</type>\n\
+                     <content>\n\
+                     image/jpeg image, 1280x354 px, 39578 bytes\n\
+                     </content>"
+                        .into(),
+                ),
+                truncated: false,
+            },
+            meta: ToolMetaView::default(),
+            subagent: None,
+            expanded: true,
+            keep_live: false,
+            destructive: false,
+            duration_ms: None,
+        };
+
+        let envelope = tool.output.detail.as_deref().expect("read_image detail");
+        let image = read_image_output(envelope).expect("read_image envelope");
+        assert_eq!(
+            image.path,
+            PathBuf::from("/home/rg/Work/charts/crop_bottom.png")
+        );
+        assert_eq!(
+            image.summary,
+            "`/home/rg/Work/charts/crop_bottom.png` · image/jpeg · 1280x354 px · 39578 bytes"
+        );
+        assert_eq!(
+            tool_body_markdown(&tool, tact_catalog::CatalogLocale::En),
+            image.summary
+        );
+        assert!(read_image_output("not an image envelope").is_none());
+    }
+
+    #[test]
     fn cancelled_and_unknown_tools_keep_distinct_progress_states() {
         assert_eq!(
             progress_state(RowStatus::Cancelled, tact_catalog::CatalogLocale::En),
@@ -18248,6 +20703,7 @@ mod tests {
     #[gpui::test]
     fn back_to_bottom_floats_above_the_sticky_strip(cx: &mut TestAppContext) {
         let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(600.)));
         window.update(|window, cx| {
             root.update(cx, |this, cx| {
                 let mut snapshot = (*this.snapshot).clone();
@@ -18275,6 +20731,23 @@ mod tests {
         let tail_following =
             window.update(|_, cx| root.read(cx).transcript_scroller.read(cx).tail_following);
         assert!(!tail_following, "back-to-bottom state reached the scroller");
+        assert!(
+            window.debug_bounds("back-to-bottom").is_none(),
+            "the pill must hide while the transcript is already at the last line"
+        );
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.scroller
+                    .update(cx, |state, cx| state.scroll_to_item(0, cx));
+            });
+            window.draw(cx).clear(cx);
+        });
+        window.run_until_parked();
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            window.update(|_, cx| root.read(cx).scroller.read(cx).is_scrolled_up()),
+            "the fixture must actually scroll away from the tail"
+        );
         let sticky = window.debug_bounds("sticky-strip").expect("sticky strip");
         let back = window
             .debug_bounds("back-to-bottom")
@@ -18319,7 +20792,577 @@ mod tests {
             .debug_bounds("extensions-overlay")
             .expect("extensions manager");
         assert_eq!(manager.size.width, px(780.), "manager width");
-        assert_eq!(manager.size.height, px(620.), "manager height");
+        assert!(
+            (px(320.)..=px(620.)).contains(&manager.size.height),
+            "manager height {:?}",
+            manager.size.height
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn extensions_popover_is_centered_in_the_window(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|_, cx| cx.set_reduce_motion(true));
+        window.simulate_resize(size(px(1280.), px(840.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, _cx| {
+                this.open_overlay(Overlay::Extensions(ExtensionsTab::Skills));
+                this.extension_manage = false;
+            });
+            window.draw(cx).clear(cx);
+        });
+        let popover = window
+            .debug_bounds("extensions-overlay")
+            .expect("extensions popover");
+        let viewport = window.update(|window, _| window.viewport_size());
+        let expected_x = (f32::from(viewport.width) - f32::from(popover.size.width)) / 2.0;
+        let expected_y = (f32::from(viewport.height) - f32::from(popover.size.height)) / 2.0;
+        assert!(
+            (f32::from(popover.origin.x) - expected_x).abs() <= 1.0,
+            "popover x {} must center at {expected_x}",
+            f32::from(popover.origin.x)
+        );
+        assert!(
+            (f32::from(popover.origin.y) - expected_y).abs() <= 1.0,
+            "popover y {} must center at {expected_y}",
+            f32::from(popover.origin.y)
+        );
+
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.extension_manage = true;
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        let manager = window
+            .debug_bounds("extensions-overlay")
+            .expect("extensions manager");
+        let expected_x = (f32::from(viewport.width) - f32::from(manager.size.width)) / 2.0;
+        let expected_y = (f32::from(viewport.height) - f32::from(manager.size.height)) / 2.0;
+        assert!(
+            (f32::from(manager.origin.x) - expected_x).abs() <= 1.0,
+            "manager x {} must center at {expected_x}",
+            f32::from(manager.origin.x)
+        );
+        assert!(
+            (f32::from(manager.origin.y) - expected_y).abs() <= 1.0,
+            "manager y {} must center at {expected_y}",
+            f32::from(manager.origin.y)
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn pressing_enter_on_a_searched_skill_inserts_it_into_the_composer(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                let mut snapshot = (*root.snapshot).clone();
+                snapshot.extensions.snapshot.skills = vec![tact_host::SkillSnapshot {
+                    name: "rust-skills".into(),
+                    description: "Comprehensive Rust coding guidelines".into(),
+                    enabled: true,
+                    path: "/skills/rust-skills/SKILL.md".into(),
+                }];
+                root.snapshot = Arc::new(snapshot);
+                root.open_overlay(Overlay::Extensions(ExtensionsTab::Skills));
+                root.extension_manage = false;
+                root.extension_query = "rust".into();
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                root.extension_search.update(cx, |input, cx| {
+                    input.set_value("rust", window, cx);
+                    input.focus(window, cx);
+                });
+            });
+        });
+
+        window.simulate_keystrokes("enter");
+
+        let (draft, overlay) = window.update(|_, cx| {
+            let root = root.read(cx);
+            (
+                root.prompt.read(cx).draft(cx).to_string(),
+                root.overlay.is_some(),
+            )
+        });
+        assert_eq!(draft, "/skill rust-skills ");
+        assert!(!overlay, "inserting a skill closes the extensions popover");
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn popover_search_enter_with_no_query_does_not_insert_a_skill(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                let mut snapshot = (*root.snapshot).clone();
+                snapshot.extensions.snapshot.skills = vec![tact_host::SkillSnapshot {
+                    name: "rust-skills".into(),
+                    description: "Comprehensive Rust coding guidelines".into(),
+                    enabled: true,
+                    path: "/skills/rust-skills/SKILL.md".into(),
+                }];
+                root.snapshot = Arc::new(snapshot);
+                root.open_overlay(Overlay::Extensions(ExtensionsTab::Skills));
+                root.extension_manage = false;
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                root.extension_search
+                    .update(cx, |input, cx| input.focus(window, cx));
+            });
+        });
+
+        window.simulate_keystrokes("enter");
+
+        let (draft, overlay) = window.update(|_, cx| {
+            let root = root.read(cx);
+            (
+                root.prompt.read(cx).draft(cx).to_string(),
+                root.overlay.is_some(),
+            )
+        });
+        assert_eq!(draft, "", "an empty search must not insert a skill");
+        assert!(overlay, "an empty search Enter keeps the popover open");
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn enter_inserts_only_a_skill_the_list_shows(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                let mut snapshot = (*root.snapshot).clone();
+                snapshot.extensions.snapshot.skills = vec![tact_host::SkillSnapshot {
+                    name: "rust-skills".into(),
+                    description: "Comprehensive Rust coding guidelines".into(),
+                    enabled: true,
+                    path: "/skills/rust-skills/SKILL.md".into(),
+                }];
+                root.snapshot = Arc::new(snapshot);
+                root.open_overlay(Overlay::Extensions(ExtensionsTab::Skills));
+                root.extension_manage = false;
+                root.extension_query = "guidelines".into();
+                root.extension_search.update(cx, |input, cx| {
+                    input.set_value("guidelines", window, cx);
+                    input.focus(window, cx);
+                });
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        assert!(
+            window.debug_bounds("skill-row-rust-skills").is_some(),
+            "a description match must still render its row"
+        );
+
+        window.simulate_keystrokes("enter");
+        window.run_until_parked();
+        let draft = window.update(|_, cx| root.read(cx).prompt.read(cx).draft(cx).to_string());
+        assert_eq!(draft, "/skill rust-skills ");
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn inserting_a_skill_never_toggles_it(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                let mut snapshot = (*root.snapshot).clone();
+                snapshot.extensions.snapshot.skills = vec![tact_host::SkillSnapshot {
+                    name: "rust-skills".into(),
+                    description: "Comprehensive Rust coding guidelines".into(),
+                    enabled: true,
+                    path: "/skills/rust-skills/SKILL.md".into(),
+                }];
+                root.snapshot = Arc::new(snapshot);
+                root.open_overlay(Overlay::Extensions(ExtensionsTab::Skills));
+                root.extension_manage = false;
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        let row = window
+            .debug_bounds("skill-row-rust-skills")
+            .expect("skill row");
+        window.simulate_click(row.center(), gpui::Modifiers::default());
+        window.run_until_parked();
+
+        let (draft, enabled) = window.update(|_, cx| {
+            let root = root.read(cx);
+            (
+                root.prompt.read(cx).draft(cx).to_string(),
+                root.snapshot
+                    .extensions
+                    .snapshot
+                    .skills
+                    .first()
+                    .map(|skill| skill.enabled)
+                    .unwrap_or(false),
+            )
+        });
+        assert_eq!(draft, "/skill rust-skills ");
+        assert!(enabled, "inserting a skill must not disable it");
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn reopening_the_popover_drops_the_previous_filter(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                let mut snapshot = (*root.snapshot).clone();
+                snapshot.extensions.snapshot.skills = ["alpha", "zeta"]
+                    .into_iter()
+                    .map(|name| tact_host::SkillSnapshot {
+                        name: name.into(),
+                        description: format!("{name} skill"),
+                        enabled: true,
+                        path: format!("/skills/{name}/SKILL.md"),
+                    })
+                    .collect();
+                root.snapshot = Arc::new(snapshot);
+                root.open_overlay(Overlay::Extensions(ExtensionsTab::Skills));
+                root.extension_query = "zeta".into();
+                root.extension_search.update(cx, |input, cx| {
+                    input.set_value("zeta", window, cx);
+                });
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| root.insert_skill("zeta", window, cx));
+        });
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                root.open_overlay(Overlay::Extensions(ExtensionsTab::Skills));
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        let (query, input_value) = window.update(|_, cx| {
+            let root = root.read(cx);
+            (
+                root.extension_query.clone(),
+                root.extension_search.read(cx).value().to_string(),
+            )
+        });
+        assert_eq!(query, "", "reopening must not keep the old query");
+        assert_eq!(input_value, "", "reopening must clear the search field");
+        assert!(
+            window.debug_bounds("skill-row-alpha").is_some(),
+            "an unfiltered popover lists every skill"
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn an_unmatched_query_shows_the_empty_state_and_inserts_nothing(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                let mut snapshot = (*root.snapshot).clone();
+                snapshot.extensions.snapshot.skills = vec![tact_host::SkillSnapshot {
+                    name: "rust-skills".into(),
+                    description: "Comprehensive Rust coding guidelines".into(),
+                    enabled: true,
+                    path: "/skills/rust-skills/SKILL.md".into(),
+                }];
+                root.snapshot = Arc::new(snapshot);
+                root.open_overlay(Overlay::Extensions(ExtensionsTab::Skills));
+                root.extension_query = "kubernetes".into();
+                root.extension_search.update(cx, |input, cx| {
+                    input.set_value("kubernetes", window, cx);
+                    input.focus(window, cx);
+                });
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        assert!(
+            window.debug_bounds("extensions-empty").is_some(),
+            "an unmatched query shows the empty state"
+        );
+        assert!(window.debug_bounds("skill-row-rust-skills").is_none());
+
+        window.simulate_keystrokes("enter");
+        window.run_until_parked();
+        let draft = window.update(|_, cx| root.read(cx).prompt.read(cx).draft(cx).to_string());
+        assert_eq!(draft, "", "Enter must not insert a hidden skill");
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn popover_skills_sort_alphabetically_without_a_query(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                let mut snapshot = (*root.snapshot).clone();
+                snapshot.extensions.snapshot.skills = ["zeta", "alpha"]
+                    .into_iter()
+                    .map(|name| tact_host::SkillSnapshot {
+                        name: name.into(),
+                        description: format!("{name} description"),
+                        enabled: true,
+                        path: format!("/skills/{name}/SKILL.md"),
+                    })
+                    .collect();
+                root.snapshot = Arc::new(snapshot);
+                root.open_overlay(Overlay::Extensions(ExtensionsTab::Skills));
+                root.extension_manage = false;
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        let alpha = window
+            .debug_bounds("skill-row-alpha")
+            .expect("alpha skill row");
+        let zeta = window
+            .debug_bounds("skill-row-zeta")
+            .expect("zeta skill row");
+        assert!(
+            alpha.origin.y < zeta.origin.y,
+            "alpha {alpha:?} must render before zeta {zeta:?}"
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn clicking_a_skill_row_inserts_it_into_the_composer(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                let mut snapshot = (*root.snapshot).clone();
+                snapshot.extensions.snapshot.skills = vec![tact_host::SkillSnapshot {
+                    name: "rust-skills".into(),
+                    description: "Comprehensive Rust coding guidelines".into(),
+                    enabled: true,
+                    path: "/skills/rust-skills/SKILL.md".into(),
+                }];
+                root.snapshot = Arc::new(snapshot);
+                root.open_overlay(Overlay::Extensions(ExtensionsTab::Skills));
+                root.extension_manage = false;
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        let row = window
+            .debug_bounds("skill-row-rust-skills")
+            .expect("skill row");
+        window.simulate_click(row.center(), gpui::Modifiers::default());
+        window.run_until_parked();
+
+        let (draft, overlay) = window.update(|_, cx| {
+            let root = root.read(cx);
+            (
+                root.prompt.read(cx).draft(cx).to_string(),
+                root.overlay.is_some(),
+            )
+        });
+        assert_eq!(draft, "/skill rust-skills ");
+        assert!(!overlay, "inserting a skill closes the extensions popover");
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn manager_search_enter_keeps_the_manager_open(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                let mut snapshot = (*root.snapshot).clone();
+                snapshot.extensions.snapshot.skills = vec![tact_host::SkillSnapshot {
+                    name: "rust-skills".into(),
+                    description: "Comprehensive Rust coding guidelines".into(),
+                    enabled: true,
+                    path: "/skills/rust-skills/SKILL.md".into(),
+                }];
+                root.snapshot = Arc::new(snapshot);
+                root.open_overlay(Overlay::Extensions(ExtensionsTab::Skills));
+                root.extension_manage = true;
+                root.extension_query = "rust".into();
+                root.extension_search.update(cx, |input, cx| {
+                    input.set_value("rust", window, cx);
+                    input.focus(window, cx);
+                });
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        window.simulate_keystrokes("enter");
+        window.run_until_parked();
+
+        let (draft, overlay, manage) = window.update(|_, cx| {
+            let root = root.read(cx);
+            (
+                root.prompt.read(cx).draft(cx).to_string(),
+                root.overlay.is_some(),
+                root.extension_manage,
+            )
+        });
+        assert_eq!(draft, "", "manager search must not insert a skill");
+        assert!(overlay, "manager search must keep the manager open");
+        assert!(manage, "manager search must keep manager mode");
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn manager_skill_activation_toggles_instead_of_inserting(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                let mut snapshot = (*root.snapshot).clone();
+                snapshot.extensions.snapshot.skills = vec![tact_host::SkillSnapshot {
+                    name: "rust-skills".into(),
+                    description: "Comprehensive Rust coding guidelines".into(),
+                    enabled: true,
+                    path: "/skills/rust-skills/SKILL.md".into(),
+                }];
+                root.snapshot = Arc::new(snapshot);
+                root.open_overlay(Overlay::Extensions(ExtensionsTab::Skills));
+                root.extension_manage = true;
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        let action = window
+            .debug_bounds("filter-table-open-skill|toggle|rust-skills")
+            .expect("skill toggle action");
+        window.simulate_click(action.center(), gpui::Modifiers::default());
+        window.run_until_parked();
+
+        let (draft, overlay, manage) = window.update(|_, cx| {
+            let root = root.read(cx);
+            (
+                root.prompt.read(cx).draft(cx).to_string(),
+                root.overlay.is_some(),
+                root.extension_manage,
+            )
+        });
+        assert_eq!(draft, "", "the manager must not insert a skill");
+        assert!(overlay, "the manager must stay open");
+        assert!(manage, "the manager must stay in manager mode");
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn popover_skill_toggle_does_not_insert(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                let mut snapshot = (*root.snapshot).clone();
+                snapshot.extensions.snapshot.skills = vec![tact_host::SkillSnapshot {
+                    name: "rust-skills".into(),
+                    description: "Comprehensive Rust coding guidelines".into(),
+                    enabled: true,
+                    path: "/skills/rust-skills/SKILL.md".into(),
+                }];
+                root.snapshot = Arc::new(snapshot);
+                root.open_overlay(Overlay::Extensions(ExtensionsTab::Skills));
+                root.extension_manage = false;
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        let toggle = window
+            .debug_bounds("skill-toggle-rust-skills")
+            .expect("skill toggle");
+        window.simulate_click(toggle.center(), gpui::Modifiers::default());
+        window.run_until_parked();
+
+        let (draft, overlay) = window.update(|_, cx| {
+            let root = root.read(cx);
+            (
+                root.prompt.read(cx).draft(cx).to_string(),
+                root.overlay.is_some(),
+            )
+        });
+        assert_eq!(draft, "", "the inline toggle must not insert the skill");
+        assert!(overlay, "toggling keeps the popover open");
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn popover_skill_toggle_stays_inside_the_popover_with_a_long_description(
+        cx: &mut TestAppContext,
+    ) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |root, cx| {
+                let mut snapshot = (*root.snapshot).clone();
+                snapshot.extensions.snapshot.skills = vec![tact_host::SkillSnapshot {
+                    name: "rust-skills".into(),
+                    description:
+                        "Comprehensive Rust coding guidelines with a deliberately long tail that used to push the inline toggle out of the popover"
+                            .into(),
+                    enabled: true,
+                    path: "/skills/rust-skills/SKILL.md".into(),
+                }];
+                root.snapshot = Arc::new(snapshot);
+                root.open_overlay(Overlay::Extensions(ExtensionsTab::Skills));
+                root.extension_manage = false;
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        let popover = window
+            .debug_bounds("extensions-overlay")
+            .expect("extensions popover");
+        let toggle = window
+            .debug_bounds("skill-toggle-rust-skills")
+            .expect("skill toggle");
+        assert!(
+            toggle.origin.x + toggle.size.width <= popover.origin.x + popover.size.width,
+            "skill toggle {:?} must stay inside popover {:?}",
+            toggle,
+            popover
+        );
 
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
@@ -18503,7 +21546,11 @@ mod tests {
         });
         let hooks = window.debug_bounds("hooks-overlay").expect("hooks sheet");
         assert_eq!(hooks.size.width, px(780.), "hooks sheet width");
-        assert_eq!(hooks.size.height, px(620.), "hooks sheet height");
+        assert!(
+            (px(320.)..=px(620.)).contains(&hooks.size.height),
+            "hooks height {:?}",
+            hooks.size.height
+        );
 
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
@@ -18865,86 +21912,50 @@ mod tests {
     #[test]
     fn tool_only_plans_yield_to_the_tool_rows() {
         let base = tact_desktop_core::fixtures::demo_transcript();
-        let rows = base
-            .iter()
-            .map(|row| {
-                let mut row = (**row).clone();
-                if matches!(row.body, RowBody::Plan(_)) {
-                    row.body = RowBody::Plan(tact_desktop_core::PlanRow {
-                        title: Arc::from("Execution plan"),
-                        steps: Arc::from([tact_desktop_core::PlanStep {
-                            tool_id: Some(Arc::from("tool-4")),
-                            label: Arc::from("cargo test -p tact store::session_store"),
-                            status: RowStatus::Success,
-                            detail: Some(Arc::from("shell")),
-                        }]),
-                    });
-                }
-                Arc::new(row)
-            })
-            .collect::<Vec<_>>();
-        let transcript = TranscriptView::from_rows(rows);
-        let plan_row = transcript
-            .iter()
-            .find(|row| matches!(row.body, RowBody::Plan(_)))
-            .expect("plan row");
-        let RowBody::Plan(plan) = &plan_row.body else {
-            unreachable!()
+        // Rewrite the demo plan with `steps` and report whether its card yields
+        // to the run's tool group, all else unchanged.
+        let plan_yields = |steps: [tact_desktop_core::PlanStep; 2]| {
+            let rows = base
+                .iter()
+                .map(|row| {
+                    let mut row = (**row).clone();
+                    if matches!(row.body, RowBody::Plan(_)) {
+                        row.body = RowBody::Plan(tact_desktop_core::PlanRow {
+                            title: Arc::from("Execution plan"),
+                            steps: Arc::from(steps.clone()),
+                        });
+                    }
+                    Arc::new(row)
+                })
+                .collect::<Vec<_>>();
+            let plan_id = rows
+                .iter()
+                .find(|row| matches!(row.body, RowBody::Plan(_)))
+                .expect("plan row")
+                .id;
+            let yielded = yielded_plans(&rows);
+            yielded.contains(&plan_id)
         };
-        assert!(
-            plan_is_tool_execution(plan_row, plan, &transcript),
-            "a one-step plan that is the tool call must not draw a second card"
-        );
+        let step =
+            |tool_id: Option<&str>, label: &str, status: RowStatus| tact_desktop_core::PlanStep {
+                tool_id: tool_id.map(Arc::from),
+                label: Arc::from(label),
+                status,
+                detail: Some(Arc::from("shell")),
+            };
 
-        let mut multi = (**plan_row).clone();
-        multi.body = RowBody::Plan(tact_desktop_core::PlanRow {
-            title: Arc::from("Execution plan"),
-            steps: Arc::from([
-                tact_desktop_core::PlanStep {
-                    tool_id: Some(Arc::from("tool-4")),
-                    label: Arc::from("Run the store tests"),
-                    status: RowStatus::Success,
-                    detail: Some(Arc::from("shell")),
-                },
-                tact_desktop_core::PlanStep {
-                    tool_id: Some(Arc::from("tool-5")),
-                    label: Arc::from("Edit the store"),
-                    status: RowStatus::Running,
-                    detail: Some(Arc::from("edit")),
-                },
-            ]),
-        });
-        let RowBody::Plan(multi_plan) = &multi.body else {
-            unreachable!()
-        };
         assert!(
-            plan_is_tool_execution(&multi, multi_plan, &transcript),
+            plan_yields([
+                step(Some("tool-4"), "Run the store tests", RowStatus::Success),
+                step(Some("tool-5"), "Edit the store", RowStatus::Running),
+            ]),
             "a multi-step plan that only repeats tool rows must not draw a second card"
         );
-
-        let mut conceptual = (**plan_row).clone();
-        conceptual.body = RowBody::Plan(tact_desktop_core::PlanRow {
-            title: Arc::from("Execution plan"),
-            steps: Arc::from([
-                tact_desktop_core::PlanStep {
-                    tool_id: None,
-                    label: Arc::from("Inspect the store"),
-                    status: RowStatus::Success,
-                    detail: None,
-                },
-                tact_desktop_core::PlanStep {
-                    tool_id: Some(Arc::from("tool-4")),
-                    label: Arc::from("Run the tests"),
-                    status: RowStatus::Running,
-                    detail: Some(Arc::from("shell")),
-                },
-            ]),
-        });
-        let RowBody::Plan(conceptual_plan) = &conceptual.body else {
-            unreachable!()
-        };
         assert!(
-            !plan_is_tool_execution(&conceptual, conceptual_plan, &transcript),
+            !plan_yields([
+                step(None, "Inspect the store", RowStatus::Success),
+                step(Some("tool-4"), "Run the tests", RowStatus::Running),
+            ]),
             "a conceptual step keeps the plan card"
         );
     }
@@ -18957,12 +21968,791 @@ mod tests {
     }
 
     #[test]
+    fn project_groups_share_the_repository_directory_identity() {
+        let project = tact_desktop_core::ProjectView {
+            id: Some(ProjectId("p".into())),
+            root: Some("/tmp/gateway".into()),
+            display_name: "gateway".into(),
+            branch: None,
+            repository: Some("acme/gateway".into()),
+            available: true,
+        };
+        let label = project_identity_label(&project);
+        assert_eq!(label, "acme/gateway");
+        assert_eq!(project_initials(&label), "AG");
+
+        let local = tact_desktop_core::ProjectView {
+            repository: None,
+            display_name: "dotfiles".into(),
+            ..project
+        };
+        assert_eq!(project_identity_label(&local), "dotfiles");
+        assert_eq!(project_initials("dotfiles"), "D");
+    }
+
+    #[test]
     fn run_titles_drop_a_leading_url() {
         assert_eq!(
             strip_leading_url("https://labcoder.github.io/gpui-ai 分析下这个库"),
             "分析下这个库"
         );
         assert_eq!(strip_leading_url("  plain title"), "  plain title");
+    }
+
+    #[test]
+    fn process_summary_counts_commands_files_and_skills() {
+        let group = ProcessGroup {
+            first_index: 0,
+            end_index: 4,
+            first_row: RowId::new(0),
+            first_ordinal: 0,
+            commands: 25,
+            files_read: 12,
+            files_changed: 0,
+            skills: 1,
+            other_tools: 0,
+            thoughts: 3,
+            active: false,
+        };
+        assert_eq!(
+            process_summary_text(&group, tact_catalog::CatalogLocale::En),
+            "3 thoughts, ran 25 commands, read 12 files, ran 1 skill"
+        );
+        assert_eq!(
+            process_summary_text(&group, tact_catalog::CatalogLocale::Zh),
+            "3 段思考，运行了 25 条命令，读取了 12 个文件，运行了 1 个 skill"
+        );
+        let mut without_thoughts = group.clone();
+        without_thoughts.thoughts = 0;
+        assert_eq!(
+            process_summary_text(&without_thoughts, tact_catalog::CatalogLocale::En),
+            "Ran 25 commands, read 12 files, ran 1 skill"
+        );
+        assert_eq!(
+            process_summary_text(&without_thoughts, tact_catalog::CatalogLocale::Zh),
+            "运行了 25 条命令，读取了 12 个文件，运行了 1 个 skill"
+        );
+    }
+
+    #[test]
+    fn commentary_assistant_text_joins_the_process_group() {
+        use tact_desktop_core::transcript::AssistantRow;
+        let assistant = |phase| {
+            RowBody::Assistant(AssistantRow {
+                markdown: Arc::from("note"),
+                status: RowStatus::Success,
+                suggestions: Arc::from([]),
+                phase,
+            })
+        };
+        assert!(is_process_row(&assistant(Some(MessagePhase::Commentary))));
+        assert!(!is_process_row(&assistant(Some(MessagePhase::FinalAnswer))));
+        assert!(!is_process_row(&assistant(None)));
+    }
+
+    #[test]
+    fn answers_only_keeps_pending_gates_and_errors() {
+        use tact_desktop_core::{ToolGroupItem, ToolGroupRow, transcript::ErrorRow};
+        let gate = tact_desktop_core::fixtures::demo_gate();
+        assert!(answers_only_visible(&RowBody::Gate(gate.clone())));
+        let loop_id = tact_desktop_core::fixtures::demo_transcript()
+            .iter()
+            .find_map(|row| match &row.body {
+                RowBody::ToolGroup(group) => Some(group.loop_id),
+                _ => None,
+            })
+            .expect("demo tool group");
+        assert!(answers_only_visible(&RowBody::ToolGroup(ToolGroupRow {
+            loop_id,
+            items: Arc::from([ToolGroupItem::Gate(gate)]),
+            summary: Arc::from("permission"),
+            collapsed: false,
+            collapse_override: None,
+        })));
+        assert!(answers_only_visible(&RowBody::Error(ErrorRow {
+            message: Arc::from("boom"),
+            retryable: false,
+        })));
+    }
+
+    #[gpui::test]
+    fn hidden_tool_plans_do_not_split_the_activity_group(cx: &mut TestAppContext) {
+        use tact_desktop_core::{
+            PlanRow, PlanStep, ToolBody, ToolGroupItem, ToolGroupRow, ToolMetaView, ToolOutputView,
+            ToolRow,
+            transcript::{AssistantRow, ThinkingRow},
+        };
+
+        fn row(
+            id: u64,
+            loop_id: Option<tact_desktop_core::LoopId>,
+            body: RowBody,
+        ) -> Arc<TranscriptRow> {
+            Arc::new(TranscriptRow {
+                id: RowId::new(id),
+                ordinal: id,
+                loop_id,
+                time: None,
+                body,
+            })
+        }
+
+        fn thinking() -> RowBody {
+            RowBody::Thinking(ThinkingRow {
+                markdown: Arc::from("thinking"),
+                status: RowStatus::Success,
+                duration_ms: None,
+            })
+        }
+
+        fn tool_plan(tool_id: &str) -> RowBody {
+            RowBody::Plan(PlanRow {
+                title: Arc::from("plan"),
+                steps: Arc::from([PlanStep {
+                    tool_id: Some(Arc::from(tool_id)),
+                    label: Arc::from("run"),
+                    status: RowStatus::Success,
+                    detail: None,
+                }]),
+            })
+        }
+
+        fn tool_group(loop_id: tact_desktop_core::LoopId, id: u64, tool_id: &str) -> RowBody {
+            RowBody::ToolGroup(ToolGroupRow {
+                loop_id,
+                items: Arc::from([ToolGroupItem::Tool(ToolRow {
+                    id: RowId::new(id + 100),
+                    tool_id: Arc::from(tool_id),
+                    name: Arc::from("bash"),
+                    arg_summary: Arc::from("echo hi"),
+                    arg_full: None,
+                    status: RowStatus::Success,
+                    body: ToolBody::None,
+                    output: ToolOutputView::default(),
+                    meta: ToolMetaView::default(),
+                    subagent: None,
+                    expanded: false,
+                    keep_live: false,
+                    destructive: false,
+                    duration_ms: None,
+                })]),
+                summary: Arc::from("bash"),
+                collapsed: true,
+                collapse_override: None,
+            })
+        }
+
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(1200.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let demo = tact_desktop_core::fixtures::demo_transcript();
+                let loop_id = demo
+                    .iter()
+                    .find_map(|row| match &row.body {
+                        RowBody::ToolGroup(group) => Some(group.loop_id),
+                        _ => None,
+                    })
+                    .expect("demo tool group");
+                let rows = vec![
+                    row(0, Some(loop_id), thinking()),
+                    row(1, Some(loop_id), tool_plan("tool-1")),
+                    row(2, Some(loop_id), tool_group(loop_id, 2, "tool-1")),
+                    row(3, Some(loop_id), thinking()),
+                    row(4, Some(loop_id), tool_plan("tool-2")),
+                    row(5, Some(loop_id), tool_group(loop_id, 5, "tool-2")),
+                    row(
+                        6,
+                        Some(loop_id),
+                        RowBody::Assistant(AssistantRow {
+                            markdown: Arc::from("answer"),
+                            status: RowStatus::Success,
+                            suggestions: Arc::from(Vec::<Arc<str>>::new()),
+                            phase: None,
+                        }),
+                    ),
+                ];
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = TranscriptView::from_rows(rows);
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        let layout = window.update(|_, cx| {
+            root.read(cx)
+                .transcript_scroller
+                .read(cx)
+                .process_layout
+                .clone()
+        });
+        assert_eq!(
+            layout.groups.len(),
+            1,
+            "hidden tool plans must not split the activity group"
+        );
+        let groups = &layout.groups;
+        assert_eq!(groups[0].thoughts, 2);
+        assert_eq!(groups[0].commands, 2);
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn commentary_text_joins_the_activity_group_but_the_answer_stays_out(cx: &mut TestAppContext) {
+        use tact_desktop_core::{
+            ToolBody, ToolGroupItem, ToolGroupRow, ToolMetaView, ToolOutputView, ToolRow,
+            transcript::{AssistantRow, ThinkingRow},
+        };
+
+        fn row(id: u64, body: RowBody) -> Arc<TranscriptRow> {
+            Arc::new(TranscriptRow {
+                id: RowId::new(id),
+                ordinal: id,
+                loop_id: None,
+                time: None,
+                body,
+            })
+        }
+
+        fn assistant(text: &str, phase: MessagePhase) -> RowBody {
+            RowBody::Assistant(AssistantRow {
+                markdown: Arc::from(text),
+                status: RowStatus::Success,
+                suggestions: Arc::from([]),
+                phase: Some(phase),
+            })
+        }
+
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let loop_id = tact_desktop_core::fixtures::demo_transcript()
+                    .iter()
+                    .find_map(|row| match &row.body {
+                        RowBody::ToolGroup(group) => Some(group.loop_id),
+                        _ => None,
+                    })
+                    .expect("demo tool group");
+                let rows = vec![
+                    row(
+                        0,
+                        RowBody::Thinking(ThinkingRow {
+                            markdown: Arc::from("plan"),
+                            status: RowStatus::Success,
+                            duration_ms: None,
+                        }),
+                    ),
+                    row(1, assistant("checking the store", MessagePhase::Commentary)),
+                    row(
+                        2,
+                        RowBody::ToolGroup(ToolGroupRow {
+                            loop_id,
+                            items: Arc::from([ToolGroupItem::Tool(ToolRow {
+                                id: RowId::new(12),
+                                tool_id: Arc::from("tool-1"),
+                                name: Arc::from("bash"),
+                                arg_summary: Arc::from("echo hi"),
+                                arg_full: None,
+                                status: RowStatus::Success,
+                                body: ToolBody::None,
+                                output: ToolOutputView::default(),
+                                meta: ToolMetaView::default(),
+                                subagent: None,
+                                expanded: false,
+                                keep_live: false,
+                                destructive: false,
+                                duration_ms: None,
+                            })]),
+                            summary: Arc::from("bash"),
+                            collapsed: true,
+                            collapse_override: None,
+                        }),
+                    ),
+                    row(3, assistant("done", MessagePhase::FinalAnswer)),
+                ];
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = TranscriptView::from_rows(rows);
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        let layout = window.update(|_, cx| {
+            root.read(cx)
+                .transcript_scroller
+                .read(cx)
+                .process_layout
+                .clone()
+        });
+        let (groups, roles) = (&layout.groups, &layout.roles);
+        assert_eq!(groups.len(), 1, "commentary must stay in one process group");
+        assert_eq!(groups[0].thoughts, 1);
+        assert_eq!(groups[0].commands, 1);
+        assert_eq!(
+            roles[1],
+            ProcessRowRole::Hidden(0),
+            "the narration row is part of the group"
+        );
+        assert_eq!(
+            roles[3],
+            ProcessRowRole::Normal,
+            "the final answer stays outside the group"
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn answers_only_hides_process_rows_and_keeps_the_answer(cx: &mut TestAppContext) {
+        use tact_desktop_core::{
+            ToolBody, ToolGroupItem, ToolGroupRow, ToolMetaView, ToolOutputView, ToolRow,
+            transcript::{AssistantRow, ThinkingRow, UserRow},
+        };
+
+        fn row(id: u64, body: RowBody) -> Arc<TranscriptRow> {
+            Arc::new(TranscriptRow {
+                id: RowId::new(id),
+                ordinal: id,
+                loop_id: None,
+                time: None,
+                body,
+            })
+        }
+
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(1400.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let loop_id = tact_desktop_core::fixtures::demo_transcript()
+                    .iter()
+                    .find_map(|row| match &row.body {
+                        RowBody::ToolGroup(group) => Some(group.loop_id),
+                        _ => None,
+                    })
+                    .expect("demo tool group");
+                let rows = vec![
+                    row(
+                        0,
+                        RowBody::User(UserRow {
+                            text: Arc::from("question"),
+                            attachments: Arc::from([]),
+                        }),
+                    ),
+                    row(
+                        1,
+                        RowBody::Thinking(ThinkingRow {
+                            markdown: Arc::from("plan"),
+                            status: RowStatus::Success,
+                            duration_ms: None,
+                        }),
+                    ),
+                    row(
+                        2,
+                        RowBody::ToolGroup(ToolGroupRow {
+                            loop_id,
+                            items: Arc::from([ToolGroupItem::Tool(ToolRow {
+                                id: RowId::new(12),
+                                tool_id: Arc::from("tool-1"),
+                                name: Arc::from("bash"),
+                                arg_summary: Arc::from("echo hi"),
+                                arg_full: None,
+                                status: RowStatus::Success,
+                                body: ToolBody::None,
+                                output: ToolOutputView::default(),
+                                meta: ToolMetaView::default(),
+                                subagent: None,
+                                expanded: false,
+                                keep_live: false,
+                                destructive: false,
+                                duration_ms: None,
+                            })]),
+                            summary: Arc::from("bash"),
+                            collapsed: true,
+                            collapse_override: None,
+                        }),
+                    ),
+                    row(
+                        3,
+                        RowBody::Assistant(AssistantRow {
+                            markdown: Arc::from("checking"),
+                            status: RowStatus::Success,
+                            suggestions: Arc::from([]),
+                            phase: Some(MessagePhase::Commentary),
+                        }),
+                    ),
+                    row(
+                        4,
+                        RowBody::Assistant(AssistantRow {
+                            markdown: Arc::from("answer"),
+                            status: RowStatus::Success,
+                            suggestions: Arc::from([]),
+                            phase: Some(MessagePhase::FinalAnswer),
+                        }),
+                    ),
+                ];
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = TranscriptView::from_rows(rows);
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        let toggle = window
+            .debug_bounds("run-tab-answers-only")
+            .expect("answers-only toggle");
+        window.simulate_click(toggle.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+
+        assert!(
+            window.debug_bounds("transcript-row-user-0").is_some(),
+            "the user's question stays"
+        );
+        assert!(
+            window.debug_bounds("transcript-row-assistant-4").is_some(),
+            "the final answer stays"
+        );
+        assert!(
+            window.debug_bounds("transcript-row-thinking-1").is_none()
+                && window.debug_bounds("transcript-row-tool-group-2").is_none()
+                && window.debug_bounds("transcript-row-assistant-3").is_none(),
+            "process rows are hidden"
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn the_process_summary_label_switches_from_live_to_counts() {
+        let group = ProcessGroup {
+            first_index: 0,
+            end_index: 2,
+            first_row: RowId::new(0),
+            first_ordinal: 0,
+            commands: 4,
+            files_read: 0,
+            files_changed: 0,
+            skills: 0,
+            other_tools: 0,
+            thoughts: 3,
+            active: true,
+        };
+        assert_eq!(
+            process_summary_label(
+                &group,
+                Some("Running · edit_file bridge.rs"),
+                Some("2s"),
+                tact_catalog::CatalogLocale::En,
+            ),
+            "2s · Running · edit_file bridge.rs"
+        );
+        let mut settled = group.clone();
+        settled.active = false;
+        assert_eq!(
+            process_summary_label(&settled, None, Some("2s"), tact_catalog::CatalogLocale::En),
+            "2s · 3 thoughts, ran 4 commands"
+        );
+    }
+
+    fn summary_row(id: u64, body: RowBody) -> Arc<TranscriptRow> {
+        Arc::new(TranscriptRow {
+            id: RowId::new(id),
+            ordinal: id,
+            loop_id: None,
+            time: None,
+            body,
+        })
+    }
+
+    fn summary_thinking(status: RowStatus) -> RowBody {
+        RowBody::Thinking(tact_desktop_core::transcript::ThinkingRow {
+            markdown: Arc::from("plan"),
+            status,
+            duration_ms: None,
+        })
+    }
+
+    fn summary_tool_group(loop_id: tact_desktop_core::LoopId, status: RowStatus) -> RowBody {
+        use tact_desktop_core::{
+            ToolBody, ToolGroupItem, ToolGroupRow, ToolMetaView, ToolOutputView, ToolRow,
+        };
+        RowBody::ToolGroup(ToolGroupRow {
+            loop_id,
+            items: Arc::from([ToolGroupItem::Tool(ToolRow {
+                id: RowId::new(12),
+                tool_id: Arc::from("tool-1"),
+                name: Arc::from("bash"),
+                arg_summary: Arc::from("echo hi"),
+                arg_full: None,
+                status,
+                body: ToolBody::None,
+                output: ToolOutputView::default(),
+                meta: ToolMetaView::default(),
+                subagent: None,
+                expanded: false,
+                keep_live: false,
+                destructive: false,
+                duration_ms: None,
+            })]),
+            summary: Arc::from("bash"),
+            collapsed: true,
+            collapse_override: None,
+        })
+    }
+
+    #[gpui::test]
+    fn the_process_summary_shows_the_live_status_and_keeps_its_clock(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(1400.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let loop_id = tact_desktop_core::fixtures::demo_transcript()
+                    .iter()
+                    .find_map(|row| match &row.body {
+                        RowBody::ToolGroup(group) => Some(group.loop_id),
+                        _ => None,
+                    })
+                    .expect("demo tool group");
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.session.phase = SessionPhase::Running;
+                snapshot.runtime.current_phase = tact_desktop_core::RunPhase::RunningTools;
+                snapshot.runtime.latest_tool_detail = Some(LatestToolView {
+                    tool_id: "call-live".into(),
+                    group: None,
+                    row: None,
+                    label: "Editing root.rs".into(),
+                    duration_ms: None,
+                    status: RowStatus::Running,
+                });
+                snapshot.transcript = TranscriptView::from_rows(vec![
+                    summary_row(0, summary_thinking(RowStatus::Running)),
+                    summary_row(1, summary_tool_group(loop_id, RowStatus::Pending)),
+                ]);
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        assert!(
+            window
+                .debug_bounds("transcript-process-summary-0")
+                .is_some(),
+            "the running status lives on the process summary"
+        );
+        let started_at = window.update(|_, cx| {
+            root.read(cx)
+                .transcript_scroller
+                .read(cx)
+                .group_started
+                .get(&RowId::new(0))
+                .copied()
+        });
+        assert!(started_at.is_some(), "an active group gets a clock");
+        assert!(
+            window.debug_bounds("composer-live-activity").is_none(),
+            "the standalone composer chip is gone"
+        );
+
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let loop_id = tact_desktop_core::fixtures::demo_transcript()
+                    .iter()
+                    .find_map(|row| match &row.body {
+                        RowBody::ToolGroup(group) => Some(group.loop_id),
+                        _ => None,
+                    })
+                    .expect("demo tool group");
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = TranscriptView::from_rows(vec![
+                    summary_row(0, summary_thinking(RowStatus::Success)),
+                    summary_row(1, summary_tool_group(loop_id, RowStatus::Running)),
+                ]);
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+        assert_eq!(
+            window.update(|_, cx| {
+                root.read(cx)
+                    .transcript_scroller
+                    .read(cx)
+                    .group_started
+                    .get(&RowId::new(0))
+                    .copied()
+            }),
+            started_at,
+            "the clock spans thinking into tools without restarting"
+        );
+
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let loop_id = tact_desktop_core::fixtures::demo_transcript()
+                    .iter()
+                    .find_map(|row| match &row.body {
+                        RowBody::ToolGroup(group) => Some(group.loop_id),
+                        _ => None,
+                    })
+                    .expect("demo tool group");
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.session.phase = SessionPhase::Ready;
+                snapshot.transcript = TranscriptView::from_rows(vec![
+                    summary_row(0, summary_thinking(RowStatus::Success)),
+                    summary_row(1, summary_tool_group(loop_id, RowStatus::Success)),
+                ]);
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        let (started, elapsed) = window.update(|_, cx| {
+            let scroller = root.read(cx).transcript_scroller.read(cx);
+            (
+                scroller.group_started.contains_key(&RowId::new(0)),
+                scroller.group_elapsed.get(&RowId::new(0)).cloned(),
+            )
+        });
+        assert!(!started, "the clock stops when the group settles");
+        assert!(
+            elapsed.is_some_and(|elapsed| !elapsed.is_empty()),
+            "the settled summary keeps the elapsed time"
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn the_process_summary_clock_survives_a_tool_batch_boundary(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(1400.)));
+        let loop_id = tact_desktop_core::fixtures::demo_transcript()
+            .iter()
+            .find_map(|row| match &row.body {
+                RowBody::ToolGroup(group) => Some(group.loop_id),
+                _ => None,
+            })
+            .expect("demo tool group");
+
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.session.phase = SessionPhase::Running;
+                snapshot.runtime.current_phase = tact_desktop_core::RunPhase::RunningTools;
+                snapshot.transcript = TranscriptView::from_rows(vec![
+                    summary_row(0, summary_thinking(RowStatus::Running)),
+                    summary_row(1, summary_tool_group(loop_id, RowStatus::Pending)),
+                ]);
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+        let started_at = window
+            .update(|_, cx| {
+                root.read(cx)
+                    .transcript_scroller
+                    .read(cx)
+                    .group_started
+                    .get(&RowId::new(0))
+                    .copied()
+            })
+            .expect("an active group gets a clock");
+
+        // The model is between requests: no row runs until the next thinking
+        // chunk arrives, so the group goes idle for a moment.
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.session.phase = SessionPhase::Running;
+                snapshot.transcript = TranscriptView::from_rows(vec![
+                    summary_row(0, summary_thinking(RowStatus::Success)),
+                    summary_row(1, summary_tool_group(loop_id, RowStatus::Success)),
+                ]);
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+        assert_eq!(
+            window.update(|_, cx| {
+                root.read(cx)
+                    .transcript_scroller
+                    .read(cx)
+                    .group_started
+                    .get(&RowId::new(0))
+                    .copied()
+            }),
+            Some(started_at),
+            "an idle gap must not restart the group's clock"
+        );
+
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.session.phase = SessionPhase::Running;
+                snapshot.runtime.current_phase = tact_desktop_core::RunPhase::Thinking;
+                snapshot.transcript = TranscriptView::from_rows(vec![
+                    summary_row(0, summary_thinking(RowStatus::Success)),
+                    summary_row(1, summary_tool_group(loop_id, RowStatus::Success)),
+                    summary_row(2, summary_thinking(RowStatus::Running)),
+                ]);
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+        assert_eq!(
+            window.update(|_, cx| {
+                root.read(cx)
+                    .transcript_scroller
+                    .read(cx)
+                    .group_started
+                    .get(&RowId::new(0))
+                    .copied()
+            }),
+            Some(started_at),
+            "the clock keeps its original start when the group wakes up again"
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn the_run_header_clock_repaints_while_a_run_is_active(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.session.phase = SessionPhase::Running;
+                snapshot.runtime.turn_started_at =
+                    Some(chrono::Utc::now() - chrono::Duration::seconds(5));
+                this.snapshot = Arc::new(snapshot);
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        assert!(
+            window.update(|_, cx| root.read(cx).run_clock_timer.is_some()),
+            "a running turn owns a one-second header clock"
+        );
+
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.session.phase = SessionPhase::Ready;
+                this.snapshot = Arc::new(snapshot);
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        assert!(
+            window.update(|_, cx| root.read(cx).run_clock_timer.is_none()),
+            "the settled run drops its timer"
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
     }
 
     #[gpui::test]
@@ -18990,12 +22780,124 @@ mod tests {
             "composer x"
         );
 
-        let sticky = window.debug_bounds("sticky-strip").expect("sticky strip");
-        assert_eq!(sticky.size.width, px(900.), "sticky width");
+        // The strip itself is the full-width band above the composer; the
+        // column it centers is the composer's own column, which is what makes
+        // the card share the input's gutter at every window width.
+        let column = window.debug_bounds("sticky-column").expect("sticky column");
         assert_eq!(
-            sticky.origin.x,
-            area.origin.x + (area.size.width - px(900.)) / 2.,
-            "sticky x"
+            column.size.width,
+            px(crate::ui::layout::COMPOSER_WIDTH),
+            "the sticky column matches the composer column"
+        );
+        assert_eq!(
+            column.origin.x, composer.origin.x,
+            "the sticky column shares the composer gutter"
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn run_header_sits_close_to_the_chat_tabs(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(840.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = tact_desktop_core::fixtures::demo_transcript();
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+        let tabs = window.debug_bounds("run-tabs").expect("run tabs");
+        let meta = window
+            .debug_bounds("transcript-run-meta")
+            .expect("run header meta");
+        assert!(
+            meta.origin.y - tabs.bottom() <= px(28.),
+            "the run header must not leave a large gap under the tabs: tabs={tabs:?}, meta={meta:?}"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn panel_dividers_resize_the_rail_and_the_inspector(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1440.), px(900.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.left_visible = true;
+                this.right_visible = true;
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        let rail = window.debug_bounds("session-rail").expect("session rail");
+        let rail_before = rail.size.width;
+        let boundary = window
+            .debug_bounds("rail-divider")
+            .expect("rail divider")
+            .center();
+        window.simulate_mouse_down(
+            boundary,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        window.simulate_mouse_move(
+            boundary + point(px(60.), px(0.)),
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::default(),
+        );
+        window.simulate_mouse_up(
+            boundary + point(px(60.), px(0.)),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        draw(window);
+        let rail_after = window
+            .debug_bounds("session-rail")
+            .expect("session rail after drag")
+            .size
+            .width;
+        assert!(
+            rail_after > rail_before + px(40.),
+            "dragging the left divider must widen the rail: {rail_before:?} -> {rail_after:?}"
+        );
+
+        let inspector = window.debug_bounds("run-inspector").expect("run inspector");
+        let inspector_before = inspector.size.width;
+        let boundary = window
+            .debug_bounds("inspector-divider")
+            .expect("inspector divider")
+            .center();
+        window.simulate_mouse_down(
+            boundary,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        window.simulate_mouse_move(
+            boundary - point(px(60.), px(0.)),
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::default(),
+        );
+        window.simulate_mouse_up(
+            boundary - point(px(60.), px(0.)),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        draw(window);
+        let inspector_after = window
+            .debug_bounds("run-inspector")
+            .expect("run inspector after drag")
+            .size
+            .width;
+        assert!(
+            inspector_after > inspector_before + px(40.),
+            "dragging the right divider must widen the inspector: \
+             {inspector_before:?} -> {inspector_after:?}"
         );
 
         shutdown.shutdown_blocking().unwrap();
@@ -19050,17 +22952,23 @@ mod tests {
             "the session list should take about a third of the window, got {list:?} of {viewport:?}"
         );
 
-        // Extensions moved to the rail's bottom, below the session list and
-        // the view-all row, so the least-used block stops crowding the list.
-        let extensions = window
-            .debug_bounds("rail-extensions")
-            .expect("rail extensions bounds");
+        // The extensions block no longer competes with the session list; the
+        // rail keeps only the Settings entry at its bottom.
         let view_all = window
             .debug_bounds("view-all-sessions")
             .expect("view all sessions bounds");
         assert!(
-            extensions.origin.y > view_all.origin.y,
-            "extensions belong below the session list: extensions={extensions:?}, view_all={view_all:?}"
+            window.debug_bounds("rail-extensions").is_none(),
+            "extension entries belong to Settings, not the rail"
+        );
+        assert!(
+            view_all.origin.y
+                < window
+                    .debug_bounds("open-settings")
+                    .expect("rail settings row")
+                    .origin
+                    .y,
+            "Settings stays below the session list"
         );
 
         // The duplicate rows are gone for good: a second copy of the
@@ -19085,6 +22993,239 @@ mod tests {
             "removing the durable block must not push Settings off the rail"
         );
 
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn session_rail_groups_sessions_by_project(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(900.)));
+        window.update(|window, cx| {
+            root.update(cx, install_two_project_sessions);
+            window.draw(cx).clear(cx);
+        });
+        let first_header = window
+            .debug_bounds("sidebar-nav-section-sessions-project-project-a")
+            .expect("project A heading");
+        let first_row = window
+            .debug_bounds("sidebar-nav-item-session-a")
+            .expect("project A session");
+        let second_header = window
+            .debug_bounds("sidebar-nav-section-sessions-project-project-b")
+            .expect("project B heading");
+        let second_row = window
+            .debug_bounds("sidebar-nav-item-session-b")
+            .expect("project B session");
+        assert!(
+            window
+                .debug_bounds("sidebar-nav-section-leading-sessions-project-project-a")
+                .is_some(),
+            "project A's heading must carry the shared project avatar"
+        );
+        assert!(
+            window
+                .debug_bounds("sidebar-nav-section-count-sessions-project-project-a")
+                .is_some(),
+            "project A's heading must carry its session count"
+        );
+        assert!(
+            first_header.origin.y < first_row.origin.y
+                && first_row.origin.y < second_header.origin.y
+                && second_header.origin.y < second_row.origin.y,
+            "sessions must sit under their project headings in recency order: {first_header:?}, {first_row:?}, {second_header:?}, {second_row:?}"
+        );
+        let children = window
+            .debug_bounds("sidebar-nav-section-children-sessions-project-project-a")
+            .expect("project A child tree");
+        assert!(
+            children.origin.x > first_header.origin.x && first_row.origin.x > first_header.origin.x,
+            "session rows must indent under their project node: header={first_header:?}, children={children:?}, row={first_row:?}"
+        );
+        window.simulate_click(first_header.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            window.debug_bounds("sidebar-nav-item-session-a").is_none(),
+            "collapsing a project must hide its session children"
+        );
+        window.update(|_, cx| {
+            assert!(
+                root.read(cx)
+                    .collapsed_session_projects
+                    .contains(&tact_desktop_core::ProjectId("project-a".into())),
+                "the rail must report the collapsed project"
+            );
+        });
+        window.simulate_click(first_header.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            window.debug_bounds("sidebar-nav-item-session-a").is_some(),
+            "expanding a project must restore its session children"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn project_remove_entry_opens_a_confirmation(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(900.)));
+        window.update(|window, cx| {
+            root.update(cx, install_two_project_sessions);
+            window.draw(cx).clear(cx);
+        });
+        let remove = window
+            .debug_bounds("sidebar-nav-section-action-sessions-project-project-a")
+            .expect("project remove action");
+        window.simulate_click(remove.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            window.debug_bounds("command-form-overlay").is_some(),
+            "the project remove action must open a confirmation surface"
+        );
+        assert!(
+            window.debug_bounds("form-choice-remove").is_some()
+                && window.debug_bounds("form-choice-cancel").is_some(),
+            "the confirmation must offer remove and cancel"
+        );
+        let remove_choice = window
+            .debug_bounds("form-choice-remove")
+            .expect("remove choice");
+        window.simulate_click(remove_choice.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            window.debug_bounds("command-form-overlay").is_none(),
+            "confirming removal must dismiss the confirmation surface"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn session_manager_groups_sessions_by_project(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(900.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                install_two_project_sessions(this, cx);
+                this.session_project_filter = None;
+                this.open_overlay(Overlay::SessionManager);
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        let first_header = window
+            .debug_bounds("manager-project-group-project-a")
+            .expect("manager project A heading");
+        let first_row = window
+            .debug_bounds("manager-session-session-a")
+            .expect("manager project A session");
+        let second_header = window
+            .debug_bounds("manager-project-group-project-b")
+            .expect("manager project B heading");
+        let second_row = window
+            .debug_bounds("manager-session-session-b")
+            .expect("manager project B session");
+        assert!(
+            window
+                .debug_bounds("manager-project-group-leading-project-a")
+                .is_some(),
+            "manager project A heading must carry the shared project avatar"
+        );
+        assert!(
+            window
+                .debug_bounds("manager-project-group-count-project-a")
+                .is_some(),
+            "manager project A heading must carry its session count"
+        );
+        assert!(
+            window
+                .debug_bounds("manager-remove-project-project-a")
+                .is_some(),
+            "the manager project directory must expose a remove action"
+        );
+        assert!(
+            window.debug_bounds("archive-session-session-a").is_some(),
+            "the session manager must expose archive for each session"
+        );
+        assert!(
+            first_header.origin.y < first_row.origin.y
+                && first_row.origin.y < second_header.origin.y
+                && second_header.origin.y < second_row.origin.y,
+            "manager rows must sit under their project headings: {first_header:?}, {first_row:?}, {second_header:?}, {second_row:?}"
+        );
+        assert!(
+            first_row.origin.x > first_header.origin.x,
+            "manager session rows must indent under their project node"
+        );
+        window.simulate_click(first_header.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            window.debug_bounds("manager-session-session-a").is_none(),
+            "collapsing a manager project must hide its session children"
+        );
+        assert!(
+            window.debug_bounds("manager-session-session-b").is_some(),
+            "collapsing one project must leave other project nodes visible"
+        );
+        window.simulate_click(first_header.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            window.debug_bounds("manager-session-session-a").is_some(),
+            "expanding a manager project must restore its session children"
+        );
+        let project_b = window
+            .debug_bounds("manager-project-project-b")
+            .expect("project B filter");
+        window.simulate_click(project_b.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            window.debug_bounds("manager-session-session-a").is_none(),
+            "the project filter must hide sessions from other projects"
+        );
+        assert!(
+            window.debug_bounds("manager-session-session-b").is_some(),
+            "the selected project's sessions must remain visible"
+        );
+        assert!(
+            window.debug_bounds("session-manager-overlay").is_some(),
+            "filtering by project must not close the manager"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
+    fn composer_has_no_project_directory_or_new_run_entry(cx: &mut TestAppContext) {
+        let (_root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(900.)));
+        window.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        assert!(
+            window.debug_bounds("composer-frame").is_some(),
+            "the composer itself must remain"
+        );
+        assert!(
+            window.debug_bounds("composer-project").is_none(),
+            "the composer must not repeat the project directory"
+        );
+        assert!(
+            window.debug_bounds("open-project").is_none(),
+            "the old rail project switcher must be gone"
+        );
+        assert!(
+            window.debug_bounds("new-run").is_none(),
+            "New Run must not be a standalone rail entry"
+        );
+        assert!(
+            window.debug_bounds("composer-new-run").is_none(),
+            "New Run must not be attached to the removed project bar"
+        );
+        assert!(
+            window.debug_bounds("workspace-switcher").is_some(),
+            "project switching remains available from the title bar"
+        );
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
     }
@@ -19227,7 +23368,7 @@ mod tests {
 
     #[gpui::test]
     fn localized_component_labels_are_not_english(cx: &mut TestAppContext) {
-        cx.update(gpui_ai::init);
+        cx.update(gpui_component::init);
         type CapturedLabels = Arc<std::sync::Mutex<(Option<String>, Option<String>)>>;
         struct LabelProbe {
             captured: CapturedLabels,
@@ -19243,7 +23384,7 @@ mod tests {
                                     tact_catalog::CatalogLocale::Zh,
                                     TextKey::Attachment,
                                 ))
-                                .items([PromptAttachment::new("notes.md", "notes.md")]),
+                                .items([AttachmentItem::new("notes.md", "notes.md")]),
                             window,
                             cx,
                         )
@@ -19286,7 +23427,7 @@ mod tests {
 
     #[gpui::test]
     fn localized_answer_and_suggestion_labels_are_not_english(cx: &mut TestAppContext) {
-        cx.update(gpui_ai::init);
+        cx.update(gpui_component::init);
         type CapturedLabels = Arc<std::sync::Mutex<(Option<String>, Option<String>)>>;
         struct LabelProbe {
             captured: CapturedLabels,
@@ -19510,8 +23651,8 @@ mod tests {
         let (controller, _events) = DesktopController::start(config).unwrap();
         let shutdown = controller.clone();
         let (probe, window) = cx.add_window_view(move |window, cx| {
-            gpui_ai::init(cx);
-            crate::theme::apply(Appearance::Light, Some(window), cx);
+            gpui_component::init(cx);
+            crate::theme::apply(DesktopTheme::Tact, Appearance::Light, Some(window), cx);
             let root = cx.new(|cx| DesktopRoot::new_for_test(controller, window, cx));
             root.update(cx, |this, cx| {
                 let mut snapshot = (*this.snapshot).clone();
@@ -19658,6 +23799,63 @@ mod tests {
     }
 
     #[gpui::test]
+    fn the_model_picker_keeps_its_slot_while_the_composer_initialises(cx: &mut TestAppContext) {
+        fn trigger_x(
+            window: &mut VisualTestContext,
+            root: &Entity<DesktopRoot>,
+            models: &[&str],
+            model: &str,
+            phase: SessionPhase,
+        ) -> f32 {
+            window.update(|_, cx| {
+                root.update(cx, |this, cx| {
+                    let mut snapshot = (*this.snapshot).clone();
+                    snapshot.composer.models = models
+                        .iter()
+                        .map(|model| Arc::from(*model))
+                        .collect::<Vec<_>>()
+                        .into();
+                    snapshot.composer.model = Arc::from(model);
+                    snapshot.session.phase = phase;
+                    this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+                });
+            });
+            draw(window);
+            window
+                .debug_bounds("prompt-bar-model-trigger")
+                .expect("model trigger renders")
+                .origin
+                .x
+                .as_f32()
+        }
+
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(840.)));
+        draw(window);
+        let initial = window
+            .debug_bounds("prompt-bar-model-trigger")
+            .expect("model trigger renders")
+            .origin
+            .x
+            .as_f32();
+        let model = "opencode-go/deepseek-v4.1-flash";
+        let loaded = trigger_x(window, &root, &[model], model, SessionPhase::Ready);
+        let starting = trigger_x(window, &root, &[model], model, SessionPhase::Starting);
+        assert_eq!(
+            initial, loaded,
+            "the model trigger must not move when the model list loads: \
+             initial={initial}, loaded={loaded}"
+        );
+        assert_eq!(
+            loaded, starting,
+            "the model trigger must not move while the session starts: \
+             loaded={loaded}, starting={starting}"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
     fn model_menu_scrolls_past_its_first_screenful(cx: &mut TestAppContext) {
         let (root, window, shutdown, data_dir) = probe_root(cx);
         window.simulate_resize(size(px(1280.), px(840.)));
@@ -19685,13 +23883,16 @@ mod tests {
             .debug_bounds("prompt-bar-model-picker")
             .expect("model menu opens");
         assert!(
-            menu.size.height <= px(240.) && menu.bottom() <= trigger.top(),
+            menu.size.height <= px(270.) && menu.bottom() <= trigger.top(),
             "the menu stays capped and flips above the composer: menu={menu:?}, trigger={trigger:?}"
         );
         let transcript_before = window
             .debug_bounds("transcript-row-thinking-2")
             .expect("transcript row behind the menu");
-        let wheel_at = point(menu.origin.x + px(20.), menu.origin.y + px(20.));
+        let model_list = window
+            .debug_bounds("prompt-bar-model-list")
+            .expect("model rows render");
+        let wheel_at = point(model_list.origin.x + px(20.), model_list.origin.y + px(20.));
         let transcript_view = window
             .debug_bounds("desktop-transcript")
             .expect("transcript viewport renders");
@@ -19700,12 +23901,46 @@ mod tests {
             "the wheel must land over the transcript for the isolation check to mean \
              anything: viewport={transcript_view:?}, wheel={wheel_at:?}"
         );
-        let last_after = assert_scrolls_past_cap(
-            window,
-            wheel_at,
-            "prompt-bar-model-option-model-00",
-            "prompt-bar-model-option-model-27",
+        assert!(
+            window.debug_bounds("prompt-bar-model-search").is_some(),
+            "a model list longer than eight rows needs its own search"
         );
+        window.simulate_event(gpui::ScrollWheelEvent {
+            position: wheel_at,
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-2000.))),
+            ..Default::default()
+        });
+        draw(window);
+        assert!(
+            window
+                .debug_bounds("prompt-bar-model-option-model-00")
+                .is_none(),
+            "row scrolling must window out rows above the viewport"
+        );
+        assert!(
+            window
+                .debug_bounds("prompt-bar-model-option-model-27")
+                .is_some(),
+            "the last model remains visible after row scrolling"
+        );
+        let search = window
+            .debug_bounds("prompt-bar-model-search")
+            .expect("model search field");
+        window.simulate_click(search.center(), gpui::Modifiers::default());
+        window.simulate_input("27");
+        draw(window);
+        assert!(
+            window
+                .debug_bounds("prompt-bar-model-option-model-27")
+                .is_some()
+                && window
+                    .debug_bounds("prompt-bar-model-option-model-00")
+                    .is_none(),
+            "typing in the model search must filter the row window"
+        );
+        let last_after = window
+            .debug_bounds("prompt-bar-model-option-model-27")
+            .expect("the filtered model row");
         let transcript_after = window
             .debug_bounds("transcript-row-thinking-2")
             .expect("transcript row after scrolling");
@@ -19813,14 +24048,58 @@ mod tests {
             .debug_bounds("prompt-bar-suggestion-0")
             .expect("first mention row renders")
             .center();
-        assert_scrolls_past_cap(
-            window,
-            at,
-            "prompt-bar-suggestion-0",
-            "prompt-bar-suggestion-29",
+        window.simulate_event(gpui::ScrollWheelEvent {
+            position: at,
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-2000.))),
+            ..Default::default()
+        });
+        draw(window);
+        assert!(
+            window.debug_bounds("prompt-bar-suggestion-0").is_none(),
+            "row scrolling must window out suggestions above the viewport"
+        );
+        assert!(
+            window.debug_bounds("prompt-bar-suggestion-29").is_some(),
+            "the last mention must remain reachable after row scrolling"
         );
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
         let _ = std::fs::remove_dir_all(project);
+    }
+
+    #[gpui::test]
+    fn informational_toasts_hide_after_three_seconds(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.show_toast(
+                    Toast {
+                        title: "Settings".into(),
+                        body: "Updated".into(),
+                    },
+                    true,
+                    cx,
+                );
+            });
+            window.draw(cx).clear(cx);
+        });
+        assert!(
+            window.debug_bounds("desktop-toast").is_some(),
+            "the notification starts visible"
+        );
+
+        window
+            .cx
+            .background_executor
+            .advance_clock(std::time::Duration::from_secs(4));
+        window.run_until_parked();
+        draw(window);
+
+        assert!(
+            window.debug_bounds("desktop-toast").is_none(),
+            "informational notifications dismiss themselves after three seconds"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
     }
 }
