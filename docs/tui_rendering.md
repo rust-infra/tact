@@ -49,14 +49,14 @@ Log box.
 Pure renderers accept `agent_tui_kit::render::ctx::RenderCtx`. The app builds
 one context per frame from disjoint reads of `App`.
 
-<<<<<<< HEAD
 ```text
 App
   -> RenderCtx
   -> pure render functions
   -> Vec<RenderCommand> and popup mouse surfaces
   -> App applies the commands after the frame
-=======
+```
+
 **Narrow-width drop order** (each row independently; `fit_row_spans` drops from the end of the group list, and push order *is* survival priority):
 Row 1 drops **uptime → path** (permission mode, branch and account are never dropped). It carries no task clock: the live one is the log's task-stats row (2026-10-05).
 Row 2 drops **timing → turns → cache → ctx** (model, `out` and `think` are never dropped, so `ctx` survives longest among the droppable segments).
@@ -279,28 +279,12 @@ pub(crate) trait Renderable {
     fn render_partial(&self, area: Rect, buf: &mut Buffer, skip_lines: usize);
     fn height(&self, width: u16) -> u16;
 }
->>>>>>> origin/main
 ```
 
 Render code cannot mutate `App`. A renderer that needs to queue a message,
 repaint, or record a click area returns a typed command or hit area.
 
-## Prepare phases
-
-Some work needs mutable state or host data before drawing:
-
-- `crates/tui/src/render/log.rs` rebuilds logical-to-physical row maps, wrapped
-  visual caches, viewport clipping, and the live stats row reserve.
-- `crates/tui/src/render/input.rs` clamps and scrolls the caret into view.
-- popup modules may load a diff, prepare Markdown, or cache rendered selection
-  text.
-
-<<<<<<< HEAD
-The prepare phase and the pure renderer consume the same frame geometry. This
-keeps scroll, mouse hit testing, and painted rows aligned.
-
-## Module map
-=======
+### Card Cells
 - `thinking.rs`: borderless direct card with a header row carrying the title, elapsed time, line count and open button, then one row per reasoning line; a finished card is that header alone
 - `diff.rs`: green `+` prefix, shows file path and line numbers
 - `code.rs`: dark blue-gray background, shows language tag and code preview
@@ -359,8 +343,20 @@ Reasoning text starts at `LOG_THINKING_INDENT + 1`, the same column assistant
 prose lands in, so a reasoning line and the reply under it share a vertical. The
 border used to provide that column; `CONTENT_PAD` now does.
 
----
->>>>>>> origin/main
+## Prepare phases
+
+Some work needs mutable state or host data before drawing:
+
+- `crates/tui/src/render/log.rs` rebuilds logical-to-physical row maps, wrapped
+  visual caches, viewport clipping, and the live stats row reserve.
+- `crates/tui/src/render/input.rs` clamps and scrolls the caret into view.
+- popup modules may load a diff, prepare Markdown, or cache rendered selection
+  text.
+
+The prepare phase and the pure renderer consume the same frame geometry. This
+keeps scroll, mouse hit testing, and painted rows aligned.
+
+## Module map
 
 ```text
 crates/tui/src/
