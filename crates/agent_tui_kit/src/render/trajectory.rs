@@ -78,6 +78,19 @@ impl TrajectoryPageState {
         }
     }
 
+    /// A state positioned at an explicit offset.
+    ///
+    /// An offset only means something when the view is not following: while
+    /// following, the renderer derives the offset from the content, so setting
+    /// one without clearing `follow` would be silently ignored.
+    pub fn scrolled_to(offset: usize) -> Self {
+        Self {
+            follow: false,
+            scroll: offset,
+            ..Self::default()
+        }
+    }
+
     /// Whether the overview is drawn at this content height.
     ///
     /// The reader's explicit choice wins; otherwise the page decides from the
@@ -128,6 +141,25 @@ pub fn ledger_rows(log: &TrajectoryLog, filter: &str) -> Vec<LedgerRow> {
         last_turn = Some(record.turn);
     }
     rows
+}
+
+/// How many painted lines `rows` occupies, turn rules included.
+///
+/// The ledger's scroll offset is in painted lines, not records: a turn rule
+/// costs one and a record costs one, so a record's painted offset is not its
+/// index. Both the follower and the scroll clamp need this same number, and
+/// two implementations of it would drift.
+pub fn painted_lines(rows: &[LedgerRow]) -> usize {
+    rows.iter()
+        .map(|row| if row.starts_turn { 2 } else { 1 })
+        .sum()
+}
+
+/// The offset that keeps the last record in view.
+///
+/// Zero when the content already fits, so a short ledger never scrolls.
+pub fn follow_offset(rows: &[LedgerRow], visible: u16) -> usize {
+    painted_lines(rows).saturating_sub(visible as usize)
 }
 
 /// How many ledger rows fit, given whether the overview and detail are open.
@@ -374,11 +406,21 @@ fn render_ledger(
         .saturating_sub(INDEX_COLS as u16 + kind_cols as u16 + tail_cols as u16)
         as usize;
 
+    // Following the tail is resolved here rather than in the app: the render is
+    // the only place that knows how many rows fit *and* how many painted lines
+    // the ledger has, and a follower that guessed at either would park the view
+    // one row short of the newest record.
+    let offset = if state.follow {
+        follow_offset(&rows, inner.height)
+    } else {
+        state.scroll
+    };
+
     // Count painted lines so the scroll offset is in the unit the reader sees.
     let mut painted = 0u16;
     let mut skipped = 0usize;
     for row in &rows {
-        if skipped < state.scroll {
+        if skipped < offset {
             skipped += if row.starts_turn { 2 } else { 1 };
             continue;
         }
@@ -477,9 +519,17 @@ fn render_ledger_row(
         ),
     ];
 
-    // The summary, truncated to the column, never wrapped: one record is one row.
-    let mut text = record.text.clone();
-    if record.tool_name.is_none() && record.kind == TrajectoryKind::Tool {
+    // The summary, truncated to the column, never wrapped: one record is one
+    // row. A running tool reports what it last printed, because "read_file" on
+    // a call that has been going for a minute tells the reader nothing.
+    let mut text = match &record.live_tail {
+        Some(tail) if record.status == Some(TrajectoryStatus::Running) => tail.clone(),
+        _ => record.text.clone(),
+    };
+    if record.tool_name.is_none()
+        && record.kind == TrajectoryKind::Tool
+        && record.live_tail.is_none()
+    {
         text = "(tool)".to_string();
     }
     let truncated = truncate_to(&text, text_cols);
@@ -515,7 +565,7 @@ fn status_marker(status: Option<TrajectoryStatus>) -> char {
         Some(TrajectoryStatus::Success) => '✓',
         Some(TrajectoryStatus::Failed) => '✗',
         Some(TrajectoryStatus::Cancelled) => '⊘',
-        Some(TrajectoryStatus::Running) => '◐',
+        Some(TrajectoryStatus::Running) => '▶',
         Some(TrajectoryStatus::Queued) => '·',
         None => ' ',
     }
@@ -1049,10 +1099,7 @@ mod tests {
     #[test]
     fn scrolling_skips_painted_rows_not_records() {
         let log = log_with(6);
-        let state = TrajectoryPageState {
-            scroll: 4,
-            ..TrajectoryPageState::new()
-        };
+        let state = TrajectoryPageState::scrolled_to(4);
         let text = paint(80, 20, &log, &state);
         assert!(
             !text.contains("src/file-0.rs"),
@@ -1091,5 +1138,171 @@ mod tests {
         assert_eq!(truncate_to("exactly-ten", 11), "exactly-ten");
         assert_eq!(truncate_to("abcdefghij", 5), "abcd…");
         assert_eq!(truncate_to("anything", 0), "");
+    }
+}
+
+#[cfg(test)]
+mod live_render_tests {
+    use ratatui::{Terminal, backend::TestBackend};
+    use tact_protocol::{AgentUpdate, ToolOutputChunk, ToolPresentationInfo};
+
+    use super::*;
+    use crate::theme::ThemeName;
+
+    fn queued(tool_id: &str, args: &str) -> AgentUpdate {
+        AgentUpdate::StepQueued {
+            idx: 0,
+            tool_id: tool_id.into(),
+            tool_name: "bash".into(),
+            arg_summary: args.into(),
+            arg_full: String::new(),
+            presentation: ToolPresentationInfo::generic("bash"),
+        }
+    }
+
+    fn progress(tool_id: &str, text: &str) -> AgentUpdate {
+        AgentUpdate::ToolProgress {
+            run_id: None,
+            tool_id: tool_id.into(),
+            chunks: vec![ToolOutputChunk::stdout(text)],
+        }
+    }
+
+    fn paint(log: &TrajectoryLog, state: &TrajectoryPageState, height: u16) -> String {
+        let backend = TestBackend::new(80, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let theme = Theme::from(ThemeName::Dark);
+        terminal
+            .draw(|frame| {
+                render_trajectory_page(frame.area(), frame.buffer_mut(), log, state, &theme);
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let mut out = String::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                out.push_str(buffer[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    /// A running call shows what it printed instead of its argument summary.
+    #[test]
+    fn a_running_row_paints_the_live_output() {
+        let mut log = TrajectoryLog::new();
+        log.begin_turn();
+        log.observe(&queued("call-1", "cargo test"));
+        log.observe(&progress("call-1", "compiling tui v0.1.0"));
+
+        let text = paint(&log, &TrajectoryPageState::new(), 20);
+        assert!(
+            text.contains("compiling tui v0.1.0"),
+            "the row reports live output:\n{text}"
+        );
+        assert!(
+            !text.contains("cargo test"),
+            "and not the stale argument line:\n{text}"
+        );
+        assert!(
+            text.contains('▶'),
+            "a running row has a run marker:\n{text}"
+        );
+    }
+
+    /// The final body wins once the call is done: a finished row never shows a
+    /// fragment.
+    #[test]
+    fn a_finished_row_returns_to_its_summary() {
+        let mut log = TrajectoryLog::new();
+        log.begin_turn();
+        log.observe(&queued("call-1", "cargo test"));
+        log.observe(&progress("call-1", "compiling"));
+        log.observe(&AgentUpdate::StepFinished {
+            idx: 0,
+            run_id: None,
+            tool_id: "call-1".into(),
+            result: tact_protocol::StepResult {
+                tool: "bash".into(),
+                arg_summary: "cargo test".into(),
+                arg_full: None,
+                status: tact_protocol::StepStatus::Success,
+                message: "ok".into(),
+                detail: None,
+                duration_us: Some(4_200_000),
+                permission_label: None,
+                presentation: ToolPresentationInfo::generic("bash"),
+            },
+        });
+
+        let text = paint(&log, &TrajectoryPageState::new(), 20);
+        assert!(
+            !text.contains("compiling"),
+            "the tail is gone once the call ends:\n{text}"
+        );
+        assert!(
+            text.contains("4.2s"),
+            "the measurement took its place:\n{text}"
+        );
+    }
+
+    /// Following keeps the newest record on screen as the ledger grows past a
+    /// viewport. This is the whole point of the page during a live run.
+    #[test]
+    fn following_shows_the_newest_record_as_the_ledger_grows() {
+        let mut log = TrajectoryLog::new();
+        log.begin_turn();
+        for index in 0..40 {
+            log.observe(&queued(&format!("call-{index}"), &format!("step-{index}")));
+        }
+        let state = TrajectoryPageState::new();
+        assert!(state.follow, "a fresh page follows");
+
+        let text = paint(&log, &state, 20);
+        assert!(
+            text.contains("step-39"),
+            "the newest record is visible without scrolling:\n{text}"
+        );
+        assert!(
+            !text.contains("step-0 "),
+            "and the oldest is off screen:\n{text}"
+        );
+    }
+
+    /// A reader who scrolled away keeps their place while the run continues.
+    #[test]
+    fn a_scrolled_reader_does_not_get_dragged_to_the_tail() {
+        let mut log = TrajectoryLog::new();
+        log.begin_turn();
+        for index in 0..40 {
+            log.observe(&queued(&format!("call-{index}"), &format!("step-{index}")));
+        }
+        let mut state = TrajectoryPageState::scrolled_to(0);
+        state.detail = false;
+
+        for index in 40..60 {
+            log.observe(&queued(&format!("call-{index}"), &format!("step-{index}")));
+        }
+        let text = paint(&log, &state, 20);
+        assert!(
+            text.contains("step-0 ") || text.contains("step-1 "),
+            "the reader's place is preserved:\n{text}"
+        );
+        assert!(
+            !text.contains("step-59"),
+            "and the tail did not steal the view:\n{text}"
+        );
+    }
+
+    #[test]
+    fn the_follow_offset_is_zero_when_everything_fits() {
+        let mut log = TrajectoryLog::new();
+        log.begin_turn();
+        log.observe(&queued("call-1", "one"));
+        let rows = ledger_rows(&log, "");
+        assert_eq!(follow_offset(&rows, 20), 0);
+        assert_eq!(follow_offset(&rows, 20), 0, "a short ledger never scrolls");
+        assert_eq!(painted_lines(&rows), 2, "turn rule plus the record");
     }
 }

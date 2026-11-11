@@ -49,6 +49,10 @@ impl App {
 
     /// Move the selection by `delta` records, clamped to the ledger.
     pub(crate) fn move_trajectory_selection(&mut self, delta: isize) {
+        // Leaving the tail has to pin the offset the view was actually at. While
+        // following, `scroll` is meaningless and the renderer resolves it from
+        // the content; without this, the first `k` would jump to the top.
+        self.materialize_trajectory_offset();
         let rows = ledger_rows(&self.trajectory, &self.trajectory_page.filter);
         let order: Vec<usize> = rows.iter().filter_map(|row| row.record).collect();
         if order.is_empty() {
@@ -86,6 +90,22 @@ impl App {
         self.dirty = true;
     }
 
+    /// Resolve a following view's offset into `scroll`, then stop following.
+    ///
+    /// The renderer owns the follow arithmetic because only it knows the row
+    /// count and the viewport. The app cannot recompute that without drifting,
+    /// so it asks the same function and stores the answer once.
+    pub(crate) fn materialize_trajectory_offset(&mut self) {
+        if !self.trajectory_page.follow {
+            return;
+        }
+        let rows = ledger_rows(&self.trajectory, &self.trajectory_page.filter);
+        let visible = self.trajectory_visible_rows();
+        self.trajectory_page.scroll =
+            agent_tui_kit::render::trajectory::follow_offset(&rows, visible);
+        self.trajectory_page.follow = false;
+    }
+
     /// Keep the selected record inside the painted window.
     ///
     /// Scroll is in painted rows, not records, because a turn rule costs a row:
@@ -103,10 +123,7 @@ impl App {
         let Some(position) = position else {
             return;
         };
-        let painted = rows[..position]
-            .iter()
-            .map(|row| if row.starts_turn { 2 } else { 1 })
-            .sum::<usize>();
+        let painted = agent_tui_kit::render::trajectory::painted_lines(&rows[..position]);
         let visible = self.trajectory_visible_rows() as usize;
         if visible == 0 {
             return;
@@ -214,7 +231,23 @@ impl App {
         ) {
             self.trajectory.finish_assistant();
         }
+        let before = self.trajectory.len();
         self.trajectory.observe(update);
+        let appended = self.trajectory.len() != before;
+        // A running call that only changed its live tail is not an append, but
+        // it is still activity the page must repaint for.
+        if self.show_trajectory && (appended || changed_running_record(update)) {
+            if self.trajectory_page.follow {
+                // Following means "the newest record is what I am reading", so
+                // the selection moves with it. A reader who scrolled away keeps
+                // both their place and their selection.
+                self.trajectory_page.selected =
+                    self.trajectory.records().last().map(|record| record.id);
+                self.trajectory_page.scroll = 0;
+            } else {
+                self.scroll_trajectory_to_selection();
+            }
+        }
     }
 
     /// Start a turn in the ledger, at the same moment the status bar counts one.
@@ -226,6 +259,19 @@ impl App {
             self.select_latest_trajectory_record();
         }
     }
+}
+
+/// Whether this update changed a record that is already in the ledger.
+///
+/// A `ToolProgress` rewrites a running record's live tail in place: no row is
+/// appended, but the page has to repaint or the tail stays at its first chunk.
+fn changed_running_record(update: &tact_protocol::AgentUpdate) -> bool {
+    matches!(
+        update,
+        tact_protocol::AgentUpdate::ToolProgress { .. }
+            | tact_protocol::AgentUpdate::ThinkingChunk(_)
+            | tact_protocol::AgentUpdate::StreamChunk(_)
+    )
 }
 
 /// `HH:MM` in local time, matching the rest of the TUI's stamps.

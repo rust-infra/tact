@@ -174,6 +174,13 @@ pub struct TrajectoryRecord {
     pub input: Option<String>,
     /// What came back, when this record has a result body.
     pub output: Option<String>,
+    /// The last line a running tool printed, kept while it runs.
+    ///
+    /// A live run is worth watching for this alone: the ledger otherwise shows
+    /// a spinning call and no evidence it is doing anything. It is replaced by
+    /// the final body when the call finishes, so it never competes with the
+    /// record's own result.
+    pub live_tail: Option<String>,
     /// Lowercased haystack for the ledger's filter.
     search: String,
 }
@@ -201,6 +208,7 @@ impl TrajectoryRecord {
             duration_ms: None,
             input: None,
             output: None,
+            live_tail: None,
             search,
         }
     }
@@ -388,6 +396,7 @@ impl TrajectoryLog {
             } => {
                 if let Some(index) = self.open_tools.remove(tool_id) {
                     let record = &mut self.records[index];
+                    record.live_tail = None;
                     record.status = Some(TrajectoryStatus::from_step(result.status));
                     record.duration_ms = result.duration_us.map(|us| us / 1_000);
                     if let Some(detail) = &result.detail {
@@ -409,6 +418,36 @@ impl TrajectoryLog {
                     record.tool_name = Some(result.tool.clone());
                     record.input = result.arg_full.clone();
                     record.output = result.detail.clone().or_else(|| non_empty(&result.message));
+                }
+            }
+            AgentUpdate::ToolProgress {
+                tool_id, chunks, ..
+            } => {
+                if let Some(index) = self.open_tools.get(tool_id).copied() {
+                    // The last non-empty line, not the whole stream: a ledger row
+                    // is one cell, and the point is that something is happening.
+                    let mut tail = None;
+                    for chunk in chunks {
+                        if let Some(line) = chunk
+                            .text
+                            .lines()
+                            .rev()
+                            .find(|line| !line.trim().is_empty())
+                        {
+                            tail = Some(line.trim().to_string());
+                        }
+                    }
+                    if let Some(tail) = tail {
+                        let record = &mut self.records[index];
+                        // Output arriving is proof the call is running. A
+                        // producer that skips `StepStarted` would otherwise leave
+                        // the row claiming it is still queued while it prints.
+                        if record.status == Some(TrajectoryStatus::Queued) {
+                            record.status = Some(TrajectoryStatus::Running);
+                        }
+                        record.live_tail = Some(tail);
+                        record.search = search_haystack(record);
+                    }
                 }
             }
             AgentUpdate::StepFailed {
@@ -486,6 +525,7 @@ impl TrajectoryLog {
                         || record.status == Some(TrajectoryStatus::Queued)
                     {
                         record.status = Some(TrajectoryStatus::Cancelled);
+                        record.live_tail = None;
                     }
                 }
                 self.open_tools.clear();
@@ -510,7 +550,6 @@ impl TrajectoryLog {
             }
             AgentUpdate::ToolTranscript { .. }
             | AgentUpdate::ToolTranscriptStream { .. }
-            | AgentUpdate::ToolProgress { .. }
             | AgentUpdate::TokenUsage(_)
             | AgentUpdate::ModelInfo(_)
             | AgentUpdate::TurnStats { .. }
@@ -627,9 +666,14 @@ fn collapse_whitespace(text: &str) -> String {
 
 fn search_haystack(record: &TrajectoryRecord) -> String {
     let mut haystack = record.text.to_lowercase();
-    for extra in [&record.tool_name, &record.input, &record.output]
-        .into_iter()
-        .flatten()
+    for extra in [
+        &record.tool_name,
+        &record.input,
+        &record.output,
+        &record.live_tail,
+    ]
+    .into_iter()
+    .flatten()
     {
         haystack.push(' ');
         haystack.push_str(&extra.to_lowercase());
@@ -1274,5 +1318,138 @@ mod overview_tests {
         assert!(bucket_densities(&[], 0).is_empty());
         assert_eq!(TrajectoryLog::new().summary(), TrajectorySummary::default());
         assert_eq!(TrajectoryLog::new().turns(), 0);
+    }
+}
+
+#[cfg(test)]
+mod live_tests {
+    use super::*;
+    use tact_protocol::{ToolOutputChunk, ToolPresentationInfo};
+
+    fn queued(tool_id: &str, name: &str, args: &str) -> AgentUpdate {
+        AgentUpdate::StepQueued {
+            idx: 0,
+            tool_id: tool_id.into(),
+            tool_name: name.into(),
+            arg_summary: args.into(),
+            arg_full: String::new(),
+            presentation: ToolPresentationInfo::generic(name),
+        }
+    }
+
+    fn progress(tool_id: &str, text: &str) -> AgentUpdate {
+        AgentUpdate::ToolProgress {
+            run_id: None,
+            tool_id: tool_id.into(),
+            chunks: vec![ToolOutputChunk::stdout(text)],
+        }
+    }
+
+    /// A running call reports what it last printed, so the ledger shows
+    /// evidence of work rather than a name and a spinner.
+    #[test]
+    fn a_running_tool_records_its_latest_output_line() {
+        let mut log = TrajectoryLog::new();
+        log.begin_turn();
+        log.observe(&queued("call-1", "bash", "cargo test"));
+        assert_eq!(log.get(0).expect("record").live_tail, None);
+
+        log.observe(&progress("call-1", "compiling tui v0.1.0\n"));
+        assert_eq!(
+            log.get(0).expect("record").live_tail.as_deref(),
+            Some("compiling tui v0.1.0")
+        );
+
+        log.observe(&progress("call-1", "running 806 tests\n"));
+        assert_eq!(
+            log.get(0).expect("record").live_tail.as_deref(),
+            Some("running 806 tests"),
+            "the latest line replaces the previous one"
+        );
+    }
+
+    /// A batch can carry several chunks; the newest non-empty line wins, and a
+    /// trailing blank line must not erase it.
+    #[test]
+    fn the_last_non_empty_chunk_wins() {
+        let mut log = TrajectoryLog::new();
+        log.begin_turn();
+        log.observe(&queued("call-1", "bash", "make"));
+        log.observe(&AgentUpdate::ToolProgress {
+            run_id: None,
+            tool_id: "call-1".into(),
+            chunks: vec![
+                ToolOutputChunk::stdout("first\n"),
+                ToolOutputChunk::stderr("second\n"),
+                ToolOutputChunk::stdout("\n"),
+            ],
+        });
+        assert_eq!(
+            log.get(0).expect("record").live_tail.as_deref(),
+            Some("second")
+        );
+    }
+
+    /// The final body replaces the tail: a finished record never shows a
+    /// fragment next to its answer.
+    #[test]
+    fn finishing_clears_the_live_tail() {
+        let mut log = TrajectoryLog::new();
+        log.begin_turn();
+        log.observe(&queued("call-1", "bash", "true"));
+        log.observe(&progress("call-1", "still going"));
+        log.observe(&AgentUpdate::StepFinished {
+            idx: 0,
+            run_id: None,
+            tool_id: "call-1".into(),
+            result: tact_protocol::StepResult {
+                tool: "bash".into(),
+                arg_summary: String::new(),
+                arg_full: None,
+                status: StepStatus::Success,
+                message: "done".into(),
+                detail: None,
+                duration_us: Some(1_000),
+                permission_label: None,
+                presentation: ToolPresentationInfo::generic("bash"),
+            },
+        });
+
+        let record = log.get(0).expect("record");
+        assert_eq!(record.live_tail, None, "the tail is not the result");
+        assert_eq!(record.output.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn cancelling_clears_the_live_tail() {
+        let mut log = TrajectoryLog::new();
+        log.begin_turn();
+        log.observe(&queued("call-1", "bash", "sleep 100"));
+        log.observe(&progress("call-1", "waiting"));
+        log.observe(&AgentUpdate::TaskCancelled);
+
+        let record = log.get(0).expect("record");
+        assert_eq!(record.status, Some(TrajectoryStatus::Cancelled));
+        assert_eq!(record.live_tail, None);
+    }
+
+    #[test]
+    fn progress_for_an_unknown_tool_does_not_create_a_record() {
+        let mut log = TrajectoryLog::new();
+        log.begin_turn();
+        log.observe(&progress("never-started", "noise"));
+        assert!(
+            log.is_empty(),
+            "a stray progress chunk is not evidence of a call"
+        );
+    }
+
+    #[test]
+    fn the_live_tail_is_searchable() {
+        let mut log = TrajectoryLog::new();
+        log.begin_turn();
+        log.observe(&queued("call-1", "bash", "cargo test"));
+        log.observe(&progress("call-1", "error: the guard is inverted"));
+        assert_eq!(log.matches("inverted"), vec![0]);
     }
 }
