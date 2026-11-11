@@ -479,11 +479,17 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                             handle_insert_mode(&mut app, key, &user_cmd_tx);
                         } else if handle_overlay_key(&mut app, key) {
                             // Overlay popup consumed the key.
-                        } else if (app.show_help || app.show_history || app.show_subagent_view)
+                        } else if (app.show_help
+                            || app.show_history
+                            || app.show_subagent_view
+                            || app.show_trajectory)
                             && key.code == KeyCode::Esc
                         {
                             app.show_help = false;
                             app.show_history = false;
+                            if app.show_trajectory {
+                                app.close_trajectory_page();
+                            }
                             // The one close path for the view, so its hit rects
                             // and its active id clear with it: leaving
                             // `active_subagent_popup` set let a later transcript

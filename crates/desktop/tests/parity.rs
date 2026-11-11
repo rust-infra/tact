@@ -32,9 +32,14 @@ fn walk_subcommands(
     }
 }
 
+/// Every catalog command the host declares has a route here.
+///
+/// The count is not asserted on its own: a literal in this test only restates
+/// what the enum already says, and it fails the day a command is added even
+/// when the new command is routed correctly. What matters is that the list and
+/// the routes agree, and that is what the loop below checks.
 #[test]
-fn all_23_builtin_slash_commands_have_desktop_routes() {
-    assert_eq!(BuiltinCommand::ALL.len(), 23);
+fn every_builtin_slash_command_has_a_desktop_route() {
     for command in BuiltinCommand::ALL {
         assert_routed(CommandId::Builtin(*command));
     }

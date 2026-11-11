@@ -81,6 +81,7 @@ fn scroll_list_popup(app: &mut App, popup: SurfaceId, delta: i32) -> bool {
         | SurfaceId::MermaidPopup
         | SurfaceId::ThinkingPopup
         | SurfaceId::SubagentPopup
+        | SurfaceId::TrajectoryPage
         | SurfaceId::DiffPopup
         | SurfaceId::TaskDagPopup
         | SurfaceId::SystemPromptPopup => false,

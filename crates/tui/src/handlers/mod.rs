@@ -4,7 +4,7 @@ mod hooks;
 mod insert;
 mod mcp;
 mod mouse;
-mod normal;
+pub(crate) mod normal;
 mod overlay;
 mod palette;
 mod plugin;
@@ -500,6 +500,10 @@ fn run_command(app: &mut App, command: SlashCommand) -> CommandExecOutcome {
             app.open_task_dag_popup();
             CommandExecOutcome::handled()
         }
+        C::Trajectory => {
+            app.open_trajectory_page();
+            CommandExecOutcome::handled()
+        }
         C::Background => {
             // `/background` lists all background tasks; `/background <id>`
             // shows one task (pretty JSON). The optional id comes from the
@@ -851,6 +855,19 @@ pub(crate) fn start_permission_picker(app: &mut App) {
         true,
     );
     app.input_mode = crate::widgets::state::InputMode::Select;
+}
+
+/// The Normal-mode key handler, reachable from the page's integration tests.
+///
+/// The page's keys are dispatched from `handle_normal_mode`, so testing the page
+/// through it is the only way to prove they are reachable at all.
+#[cfg(test)]
+pub(crate) fn handle_normal_mode_for_page_tests(
+    app: &mut crate::widgets::state::App,
+    key: crossterm::event::KeyEvent,
+    tx: &tokio::sync::mpsc::UnboundedSender<tact_protocol::UserCommand>,
+) {
+    normal::handle_normal_mode(app, key, tx);
 }
 
 #[cfg(test)]

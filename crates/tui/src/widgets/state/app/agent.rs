@@ -48,6 +48,11 @@ impl App {
 
     pub(crate) fn handle_agent_update(&mut self, update: AgentUpdate) {
         self.dirty = true;
+        // The ledger records the update before any component sees it: several
+        // fields it keeps are discarded by the handlers below (streamed output
+        // on finalize, `run_id` everywhere), so this is the last point where
+        // they still exist.
+        self.observe_for_trajectory(&update);
         self.coordinator_prepass(&update);
         // 1. Components update their own state (registry dispatch); the
         //    stream outbox carries parsed `StreamEvent`s the shell applies.

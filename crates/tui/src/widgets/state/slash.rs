@@ -131,6 +131,7 @@ mod tests {
             SlashCommand::Lang => msgs.cmd_lang,
             SlashCommand::Stats => msgs.cmd_stats,
             SlashCommand::TasksDag => msgs.cmd_tasks_dag,
+            SlashCommand::Trajectory => msgs.cmd_trajectory,
             SlashCommand::Background => msgs.cmd_background,
             SlashCommand::Goal => msgs.cmd_goal,
         }

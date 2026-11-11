@@ -10,6 +10,12 @@ pub(crate) fn handle_normal_mode(
     key: KeyEvent,
     _user_cmd_tx: &UnboundedSender<UserCommand>,
 ) {
+    // Trajectory page: the reader is auditing, so every key belongs to the
+    // ledger and none of them may fall through to the log's keymap.
+    if app.show_trajectory {
+        handle_trajectory_keys(app, key);
+        return;
+    }
     // Subagent view mode: j/k/G/g/y/Esc scroll / copy / close the view, and
     // Enter raises the cap on the tool blocks.
     if app.show_subagent_view {
@@ -178,6 +184,44 @@ pub(crate) fn handle_normal_mode(
                 app.scroll_log_to_bottom();
             } else {
                 app.mouse.log_selection = None;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Keys while the trajectory page owns the main area.
+///
+/// The filter takes printable characters while it is being edited, so the
+/// navigation keys are only live when the reader is not typing a query.
+fn handle_trajectory_keys(app: &mut App, key: KeyEvent) {
+    if app.trajectory_page.filter_editing {
+        match key.code {
+            KeyCode::Esc => app.clear_trajectory_filter(),
+            KeyCode::Enter => app.finish_trajectory_filter(),
+            KeyCode::Backspace => app.pop_trajectory_filter(),
+            KeyCode::Char(c) => app.push_trajectory_filter(c),
+            _ => {}
+        }
+        return;
+    }
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => app.move_trajectory_selection(1),
+        KeyCode::Char('k') | KeyCode::Up => app.move_trajectory_selection(-1),
+        KeyCode::Char('g') => app.move_trajectory_selection_to_edge(false),
+        KeyCode::Char('G') => app.move_trajectory_selection_to_edge(true),
+        KeyCode::Enter => app.toggle_trajectory_detail(),
+        KeyCode::Tab => app.cycle_trajectory_tab(),
+        KeyCode::Char('o') => app.toggle_trajectory_overview(),
+        KeyCode::Char('/') => app.begin_trajectory_filter(),
+        KeyCode::Char('q') => app.close_trajectory_page(),
+        KeyCode::Esc => {
+            // Esc clears a filter first, then leaves: a query is the more
+            // specific thing on screen, so it is the smaller undo.
+            if app.trajectory_page.filter.is_empty() {
+                app.close_trajectory_page();
+            } else {
+                app.clear_trajectory_filter();
             }
         }
         _ => {}

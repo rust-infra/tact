@@ -549,14 +549,18 @@ impl App {
         let (cached_markdown, _) = render_markdown_tui(&active.content, &self.theme);
         let new_rows = crate::render::cells::thinking::COMPLETED_THINKING_ROWS;
         self.resize_thinking_placeholder_rows(active.phys_idx, old_rows, new_rows);
+        let elapsed = active.started_at.elapsed();
         self.thinking_mut().blocks.push(ThinkingBlock::new(
             active.block_id.clone(),
             active.phys_idx,
             active.content,
             summary,
             cached_markdown,
-            active.started_at.elapsed(),
+            elapsed,
         ));
+        // The ledger gets the same measurement: `ThinkingChunk::Finished` is a
+        // bare marker, and this is the only place the wall clock still exists.
+        self.trajectory.finish_thinking(elapsed);
     }
 
     /// Open a new thinking card at one shared-log placeholder row.
