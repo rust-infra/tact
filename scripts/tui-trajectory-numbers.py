@@ -52,6 +52,22 @@ def main():
         )
         print(f"  records={n:>3}  {per}")
 
+    print("\nHOSTING: ledger rows a popup leaves vs a full page")
+    print("  popup = centered_popup_area (80% of parent, 40x10 floor)")
+    print("  popup chrome = 2 borders + 1 footer hint row")
+    print("  either way, summary 1 row + overview 3 rows")
+    popup_chrome = 3
+    fixed = 1 + 3
+    for term in (24, 30, 40):
+        main = main_area(term)
+        popup_h = max(int(main * 0.8), 10)
+        popup_ledger = popup_h - popup_chrome - fixed
+        page_ledger = content_rows(term) - fixed
+        print(
+            f"  terminal={term:>2}  popup={popup_ledger:>2} ledger rows"
+            f"  page={page_ledger:>2} ledger rows"
+        )
+
 
 if __name__ == "__main__":
     main()
