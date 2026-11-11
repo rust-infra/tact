@@ -1,9 +1,11 @@
 //! Local, filtered session navigation for the desktop rail.
 
+use std::collections::HashMap;
+
 use gpui::{
     AnyElement, ClickEvent, Context, ElementId, EventEmitter, InteractiveElement as _, IntoElement,
-    KeyDownEvent, ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _,
-    Styled, Window, div, prelude::FluentBuilder as _, px,
+    KeyDownEvent, ParentElement as _, Render, Role, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled, Window, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex,
@@ -84,6 +86,30 @@ impl SidebarNavItem {
     }
 }
 
+/// How tall a project's session list may get before it scrolls on its own.
+///
+/// Without a cap one busy project pushes every later project's heading past
+/// the bottom of the rail: measured at 1280x900 with 40 sessions, the next
+/// project's heading sat at y=2053 inside a rail ending at y=900, so it was
+/// 1153px off screen and only reachable by scrolling the whole navigation.
+/// A cap keeps each project's block bounded, so every project heading stays
+/// inside the rail and one project's depth costs the others nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SidebarSectionCap {
+    /// Rows to show before the list scrolls, ignoring the viewport.
+    rows: usize,
+}
+
+impl SidebarSectionCap {
+    pub fn rows(rows: usize) -> Self {
+        Self { rows: rows.max(1) }
+    }
+
+    pub fn row_count(self) -> usize {
+        self.rows
+    }
+}
+
 /// One labelled group of navigation rows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SidebarSection {
@@ -95,6 +121,7 @@ pub struct SidebarSection {
     new_session_action: Option<SharedString>,
     collapsed: bool,
     items: Vec<SidebarNavItem>,
+    cap: Option<SidebarSectionCap>,
 }
 
 impl SidebarSection {
@@ -108,6 +135,7 @@ impl SidebarSection {
             new_session_action: None,
             collapsed: false,
             items: Vec::new(),
+            cap: None,
         }
     }
 
@@ -139,6 +167,16 @@ impl SidebarSection {
     pub fn items(mut self, items: impl IntoIterator<Item = SidebarNavItem>) -> Self {
         self.items = items.into_iter().collect();
         self
+    }
+
+    /// Bound this section's rows, and let them scroll past the bound.
+    pub fn cap(mut self, cap: SidebarSectionCap) -> Self {
+        self.cap = Some(cap);
+        self
+    }
+
+    pub fn row_cap(&self) -> Option<SidebarSectionCap> {
+        self.cap
     }
 }
 
@@ -225,6 +263,19 @@ pub enum SidebarNavEvent {
     },
 }
 
+/// One row of a project's session list, in pixels.
+///
+/// Measured from the rail at 1280x900: a compact session row paints 46.5px
+/// (label line, detail line, and the row's vertical padding). The cap
+/// multiplies this by the row count, so a wrong value here either clips the
+/// last visible row or leaves a gap. `a_capped_section_scrolls_inside_itself`
+/// asserts the painted row height matches, so a change to the row's padding
+/// fails a test instead of silently mis-sizing the list.
+pub const COMPACT_SESSION_ROW_HEIGHT: f32 = 46.5;
+
+/// The same measurement for the non-compact presentation.
+pub const DEFAULT_SESSION_ROW_HEIGHT: f32 = 56.;
+
 /// A filtered, application-controlled navigation tree.
 pub struct SidebarNav {
     id: SharedString,
@@ -236,6 +287,10 @@ pub struct SidebarNav {
     compact_rows: bool,
     presentation: SidebarNavPresentation,
     collapsed: bool,
+    /// One scroll owner per capped section, keyed by section id. Kept on the
+    /// view so scrolling a project's rows survives the re-render that a
+    /// session list refresh causes.
+    section_scrolls: HashMap<SharedString, ScrollHandle>,
 }
 
 impl SidebarNav {
@@ -250,6 +305,7 @@ impl SidebarNav {
             compact_rows: false,
             presentation: SidebarNavPresentation::Embedded,
             collapsed: false,
+            section_scrolls: HashMap::new(),
         }
     }
 
@@ -498,6 +554,21 @@ impl EventEmitter<SidebarNavEvent> for SidebarNav {}
 
 impl Render for SidebarNav {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A capped section scrolls inside itself, so it needs a handle that
+        // outlives this render. Kept in step with the sections rather than
+        // accumulated: a session list refresh replaces the set, and an entry
+        // per project ever seen would grow without bound.
+        let capped: Vec<SharedString> = self
+            .sections
+            .iter()
+            .filter(|section| section.row_cap().is_some())
+            .map(|section| section.id.clone())
+            .collect();
+        self.section_scrolls
+            .retain(|section_id, _| capped.contains(section_id));
+        for section_id in capped {
+            self.section_scrolls.entry(section_id).or_default();
+        }
         let mut body = v_flex()
             .id(ElementId::Name(self.id.clone()))
             .role(Role::Navigation)
@@ -714,6 +785,40 @@ impl Render for SidebarNav {
                     for item in items {
                         tree = tree.child(self.render_item(item, cx));
                     }
+                    // A capped section owns its scroll, so one long project
+                    // cannot push the next project's heading off the rail.
+                    let tree = match section.row_cap() {
+                        Some(cap) => {
+                            let handle = self
+                                .section_scrolls
+                                .entry(section.id.clone())
+                                .or_default()
+                                .clone();
+                            let row_height = if self.compact_rows {
+                                px(COMPACT_SESSION_ROW_HEIGHT)
+                            } else {
+                                px(DEFAULT_SESSION_ROW_HEIGHT)
+                            };
+                            let mut scroller = div()
+                                .id(SharedString::from(format!(
+                                    "sidebar-nav-section-scroll-{}",
+                                    section.id
+                                )))
+                                .debug_selector({
+                                    let id = section.id.clone();
+                                    move || format!("sidebar-nav-section-scroll-{id}")
+                                })
+                                .w_full()
+                                .flex_none()
+                                .max_h(row_height * cap.row_count() as f32)
+                                .min_h_0()
+                                .overflow_y_scroll()
+                                .track_scroll(&handle);
+                            scroller = scroller.child(tree);
+                            scroller.into_any_element()
+                        }
+                        None => tree.into_any_element(),
+                    };
                     body = body.child(children.child(tree));
                 }
             } else {
@@ -770,6 +875,80 @@ mod tests {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             div().w(px(320.)).h(px(400.)).child(self.nav.clone())
         }
+    }
+
+    /// A capped section keeps only its cap of rows on screen and scrolls the
+    /// rest, and the height it reserves matches what a row actually paints.
+    #[gpui::test]
+    fn a_capped_section_scrolls_inside_itself(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let cap = SidebarSectionCap::rows(3);
+        // Rows carry a detail line in the rail, and that second line is what
+        // makes the painted height the constant we size against.
+        let sessions: Vec<_> = (0..10)
+            .map(|index| {
+                SidebarNavItem::new(SharedString::from(format!("s-{index}")), "Session")
+                    .detail("2 messages · 5m ago")
+                    .trailing("09:41")
+            })
+            .collect();
+        let (_probe, window) = cx.add_window_view(|window, cx| {
+            let nav =
+                cx.new(|cx| SidebarNav::new("sidebar-capped", window, cx).with_compact_rows(true));
+            nav.update(cx, |nav, cx| {
+                nav.set_sections(
+                    [
+                        SidebarSection::new("busy", "Busy")
+                            .items(sessions.clone())
+                            .cap(cap),
+                        SidebarSection::new("quiet", "Quiet")
+                            .items([SidebarNavItem::new("q-0", "Only one")]),
+                    ],
+                    cx,
+                );
+            });
+            NavProbe { nav }
+        });
+        window.simulate_resize(size(px(400.), px(600.)));
+        window.update(|window, cx| window.draw(cx).clear(cx));
+
+        let scroller = window
+            .debug_bounds("sidebar-nav-section-scroll-busy")
+            .expect("the capped section owns a scroller");
+        let row = window
+            .debug_bounds("sidebar-nav-item-s-0")
+            .expect("first row");
+        assert!(
+            (row.size.height - px(COMPACT_SESSION_ROW_HEIGHT)).abs() <= px(0.5),
+            "the row-height constant must match what a session row paints: \
+             constant={COMPACT_SESSION_ROW_HEIGHT}, painted={:?}",
+            row.size.height
+        );
+        assert!(
+            scroller.size.height <= px(COMPACT_SESSION_ROW_HEIGHT * 3. + 1.),
+            "three rows is the cap, so the scroller must not be taller: {scroller:?}"
+        );
+
+        let before = window
+            .debug_bounds("sidebar-nav-item-s-9")
+            .expect("last row");
+        window.simulate_event(gpui::ScrollWheelEvent {
+            position: scroller.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-2000.))),
+            ..Default::default()
+        });
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        let after = window
+            .debug_bounds("sidebar-nav-item-s-9")
+            .expect("last row");
+        assert!(
+            before.origin.y - after.origin.y > px(50.),
+            "the capped rows must scroll: {before:?} -> {after:?}"
+        );
+        assert!(
+            window.debug_bounds("sidebar-nav-item-q-0").is_some(),
+            "the uncapped section stays visible next to a scrolling one"
+        );
     }
 
     #[gpui::test]
