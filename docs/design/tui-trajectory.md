@@ -101,14 +101,33 @@ is also small enough that every fixed row has to earn itself.
 ### D1. A page, not a popup
 
 The view replaces the main area, the way `show_help`, `show_history` and the
-subagent view do (`crates/tui/src/render/layout.rs:15-26`). It is not an 80%
-centred box.
+subagent view do (`crates/tui/src/render/layout.rs:15-26`). It is not a
+`centered_popup_area` box.
 
-Reason: the popup geometry is fixed at 80% of the parent, so at 24 rows it
-would be 14 rows and hold two ledger rows. A trajectory is read by scanning,
-which needs the height. The subagent view is the precedent for a page with its
-own keymap and its own scroll state, and it is the closest existing thing to
-what this is.
+Measured both ways against the frame split. The popup geometry is 80% of the
+parent with a 40x10 floor and three rows of chrome (two borders plus the footer
+hint row, `crates/agent_tui_kit/src/render/popups/mod.rs:110` and `:244`):
+
+| terminal | popup content | popup ledger rows | page content | page ledger rows |
+|---|---|---|---|---|
+| 24 rows | 11 | 7 | 16 | 12 |
+| 30 rows | 16 | 12 | 22 | 18 |
+| 40 rows | 24 | 20 | 32 | 28 |
+
+A ledger row is one record, so the popup costs 5 of 12 records at the most
+common terminal size and 8 of 28 at a large one. Two further costs are not
+arithmetic: the popup calls `Clear`, so it hides the log the reader may want to
+cross-reference, and it closes on an outside click, which is wrong for a
+surface navigated with `j`/`k` while reading.
+
+The subagent view is the precedent for a page with its own keymap and its own
+scroll state, and it is the closest existing thing to what this is.
+
+**One consequence to accept.** `render_main_area` resolves pages *before* the
+sticky-strip split, so a page also hides the Goal, task, subagent and
+background strips. The trajectory page inherits that. It is the right trade for
+an audit surface (the strips are live status, the page is a still record), but
+it should be a stated choice rather than a surprise.
 
 ### D2. The overview is bucketed, not per-record
 
@@ -227,22 +246,104 @@ cells. Narrower than 60 columns the kind is abbreviated to 4 characters and the
 duration moves to the detail panel, because a truncated summary is the row's
 whole purpose.
 
-## Opening, keys, and detail
+## Entry points
 
-- `/trajectory` opens it, matching `/tasks-dag`. A key binding is deliberately
-  not chosen yet: every free binding in Normal mode is a decision about
-  someone else's muscle memory, and it can be added after the page is usable.
-- `j`/`k` move the selection, `g`/`G` jump to the first and last record,
-  `Enter` opens the detail panel, `Tab` cycles the detail tabs, `q`/`Esc`
-  returns to the log, `o` toggles the overview, `/` filters.
-- The detail panel is a bottom split, not a side panel: at 80 columns a side
-  panel would leave the ledger 40 cells and the summary would not fit. It takes
-  40% of the content height, so 6 rows at the smallest terminal, and scrolls
-  inside itself.
-- Live: while the page is open, `App::handle_agent_update` appends to the
-  record log and the page repaints, the way `/tasks-dag` re-renders its lines
-  (`crates/tui/src/widgets/state/app/agent.rs:689`). The selection stays on the
-  record it was on, keyed by record id, not index.
+Three ways in, all resolved to one open function, `App::open_trajectory_page`,
+so the surface cannot be entered in a half-initialised state.
+
+1. **`/trajectory` slash command.** The primary entry, matching `/tasks-dag`.
+   Registered as `BuiltinCommand::Trajectory` in `crates/catalog` so `--help`,
+   the palette and the slash completion all list it from one source.
+2. **A card affordance.** The log's task-end separator and the status bar's
+   turn counter are the two places a reader already is when they want to audit.
+   The separator gets an `[ abreast ]`-style action like the thinking card's
+   `[Open]`; this is a later step, not the first PR.
+3. **A key binding, left open.** Normal mode's free single-letter keys after
+   the existing set (`/ c g G i j k q t V y Y z` are taken) are `a b d e f h l m
+   n o p r s u v w x A B C D E F H I J K L M N O P Q R S T U W X Z`. Choosing
+   one is a decision about someone else's muscle memory, and the wrong choice
+   is worse than no binding. The design leaves it open and says so; the page is
+   fully usable through `/trajectory` without it.
+
+Opening does three things, all of which the subagent view already does and the
+existing page flags do not:
+
+- sets `show_trajectory`, and clears `show_help`, `show_history` and
+  `show_subagent_view` so two pages cannot both claim the main area;
+- switches to `InputMode::Normal`, because the page's keymap (`j`/`k`/`g`/`G`)
+  is dispatched from the Normal handler and a session starts in Insert, where
+  those letters would type into the input box instead;
+- computes an initial selection (the last record) and leaves `follow` on, so
+  opening during a live run lands on the newest work rather than the top.
+
+Closing is one function, `App::close_trajectory_page`, which clears the flag,
+restores `InputMode::Insert`, and clears every hit rect the page recorded. The
+subagent view's close path does exactly this and the comment on it explains
+why: leaving one field set let a later transcript update badge a view that was
+already closed.
+
+## Presentation
+
+**It is the subagent view's form, not a popup.** Full main area, one header row
+of chrome, the rest the content. Concretely, the same three-part shape the
+subagent view uses (`crates/tui/src/render/popups/subagent_popup.rs:24`): a
+fixed first row, then `Min(1)` for the body, with one column reserved for a
+scrollbar when the terminal is wide enough.
+
+The differences from the subagent view, all because this is a list of records
+rather than a conversation:
+
+| | subagent view | trajectory page |
+|---|---|---|
+| header | breadcrumb: parent › child | summary: turns · records · calls · time |
+| body | wrapped prose rows, one scroll | fixed-column ledger rows, plus overview band |
+| keys | `j k g G y Enter Esc` | `j k g G Enter Tab o / q Esc` |
+| selection | none, it is a transcript | one selected record, coloured by its own status |
+| live | follows the child's tail | follows until the reader scrolls up |
+| state kept across close | scroll, expanded steps | scroll, selection, filter, tab, overview |
+
+**No popup chrome.** The page does not use `render_popup_chrome`: no `Clear`
+(it covers nothing), no centred geometry, no footer hint row (it would spend
+one of 12 ledger rows). Hints live on the header row, right-aligned, the way
+the subagent view puts its `normal · esc back` badge
+(`crates/agent_tui_kit/src/i18n.rs:578`).
+
+**The detail panel is a bottom split, not a side panel.** At 80 columns a side
+panel would leave the ledger 40 cells and the summary would not fit. It takes
+40% of the content height, so 6 rows at the smallest terminal, and scrolls
+inside itself. `Tab` cycles Summary / Payload / Result / Timing. Schema is
+dropped from the desktop's five tabs because at 6 rows a schema block is one
+line of the answer and four of its wrapper.
+
+**Selection is a record id, not an index.** Appending during a live run must
+not move the reader's place, and an index would.
+
+**The overview band is the page's own, not the desktop's plot.** See D2. It is
+drawn into the ledger's block area as three labeled rows, so it adds no border
+rows of its own.
+
+## Keys
+
+In the page:
+
+| key | effect |
+|---|---|
+| `j` / `↓` | next record |
+| `k` / `↑` | previous record; turns `follow` off |
+| `g` / `G` | first / last record; `G` turns `follow` on |
+| `Enter` | toggle the detail panel |
+| `Tab` | next detail tab |
+| `o` | toggle the overview band |
+| `/` | filter; `Esc` restores the unfiltered ledger |
+| `q` / `Esc` | back to the log |
+
+Wheel scrolling over the ledger works through the existing
+`SurfaceId` hit-rect mechanism: the page records its own area on open and
+clears it on close.
+
+Live: while the page is open, `App::handle_agent_update` appends to the record
+log and the page repaints, the way `/tasks-dag` re-renders its lines
+(`crates/tui/src/widgets/state/app/agent.rs:689`).
 
 ## Where the code goes
 
@@ -258,14 +359,18 @@ Kit side (`crates/agent_tui_kit`), because it is reusable and pure:
 App side (`crates/tui`):
 
 - `src/widgets/state/app/trajectory.rs`: the `show_trajectory` flag, the page
-  state (selection, scroll, filter, tab, overview collapsed), the key handler.
+  state (selection, scroll, filter, tab, overview collapsed), the open/close
+  functions and the key handler.
 - `src/render/popups/trajectory_page.rs`: the app wrapper, resolving i18n and
   theme into the kit call.
-- `src/render/layout.rs`: one more early-return page branch.
+- `src/render/layout.rs`: one more early-return page branch, before the sticky
+  split.
 - `src/handlers/mod.rs`: the `/trajectory` slash command; `src/handlers/
-  normal.rs`: keys while the page is up.
+  normal.rs`: keys while the page is up; `src/lib.rs`: `Esc` closes the page in
+  the same branch that closes help, history and the subagent view.
 - `crates/catalog`: `BuiltinCommand::Trajectory` so `--help` and the palette
   list it; `crates/agent_tui_kit/src/i18n.rs`: the strings, both locales.
+
 
 ## Verification
 
@@ -287,6 +392,19 @@ intention.
    new update, leaves the selection on record 40 and does not jump.
 6. **The collapse rule is a function of height.** 16 content rows collapses,
    22 does not, asserted directly with no terminal.
+7. **One page at a time.** Opening the trajectory page while the subagent view is
+   up leaves `show_subagent_view == false`, and opening either of the other two
+   pages closes the trajectory. Closing returns `InputMode::Insert` and clears
+   every hit rect the page set: the subagent view's close path exists for
+   exactly this reason, and a missed field made a closed view badge on later
+   updates.
+8. **The page hides the sticky strips.** `render_main_area` resolves page flags
+   before the sticky split, so a test asserts the strip is gone while the page is
+   up. That is the chosen behaviour, and the test is what stops it drifting.
+9. **A free key is not silently stolen.** If a binding is added later, the test
+   set that proves the other Normal-mode letters still do what they did has to
+   keep passing. Today no letter is bound, so this one is a note rather than a
+   test.
 
 ## What this deliberately does not do
 
