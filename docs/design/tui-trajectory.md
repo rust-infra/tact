@@ -14,6 +14,11 @@ Not built, and not wanted: a key binding. The page is reached through
 Live streaming is built: a running call reports its latest output line, and
 `follow` drives the view while a run is in progress.
 
+Performance is measured against this repo's own sessions, not estimated. The
+short version: render and ingestion costs are invisible at the real ceiling
+(~2,000 records), and the one cost that mattered was memory duplication of
+tool result bodies, now capped at 4 KB with the truncation named in the UI.
+
 ## Purpose
 
 The desktop has a Trajectory page. It renders the same transcript the chat
@@ -435,6 +440,65 @@ intention.
    set that proves the other Normal-mode letters still do what they did has to
    keep passing. Today no letter is bound, so this one is a note rather than a
    test.
+
+## Performance, measured against real sessions
+
+The question is whether a large ledger costs anything the reader would notice.
+The corpus is this repo's own history: 62 session transcripts.
+`scripts/trajectory-session-shape.py` reproduces every figure below.
+
+**Record count.** Median 124 tool calls per session, largest 1,994. So the page
+is sized for a couple of thousand records, not a hundred thousand.
+
+**Per-frame render cost.** The renderer rebuilds the row list, the summary and
+the overview buckets on every frame. Measured per frame:
+
+| records | row maths | summary | overview |
+|---|---|---|---|
+| 124 | 3 µs | <1 µs | ~2 µs |
+| 500 | 6 µs | ~2 µs | ~10 µs |
+| 2,000 | 24 µs | 7 µs | 36 µs |
+
+At the worst real session a frame costs roughly 66 µs of ledger arithmetic.
+A 60 fps budget is 16,000 µs, so this is 0.4 percent of it. The TUI also only
+repaints on a dirty flag, so the idle cost is zero. **No caching is warranted**,
+and adding it would introduce an invalidation bug for no measurable gain.
+
+**Ingestion cost.** ~0.5 µs per update at 20,000 records, so the log's own
+bookkeeping is not the bottleneck in a live run.
+
+**Streamed text is the one superlinear path.** The assistant body is appended
+chunk by chunk, and the search haystack is rebuilt from the whole accumulated
+text on each chunk, which is O(n²) in the body length. Measured:
+
+| body | chunks | total |
+|---|---|---|
+| 16 KB | 256 | 0.35 ms |
+| 256 KB | 256 | 1.7 ms |
+| 1 MB | 1,024 | 17.6 ms |
+
+A megabyte answer costs 18 ms spread over a whole turn, which no reader
+perceives. It stays as it is, with the shape written down so the next person
+does not have to rediscover it.
+
+**Memory is the real cost, and it was a duplication.** Every finished record
+kept the tool's full result body, while the tool card already keeps the same
+bytes as `detail_full`. Measured body sizes:
+
+| | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| tool result | 0.4 KB | 3.4 KB | 15.8 KB | 757 KB |
+
+Across the corpus 8 percent of results exceed 4 KB and hold 10.1 MB of the
+18.4 MB total. `OUTPUT_CAP_BYTES` is therefore 4 KB: it keeps 92 percent of
+records complete, bounds the rest, and the record carries `output_truncated`
+so the detail panel names the cut instead of letting a partial body read as the
+answer. The full text is one keystroke away on the tool card, which is where a
+reader who wants the whole body already goes.
+
+The cap is applied once, where a result body is set, and it cuts on a character
+boundary: a tool can return any encoding, and a byte cut would panic on the next
+slice.
 
 ## What this deliberately does not do
 
