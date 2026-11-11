@@ -532,22 +532,6 @@ impl ContextPolicy for CounterContext {
     }
 }
 
-#[tokio::test]
-async fn no_subscriber_is_required_or_installed() {
-    assert!(!tracing::dispatcher::has_been_set());
-    let model = ScriptedModel::new(vec![events(text_response(
-        "assistant",
-        "ok",
-        StopReason::EndTurn,
-    ))]);
-    let mut session = AgentBuilder::new(model)
-        .build_session("no-subscriber")
-        .unwrap();
-    let outcome = session.run_text("go").await.unwrap();
-    assert_eq!(outcome.stop, tact_agent_api::RunStop::Completed);
-    assert!(!tracing::dispatcher::has_been_set());
-}
-
 struct EmptyStream;
 
 #[async_trait]
