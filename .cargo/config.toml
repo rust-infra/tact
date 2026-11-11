@@ -1,3 +1,21 @@
 [build]
 # tokio 的 tracing / console-subscriber 需要 unstable 内部 API
 rustflags = ["--cfg", "tokio_unstable"]
+
+[env]
+# Cargo runs tests in parallel across every core. Several tests here install a
+# thread-local `tracing` subscriber with `set_default`, and at high parallelism
+# `telemetry_compaction_span_durations_are_recorded` fails intermittently with
+# "missing duration_ms on agent.context.compact".
+#
+# The cause is parallelism, not descriptors. Measured on a 14-core machine with
+# `ulimit -n 8192` (which `scripts/check-rust.sh` already sets): the default
+# parallelism failed 2 runs in 15, while `--test-threads=4`, `=2` and `=1` each
+# failed 0 times in 10 to 12 runs. CI's `ubuntu-latest` is 4 cores, which is why
+# it has never failed there.
+#
+# What breaks inside tracing is not pinned down: `--test-threads=1` rules out
+# the descriptor theory, and switching the one test to a current-thread runtime
+# made it fail more often, not less. Capping the threads is the measure that
+# holds, so it goes here until someone reads the dispatcher path proper.
+RUST_TEST_THREADS = "4"

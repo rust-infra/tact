@@ -2076,6 +2076,17 @@ async fn handle_user_command_with_account(
             let mut stop_continuations = 0u32;
             loop {
                 match agent.agent_loop_detailed(task_message.take()).await {
+                    // A turn that produced nothing is not a finished task.
+                    // `agent_loop` folds this into `Ok(())`, so the driver
+                    // reported `TaskComplete("")` and both frontends froze the
+                    // turn as done: a finished task with no answer and no error.
+                    Ok(outcome) if outcome.stop == AgentLoopStop::EmptyTurn => {
+                        agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(
+                            "the model ended the turn without writing an answer; \
+                             nothing was produced"
+                                .to_string(),
+                        )));
+                    }
                     Ok(outcome) if !agent.is_cancelled() => {
                         // A truncated turn must not pass for a finished one.
                         // `StopReason::MaxTokens` after the continuation budget
@@ -4884,5 +4895,85 @@ mod tests {
         .expect("flow completes");
 
         assert_eq!(seen_rx.recv().await.as_deref(), Some("last"));
+    }
+
+    /// A turn that produced nothing is not a finished task.
+    ///
+    /// The provider can answer with an empty content array and no stop reason,
+    /// which the transport normalises to `end_turn`. `agent_loop` then returns
+    /// `Ok(())` like any completed turn, so the driver emitted `TaskComplete`
+    /// and both frontends froze the turn as done — the reader saw a finished
+    /// task with no answer and no error.
+    #[tokio::test]
+    async fn an_empty_turn_is_reported_as_a_failure_not_a_completion() {
+        install_test_config();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mock = MockClient::new(vec![(Vec::new(), Some(StopReason::EndTurn))]);
+        let (mut agent, work_dir) = build_test_agent(mock, Some(agent_tx));
+
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::SubmitTask("say something".to_string()),
+            &work_dir,
+        )
+        .await;
+
+        let updates: Vec<AgentUpdate> = std::iter::from_fn(|| agent_rx.try_recv().ok()).collect();
+        assert!(
+            !updates
+                .iter()
+                .any(|update| matches!(update, AgentUpdate::TaskComplete(_))),
+            "an empty turn must not report the task complete: {updates:?}"
+        );
+        assert!(
+            updates
+                .iter()
+                .any(|update| matches!(update, AgentUpdate::Error(_))),
+            "the reader has to be told the turn produced nothing: {updates:?}"
+        );
+    }
+
+    /// A reply cut off by the output limit is not a finished task either.
+    ///
+    /// `MaxTokens` reaches `Ok(())` through `agent_loop` the same way an empty
+    /// turn does, so a reply that broke off mid-sentence reported itself as
+    /// handled and the reader had to notice the break by eye.
+    #[tokio::test]
+    async fn a_truncated_reply_is_reported_as_a_failure_not_a_completion() {
+        install_test_config();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        // Every turn stops on the output limit, so the continuation budget is
+        // spent and the kernel reports `MaxTokens`.
+        let cut = || {
+            (
+                vec![ContentBlock::Text {
+                    text: "half an ans".to_string(),
+                }],
+                Some(StopReason::MaxTokens),
+            )
+        };
+        let mock = MockClient::new((0..8).map(|_| cut()).collect());
+        let (mut agent, work_dir) = build_test_agent(mock, Some(agent_tx));
+
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::SubmitTask("say something".to_string()),
+            &work_dir,
+        )
+        .await;
+
+        let updates: Vec<AgentUpdate> = std::iter::from_fn(|| agent_rx.try_recv().ok()).collect();
+        assert!(
+            !updates
+                .iter()
+                .any(|update| matches!(update, AgentUpdate::TaskComplete(_))),
+            "a cut-off reply must not report the task complete: {updates:?}"
+        );
+        assert!(
+            updates
+                .iter()
+                .any(|update| matches!(update, AgentUpdate::Error(_))),
+            "the reader has to be told the reply was cut: {updates:?}"
+        );
     }
 }
