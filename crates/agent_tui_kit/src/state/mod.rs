@@ -46,13 +46,13 @@ pub use thinking::{
     ActiveThinkingBlock, ThinkingBlock, ThinkingPopup, ThinkingState, find_thinking_at_logical,
 };
 pub use tool_group::{ToolRun, is_foldable as run_is_foldable, runs as tool_runs};
-pub use trajectory::{
-    BucketDensity, TrajectoryKind, TrajectoryLane, TrajectoryLog, TrajectoryRecord,
-    TrajectoryRecordId, TrajectoryStatus, TrajectorySummary, bucket_densities,
-    density_glyph, format_duration_ms, overview_default_collapsed, turn_marks,
-};
 pub use tool_state::{
     ActiveToolBlock, DiffPopup, SubagentPopup, SubagentTranscript, ToolBlock, ToolSpan, ToolState,
+};
+pub use trajectory::{
+    BucketDensity, TrajectoryKind, TrajectoryLane, TrajectoryLog, TrajectoryRecord,
+    TrajectoryRecordId, TrajectoryStatus, TrajectorySummary, bucket_densities, density_glyph,
+    format_duration_ms, overview_default_collapsed, turn_marks,
 };
 pub use ui_types::{
     CodeBlock, CodePopup, FocusedPanel, HistoryEntry, InputMode, MermaidBlock, MermaidPopup,

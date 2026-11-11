@@ -20,4 +20,5 @@ pub mod selectable_text;
 pub mod slash_style;
 pub mod stats_line;
 pub mod sticky_host;
+pub mod trajectory;
 pub mod util;

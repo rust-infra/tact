@@ -78,9 +78,7 @@ impl TrajectoryKind {
     pub const fn lane(self) -> TrajectoryLane {
         match self {
             Self::User | Self::Context => TrajectoryLane::Input,
-            Self::Assistant | Self::Thinking | Self::Notice | Self::Error => {
-                TrajectoryLane::Model
-            }
+            Self::Assistant | Self::Thinking | Self::Notice | Self::Error => TrajectoryLane::Model,
             Self::Tool | Self::Diff => TrajectoryLane::Tools,
         }
     }
@@ -385,7 +383,9 @@ impl TrajectoryLog {
                     self.records[index].status = Some(TrajectoryStatus::Running);
                 }
             }
-            AgentUpdate::StepFinished { tool_id, result, .. } => {
+            AgentUpdate::StepFinished {
+                tool_id, result, ..
+            } => {
                 if let Some(index) = self.open_tools.remove(tool_id) {
                     let record = &mut self.records[index];
                     record.status = Some(TrajectoryStatus::from_step(result.status));
@@ -507,7 +507,6 @@ impl TrajectoryLog {
                     None => first_line(text),
                 };
                 self.append(TrajectoryKind::Context, label);
-
             }
             AgentUpdate::ToolTranscript { .. }
             | AgentUpdate::ToolTranscriptStream { .. }
@@ -628,11 +627,12 @@ fn collapse_whitespace(text: &str) -> String {
 
 fn search_haystack(record: &TrajectoryRecord) -> String {
     let mut haystack = record.text.to_lowercase();
-    for extra in [&record.tool_name, &record.input, &record.output] {
-        if let Some(extra) = extra {
-            haystack.push(' ');
-            haystack.push_str(&extra.to_lowercase());
-        }
+    for extra in [&record.tool_name, &record.input, &record.output]
+        .into_iter()
+        .flatten()
+    {
+        haystack.push(' ');
+        haystack.push_str(&extra.to_lowercase());
     }
     haystack
 }
@@ -747,8 +747,7 @@ pub fn is_subagent_tool(visual: ToolVisualKind) -> bool {
 mod tests {
     use super::*;
     use tact_protocol::{
-        AgentErrorKind, StepResult, StepStatus, ThinkingChunk, TokenUsageInfo,
-        ToolPresentationInfo,
+        AgentErrorKind, StepResult, StepStatus, ThinkingChunk, TokenUsageInfo, ToolPresentationInfo,
     };
 
     fn presentation(name: &str) -> ToolPresentationInfo {
@@ -867,7 +866,12 @@ mod tests {
     fn a_finished_tool_without_a_start_is_still_evidence() {
         let mut log = TrajectoryLog::new();
         log.begin_turn();
-        log.observe(&finished("orphan", "bash", StepStatus::Success, Some(1_000)));
+        log.observe(&finished(
+            "orphan",
+            "bash",
+            StepStatus::Success,
+            Some(1_000),
+        ));
 
         assert_eq!(log.len(), 1);
         let record = log.get(0).expect("record");
@@ -1083,7 +1087,10 @@ mod tests {
         assert_eq!(log.matches("lib.rs"), vec![0], "matches the arguments");
         assert_eq!(log.matches("canary"), vec![0], "matches the request body");
         assert_eq!(log.matches("detail"), vec![0, 1], "matches the result body");
-        assert!(log.matches("   ").is_empty(), "a blank query matches nothing");
+        assert!(
+            log.matches("   ").is_empty(),
+            "a blank query matches nothing"
+        );
         assert!(log.matches("nothing-here").is_empty());
     }
 
@@ -1188,7 +1195,10 @@ mod overview_tests {
         let mut log = TrajectoryLog::new();
         fill(&mut log, 10);
         let buckets = bucket_densities(log.records(), 3);
-        assert_eq!(buckets.iter().map(|bucket| bucket.total()).sum::<usize>(), 10);
+        assert_eq!(
+            buckets.iter().map(|bucket| bucket.total()).sum::<usize>(),
+            10
+        );
         assert!(
             buckets[2].total() > 0,
             "the right edge must not be silently dropped: {buckets:?}"
