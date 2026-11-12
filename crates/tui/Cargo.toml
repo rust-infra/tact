@@ -34,9 +34,6 @@ syntect = { workspace = true }
 unicode-segmentation = { workspace = true }
 unicode-width = { workspace = true }
 
-[build-dependencies]
-toml = { workspace = true }
-
 [dev-dependencies]
 tact = { version = "2.0.0", path = "../tact", features = ["test-support"] }
 tempfile = { workspace = true }

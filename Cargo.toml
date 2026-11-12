@@ -17,6 +17,23 @@ members = [
 ]
 resolver = "2"
 
+# A bare `cargo build` / `cargo run` / `cargo clippy` covers only the terminal
+# entry point. Without this, a default build also compiles every test and
+# example unit of all 14 members: touching one source file in `tact` cost 18.8s
+# instead of 11.7s.
+#
+# `tact-ui` is the main binary and the one `cargo run` should mean. Desktop is
+# deliberately absent: it depends on `tact_desktop_core`, so listing it here
+# adds ~1.3s to every rebuild triggered by a `tact` edit and pulls gpui into a
+# loop that is usually reading TUI code. Build it with
+# `cargo build -p tact-desktop` (or `scripts/check-ui.sh`).
+#
+# Every gate that must stay workspace-wide passes `--workspace` explicitly:
+# `scripts/check-rust.sh`, `.github/workflows/rust.yml`. This matters — a bare
+# `cargo clippy --all-targets` silently stops checking `desktop`,
+# `desktop_core`, and the `agent_*` crates once this list is set.
+default-members = ["crates/tact-ui"]
+
 [workspace.package]
 version = "2.0.4"
 edition = "2024"
@@ -106,20 +123,34 @@ im = "15"
 # Keep the dev build fast to compile and small on disk. This workspace has ~30
 # bin/test units per crate and Cargo stores every unit's artifacts in its own
 # hash directory, so a rebuilt unit hash keeps a full copy of its outputs: a
-# fully-debug tact-ui binary is 576 MB (76% of it DWARF). Debug info and
-# incremental caches stay off, and only dependencies pay for optimization:
-# workspace units rebuild constantly, while gpui and tokio need the speed at
-# runtime. Line tables would keep backtraces useful, but they cost disk.
+# fully-debug tact-ui binary is 576 MB (76% of it DWARF). Debug info stays off
+# and only dependencies pay for optimization: workspace units rebuild
+# constantly, while gpui and tokio need the speed at runtime. Line tables would
+# keep backtraces useful, but they cost disk.
+#
+# `incremental` is ON for workspace crates and OFF for dependencies.
+#
+# It used to be off everywhere to save disk. Measured on this 14-core machine,
+# that traded away most of the edit-build loop for very little space:
+#   edit one file in `tact`       11.8s -> 2.8s
+#   touch every workspace source  20.0s -> 6.9s
+# The workspace side of the cache is ~2.7 GB after a full `cargo test`; a cold
+# build pays ~4s for it.
+#
+# Dependencies stay non-incremental because they are rebuilt rarely: the cache
+# their units would add is pure cost, and dropping it keeps a crate that a
+# workspace crate merely depends on out of `target/debug/incremental/`.
 [profile.dev]
 #debug = "line-tables-only"
 debug = false
 opt-level = 0
-incremental = false
+incremental = true
 
 # Dependencies are rebuilt far less often than workspace crates, so their
 # one-time optimization is cheap and the runtime difference in gpui is not.
 [profile.dev.package."*"]
 opt-level = 1
+incremental = false
 
 # The desktop preview's scroll path is measured in book/26: unoptimized layout
 # and text shaping took chat CPU from 13.6% to 42-50% under rapid scrolling.

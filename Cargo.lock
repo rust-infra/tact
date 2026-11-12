@@ -9010,7 +9010,6 @@ name = "tact"
 version = "2.0.4"
 dependencies = [
  "anyhow",
- "async-openai 0.20.0",
  "async-trait",
  "base64",
  "bytes",
@@ -9029,7 +9028,6 @@ dependencies = [
  "regex",
  "reqwest 0.12.28",
  "reqwest 0.13.4",
- "reqwest-eventsource",
  "rmcp",
  "schemars",
  "secrecy 0.8.0",
@@ -9987,7 +9985,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-stream",
- "toml 0.8.23",
  "tracing",
  "unicode-segmentation",
  "unicode-width",

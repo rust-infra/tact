@@ -14,7 +14,6 @@ tact_agent_api = { version = "2.0.0", path = "../agent_api" }
 tact_agent_core = { version = "2.0.0", path = "../agent_core" }
 tool_refactor_macros = { version = "2.0.0", path = "../tool_refactor_macros" }
 anyhow = { workspace = true }
-async-openai = { workspace = true }
 async-trait = { workspace = true }
 base64 = { workspace = true }
 bytes = { workspace = true }
@@ -34,7 +33,6 @@ reqwest = { workspace = true, features = ["multipart"] }
 # client for it requires depending on the same crate version, or the
 # `StreamableHttpClient for reqwest::Client` impl does not apply.
 reqwest13 = { workspace = true }
-reqwest-eventsource = { workspace = true }
 rmcp = { workspace = true }
 schemars = { workspace = true }
 secrecy = { workspace = true }

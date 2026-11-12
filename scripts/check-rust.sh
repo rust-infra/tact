@@ -54,8 +54,12 @@ scripts/check-package.sh
 echo "==> cargo fmt -- --check"
 cargo fmt -- --check
 
-echo "==> cargo clippy --all-targets -- -D warnings"
-cargo clippy --all-targets -- -D warnings
+# `--workspace` is explicit because the root manifest sets `default-members` to
+# the shippable binaries only. Without it this gate silently stops covering
+# `desktop`, `desktop_core`, `tui`, and the `agent_*` crates: a dead function in
+# `desktop_core` then passes clippy.
+echo "==> cargo clippy --workspace --all-targets -- -D warnings"
+cargo clippy --workspace --all-targets -- -D warnings
 
 # `--quiet`: one character per test instead of one line per test, and no rustc
 # command lines. A green run then costs ~2 KB of terminal instead of ~200 KB —
