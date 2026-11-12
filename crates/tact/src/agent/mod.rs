@@ -2171,12 +2171,46 @@ fn snapshot_dir(root: &Path, max_items: usize) -> Option<String> {
         ".DS_Store",
     ];
 
+    use std::collections::BTreeSet;
     use std::{cmp::Ordering, collections::BTreeMap};
+
+    // Directories that never hold code the model would want to open. They are
+    // still worth knowing about (a `src/` line, an `examples/` line), but a
+    // budget of `max_items` lines spent on `assets/fonts`, `assets/icons`,
+    // `assets/linux` and `previews` pushes the real modules off the end: in
+    // this repository the tail that got cut was `crates/tact/src/{tool,store,
+    // mcp,permission,...}` and `crates/tui/src/render`.
+    const PAYLOAD_DIRS: &[&str] = &[
+        "assets",
+        "fonts",
+        "icons",
+        "images",
+        "img",
+        "media",
+        "previews",
+        "goldens",
+        "snapshots",
+        "screenshots",
+    ];
+
+    // A `src/` whose own children are listed adds a line without adding
+    // information: `crates/tact/src` + `tool/` + `store/` says what
+    // `crates/tact/src/tool` and `crates/tact/src/store` already say, with one
+    // more line. Collapsed below, and kept when nothing beneath it is listed so
+    // a crate whose modules are all flat files still shows its `src/`.
+    const SCAFFOLD_DIRS: &[&str] = &["src", "tests", "examples", "benches"];
 
     // filter_entry prunes ignored dirs during the walk, not after.
     let mut items: Vec<std::path::PathBuf> = Vec::new();
 
     let should_keep = |entry: &walkdir::DirEntry| {
+        // `filter_entry` also visits the root, so applying the name rules to it
+        // would empty the snapshot for any workdir whose own name starts with a
+        // dot (`~/.config/proj`, a `tempfile` `.tmpXXXX`). The root is the one
+        // directory the caller asked for: always descend.
+        if entry.depth() == 0 {
+            return true;
+        }
         let path = entry.path();
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             return true;
@@ -2185,6 +2219,7 @@ fn snapshot_dir(root: &Path, max_items: usize) -> Option<String> {
             || name.eq_ignore_ascii_case(".gitignore")
             || !name.starts_with('.'))
             && !IGNORE_DIRS.contains(&name)
+            && !PAYLOAD_DIRS.contains(&name)
     };
 
     for entry in walkdir::WalkDir::new(root)
@@ -2207,6 +2242,18 @@ fn snapshot_dir(root: &Path, max_items: usize) -> Option<String> {
     if items.is_empty() {
         return None;
     }
+
+    let listed_parents: BTreeSet<std::path::PathBuf> = items
+        .iter()
+        .filter_map(|p| p.parent().map(Path::to_path_buf))
+        .collect();
+    items.retain(|p| {
+        let is_scaffold = p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| SCAFFOLD_DIRS.contains(&n));
+        !(is_scaffold && listed_parents.contains(p))
+    });
 
     items.sort_by(|a, b| {
         let depth = |path: &Path| path.components().count();

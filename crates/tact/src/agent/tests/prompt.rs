@@ -223,3 +223,107 @@ fn set_thinking_budget_auto_expands_max_tokens() {
     }
     assert!(saw_model_info, "set_thinking_budget must emit ModelInfo");
 }
+
+/// The snapshot is a budget, not an inventory: payload directories and
+/// redundant scaffold lines must not push real modules off the end.
+#[test]
+fn snapshot_dir_drops_payload_and_folds_scaffold() {
+    let tmp = tempfile::tempdir().unwrap();
+    // `walkdir` does not descend into a symlinked root, and macOS hands out
+    // temp dirs under `/var/folders`, which is a symlink.
+    let root = &std::fs::canonicalize(tmp.path()).unwrap();
+
+    // A crate whose `src/` has listed children: the `src` line is redundant.
+    for dir in [
+        "crates/app/src/tool",
+        "crates/app/src/store",
+        "crates/app/assets/fonts",
+        "crates/app/assets/icons/deep",
+    ] {
+        std::fs::create_dir_all(root.join(dir)).unwrap();
+    }
+    // A crate whose `src/` holds only files: the `src` line is the only hint
+    // that a source tree exists, so it must survive.
+    std::fs::create_dir_all(root.join("crates/flat/src")).unwrap();
+    std::fs::write(root.join("crates/flat/src/lib.rs"), "").unwrap();
+
+    let snapshot = snapshot_dir(root, 200).expect("snapshot");
+    let lines = snapshot.lines().collect::<Vec<_>>();
+
+    assert!(
+        !snapshot.contains("assets"),
+        "payload dirs must not be listed:\n{snapshot}"
+    );
+    // Exactly one `src/` line survives: the flat crate's, where it is the only
+    // hint that a source tree exists. `crates/app/src` also names `src` but as
+    // the header of its listed children, not as a redundant child of its own.
+    let src_lines = lines.iter().filter(|l| l.trim() == "src/").count();
+    assert_eq!(
+        src_lines, 1,
+        "only the flat crate needs a `src/` line:\n{snapshot}"
+    );
+    assert!(
+        lines.contains(&"crates/app/src") && lines.contains(&"crates/flat"),
+        "both crates must still be visible:\n{snapshot}"
+    );
+    assert!(
+        snapshot.contains("tool/") && snapshot.contains("store/"),
+        "real modules must survive the filter:\n{snapshot}"
+    );
+}
+
+/// The truncation budget still applies, and says so.
+#[test]
+fn snapshot_dir_reports_truncation() {
+    let tmp = tempfile::tempdir().unwrap();
+    // As above: a symlinked root is not descended into.
+    let root = &std::fs::canonicalize(tmp.path()).unwrap();
+    for i in 0..12 {
+        std::fs::create_dir_all(root.join(format!("crates/c{i}/src/mod{i}"))).unwrap();
+    }
+
+    let capped = snapshot_dir(root, 4).expect("snapshot");
+    assert!(
+        capped.contains("(truncated at 4 items)"),
+        "a capped snapshot must say it was capped:\n{capped}"
+    );
+
+    let full = snapshot_dir(root, 200).expect("snapshot");
+    assert!(
+        !full.contains("(truncated at"),
+        "an uncapped snapshot must not claim truncation:\n{full}"
+    );
+}
+
+/// Print the real repository snapshot at both caps so the before/after effect
+/// is inspectable rather than argued about. Ignored: a measurement, not a gate.
+#[test]
+#[ignore = "printing aid: shows the real snapshot for this checkout"]
+fn snapshot_dir_prints_this_repository() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let at80 = snapshot_dir(root, 80).expect("snapshot");
+    let full = snapshot_dir(root, 120).expect("snapshot");
+    println!(
+        "=== cap 80: lines={} chars={}",
+        at80.lines().count(),
+        at80.chars().count()
+    );
+    println!(
+        "=== cap 120: lines={} chars={}",
+        full.lines().count(),
+        full.chars().count()
+    );
+    let lost = full
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter(|l| !at80.lines().any(|k| k == *l))
+        .collect::<Vec<_>>();
+    println!("=== dropped at cap 80 ===");
+    for l in lost {
+        println!("{l}");
+    }
+}

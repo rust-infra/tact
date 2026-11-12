@@ -475,7 +475,7 @@ The runtime builds the system prompt via `SystemPrompt` (Tera template in `crate
 
 | Setting | Config key / CLI | Default | Description |
 |---|---|---|---|
-| Snapshot size | `agent.snapshot_max_items` / `--snapshot-max-items` | `80` | Max files/dirs in the snapshot (truncated after sort) |
+| Snapshot size | `agent.snapshot_max_items` / `--snapshot-max-items` | `120` | Max dirs in the snapshot (truncated after sort); payload dirs skipped, redundant `src/` lines folded |
 | Walk depth | `4` | Max directory depth from project root |
 
 Snapshot behavior (language-agnostic, works for any repo layout):
