@@ -136,9 +136,15 @@ cargo run -p tact-desktop
 cargo build --release -p tact-desktop
 ```
 
-The release workflow also packages `tact-ui` beside the desktop binary. macOS
-assets are signed/notarized `.app` bundles; Windows and Linux ship matching
-desktop and CLI binaries.
+The release workflow also packages `tact-ui` beside the desktop binary. Windows
+and Linux ship matching desktop and CLI binaries. The macOS `.app` bundle is
+signed and notarized only when the repository has the six signing secrets
+(`MACOS_CERTIFICATE`, `MACOS_CERTIFICATE_PASSWORD`, `MACOS_SIGNING_IDENTITY`,
+`APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD`). Without them the release
+still ships, with an unsigned bundle: macOS users open it once from the
+right-click **Open** menu, or run
+`xattr -d com.apple.quarantine 'Tact Desktop.app'`. A partial set of secrets
+fails the release and names the missing ones.
 
 Building the desktop on Linux needs the GPUI platform libraries, which the CLI
 does not:

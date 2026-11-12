@@ -405,34 +405,57 @@ jobs:
           PLIST
             /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string ${version}" "${app}/Contents/Info.plist"
             /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string ${version}" "${app}/Contents/Info.plist"
-            : "${MACOS_CERTIFICATE:?macOS signing certificate secret is required}"
-            : "${MACOS_CERTIFICATE_PASSWORD:?macOS signing certificate password secret is required}"
-            : "${MACOS_SIGNING_IDENTITY:?macOS signing identity secret is required}"
-            : "${APPLE_ID:?Apple notarization account secret is required}"
-            : "${APPLE_TEAM_ID:?Apple team id secret is required}"
-            : "${APPLE_APP_PASSWORD:?Apple app password secret is required}"
-            keychain="$RUNNER_TEMP/tact-signing.keychain-db"
-            cert="$RUNNER_TEMP/tact-signing.p12"
-            printf '%s' "${MACOS_CERTIFICATE}" | base64 --decode > "${cert}"
-            security create-keychain -p tact-signing "${keychain}"
-            security set-keychain-settings -lut 21600 "${keychain}"
-            security unlock-keychain -p tact-signing "${keychain}"
-            security import "${cert}" -k "${keychain}" -P "${MACOS_CERTIFICATE_PASSWORD}" \
-              -T /usr/bin/codesign
-            security set-key-partition-list -S apple-tool:,apple: \
-              -s -k tact-signing "${keychain}" >/dev/null
-            security list-keychains -d user -s "${keychain}" $(security list-keychains -d user | tr -d '"')
-            codesign --force --deep --options runtime --timestamp \
-              --sign "${MACOS_SIGNING_IDENTITY}" "${app}"
-            codesign --verify --deep --strict --verbose=2 "${app}"
-            notarize_zip="$RUNNER_TEMP/tact-notarize.zip"
-            ditto -c -k --sequesterRsrc --keepParent "${app}" "${notarize_zip}"
-            xcrun notarytool submit "${notarize_zip}" \
-              --apple-id "${APPLE_ID}" --team-id "${APPLE_TEAM_ID}" \
-              --password "${APPLE_APP_PASSWORD}" --wait
-            xcrun stapler staple "${app}"
-            xcrun stapler validate "${app}"
-            spctl --assess --type execute --verbose=4 "${app}"
+
+            # Signing and notarization need all six secrets. All six present
+            # means a signed release. None present means this repository has no
+            # macOS signing identity, so the archive ships unsigned with a
+            # warning rather than failing the whole release. A partial set is a
+            # configuration error: one forgotten secret would otherwise fail
+            # halfway through with an error that named the wrong thing.
+            signing_secrets=(
+              MACOS_CERTIFICATE MACOS_CERTIFICATE_PASSWORD MACOS_SIGNING_IDENTITY
+              APPLE_ID APPLE_TEAM_ID APPLE_APP_PASSWORD
+            )
+            present=0
+            missing=()
+            for name in "${signing_secrets[@]}"; do
+              if [[ -n "${!name:-}" ]]; then
+                present=$((present + 1))
+              else
+                missing+=("$name")
+              fi
+            done
+            if [[ "$present" -ne 0 && "$present" -ne "${#signing_secrets[@]}" ]]; then
+              echo "::error::macOS signing is partially configured. Missing: ${missing[*]}"
+              exit 1
+            fi
+
+            if [[ "$present" -eq 0 ]]; then
+              echo "::warning::macOS signing secrets are not configured; packaging an unsigned .app. macOS users must right-click Open on first launch, or run: xattr -d com.apple.quarantine 'Tact Desktop.app'"
+            else
+              keychain="$RUNNER_TEMP/tact-signing.keychain-db"
+              cert="$RUNNER_TEMP/tact-signing.p12"
+              printf '%s' "${MACOS_CERTIFICATE}" | base64 --decode > "${cert}"
+              security create-keychain -p tact-signing "${keychain}"
+              security set-keychain-settings -lut 21600 "${keychain}"
+              security unlock-keychain -p tact-signing "${keychain}"
+              security import "${cert}" -k "${keychain}" -P "${MACOS_CERTIFICATE_PASSWORD}" \
+                -T /usr/bin/codesign
+              security set-key-partition-list -S apple-tool:,apple: \
+                -s -k tact-signing "${keychain}" >/dev/null
+              security list-keychains -d user -s "${keychain}" $(security list-keychains -d user | tr -d '"')
+              codesign --force --deep --options runtime --timestamp \
+                --sign "${MACOS_SIGNING_IDENTITY}" "${app}"
+              codesign --verify --deep --strict --verbose=2 "${app}"
+              notarize_zip="$RUNNER_TEMP/tact-notarize.zip"
+              ditto -c -k --sequesterRsrc --keepParent "${app}" "${notarize_zip}"
+              xcrun notarytool submit "${notarize_zip}" \
+                --apple-id "${APPLE_ID}" --team-id "${APPLE_TEAM_ID}" \
+                --password "${APPLE_APP_PASSWORD}" --wait
+              xcrun stapler staple "${app}"
+              xcrun stapler validate "${app}"
+              spctl --assess --type execute --verbose=4 "${app}"
+            fi
             python3 scripts/normalize-mtime.py "${app}"
             python3 scripts/package-zip.py --output "${asset}" "${app}"
           else

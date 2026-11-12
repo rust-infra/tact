@@ -786,6 +786,7 @@
 <li class="toc-l2"><a href="#35-2026-11-10--thinking-%E5%8D%A1%E7%89%87%E8%B7%91%E5%AE%8C%E5%90%8E%E5%8F%AA%E7%95%99%E7%8A%B6%E6%80%81%E8%A1%8C" title="35. 2026-11-10 — thinking 卡片跑完后只留状态行，摘要不再画"><span class="toc-label">35. 2026-11-10 — thinking 卡片跑完后只留状态行，摘要不再画</span></a></li>
 <li class="toc-l2"><a href="#36-2026-11-10--%E6%97%A5%E5%BF%97%E6%BB%9A%E5%8A%A8%E6%8C%89%E8%A1%8C%E7%BF%BB%E9%A1%B5%E5%8D%A1%E4%BD%8F%E9%98%85%E8%AF%BB%E4%BD%8D%E7%BD%AE" title="36. 2026-11-10 — 日志向上滚动不是按行翻页"><span class="toc-label">36. 2026-11-10 — 日志向上滚动不是按行翻页</span></a></li>
 <li class="toc-l2"><a href="#37-2026-11-11--dev-%E7%BC%96%E8%AF%91%E6%97%B6%E9%97%B4%E4%B8%8E%E4%BB%93%E5%BA%93%E7%BB%93%E6%9E%84%E5%99%AA%E9%9F%B3" title="37. 2026-11-11 — 开发编译时间与「仓库太大」的上下文噪音"><span class="toc-label">37. 2026-11-11 — 开发编译时间与「仓库太大」的上下文噪音</span></a></li>
+<li class="toc-l2"><a href="#38-2026-11-13--macos-%E7%AD%BE%E5%90%8D%E7%BC%BA%E5%A4%B1%E6%8B%A6%E4%BD%8F%E6%95%B4%E4%B8%AA%E5%8F%91%E5%B8%83" title="38. 2026-11-13 — macOS 签名缺失拦住整个发布"><span class="toc-label">38. 2026-11-13 — macOS 签名缺失拦住整个发布</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -23482,6 +23483,44 @@ cargo 的变体 hash 不出现在 <code>.fingerprint/</code> 里、no-op 构建�
 <code>-Z gc</code>：需要 nightly 且依赖使用记录而非时间，不作为仓库方案。
 <a href="../AGENTS.md">AGENTS.md</a>（<code>scripts/clean-target.sh</code>）与
 <code>Cargo.toml</code>（<code>[profile.dev.package."*"] incremental</code>）为指针。</p>
+<hr />
+<h2 id="38-2026-11-13--macos-签名缺失拦住整个发布">38. 2026-11-13 — macOS 签名缺失拦住整个发布</h2>
+<p><strong>现象：</strong> <code>v2.0.6</code> 的发布任务里五个 CLI 目标全部构建成功，
+Linux 与 Windows 的桌面包也成功，但两个 macOS 桌面任务失败（一个报缺少
+<code>MACOS_CERTIFICATE</code>，另一个被取消），于是
+<code>publish GitHub release</code> 因为 <code>needs: [build, build-desktop]</code>
+被跳过，整个版本一个资产都没发出去。往前查，<code>v2.0.3</code>、<code>v2.0.4</code>
+的 release 资产数同样是 0：桌面从 #104 引入以来，带桌面的发布从未成功过一次。</p>
+<p><strong>根因：</strong> <code>release.yml</code> 的 macOS 分支用
+<code>: "${MACOS_CERTIFICATE:?…}"</code> 硬性要求六个仓库 secret
+（<code>MACOS_CERTIFICATE</code>、<code>MACOS_CERTIFICATE_PASSWORD</code>、
+<code>MACOS_SIGNING_IDENTITY</code>、<code>APPLE_ID</code>、<code>APPLE_TEAM_ID</code>、
+<code>APPLE_APP_PASSWORD</code>），而这六个一个都没配过——仓库里只有
+<code>CARGO_PACKAGER_SIGN_PRIVATE_KEY</code>，环境 <code>tact-ui</code> 下只有
+<code>API_KEY</code> / <code>BASE_URL</code> / <code>MODEL</code> / <code>PROVIDER</code>。
+把这个凭据缺口当成构建失败，是「这么多问题」的真实来源：它每次发布都复现一次。</p>
+<p><strong>决策：</strong>签名改为可选，而不是可选地跳过发布。
+六个 secret 齐全时照旧签名并公证；全部缺失时打<strong>未签名</strong>的
+<code>.app</code>，并用 <code>::warning::</code> 明说归档未签名、macOS 用户首次打开需要
+右键「打开」或执行 <code>xattr -d com.apple.quarantine 'Tact Desktop.app'</code>；
+<strong>部分配置</strong>（有 1 到 5 个）视为配置错误，直接失败并列出缺的项。
+后者是关键：否则漏配一个 secret 会在签名进行到一半时失败，报错指向的还不是漏掉的那个。
+判定用数组循环加 <code>${!name:-}</code> 间接展开，macOS runner 的
+<code>/bin/bash</code> 是 3.2，已在该版本上实测过。</p>
+<p><strong>验证：</strong>在本机 macOS 上按 <code>release.yml</code> 的 macOS 分支
+逐行跑了一遍未签名路径：<code>Tact Desktop.app</code> 生成、
+<code>plutil -lint</code> 通过、<code>codesign -dv</code> 报
+<code>code object is not signed at all</code>（符合预期）、
+<code>package-zip.py</code> 产出 15 个条目的 zip；再用工作流里
+<code>Verify packaged desktop archive</code> 的断言逐个检查解包结果，全部通过。
+三个分支（全空、全有、缺一个）在本机各跑一次，行为与预期一致。
+<code>/bin/bash -n</code>（3.2.57）对 <code>release.yml</code> 全部 18 个
+<code>run:</code> 块无语法错误。</p>
+<p><strong>Pointers：</strong> <code>.github/workflows/release.yml</code>
+（<code>signing_secrets</code> 校验与签名分支）、
+<a href="../README.md">README.md</a> 的 Tact Desktop 段、
+<a href="../docs/design/tact-desktop/visual-verification.md">visual-verification.md</a> §4。
+配好六个 secret 后无需改动代码，同一个 tag 重跑即回到签名路径。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>

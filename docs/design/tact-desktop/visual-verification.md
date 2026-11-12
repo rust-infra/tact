@@ -123,10 +123,13 @@ Each job runs the packaged binary from a clean app-data directory
 (`TACT_DESKTOP_SMOKE=1`); Linux uses Mesa lavapipe under `xvfb-run` because the
 hosted runners have no GPU.
 
-The signed release remains blocked on repository secrets the workflow requires:
-`MACOS_CERTIFICATE`, `MACOS_CERTIFICATE_PASSWORD`, `MACOS_SIGNING_IDENTITY`,
-`APPLE_ID`, `APPLE_TEAM_ID`, and `APPLE_APP_PASSWORD`. Only
-`CARGO_PACKAGER_SIGN_PRIVATE_KEY` is configured today.
+The release signs and notarizes the macOS bundle only when all six repository
+secrets are present: `MACOS_CERTIFICATE`, `MACOS_CERTIFICATE_PASSWORD`,
+`MACOS_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_TEAM_ID`, and
+`APPLE_APP_PASSWORD`. Only `CARGO_PACKAGER_SIGN_PRIVATE_KEY` is configured
+today, so release archives ship an unsigned `.app` and the workflow logs a
+warning saying so. A partially configured set fails the job and names the
+missing secrets, rather than failing halfway through signing.
 
 ## 5. Live entry walkthrough
 
