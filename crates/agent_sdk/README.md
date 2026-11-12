@@ -20,8 +20,8 @@ the host needs the SDK plus one provider adapter:
 
 ```toml
 [dependencies]
-tact_agent_sdk = "2.0.4"
-tact_llm = { version = "2.0.4", default-features = false, features = ["openai-chat"] }
+tact_agent_sdk = "2.0.6"
+tact_llm = { version = "2.0.6", default-features = false, features = ["openai-chat"] }
 ```
 
 Until the registry release is available, pin the tag that matches the Tact
@@ -29,10 +29,10 @@ checkout:
 
 ```toml
 [dependencies]
-tact_agent_sdk = { git = "https://github.com/rust-infra/tact", tag = "v2.0.4" }
+tact_agent_sdk = { git = "https://github.com/rust-infra/tact", tag = "v2.0.6" }
 tact_llm = {
   git = "https://github.com/rust-infra/tact",
-  tag = "v2.0.4",
+  tag = "v2.0.6",
   default-features = false,
   features = ["openai-chat"]
 }

@@ -18,7 +18,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square&logo=rust" alt="Rust" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT License" />
-  <img src="https://img.shields.io/badge/version-2.0.4-blue?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/version-2.0.6-blue?style=flat-square" alt="Version" />
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey?style=flat-square" alt="Platform" />
   <a href="https://ko-fi.com/00x80">
     <img src="https://img.shields.io/badge/Ko--fi-Buy%20me%20a%20coffee-FF5E5B?style=flat-square&logo=ko-fi&logoColor=white" alt="Support on Ko-fi" />
@@ -137,12 +137,12 @@ Via Cargo (coming soon to crates.io):
 cargo install --path crates/tact-ui   # from the repo root
 ```
 
-**Binary releases:** push a version tag to publish pre-built binaries for Linux (x86_64 / ARM64), macOS (x86_64 / ARM64), and Windows (x86_64):
-
-```bash
-git tag v2.0.4
-git push origin v2.0.4
-```
+**Binary releases:** bump `[workspace.package].version` in `Cargo.toml` in the
+PR that changes the behaviour. A merge to `main` whose version is new is tagged
+by `.github/workflows/tag.yml`, which calls `release.yml` and builds the
+binaries for Linux (x86_64 / ARM64), macOS (x86_64 / ARM64), and Windows
+(x86_64). A hand-pushed tag that does not match the workspace version is
+rejected by `scripts/check-release-tag.py`, and `release.yml` builds nothing.
 
 GitHub Actions (`.github/workflows/release.yml`) uploads
 `tact-ui-v<version>-<target-triple>.tar.gz` / `.zip`,

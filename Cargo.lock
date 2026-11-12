@@ -9007,7 +9007,7 @@ dependencies = [
 
 [[package]]
 name = "tact"
-version = "2.0.4"
+version = "2.0.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9058,7 +9058,7 @@ dependencies = [
 
 [[package]]
 name = "tact-desktop"
-version = "2.0.4"
+version = "2.0.6"
 dependencies = [
  "anyhow",
  "chrono",
@@ -9084,7 +9084,7 @@ dependencies = [
 
 [[package]]
 name = "tact-ui"
-version = "2.0.4"
+version = "2.0.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9106,7 +9106,7 @@ dependencies = [
 
 [[package]]
 name = "tact_agent_api"
-version = "2.0.4"
+version = "2.0.6"
 dependencies = [
  "async-trait",
  "futures-core",
@@ -9118,7 +9118,7 @@ dependencies = [
 
 [[package]]
 name = "tact_agent_core"
-version = "2.0.4"
+version = "2.0.6"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -9131,7 +9131,7 @@ dependencies = [
 
 [[package]]
 name = "tact_agent_sdk"
-version = "2.0.4"
+version = "2.0.6"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -9147,7 +9147,7 @@ dependencies = [
 
 [[package]]
 name = "tact_catalog"
-version = "2.0.4"
+version = "2.0.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -9156,7 +9156,7 @@ dependencies = [
 
 [[package]]
 name = "tact_desktop_core"
-version = "2.0.4"
+version = "2.0.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9181,7 +9181,7 @@ dependencies = [
 
 [[package]]
 name = "tact_host"
-version = "2.0.4"
+version = "2.0.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9201,7 +9201,7 @@ dependencies = [
 
 [[package]]
 name = "tact_llm"
-version = "2.0.4"
+version = "2.0.6"
 dependencies = [
  "anyhow",
  "async-openai 0.20.0",
@@ -9790,7 +9790,7 @@ dependencies = [
 
 [[package]]
 name = "tool_refactor_macros"
-version = "2.0.4"
+version = "2.0.6"
 dependencies = [
  "proc-macro2",
  "quote",
