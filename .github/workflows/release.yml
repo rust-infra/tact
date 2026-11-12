@@ -191,32 +191,30 @@ jobs:
             bin_path="${bin_path}.exe"
             cp "${bin_path}" "${BINARY_NAME}.exe"
             cp LICENSE LICENSE.txt
-            cp vendor/gpui-ai/LICENSE gpui-ai-LICENSE-MIT.txt
             python3 scripts/normalize-mtime.py "${BINARY_NAME}.exe" LICENSE.txt \
               THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt \
-              THIRD-PARTY-LICENSES.txt Cargo.lock gpui-ai-LICENSE-MIT.txt
+              THIRD-PARTY-LICENSES.txt Cargo.lock
             python3 scripts/package-zip.py --output "${asset}" "${BINARY_NAME}.exe" \
               LICENSE.txt THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt \
-              THIRD-PARTY-LICENSES.txt Cargo.lock gpui-ai-LICENSE-MIT.txt
+              THIRD-PARTY-LICENSES.txt Cargo.lock
           else
             cp "${bin_path}" "${BINARY_NAME}"
             cp LICENSE LICENSE.tact-ui
-            cp vendor/gpui-ai/LICENSE gpui-ai-LICENSE-MIT.txt
             if command -v strip >/dev/null 2>&1; then
               strip "${BINARY_NAME}" || true
             fi
             python3 scripts/normalize-mtime.py "${BINARY_NAME}" LICENSE.tact-ui \
               THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt \
-              THIRD-PARTY-LICENSES.txt Cargo.lock gpui-ai-LICENSE-MIT.txt
+              THIRD-PARTY-LICENSES.txt Cargo.lock
             if [[ "${{ matrix.archive }}" == "zip" ]]; then
               python3 scripts/package-zip.py --output "${asset}" "${BINARY_NAME}" \
                 LICENSE.tact-ui THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt \
-                THIRD-PARTY-LICENSES.txt Cargo.lock gpui-ai-LICENSE-MIT.txt
+                THIRD-PARTY-LICENSES.txt Cargo.lock
             else
               tar --sort=name --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 \
                 --numeric-owner -cf - "${BINARY_NAME}" LICENSE.tact-ui \
                 THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt \
-                THIRD-PARTY-LICENSES.txt Cargo.lock gpui-ai-LICENSE-MIT.txt \
+                THIRD-PARTY-LICENSES.txt Cargo.lock \
                 | gzip -n > "${asset}"
             fi
           fi
@@ -369,16 +367,15 @@ jobs:
             cp LICENSE LICENSE.tact-ui
             cp crates/desktop/assets/fonts/IBM-Plex-LICENSE.txt .
             cp crates/desktop/assets/fonts/Lilex-LICENSE.txt .
-            cp vendor/gpui-ai/LICENSE gpui-ai-LICENSE-MIT.txt
             cp crates/desktop/assets/app-icon.png .
             python3 scripts/normalize-mtime.py tact-desktop.exe tact-ui.exe LICENSE \
               LICENSE.tact-ui IBM-Plex-LICENSE.txt Lilex-LICENSE.txt \
               THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt \
-              THIRD-PARTY-LICENSES.txt Cargo.lock gpui-ai-LICENSE-MIT.txt app-icon.png
+              THIRD-PARTY-LICENSES.txt Cargo.lock app-icon.png
             python3 scripts/package-zip.py --output "${asset}" tact-desktop.exe \
               tact-ui.exe LICENSE LICENSE.tact-ui IBM-Plex-LICENSE.txt \
               Lilex-LICENSE.txt THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt \
-              THIRD-PARTY-LICENSES.txt Cargo.lock gpui-ai-LICENSE-MIT.txt app-icon.png
+              THIRD-PARTY-LICENSES.txt Cargo.lock app-icon.png
           elif [[ "${{ runner.os }}" == "macOS" ]]; then
             app="Tact Desktop.app"
             mkdir -p "${app}/Contents/MacOS" "${app}/Contents/Resources"
@@ -391,7 +388,6 @@ jobs:
             cp THIRD-PARTY-APACHE-2.0.txt "${app}/Contents/Resources/"
             cp THIRD-PARTY-LICENSES.txt "${app}/Contents/Resources/"
             cp Cargo.lock "${app}/Contents/Resources/"
-            cp vendor/gpui-ai/LICENSE "${app}/Contents/Resources/gpui-ai-LICENSE-MIT.txt"
             cp crates/desktop/assets/app-icon.icns "${app}/Contents/Resources/Tact.icns"
             cat > "${app}/Contents/Info.plist" <<'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>
@@ -445,7 +441,6 @@ jobs:
             cp LICENSE LICENSE.tact-ui
             cp crates/desktop/assets/fonts/IBM-Plex-LICENSE.txt .
             cp crates/desktop/assets/fonts/Lilex-LICENSE.txt .
-            cp vendor/gpui-ai/LICENSE gpui-ai-LICENSE-MIT.txt
             cp crates/desktop/assets/app-icon.png .
             mkdir -p share/icons share/applications
             cp -R crates/desktop/assets/linux/hicolor share/icons/
@@ -455,13 +450,13 @@ jobs:
             python3 scripts/normalize-mtime.py tact-desktop tact-ui LICENSE \
               LICENSE.tact-ui IBM-Plex-LICENSE.txt Lilex-LICENSE.txt \
               THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt \
-              THIRD-PARTY-LICENSES.txt Cargo.lock gpui-ai-LICENSE-MIT.txt app-icon.png \
+              THIRD-PARTY-LICENSES.txt Cargo.lock app-icon.png \
               share
             tar --sort=name --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 \
               --numeric-owner -cf - tact-desktop tact-ui LICENSE LICENSE.tact-ui \
               IBM-Plex-LICENSE.txt Lilex-LICENSE.txt THIRD-PARTY-NOTICES.md \
               THIRD-PARTY-APACHE-2.0.txt THIRD-PARTY-LICENSES.txt Cargo.lock \
-              gpui-ai-LICENSE-MIT.txt app-icon.png share | gzip -n > "${asset}"
+              app-icon.png share | gzip -n > "${asset}"
           fi
 
           echo "ASSET_PATH=${asset}" >> "${GITHUB_ENV}"
