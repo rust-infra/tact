@@ -8,6 +8,10 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # The dev profile enables incremental compilation for local edit-build loops.
+  # CI never reuses an edited tree, so the cache would only bloat `target/`
+  # (which these workflows restore and save) and slow the first build down.
+  CARGO_INCREMENTAL: 0
 
 jobs:
   kernel-deps:
@@ -73,7 +77,9 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-clippy-
-      - run: cargo clippy --all-targets -- -D warnings
+      # `--workspace`: root Cargo.toml sets `default-members` to the
+      # shippable binaries, so a bare clippy would skip desktop/agent crates.
+      - run: cargo clippy --workspace --all-targets -- -D warnings
 
   doc:
     name: Doc check
@@ -106,7 +112,7 @@ jobs:
       # not denied — the workspace carries pre-existing `broken_intra_doc_links`
       # ones — so the job fails only when the docs stop building.
       - name: Build the workspace docs
-        run: cargo doc --no-deps
+        run: cargo doc --workspace --no-deps
 
   book:
     name: Book check
@@ -142,7 +148,8 @@ jobs:
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-test-
       - name: Run full workspace tests
-        run: cargo test --verbose
+        # `--workspace`: `default-members` otherwise narrows this to tact-ui.
+        run: cargo test --workspace --verbose
 
   desktop:
     name: Desktop (${{ matrix.os }})

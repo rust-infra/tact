@@ -785,6 +785,7 @@
 <li class="toc-l2"><a href="#34-2026-11-10--%E5%B7%A5%E5%85%B7%E7%BB%84%E5%B1%95%E5%BC%80%E5%90%8E%E6%97%A0%E6%B3%95%E5%86%8D%E6%8A%98%E5%8F%A0" title="34. 2026-11-10 — 工具组展开后无法再折叠"><span class="toc-label">34. 2026-11-10 — 工具组展开后无法再折叠</span></a></li>
 <li class="toc-l2"><a href="#35-2026-11-10--thinking-%E5%8D%A1%E7%89%87%E8%B7%91%E5%AE%8C%E5%90%8E%E5%8F%AA%E7%95%99%E7%8A%B6%E6%80%81%E8%A1%8C" title="35. 2026-11-10 — thinking 卡片跑完后只留状态行，摘要不再画"><span class="toc-label">35. 2026-11-10 — thinking 卡片跑完后只留状态行，摘要不再画</span></a></li>
 <li class="toc-l2"><a href="#36-2026-11-10--%E6%97%A5%E5%BF%97%E6%BB%9A%E5%8A%A8%E6%8C%89%E8%A1%8C%E7%BF%BB%E9%A1%B5%E5%8D%A1%E4%BD%8F%E9%98%85%E8%AF%BB%E4%BD%8D%E7%BD%AE" title="36. 2026-11-10 — 日志向上滚动不是按行翻页"><span class="toc-label">36. 2026-11-10 — 日志向上滚动不是按行翻页</span></a></li>
+<li class="toc-l2"><a href="#37-2026-11-11--dev-%E7%BC%96%E8%AF%91%E6%97%B6%E9%97%B4%E4%B8%8E%E4%BB%93%E5%BA%93%E7%BB%93%E6%9E%84%E5%99%AA%E9%9F%B3" title="37. 2026-11-11 — 开发编译时间与「仓库太大」的上下文噪音"><span class="toc-label">37. 2026-11-11 — 开发编译时间与「仓库太大」的上下文噪音</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -23406,6 +23407,81 @@ tiebreaker。桌面端 299 个测试通过。</p>
 <code>crates/tui/src/render/log_render_tests.rs</code>、
 <a href="../docs/tui_rendering.md">docs/tui_rendering.md</a> §6.3 与 §6.6、
 <a href="./23_chapter_tui_zh.html">第 23 章</a> 渲染管线节。</p>
+<hr />
+<h2 id="37-2026-11-11--dev-编译时间与仓库结构噪音">37. 2026-11-11 — 开发编译时间与「仓库太大」的上下文噪音</h2>
+<p><strong>现象：</strong> 改动一个文件后 <code>cargo build -p tact-ui</code> 要 11 到 15 秒；
+裸 <code>cargo build</code> 在改 <code>tact</code> 时到 18 到 22 秒。同时系统提示的
+Project structure 快照把 80 行预算花在 <code>crates/desktop/assets/{fonts,icons,linux}</code>
+这类资源目录上，被截掉的反而是 <code>crates/tact/src/{tool,store,mcp,permission}</code>
+与 <code>crates/tui/src/render</code>——最需要被看见的模块。</p>
+<p><strong>根因（四处，互不相关）：</strong>
+(1) <code>[profile.dev] incremental = false</code>，为了省磁盘关掉了增量编译；
+(2) <code>crates/tui/build.rs</code> 没有 <code>rerun-if-changed</code>，该 package 内任何
+文件改动都会重跑并重编 build script；
+(3) 工作区没有 <code>default-members</code>，裸 <code>cargo build</code> 会连带构建全部
+14 个成员的所有 test/example 单元；
+(4) 快照的 <code>should_keep</code> 只按名字剪枝，资源目录和冗余的 <code>src/</code> 行与
+真实模块抢同一个预算。另有两处死依赖：<code>crates/tact</code> 从未使用
+<code>async-openai</code> 与 <code>reqwest-eventsource</code>。</p>
+<p><strong>决策：</strong>
+(1) <code>incremental = true</code>：缓存占 1.5 GB，相对于 32 GB 的 <code>target/debug</code>
+只换来冷构建 16.5s → 19.4s，却把「改一个文件」从 11.8s 压到 2.8s、「touch 全部源码」
+从 20.0s 压到 6.9s。
+(2) 删掉整个 <code>crates/tui/build.rs</code>：它导出的 <code>TACT_VERSION</code> 自
+2026-08 标题栏改成固定字符串后已无任何读取方，比补一条 <code>rerun-if-changed</code> 更彻底，
+连带 <code>[build-dependencies] toml</code> 一起移除。
+(3) <code>default-members = ["crates/tact-ui"]</code>，并把所有必须覆盖全工作区的门禁
+改成显式 <code>--workspace</code>——这一点是关键：<code>cargo clippy --all-targets</code>
+在 <code>default-members</code> 下会静默跳过 <code>desktop</code>/<code>desktop_core</code>/
+<code>agent_*</code>，实测在 <code>desktop_core</code> 放一个死函数也能通过。
+(4) 快照跳过纯载荷目录（<code>assets</code>/<code>fonts</code>/<code>icons</code>/<code>previews</code>/...），
+并把「自己已有子项被列出」的 <code>src/</code>、<code>tests/</code>、<code>examples/</code> 行折叠掉；
+默认预算 80 → 120。本仓库实测：80 行时被截断且缺 8 行，
+120 行时输出 120 行 / 1577 字符、零截断——比原来被截断的 2010 字符还短。</p>
+<p><strong>顺带修掉的真实缺陷：</strong> <code>walkdir</code> 的 <code>filter_entry</code>
+也会访问 root 本身，而 <code>should_keep</code> 会剪掉以 <code>.</code> 开头的目录。于是
+工作目录名以点开头时（<code>~/.config/proj</code>、<code>tempfile</code> 的
+<code>.tmpXXXX</code>），root 被自己剪掉，快照直接为空。现在 <code>depth() == 0</code>
+永远放行，并有两个单测钉住它。</p>
+<p><strong>验证：</strong> <code>cargo test -p tact --lib snapshot_dir</code> 2 通过
+（<code>snapshot_dir_drops_payload_and_folds_scaffold</code>、
+<code>snapshot_dir_reports_truncation</code>）；<code>cargo test -p tact --lib config::</code>
+144 通过；<code>python3 scripts/book-check.py book</code> 28 页 0 问题。
+编译时间的 A/B 数字都是在改前改后同一台 14 核机器上、同一份
+<code>target/</code> 里交替量出来的，不是估算。</p>
+<p><strong>Pointers：</strong> <code>Cargo.toml</code>（<code>default-members</code>、
+<code>[profile.dev]</code>）、<code>crates/tact/src/agent/mod.rs</code>（<code>snapshot_dir</code>
+的 <code>PAYLOAD_DIRS</code> / <code>SCAFFOLD_DIRS</code> 与 <code>depth() == 0</code>）、
+<code>crates/tact/src/agent/tests/prompt.rs</code>（快照行为的两条断言；本仓库的
+实测输出用 <code>cargo test -p tact --lib snapshot_dir_prints -- --ignored --nocapture</code>
+打印，该测试默认 <code>#[ignore]</code>，不参与门禁）、
+<code>crates/tact/src/config/resolve.rs</code>（默认 120）、
+<code>scripts/check-rust.sh</code> 与 <code>.github/workflows/rust.yml</code>（<code>--workspace</code>）、
+<a href="../ARCHITECTURE.md">ARCHITECTURE.md</a> 快照设置行、
+<a href="./21_chapter_config_zh.html">第 21 章</a>。</p>
+<p><strong>开启增量编译后的磁盘问题（同一改动的后续）：</strong>
+先拆解 <code>target/</code> 的真实构成，避免把账算在增量编译头上。39 GB 里
+<code>target/debug/build</code> 占 <strong>24 GB（62%）</strong>、
+<code>incremental</code> 8.2 GB（21%）、<code>release</code> 3.9 GB。前者是
+cargo 从不回收的陈旧 unit：单 <code>tact-desktop</code> 一个包就有 423 个变体，
+其中一个 <code>out/</code> 里躺着 120 MB 二进制，全部来自已删掉的 <code>nsh</code> 架构
+与反复的 feature 组合。</p>
+<p><strong>决策：</strong>把增量编译的范围收窄到「会频繁改的东西」。
+<code>[profile.dev.package."*"]</code> 加 <code>incremental = false</code>：依赖几乎不重编，
+它们的增量状态是净开销。实测 <code>tact_llm</code> 的依赖 <code>tact_agent_api</code>
+不再产生增量目录（47 MB → 20 MB 单次构建），而 workspace crate 保留完整缓存
+（全量 <code>cargo test</code> 后 2.7 GB，改 <code>tact</code> 一个文件仍是 2.8s）。</p>
+<p><strong>回收：</strong>新增 <code>scripts/clean-target.sh</code>。默认档只删确定不会
+再被读取的：<code>ui-capture*</code> 临时截图（65 个）、<code>package</code>/<code>doc</code>/
+<code>ui-proto</code> 等工具输出、非宿主 triple 的交叉编译产物。实测 0.5 GiB。
+真正的收益在 <code>--build</code>（清 <code>debug/build</code>，一次 75 到 95 秒重建，
+之后稳定在 1.4 GB）与 <code>--release</code>（2.4 GB）。</p>
+<p><strong>未采用的做法：</strong>按文件 mtime 删除 <code>build/</code> 变体。实测过两次都不对：
+cargo 的变体 hash 不出现在 <code>.fingerprint/</code> 里、no-op 构建不更新 mtime，
+「保留最新 1 个」反而触发了 69 到 75 秒全量重建。也评估了 cargo 的
+<code>-Z gc</code>：需要 nightly 且依赖使用记录而非时间，不作为仓库方案。
+<a href="../AGENTS.md">AGENTS.md</a>（<code>scripts/clean-target.sh</code>）与
+<code>Cargo.toml</code>（<code>[profile.dev.package."*"] incremental</code>）为指针。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>

@@ -614,7 +614,7 @@ fn resolve_non_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<
     let snapshot_max_items = args
         .snapshot_max_items
         .or(toml_cfg.agent.snapshot_max_items)
-        .unwrap_or(80);
+        .unwrap_or(120);
 
     let micro_compact_enabled = if args.no_micro_compact {
         false

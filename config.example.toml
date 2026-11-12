@@ -198,8 +198,10 @@ mode = "default"
 # (an explicit 0 means "unknown window": it disables the window, not falls back).
 # model_context_window = 200000
 
-# Max entries in the system-prompt project structure snapshot (default: 80)
-# snapshot_max_items = 80
+# Max entries in the system-prompt project structure snapshot (default: 120).
+# Payload dirs (assets/fonts/icons/...) are skipped and a `src/` whose own
+# children are listed is folded, so the budget goes to modules that hold code.
+# snapshot_max_items = 120
 
 # Truncate old tool results in context (default: false — opt in).
 #

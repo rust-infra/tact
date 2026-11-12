@@ -71,7 +71,7 @@ pub struct CliArgs {
     #[arg(long)]
     pub theme: Option<String>,
 
-    /// Max entries in the system-prompt project structure snapshot.
+    /// Max entries in the system-prompt project structure snapshot (default 120).
     #[arg(long)]
     pub snapshot_max_items: Option<usize>,
 

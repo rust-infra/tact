@@ -553,7 +553,7 @@ pub(crate) mod test_support {
                 model_context_window: 500_000,
                 max_tokens: 8192,
                 thinking_budget: 0,
-                snapshot_max_items: 80,
+                snapshot_max_items: 120,
                 notifications_enabled: false,
                 max_token_usage_bodies: crate::store::session_store::MAX_TOKEN_USAGE_BODIES,
                 micro_compact_enabled: true,
