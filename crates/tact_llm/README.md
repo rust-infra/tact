@@ -11,7 +11,7 @@ host should select exactly the protocol it needs:
 
 ```toml
 tact_llm = {
-  version = "2.0.4",
+  version = "2.0.6",
   default-features = false,
   features = ["openai-responses"]
 }
@@ -22,7 +22,7 @@ Until the registry release is available, use the same repository tag:
 ```toml
 tact_llm = {
   git = "https://github.com/rust-infra/tact",
-  tag = "v2.0.4",
+  tag = "v2.0.6",
   default-features = false,
   features = ["openai-chat"]
 }

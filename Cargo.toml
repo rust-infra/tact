@@ -35,7 +35,7 @@ resolver = "2"
 default-members = ["crates/tact-ui"]
 
 [workspace.package]
-version = "2.0.4"
+version = "2.0.6"
 edition = "2024"
 license = "MIT"
 rust-version = "1.99"
