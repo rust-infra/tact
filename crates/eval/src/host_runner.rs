@@ -167,26 +167,40 @@ impl Runner for HostRunner {
         let (pump_shutdown_tx, pump_shutdown_rx) = tokio::sync::oneshot::channel();
         let pump = tokio::spawn(drain_events(rx, pump_shutdown_rx));
 
-        let result = tokio::time::timeout(
-            Duration::from_secs(case.timeout_secs),
-            agent.agent_loop_detailed(Some(prompt)),
-        )
-        .await;
+        // Cancel cooperatively rather than dropping the loop mid-tool. A
+        // dropped future leaves any tool task it spawned running against the
+        // work dir that grading is about to read, and skips the loop's own
+        // interruption hooks.
+        let cancel = agent.cancel_handle();
+        let result = {
+            let mut run = Box::pin(agent.agent_loop_detailed(Some(prompt)));
+            tokio::select! {
+                result = &mut run => Some(result),
+                _ = tokio::time::sleep(Duration::from_secs(case.timeout_secs)) => {
+                    cancel.cancel();
+                    // The loop checks the cancel flag at its own boundaries; a
+                    // tool that ignores it is bounded by its own timeout, so
+                    // this grace is a backstop rather than a second budget.
+                    tokio::time::timeout(Duration::from_secs(30), &mut run).await.ok()
+                }
+            }
+        };
 
         agent.detach_event_observers();
         let _ = pump_shutdown_tx.send(());
         let (tools, tokens) = pump.await.unwrap_or_default();
 
         match result {
-            Ok(Ok(outcome)) => {
+            Some(Ok(outcome)) => {
                 artifact.stop = Some(StopView::from(outcome.stop));
                 artifact.turns = Some(outcome.turns);
             }
-            Ok(Err(error)) => {
+            Some(Err(error)) => {
                 artifact.failure = Some(RunFailure::harness(error.to_string()));
             }
-            Err(_) => {
-                agent.cancel_handle().cancel();
+            // The grace window expired after cancellation: the run never
+            // returned, so there is no outcome to report.
+            None => {
                 artifact.failure = Some(RunFailure::Timeout {
                     limit_secs: case.timeout_secs,
                 });
