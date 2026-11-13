@@ -52,7 +52,7 @@ async fn a_hung_child_is_a_timeout_not_a_grade() {
         Some(1),
         "events before the timeout survive"
     );
-    assert!(!outcome.artifact.succeeded());
+    assert_eq!(outcome.artifact.answer, "", "a hung run produced no answer");
 }
 
 #[cfg(unix)]

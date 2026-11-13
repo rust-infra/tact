@@ -17,12 +17,9 @@ use crate::runner::{RunArtifact, TokenTotals};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReportMeta {
     pub runner: crate::RunnerKind,
-    /// `None` when the runner cannot see the model it ran under. Distinct from
-    /// a model named "unset", and it serializes as `null` rather than a
-    /// string that looks configured.
-    pub model: Option<String>,
-    pub base_url: Option<String>,
-    pub permission_mode: tact_protocol::PermissionMode,
+    /// Embedded rather than copied field by field, so a field added to what a
+    /// runner reports cannot be forgotten here.
+    pub identity: crate::RunIdentity,
     pub attempts: u32,
     /// Stable hash of the case set, so a changed suite is visible without
     /// diffing two JSON files by eye.
@@ -211,9 +208,9 @@ impl EvalReport {
             out,
             "runner={} model={} endpoint={} mode={} attempts={}",
             self.meta.runner,
-            self.meta.model.as_deref().unwrap_or("unset"),
-            self.meta.base_url.as_deref().unwrap_or("unset"),
-            self.meta.permission_mode,
+            self.meta.identity.model.as_deref().unwrap_or("unset"),
+            self.meta.identity.base_url.as_deref().unwrap_or("unset"),
+            self.meta.identity.permission_mode,
             self.meta.attempts
         );
         let _ = writeln!(out, "suite={}", self.meta.suite_fingerprint);
@@ -298,9 +295,11 @@ mod tests {
         EvalReport::new(
             ReportMeta {
                 runner: crate::RunnerKind::Host,
-                model: Some("m".into()),
-                base_url: Some("u".into()),
-                permission_mode: tact_protocol::PermissionMode::Auto,
+                identity: crate::RunIdentity {
+                    model: Some("m".into()),
+                    base_url: Some("u".into()),
+                    permission_mode: tact_protocol::PermissionMode::Auto,
+                },
                 attempts: 2,
                 suite_fingerprint: "fp".into(),
                 started_at: "s".into(),

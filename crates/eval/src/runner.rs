@@ -145,13 +145,6 @@ impl std::fmt::Display for RunFailure {
     }
 }
 
-impl RunArtifact {
-    /// A run that produced an answer and recorded no failure.
-    pub fn succeeded(&self) -> bool {
-        self.failure.is_none() && !self.answer.trim().is_empty()
-    }
-}
-
 /// One attempt's artifact plus the directory it ran in.
 ///
 /// The work dir travels next to the artifact rather than inside it: it is a
@@ -207,7 +200,7 @@ impl std::str::FromStr for RunnerKind {
 /// use whatever a config file says, and then it genuinely does not know. A
 /// report that filled those with a placeholder would compare equal to a run
 /// under a different model.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunIdentity {
     pub model: Option<String>,
     pub base_url: Option<String>,
@@ -257,20 +250,11 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_answer_is_not_a_success() {
-        let artifact = RunArtifact {
-            case_id: "c".into(),
-            attempt: 1,
-            session_id: None,
-            answer: "   ".into(),
-            tools: Vec::new(),
-            tokens: Default::default(),
-            duration_ms: 1,
-            stop: Some(StopView::EmptyTurn),
-            failure: None,
-            turns: Some(1),
-        };
-        assert!(!artifact.succeeded());
+    fn an_empty_stop_reason_has_a_stable_label() {
+        assert_eq!(
+            serde_json::to_value(StopView::EmptyTurn).unwrap(),
+            "empty_turn"
+        );
     }
 
     #[test]

@@ -78,9 +78,7 @@ pub async fn run_suite(
     Ok(EvalReport::new(
         ReportMeta {
             runner: runner.kind(),
-            model: identity.model,
-            base_url: identity.base_url,
-            permission_mode: identity.permission_mode,
+            identity,
             attempts,
             suite_fingerprint: suite_fingerprint(suite.cases()),
             started_at,

@@ -124,12 +124,13 @@ HOME=$(mktemp -d) cargo run -p tact_eval -- run suites/smoke --runner cli ...
 
 ## Comparing two runs
 
-`ReportMeta` records the runner, model, endpoint, permission mode, attempt count,
+`ReportMeta` records the runner, its identity (model, endpoint, permission
+mode), the attempt count,
 and a fingerprint over the whole case set: every case's prompt, timeout,
 isolation, and graders. A changed grader or timeout changes the fingerprint, so
 a comparison cannot silently mix two different suites.
 
-`model` and `base_url` are `null` when the runner could not observe them, which
-is the case for a CLI run driven entirely by a `--config` file. Two runs whose
-fields are both `null` are not thereby comparable; check the config files
-yourself.
+`identity.model` and `identity.base_url` are `null` when the runner could not
+observe them, which is the case for a CLI run driven entirely by a `--config`
+file. Two runs whose fields are both `null` are not thereby comparable; check
+the config files yourself.
