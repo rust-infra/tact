@@ -61,8 +61,8 @@ pub async fn run_suite(
     Ok(EvalReport::new(
         ReportMeta {
             runner: runner.name().to_string(),
-            model: identity.model.unwrap_or_else(|| "unset".into()),
-            base_url: identity.base_url.unwrap_or_else(|| "unset".into()),
+            model: identity.model,
+            base_url: identity.base_url,
             permission_mode: identity.permission_mode,
             attempts,
             suite_fingerprint: suite_fingerprint(suite.cases()),

@@ -19,10 +19,14 @@ fn case_with_binary(dir: &Path, script: &str) -> (EvalCase, PathBuf) {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
+    // Two seconds, not one: the shell has to start and print its first line
+    // before the budget expires, and a loaded machine can take most of a
+    // second to do that. The scripts hang for thirty, so the margin only
+    // removes flakiness; it does not weaken the assertion.
     let case = EvalCase {
         id: format!("process-{}", uuid::Uuid::new_v4()),
         prompt: "p".into(),
-        timeout_secs: 1,
+        timeout_secs: 2,
         isolation: Isolation::Empty,
         graders: Vec::new(),
     };
@@ -40,7 +44,7 @@ async fn a_hung_child_is_a_timeout_not_a_grade() {
 
     assert_eq!(
         outcome.artifact.failure,
-        Some(RunFailure::Timeout { limit_secs: 1 }),
+        Some(RunFailure::Timeout { limit_secs: 2 }),
         "a run over its budget is a timeout"
     );
     assert_eq!(

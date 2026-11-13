@@ -1,8 +1,9 @@
 //! The suite result: one row per attempt, plus the reproducibility header.
 //!
 //! A report that omits the model, endpoint, and permission mode cannot be
-//! compared with the next one, so [`ReportMeta`] records them and the runner is
-//! refused when they cannot be determined.
+//! compared with the next one, so [`ReportMeta`] records them. A runner that
+//! genuinely does not know one writes `unset`, which reads as "not recorded"
+//! rather than as a configured blank.
 
 use std::collections::BTreeMap;
 
@@ -16,8 +17,11 @@ use crate::runner::{RunArtifact, TokenTotals};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReportMeta {
     pub runner: String,
-    pub model: String,
-    pub base_url: String,
+    /// `None` when the runner cannot see the model it ran under. Distinct from
+    /// a model named "unset", and it serializes as `null` rather than a
+    /// string that looks configured.
+    pub model: Option<String>,
+    pub base_url: Option<String>,
     pub permission_mode: String,
     pub attempts: u32,
     /// Stable hash of the case set, so a changed suite is visible without
@@ -167,8 +171,8 @@ impl EvalReport {
             out,
             "runner={} model={} endpoint={} mode={} attempts={}",
             self.meta.runner,
-            self.meta.model,
-            self.meta.base_url,
+            self.meta.model.as_deref().unwrap_or("unset"),
+            self.meta.base_url.as_deref().unwrap_or("unset"),
             self.meta.permission_mode,
             self.meta.attempts
         );
@@ -249,8 +253,8 @@ mod tests {
         EvalReport::new(
             ReportMeta {
                 runner: "host".into(),
-                model: "m".into(),
-                base_url: "u".into(),
+                model: Some("m".into()),
+                base_url: Some("u".into()),
                 permission_mode: "auto".into(),
                 attempts: 2,
                 suite_fingerprint: "fp".into(),
