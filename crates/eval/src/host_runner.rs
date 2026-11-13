@@ -175,11 +175,13 @@ impl Runner for HostRunner {
         // work dir that grading is about to read, and skips the loop's own
         // interruption hooks.
         let cancel = agent.cancel_handle();
+        let mut budget_expired = false;
         let result = {
             let mut run = Box::pin(agent.agent_loop_detailed(Some(prompt)));
             tokio::select! {
                 result = &mut run => Some(result),
                 _ = tokio::time::sleep(Duration::from_secs(case.timeout_secs)) => {
+                    budget_expired = true;
                     cancel.cancel();
                     // The loop checks the cancel flag at its own boundaries; a
                     // tool that ignores it is bounded by its own timeout, so
@@ -203,22 +205,27 @@ impl Runner for HostRunner {
             }
             // The grace window expired after cancellation: the run never
             // returned, so there is no outcome to report.
-            None => {
-                artifact.failure = Some(RunFailure::Timeout {
-                    limit_secs: case.timeout_secs,
-                });
-            }
+            None => {}
+        }
+
+        // A run this harness stopped is not a run the agent finished. The
+        // cooperative cancel usually returns `RunStop::Cancelled`, which would
+        // otherwise be graded on the files written before the bell; a case that
+        // wrote its output and then hung would pass. The stop and turn count
+        // stay in the artifact as evidence, and the attempt is inconclusive.
+        if budget_expired {
+            artifact.failure = Some(RunFailure::Timeout {
+                limit_secs: case.timeout_secs,
+            });
         }
 
         artifact.tools = tools;
         artifact.tokens = tokens;
-        artifact.answer = agent
-            .context()
-            .last()
-            .map(|message| tact::extract_text(&message.content))
-            .unwrap_or_default()
-            .trim_end()
-            .to_string();
+        // The last *assistant* text, not the last message. A cancel mid-tools
+        // makes the kernel persist synthetic tool results as `User` messages,
+        // so the tail is a user block with no text and the run's actual answer
+        // sits one or more messages back.
+        artifact.answer = last_assistant_text(&agent);
         artifact.duration_ms = crate::runner::elapsed_ms(start);
 
         // Teardown is part of the run: a subagent left running would keep
@@ -259,22 +266,49 @@ async fn drain_events(
         let Some(update) = update else {
             break;
         };
-        match update {
-            AgentUpdate::StepFinished { result, .. } => tools.push(tool_record(&result)),
-            AgentUpdate::TokenUsage(usage) => add_usage(&mut tokens, &usage),
-            _ => {}
-        }
+        record(&mut tools, &mut tokens, update);
     }
 
     while let Ok(update) = rx.try_recv() {
-        match update {
-            AgentUpdate::StepFinished { result, .. } => tools.push(tool_record(&result)),
-            AgentUpdate::TokenUsage(usage) => add_usage(&mut tokens, &usage),
-            _ => {}
-        }
+        record(&mut tools, &mut tokens, update);
     }
 
     (tools, tokens)
+}
+
+/// The last assistant message that carries text.
+///
+/// Walks back past tool-only assistant turns (their message has no text) and
+/// past synthetic `User` tool results the kernel appends on a cancel.
+fn last_assistant_text(agent: &tact::Agent) -> String {
+    agent
+        .context()
+        .iter()
+        .rev()
+        .filter(|message| matches!(message.role, tact_llm::Role::Assistant))
+        .map(|message| tact::extract_text(&message.content))
+        .find(|text| !text.trim().is_empty())
+        .unwrap_or_default()
+        .trim_end()
+        .to_string()
+}
+
+fn record(tools: &mut Vec<ToolRecord>, tokens: &mut TokenTotals, update: AgentUpdate) {
+    match update {
+        AgentUpdate::StepFinished { result, .. } => tools.push(tool_record(&result)),
+        // The event adapter emits `StepFailed` for every failed tool call and
+        // never a `StepFinished` with `Failed` status, so without this arm the
+        // host report would show no failures at all.
+        AgentUpdate::StepFailed { error, .. } => tools.push(ToolRecord {
+            name: None,
+            args: None,
+            status: ToolStatus::Failed,
+            duration_ms: None,
+            message: Some(error),
+        }),
+        AgentUpdate::TokenUsage(usage) => add_usage(tokens, &usage),
+        _ => {}
+    }
 }
 
 fn tool_record(result: &StepResult) -> ToolRecord {

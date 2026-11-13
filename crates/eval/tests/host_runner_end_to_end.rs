@@ -55,11 +55,21 @@ fn unique_dir(label: &str) -> PathBuf {
 }
 
 fn write_case(suite_dir: &std::path::Path, name: &str, prompt: &str) {
+    write_case_with_timeout(suite_dir, name, prompt, 60);
+}
+
+fn write_case_with_timeout(
+    suite_dir: &std::path::Path,
+    name: &str,
+    prompt: &str,
+    timeout_secs: u64,
+) {
     std::fs::write(
         suite_dir.join(format!("{name}.toml")),
         format!(
             r#"
 prompt = "{prompt}"
+timeout_secs = {timeout_secs}
 
 [[graders]]
 kind = "command"
@@ -81,6 +91,18 @@ async fn a_host_run_reports_the_answer_stop_reason_usage_and_verdict() {
             ResponseTemplate::new(200)
                 .insert_header("content-type", "text/event-stream")
                 .set_body_raw(completion_sse("hello from eval"), "text/event-stream"),
+        )
+        .mount(&server)
+        .await;
+    // Slower than the case's own budget, so the harness cancels it.
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(body_string_contains("reply slowly"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(completion_sse("too late"), "text/event-stream")
+                .set_delay(std::time::Duration::from_secs(30)),
         )
         .mount(&server)
         .await;
@@ -107,6 +129,7 @@ async fn a_host_run_reports_the_answer_stop_reason_usage_and_verdict() {
     let suite_dir = unique_dir("suite");
     write_case(&suite_dir, "answers", "please answer");
     write_case(&suite_dir, "silent", "say nothing");
+    write_case_with_timeout(&suite_dir, "slow", "reply slowly", 1);
     let suite = EvalSuite::load(&suite_dir).unwrap();
 
     let run = run_suite(&suite, &HostRunner::new(options), 1)
@@ -147,6 +170,24 @@ async fn a_host_run_reports_the_answer_stop_reason_usage_and_verdict() {
         "an empty answer must not be reported as Completed"
     );
     assert_eq!(silent.answer, "");
+
+    let slow = run
+        .outcomes
+        .iter()
+        .find(|outcome| outcome.case_id == "slow")
+        .expect("slow case ran");
+    // The harness cancelled this run, so its passing grader must not make it a
+    // pass: the model never finished.
+    assert_eq!(
+        slow.failure,
+        Some(tact_eval::RunFailure::Timeout { limit_secs: 1 }),
+        "an over-budget run is a timeout"
+    );
+    assert!(
+        !slow.verdict().is_pass(),
+        "a run the harness stopped cannot pass: {:?}",
+        slow.verdict()
+    );
 
     let _ = std::fs::remove_dir_all(&suite_dir);
 }

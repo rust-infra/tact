@@ -13,6 +13,10 @@ use crate::case::{EvalCase, Isolation};
 #[derive(Debug, Clone)]
 pub struct EvalSuite {
     cases: Vec<EvalCase>,
+    /// The cases exactly as written, before a relative fixture was resolved to
+    /// an absolute path. The fingerprint hashes this form so the same suite
+    /// fingerprints the same from any working directory.
+    declared: Vec<EvalCase>,
 }
 
 impl EvalSuite {
@@ -24,6 +28,7 @@ impl EvalSuite {
     pub fn load(dir: impl AsRef<Path>) -> Result<Self> {
         let dir = dir.as_ref();
         let mut cases = Vec::new();
+        let mut declared_cases = Vec::new();
         for entry in std::fs::read_dir(dir)
             .with_context(|| format!("cannot read suite dir {}", dir.display()))?
         {
@@ -32,13 +37,16 @@ impl EvalSuite {
                 continue;
             }
             let mut case = EvalCase::load(&path)?;
+            let declared = case.clone();
             resolve_fixture(&mut case, dir, &path)?;
             cases.push(case);
+            declared_cases.push(declared);
         }
         if cases.is_empty() {
             anyhow::bail!("no *.toml cases in {}", dir.display());
         }
         cases.sort_by(|a, b| a.id.cmp(&b.id));
+        declared_cases.sort_by(|a, b| a.id.cmp(&b.id));
 
         // Duplicate ids would make the report ambiguous, so refuse at load.
         for pair in cases.windows(2) {
@@ -47,11 +55,19 @@ impl EvalSuite {
             }
         }
 
-        Ok(Self { cases })
+        Ok(Self {
+            cases,
+            declared: declared_cases,
+        })
     }
 
     pub fn cases(&self) -> &[EvalCase] {
         &self.cases
+    }
+
+    /// The cases as written, for the fingerprint.
+    pub fn declared_cases(&self) -> &[EvalCase] {
+        &self.declared
     }
 }
 
@@ -162,6 +178,33 @@ mod tests {
             }
             other => panic!("expected a copy isolation, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn the_declared_cases_keep_the_fixture_spelling_and_the_resolved_ones_do_not() {
+        let suite_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(suite_dir.path().join("fixtures/seed")).unwrap();
+        std::fs::write(
+            suite_dir.path().join("copied.toml"),
+            "prompt = \"p\"\n[isolation]\nkind = \"copy\"\nfixture = \"fixtures/seed\"\n",
+        )
+        .unwrap();
+
+        let suite = EvalSuite::load(suite_dir.path()).unwrap();
+
+        // The fingerprint hashes the declared form, so loading the same suite
+        // through a relative and an absolute path agrees.
+        let declared = &suite.declared_cases()[0];
+        assert_eq!(
+            declared.isolation,
+            Isolation::Copy {
+                fixture: PathBuf::from("fixtures/seed")
+            }
+        );
+        assert!(matches!(
+            &suite.cases()[0].isolation,
+            Isolation::Copy { fixture } if fixture.is_absolute()
+        ));
     }
 
     #[test]

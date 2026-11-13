@@ -52,7 +52,13 @@ impl CliRunner {
         }
     }
 
-    pub fn with_options(mut self, options: RunOptions) -> Self {
+    pub fn with_options(mut self, mut options: RunOptions) -> Self {
+        // Every attempt spawns the binary from the case's own directory, so a
+        // relative `--config` would resolve there and fail on every case. The
+        // binary is canonicalized in `new` for the same reason.
+        if let Some(config) = options.config.take() {
+            options.config = Some(std::fs::canonicalize(&config).unwrap_or(config));
+        }
         self.options = options;
         self
     }
@@ -283,12 +289,22 @@ fn parse_turns(lines: &[String]) -> Option<u32> {
 /// `Completed` from other self-terminated runs, so it reports `Completed` only
 /// then and unknown otherwise.
 fn parse_stop(lines: &[String], end: crate::process::ChildEnd) -> Option<StopView> {
+    // Anchored on the log's own prefixes. An unanchored `contains` would match
+    // a tool echoing the sentence, turning a real answer into `EmptyTurn`.
     let empty = lines.iter().any(|line| {
-        line.contains("the final message carried no text")
-            || line.contains("the run produced no final message")
+        line.starts_with("[warn] the final message carried no text")
+            || line.starts_with("[warn] the run produced no final message")
     });
     if empty {
         return Some(StopView::EmptyTurn);
+    }
+    // A blocked hook is printed by `agent_loop` on its own fixed line, so it is
+    // distinguishable from a run that simply ended.
+    if lines
+        .iter()
+        .any(|line| line.starts_with("[info] [hook stopped the turn]"))
+    {
+        return Some(StopView::BlockedByHook);
     }
     if turn_cap_reached(lines) {
         return Some(StopView::MaxTurns);
@@ -411,6 +427,24 @@ mod tests {
                 "{warning}"
             );
         }
+    }
+
+    #[test]
+    fn a_hook_blocked_run_is_not_completed() {
+        // `agent_loop` prints this exact line and exits 0, so without the
+        // anchor it would read as a clean finish.
+        let raw = lines("[info] [hook stopped the turn] policy denied the prompt");
+        assert_eq!(
+            parse_stop(&raw, ChildEnd::TimedOut),
+            Some(StopView::BlockedByHook)
+        );
+    }
+
+    #[test]
+    fn a_tool_echoing_the_warning_sentence_does_not_fake_an_empty_run() {
+        // The warning must be the log's own line, not a payload.
+        let raw = lines("[out t1] the final message carried no text; stdout is empty");
+        assert_eq!(parse_stop(&raw, ChildEnd::TimedOut), None);
     }
 
     #[test]

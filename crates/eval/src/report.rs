@@ -210,7 +210,10 @@ impl EvalReport {
             self.meta.runner,
             self.meta.identity.model.as_deref().unwrap_or("unset"),
             self.meta.identity.base_url.as_deref().unwrap_or("unset"),
-            self.meta.identity.permission_mode,
+            // `as_str`, not `Display`: Display is the long operator sentence
+            // ("auto - allow all operations ..."), which does not belong in a
+            // one-line header that the JSON spells `"auto"`.
+            self.meta.identity.permission_mode.as_str(),
             self.meta.attempts
         );
         let _ = writeln!(out, "suite={}", self.meta.suite_fingerprint);
@@ -251,6 +254,10 @@ impl EvalReport {
 /// changed pattern, a different isolation mode, or a shorter timeout all change
 /// what the suite decides, so all of them must change the fingerprint; otherwise
 /// two reports look comparable while grading different things.
+/// Callers pass the cases as *written*, before `EvalSuite::load` resolves a
+/// relative fixture to an absolute path. Hashing the resolved form would make
+/// the same suite fingerprint differently depending on the working directory
+/// it was loaded from, which is exactly the comparison this guards.
 pub fn suite_fingerprint(cases: &[EvalCase]) -> String {
     use sha2::{Digest, Sha256};
 
@@ -259,7 +266,13 @@ pub fn suite_fingerprint(cases: &[EvalCase]) -> String {
         // `EvalCase` is `Serialize` and its fields are the whole definition, so
         // the serialized form is the canonical tuple. A field added later is
         // covered without editing this function.
-        let encoded = serde_json::to_vec(case).unwrap_or_default();
+        let encoded = match serde_json::to_vec(case) {
+            Ok(encoded) => encoded,
+            // Unreachable while `EvalCase` is all plain data. If it ever stops
+            // being serializable, hashing the debug form keeps two different
+            // broken cases from colliding on an empty input.
+            Err(_) => format!("{case:?}").into_bytes(),
+        };
         hasher.update((encoded.len() as u64).to_le_bytes());
         hasher.update(encoded);
     }

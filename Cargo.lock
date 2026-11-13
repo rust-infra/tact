@@ -9194,6 +9194,7 @@ dependencies = [
  "sha2 0.10.9",
  "tact",
  "tact_host",
+ "tact_llm",
  "tact_protocol",
  "tempfile",
  "tokio",

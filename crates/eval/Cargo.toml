@@ -18,6 +18,7 @@ path = "src/main.rs"
 [dependencies]
 tact = { version = "2.0.0", path = "../tact" }
 tact_host = { version = "2.0.0", path = "../tact_host" }
+tact_llm = { version = "2.0.0", path = "../tact_llm", default-features = false, features = ["legacy-tact"] }
 tact_protocol = { version = "2.0.0", path = "../protocol" }
 anyhow = { workspace = true }
 async-trait = { workspace = true }

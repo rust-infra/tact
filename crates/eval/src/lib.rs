@@ -80,7 +80,7 @@ pub async fn run_suite(
             runner: runner.kind(),
             identity,
             attempts,
-            suite_fingerprint: suite_fingerprint(suite.cases()),
+            suite_fingerprint: suite_fingerprint(suite.declared_cases()),
             started_at,
             finished_at: chrono::Utc::now().to_rfc3339(),
         },

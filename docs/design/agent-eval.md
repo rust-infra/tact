@@ -125,7 +125,7 @@ The two `Option`s are the load-bearing decision. A runner layered on
 in a field that averages into a suite's numbers is worse than an admission.
 `None` prints as unknown; it is never a zero.
 
-`Runner` has three methods: `name`, `identity`, and `run`. `identity` returns the
+`Runner` has three methods: `kind`, `identity`, and `run`. `identity` returns the
 model, endpoint, and permission mode *the runner knows it used*, as `Option`s,
 because the CLI runner can be told to read a config file that it never parses.
 A report that filled those with a placeholder would compare equal to a run under
