@@ -211,6 +211,14 @@ The `Answer` grader is substring and regex only. An LLM judge needs calibration
 against a suite before it earns a place, and calibrating it against itself is
 circular. It belongs here after there is a suite with known-good verdicts.
 
+A run inherits the operator's `$HOME`: `~/.tact/config.toml`, `hooks.json`,
+`skills/`, the plugin cache, and the per-repository memory directory under
+`~/.tact/projects/`. Hooks and user memory can therefore change what a case
+does. The `--config` flag pins the model configuration but not the rest. A
+suite that must be hermetic needs `HOME` pointed at a scratch directory; this is
+documented rather than enforced, because doing it inside the harness would
+break the common case of a developer running their own suites locally.
+
 ## Next implementation step
 
 Record a baseline report for a suite that exercises the tool set (not just

@@ -65,6 +65,18 @@ session behind, and a suite of any size would fill the disk.
 
 Session locking is per working directory, which is why attempts never share one.
 
+## Hermetic runs
+
+An attempt inherits the operator's `$HOME`, so `~/.tact/config.toml`,
+`hooks.json`, user skills, the plugin cache, and the per-repository memory
+directory all affect the run. `--config` pins the model configuration and
+nothing else. A suite that must be hermetic should point `HOME` at a scratch
+directory:
+
+```bash
+HOME=$(mktemp -d) cargo run -p tact_eval -- run suites/smoke --runner cli ...
+```
+
 ## Comparing two runs
 
 `ReportMeta` records the runner, model, endpoint, permission mode, attempt count,
