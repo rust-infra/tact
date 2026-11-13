@@ -786,6 +786,7 @@
 <li class="toc-l2"><a href="#35-2026-11-10--thinking-%E5%8D%A1%E7%89%87%E8%B7%91%E5%AE%8C%E5%90%8E%E5%8F%AA%E7%95%99%E7%8A%B6%E6%80%81%E8%A1%8C" title="35. 2026-11-10 — thinking 卡片跑完后只留状态行，摘要不再画"><span class="toc-label">35. 2026-11-10 — thinking 卡片跑完后只留状态行，摘要不再画</span></a></li>
 <li class="toc-l2"><a href="#36-2026-11-10--%E6%97%A5%E5%BF%97%E6%BB%9A%E5%8A%A8%E6%8C%89%E8%A1%8C%E7%BF%BB%E9%A1%B5%E5%8D%A1%E4%BD%8F%E9%98%85%E8%AF%BB%E4%BD%8D%E7%BD%AE" title="36. 2026-11-10 — 日志向上滚动不是按行翻页"><span class="toc-label">36. 2026-11-10 — 日志向上滚动不是按行翻页</span></a></li>
 <li class="toc-l2"><a href="#37-2026-11-11--dev-%E7%BC%96%E8%AF%91%E6%97%B6%E9%97%B4%E4%B8%8E%E4%BB%93%E5%BA%93%E7%BB%93%E6%9E%84%E5%99%AA%E9%9F%B3" title="37. 2026-11-11 — 开发编译时间与「仓库太大」的上下文噪音"><span class="toc-label">37. 2026-11-11 — 开发编译时间与「仓库太大」的上下文噪音</span></a></li>
+<li class="toc-l2"><a href="#39-2026-11-13--desktop-%E5%90%AF%E5%8A%A8%E6%97%B6-mcp-%E8%BF%9E%E6%8E%A5%E6%9C%9F%E9%97%B4%E5%88%87%E4%B8%8D%E4%BA%86-session" title="39. 2026-11-13 — Desktop 启动时，MCP 连接期间切不了 session"><span class="toc-label">39. 2026-11-13 — Desktop 启动时，MCP 连接期间切不了 session</span></a></li>
 <li class="toc-l2"><a href="#38-2026-11-13--macos-%E7%AD%BE%E5%90%8D%E7%BC%BA%E5%A4%B1%E6%8B%A6%E4%BD%8F%E6%95%B4%E4%B8%AA%E5%8F%91%E5%B8%83" title="38. 2026-11-13 — macOS 签名缺失拦住整个发布"><span class="toc-label">38. 2026-11-13 — macOS 签名缺失拦住整个发布</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
@@ -23484,6 +23485,48 @@ cargo 的变体 hash 不出现在 <code>.fingerprint/</code> 里、no-op 构建�
 <a href="../AGENTS.md">AGENTS.md</a>（<code>scripts/clean-target.sh</code>）与
 <code>Cargo.toml</code>（<code>[profile.dev.package."*"] incremental</code>）为指针。</p>
 <hr />
+<h2 id="39-2026-11-13--desktop-启动时-mcp-连接期间切不了-session">39. 2026-11-13 — Desktop 启动时，MCP 连接期间切不了 session</h2>
+<p><strong>现象：</strong> 刚打开 Desktop，默认 session 一直在连接 MCP 服务；此时点左侧任何一个
+session 都没有反应，窗口像卡住，只能等。</p>
+<p><strong>根因（三层，独立存在）：</strong>
+(1) <code>bootstrap_session</code> 在 <code>load_mcp_router_with_report()</code> 里
+<strong>串行等待所有 MCP server</strong>，而单个 server 的预算是
+<code>MCP_INIT_TIMEOUT = 60s</code> 加 <code>MCP_LIST_TOOLS_TIMEOUT = 30s</code>。这段时间
+<code>SessionPhase</code> 停在 <code>Starting</code>，因为 <code>Ready</code> 只在
+<code>HostEvent::Ready</code>（bootstrap 完成）后才发出。
+(2) UI 层把 <code>Starting</code> 归进 <code>switching</code>，整行 <code>on_click</code>
+根本没挂上（<code>root.rs</code> 的 <code>.when(!locked && !switching, …)</code>），
+所以点击连 intent 都没派发。
+(3) 即使绕过 UI，controller 的 <code>session_switch_in_flight()</code> 也覆盖
+<code>Starting</code>，<code>ResumeSession</code> 被<strong>静默丢弃</strong>。</p>
+<p><strong>决策：</strong>把 <code>Starting</code> 从「不可切换」里摘出去。它表示目标 host 已
+建好、正在 bootstrap，而不是正在拆装窗口 —— 切换不会与它冲突。
+(1) <code>session_switch_in_flight()</code> 收窄到 <code>Opening | Switching</code>；
+UI 的 <code>switching</code> 同步收窄，行保持可点。
+(2) 连带修掉一个真实泄漏：<code>leave_current_session</code> 过去无条件把 host 放进 warm
+pool。切走一个还没 Ready 的 host 会留下它继续连 MCP（每个 server 最多 90 秒），
+一次点击堆一个，而且永远不可能被复用。现在未 Ready 的 host 直接
+<code>close()</code>（detached），切回来从 store 重建。
+(3) <code>Opening</code>／<code>Switching</code> 仍拒收点击：那才是真正拆装窗口的阶段，
+连点会排队。</p>
+<p><strong>验证：</strong> 三条新测试都先复现、后通过，并各自回退验证过会变红：
+<code>a_switch_lands_while_the_host_is_still_starting</code>（controller：点击落到
+factory）、<code>leaving_a_starting_host_closes_it_instead_of_parking</code>（controller：
+<code>close:</code> 出现在 factory log）、
+<code>session_rows_stay_clickable_while_the_host_is_starting</code>（UI：点击派发 intent）。
+<code>cargo test -p tact_desktop_core --lib</code> 192 通过，
+<code>cargo test -p tact-desktop --lib</code> 301 通过，
+<code>scripts/check-rust.sh</code> 全绿。</p>
+<p><strong>未做的：</strong> 让 MCP 连接不再阻塞 <code>HostEvent::Ready</code>。
+<code>McpCatalogHandle</code> 已经支持运行期替换（<code>reload_mcp_router</code> 就是这么做的），
+所以先发 Ready、再后台填 MCP 技术上可行。代价是首个 activation 可能看不到 MCP 工具，
+而工具在对话中途出现需要额外的可见性设计；本次先用最小改动解掉「切不了」，
+那条留作独立决策。</p>
+<p><strong>Pointers：</strong> <code>crates/desktop_core/src/controller.rs</code>
+（<code>session_switch_in_flight</code>、<code>leave_current_session</code>）、
+<code>crates/desktop/src/root.rs</code>（session manager 的 <code>switching</code>）、
+<code>crates/tact_host/src/session_bootstrap.rs</code>（<code>load_mcp_router_with_report</code>）、
+<code>crates/tact/src/mcp/mod.rs</code>（<code>MCP_INIT_TIMEOUT</code>）。</p>
 <h2 id="38-2026-11-13--macos-签名缺失拦住整个发布">38. 2026-11-13 — macOS 签名缺失拦住整个发布</h2>
 <p><strong>现象：</strong> <code>v2.0.6</code> 的发布任务里五个 CLI 目标全部构建成功，
 Linux 与 Windows 的桌面包也成功，但两个 macOS 桌面任务失败（一个报缺少

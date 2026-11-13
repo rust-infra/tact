@@ -539,7 +539,7 @@ fn render_ledger_row(
     ));
 
     if !narrow {
-        let duration = record.duration_label().unwrap_or_default();
+        let duration = record.time_label().unwrap_or_default();
         let status_glyph = status_marker(record.status);
         let tail = format!("{status_glyph} {duration:>DURATION_COLS$}");
         spans.push(Span::styled(
