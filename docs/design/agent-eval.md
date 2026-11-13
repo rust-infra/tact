@@ -168,8 +168,10 @@ for the sake of a tool outside the product.
 **Use the SQLite session database as the only evidence, for both runners.**
 Rejected as the sole source: `token_usages` writes zeroes for absent values, so
 "unknown" and "zero" become indistinguishable, and a report built on it cannot
-tell them apart. It stays available as a secondary source and is what the
-`session_id` in each outcome points at.
+tell them apart. It is still what `session_id` names, but the work dir holding
+that database is deleted after grading, so the id is a label rather than a
+handle. Keeping the directory would be a `--keep-work-dir` flag, worth adding
+when something needs to re-open a run.
 
 **Run cases concurrently.** Rejected for now. Each concurrent case would need
 its own process-global config, which the in-process runner cannot have.

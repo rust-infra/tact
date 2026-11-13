@@ -61,8 +61,7 @@ does not carry them and `AgentLoopOutcome` never leaves the process.
 `--runner cli` spawns `tact-ui headless`. It works against a release binary or a
 container, and reports only what that process writes: final answer, tool lines,
 token totals, and an inferred stop reason. Fields it cannot see stay `null` in
-the report instead of being filled with zeroes. `session_id` is recorded either
-way, so a reviewer can open the run's transcript in `.tact/tact.db`.
+the report instead of being filled with zeroes.
 
 Both runners write the same `CaseOutcome` and go through the same graders, so a
 suite scores the same way either way. Because the host runner reads
@@ -76,6 +75,11 @@ Every attempt runs in its own directory under `$TMPDIR/tact-eval/<case>/<uuid>`,
 with a fixture copied in when the case declares `[isolation] kind = "copy"`. The
 directory is deleted after grading: a run leaves a full source tree and a SQLite
 session behind, and a suite of any size would fill the disk.
+
+That deletion is why `session_id` in a report is a label, not a handle: the
+`.tact/tact.db` it names is gone by the time anyone reads the JSON. A caller
+that needs the transcript must keep the work dir, which the harness does not
+currently offer.
 
 Session locking is per working directory, which is why attempts never share one.
 
