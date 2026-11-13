@@ -11,7 +11,6 @@
 //! inherits that model and permission mode. A caller that needs a different
 //! configuration per case spawns `tact-eval` again with different flags.
 
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use tact_host::{Frontend, Notices, bootstrap_session};
@@ -43,8 +42,8 @@ impl HostRunner {
 
 #[async_trait::async_trait]
 impl Runner for HostRunner {
-    fn name(&self) -> &'static str {
-        "host"
+    fn kind(&self) -> crate::runner::RunnerKind {
+        crate::runner::RunnerKind::Host
     }
 
     fn identity(&self) -> crate::runner::RunIdentity {
@@ -55,15 +54,14 @@ impl Runner for HostRunner {
             Some(settings) => crate::runner::RunIdentity {
                 model: Some(settings.agent.model),
                 base_url: Some(settings.llm.base_url),
-                permission_mode: settings.permission_mode.as_str().to_string(),
+                permission_mode: settings.permission_mode,
             },
+            // No installed settings means this run should have failed at
+            // startup; report the requested mode so the header is not blank.
             None => crate::runner::RunIdentity {
                 model: None,
                 base_url: None,
-                permission_mode: self
-                    .args
-                    .permission_mode
-                    .map_or_else(|| "unset".to_string(), |mode| mode.as_str().to_string()),
+                permission_mode: self.args.permission_mode.unwrap_or_default(),
             },
         }
     }
@@ -153,6 +151,11 @@ impl Runner for HostRunner {
         };
 
         if let Err(error) = agent.ensure_session().await {
+            // The bootstrap already started MCP servers. Releasing the lock
+            // without shutting them down would leave child processes behind
+            // for the whole suite, each holding the work dir that grading is
+            // about to read.
+            agent.shutdown_mcp().await;
             let _ = lock.release().await;
             artifact.failure = Some(RunFailure::startup(error.to_string()));
             return RunOutcome { artifact, work_dir };
@@ -276,31 +279,28 @@ async fn drain_events(
 
 fn tool_record(result: &StepResult) -> ToolRecord {
     ToolRecord {
-        name: result.tool.clone(),
-        args: result.arg_summary.clone(),
+        name: Some(result.tool.clone()),
+        args: Some(result.arg_summary.clone()),
         status: match result.status {
             StepStatus::Success => ToolStatus::Succeeded,
             StepStatus::Failed => ToolStatus::Failed,
             StepStatus::Cancelled => ToolStatus::Cancelled,
         },
         duration_ms: result.duration_us.map(|micros| micros / 1_000),
+        message: Some(result.message.clone()),
     }
 }
 
 /// Each usage event is one model call, so the totals accumulate rather than
 /// overwrite; a later event is not a running total.
+///
+/// Cache and reasoning counts are real here because this runner sees the typed
+/// `TokenUsage`, which the CLI path's log line does not carry.
 fn add_usage(totals: &mut TokenTotals, usage: &TokenUsageInfo) {
     totals.prompt += u64::from(usage.prompt);
     totals.completion += u64::from(usage.completion);
-    totals.cache_hit += u64::from(usage.prompt_cache_hit_tokens);
-    totals.reasoning += u64::from(usage.reasoning_tokens);
-}
-
-/// Where the runner expects the binary for the CLI path.
-pub fn default_cli_binary() -> PathBuf {
-    std::env::var_os("TACT_EVAL_BINARY")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("tact-ui"))
+    *totals.cache_hit.get_or_insert(0) += u64::from(usage.prompt_cache_hit_tokens);
+    *totals.reasoning.get_or_insert(0) += u64::from(usage.reasoning_tokens);
 }
 
 #[cfg(test)]
@@ -325,7 +325,7 @@ mod tests {
     #[test]
     fn tool_records_carry_status_and_milliseconds() {
         let record = tool_record(&result("bash", StepStatus::Failed, Some(1_500_000)));
-        assert_eq!(record.name, "bash");
+        assert_eq!(record.name.as_deref(), Some("bash"));
         assert_eq!(record.status, ToolStatus::Failed);
         assert_eq!(record.duration_ms, Some(1500));
     }
@@ -376,7 +376,7 @@ mod tests {
         );
         assert_eq!(totals.prompt, 15);
         assert_eq!(totals.completion, 5);
-        assert_eq!(totals.cache_hit, 6);
-        assert_eq!(totals.reasoning, 1);
+        assert_eq!(totals.cache_hit, Some(6));
+        assert_eq!(totals.reasoning, Some(1));
     }
 }

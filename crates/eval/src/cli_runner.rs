@@ -21,6 +21,16 @@ use crate::runner::{
     RunArtifact, RunFailure, RunOutcome, Runner, StopView, TokenTotals, ToolRecord, ToolStatus,
 };
 
+/// Where the CLI binary comes from when the caller does not name one.
+///
+/// `TACT_EVAL_BINARY` exists so a release binary or a container image can be
+/// pointed at without a flag, which is how CI runs this.
+pub fn default_cli_binary() -> PathBuf {
+    std::env::var_os("TACT_EVAL_BINARY")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("tact-ui"))
+}
+
 /// Runs cases by spawning `tact-ui headless`.
 #[derive(Debug, Clone)]
 pub struct CliRunner {
@@ -50,8 +60,8 @@ impl CliRunner {
 
 #[async_trait::async_trait]
 impl Runner for CliRunner {
-    fn name(&self) -> &'static str {
-        "cli"
+    fn kind(&self) -> crate::runner::RunnerKind {
+        crate::runner::RunnerKind::Cli
     }
 
     fn identity(&self) -> crate::runner::RunIdentity {
@@ -61,7 +71,7 @@ impl Runner for CliRunner {
         crate::runner::RunIdentity {
             model: self.options.model.clone(),
             base_url: self.options.base_url.clone(),
-            permission_mode: self.options.permission_mode.as_str().to_string(),
+            permission_mode: self.options.permission_mode,
         }
     }
 
@@ -123,19 +133,19 @@ impl Runner for CliRunner {
         artifact.answer = outcome.stdout.trim_end().to_string();
         artifact.duration_ms = crate::runner::elapsed_ms(start);
 
-        if outcome.timed_out {
+        if outcome.timed_out() {
             artifact.failure = Some(RunFailure::Timeout {
                 limit_secs: case.timeout_secs,
             });
             return RunOutcome { artifact, work_dir };
         }
 
-        artifact.stop = parse_stop(&stderr_lines, outcome.status);
+        artifact.stop = parse_stop(&stderr_lines, outcome.end);
 
         if !outcome.succeeded() {
             artifact.failure = Some(RunFailure::harness(format!(
-                "tact-ui exited {:?}: {}",
-                outcome.status,
+                "tact-ui ended {:?}: {}",
+                outcome.end,
                 tail(&outcome.stderr)
             )));
         }
@@ -153,7 +163,17 @@ fn parse_session_id(lines: &[String]) -> Option<String> {
     })
 }
 
-/// `[tool ok] bash ls (12ms)` and friends.
+/// Tool lines from the headless log.
+///
+/// Two different events share the `tool failed` prefix: a finished step
+/// (`[tool failed] {tool} {message} (Nms)`) and a provider-activity failure
+/// (`[tool failed] {error}`), which names no tool at all. Treating the second
+/// as the first is how an error message becomes a tool name.
+///
+/// So a name is recorded only when the line proves it: an `ok` or `cancelled`
+/// status can only come from a finished step, and a `failed` line with a
+/// duration suffix is a finished step too. A bare `[tool failed] …` stays
+/// unattributed, with the text kept as the message.
 fn parse_tools(lines: &[String]) -> Vec<ToolRecord> {
     lines
         .iter()
@@ -166,31 +186,61 @@ fn parse_tools(lines: &[String]) -> Vec<ToolRecord> {
                 "cancelled" => ToolStatus::Cancelled,
                 _ => return None,
             };
-            let (name, args) = match rest.split_once(' ') {
-                Some((name, args)) => (name, args),
-                None => (rest, ""),
-            };
-            let (args, duration_ms) = match args.rsplit_once(" (") {
-                Some((args, ms)) if ms.ends_with("ms)") => {
-                    (args, ms.trim_end_matches("ms)").parse::<u64>().ok())
-                }
-                _ => (args, None),
+
+            let (text, duration_ms) = split_duration(rest);
+
+            // An `ok` or `cancelled` line always came from a finished step, and
+            // so did any line carrying a duration. A failed line with neither
+            // could be a finished step without a duration or a bare failure, so
+            // it stays unattributed rather than guessing at a name.
+            let attributed = matches!(status, ToolStatus::Succeeded | ToolStatus::Cancelled)
+                || duration_ms.is_some();
+            if !attributed {
+                return Some(ToolRecord {
+                    name: None,
+                    args: None,
+                    status,
+                    duration_ms: None,
+                    message: Some(text.to_string()),
+                });
+            }
+
+            let (name, message) = match text.split_once(' ') {
+                Some((name, message)) => (name, message),
+                None => (text, ""),
             };
             Some(ToolRecord {
-                name: name.to_string(),
-                args: args.to_string(),
+                name: Some(name.to_string()),
+                // The finished-step line carries the step message, not the
+                // argument summary; the log does not print the latter.
+                args: None,
                 status,
                 duration_ms,
+                message: Some(message.to_string()),
             })
         })
         .collect()
+}
+
+/// Split a trailing ` (Nms)` off a line, if present.
+fn split_duration(text: &str) -> (&str, Option<u64>) {
+    match text.rsplit_once(" (") {
+        Some((head, tail)) => match tail.strip_suffix("ms)") {
+            Some(millis) => match millis.parse::<u64>() {
+                Ok(millis) => (head, Some(millis)),
+                Err(_) => (text, None),
+            },
+            None => (text, None),
+        },
+        None => (text, None),
+    }
 }
 
 /// `[tokens] prompt=.. completion=.. total=..`, emitted once per model call.
 ///
 /// The lines accumulate: a run with three calls prints three, and overwriting
 /// would report only the last call's cost. Cache and reasoning counts are not on
-/// this line, so they stay zero rather than being guessed.
+/// this line, so they stay `None` rather than being guessed as zero.
 fn parse_tokens(lines: &[String]) -> TokenTotals {
     let mut totals = TokenTotals::default();
     for line in lines {
@@ -222,23 +272,38 @@ fn parse_turns(lines: &[String]) -> Option<u32> {
     })
 }
 
-/// The closest the CLI path can get to a stop reason.
+/// The closest the CLI path can get to a stop reason, in precedence order.
 ///
-/// Headless prints its "no text" warning exactly when the model produced
-/// nothing, which is `EmptyTurn`. A clean exit with a non-empty answer is all
-/// the success case this path can distinguish: it cannot tell `Completed` from
-/// a run that stopped for its own reasons, so it reports `Completed` only then
-/// and unknown otherwise.
-fn parse_stop(lines: &[String], status: Option<std::process::ExitStatus>) -> Option<StopView> {
-    if lines
-        .iter()
-        .any(|line| line.contains("the final message carried no text"))
-    {
+/// Headless prints two different empty-run warnings, one per branch of its
+/// final-message match, and both mean the model produced nothing to read. A
+/// turn counter that reached its own cap means the loop stopped on the cap
+/// rather than on the model.
+///
+/// A clean exit with an answer is all the success case left: it cannot separate
+/// `Completed` from other self-terminated runs, so it reports `Completed` only
+/// then and unknown otherwise.
+fn parse_stop(lines: &[String], end: crate::process::ChildEnd) -> Option<StopView> {
+    let empty = lines.iter().any(|line| {
+        line.contains("the final message carried no text")
+            || line.contains("the run produced no final message")
+    });
+    if empty {
         return Some(StopView::EmptyTurn);
     }
-    status
-        .is_some_and(|status| status.success())
+    if turn_cap_reached(lines) {
+        return Some(StopView::MaxTurns);
+    }
+    matches!(end, crate::process::ChildEnd::Exited(status) if status.success())
         .then_some(StopView::Completed)
+}
+
+/// `[turn] n/max` where `n == max`.
+fn turn_cap_reached(lines: &[String]) -> bool {
+    lines.iter().rev().find_map(|line| {
+        let rest = line.strip_prefix("[turn] ")?;
+        let (taken, max) = rest.split_once('/')?;
+        Some(taken.trim().parse::<u32>().ok()? == max.trim().parse::<u32>().ok()?)
+    }) == Some(true)
 }
 
 fn tail(text: &str) -> String {
@@ -249,6 +314,7 @@ fn tail(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::process::ChildEnd;
 
     fn lines(raw: &str) -> Vec<String> {
         raw.lines().map(str::to_string).collect()
@@ -269,12 +335,39 @@ mod tests {
         );
         let tools = parse_tools(&raw);
         assert_eq!(tools.len(), 3);
-        assert_eq!(tools[0].name, "bash");
-        assert_eq!(tools[0].args, "ls");
+        assert_eq!(tools[0].name.as_deref(), Some("bash"));
+        assert_eq!(tools[0].message.as_deref(), Some("ls"));
         assert_eq!(tools[0].status, ToolStatus::Succeeded);
         assert_eq!(tools[0].duration_ms, Some(12));
         assert_eq!(tools[1].status, ToolStatus::Failed);
+        assert_eq!(tools[1].name.as_deref(), Some("edit_file"));
         assert_eq!(tools[2].status, ToolStatus::Cancelled);
+        assert_eq!(
+            tools[0].args, None,
+            "the log does not print an argument summary for a finished step"
+        );
+    }
+
+    #[test]
+    fn a_bare_failure_line_does_not_invent_a_tool_name() {
+        // A provider-activity failure prints `[tool failed] {error}` with no
+        // tool and no duration. Reading the error as a tool name would report a
+        // tool called "too many requests".
+        let tools = parse_tools(&lines("[tool failed] too many requests"));
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, None, "no tool was named");
+        assert_eq!(tools[0].status, ToolStatus::Failed);
+        assert_eq!(tools[0].message.as_deref(), Some("too many requests"));
+    }
+
+    #[test]
+    fn a_failure_with_a_duration_is_a_finished_step() {
+        // The duration suffix is what distinguishes a finished step from a bare
+        // failure, so this one does carry a name.
+        let tools = parse_tools(&lines("[tool failed] bash exit 1 (1500ms)"));
+        assert_eq!(tools[0].name.as_deref(), Some("bash"));
+        assert_eq!(tools[0].message.as_deref(), Some("exit 1"));
+        assert_eq!(tools[0].duration_ms, Some(1500));
     }
 
     #[test]
@@ -288,7 +381,10 @@ mod tests {
         let totals = parse_tokens(&lines("[tokens] prompt=10 completion=4 total=14"));
         assert_eq!(totals.prompt, 10);
         assert_eq!(totals.completion, 4);
-        assert_eq!(totals.cache_hit, 0, "cache hits are not on this line");
+        assert_eq!(
+            totals.cache_hit, None,
+            "cache hits are not on this line, so they are unknown rather than zero"
+        );
     }
 
     #[test]
@@ -305,12 +401,29 @@ mod tests {
 
     #[test]
     fn an_empty_answer_warning_is_an_empty_turn() {
-        let raw = lines("[warn] the final message carried no text; stdout is empty");
-        assert_eq!(parse_stop(&raw, None), Some(StopView::EmptyTurn));
+        for warning in [
+            "[warn] the final message carried no text; stdout is empty",
+            "[warn] the run produced no final message; stdout is empty",
+        ] {
+            assert_eq!(
+                parse_stop(&lines(warning), ChildEnd::TimedOut),
+                Some(StopView::EmptyTurn),
+                "{warning}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_turn_count_that_hit_its_cap_is_max_turns() {
+        assert_eq!(
+            parse_stop(&lines("[turn] 32/32"), ChildEnd::TimedOut),
+            Some(StopView::MaxTurns)
+        );
+        assert_eq!(parse_stop(&lines("[turn] 5/32"), ChildEnd::TimedOut), None);
     }
 
     #[test]
     fn a_missing_exit_status_concludes_nothing() {
-        assert_eq!(parse_stop(&[], None), None);
+        assert_eq!(parse_stop(&[], ChildEnd::TimedOut), None);
     }
 }

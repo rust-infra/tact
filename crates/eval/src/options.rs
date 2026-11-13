@@ -12,48 +12,33 @@
 
 use std::path::PathBuf;
 
+pub use tact_protocol::PermissionMode;
+
 /// The configuration one suite run executes under.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunOptions {
     pub config: Option<PathBuf>,
     pub provider: Option<String>,
     pub model: Option<String>,
     pub base_url: Option<String>,
-    /// `default`, `plan`, or `auto`.
     pub permission_mode: PermissionMode,
 }
 
-/// The three permission modes, mirrored here so `RunOptions` is constructible
-/// without a clap parser.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum PermissionMode {
-    Default,
-    Plan,
-    #[default]
-    Auto,
-}
-
-impl PermissionMode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Default => "default",
-            Self::Plan => "plan",
-            Self::Auto => "auto",
-        }
-    }
-}
-
-impl std::str::FromStr for PermissionMode {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "default" => Ok(Self::Default),
-            "plan" => Ok(Self::Plan),
-            "auto" => Ok(Self::Auto),
-            other => Err(format!(
-                "unknown permission mode {other:?}; expected default, plan, or auto"
-            )),
+/// Eval's only deviation from the canonical defaults: a suite runs in `auto`
+/// unless told otherwise.
+///
+/// Headless cannot answer a permission prompt, so `default` would fail every
+/// case that needs a tool, and a suite that silently ran with ask-first
+/// semantics would look like a model failure. Stated here, once, rather than as
+/// a re-declared `PermissionMode` whose `Default` disagreed with the product's.
+impl Default for RunOptions {
+    fn default() -> Self {
+        Self {
+            config: None,
+            provider: None,
+            model: None,
+            base_url: None,
+            permission_mode: PermissionMode::Auto,
         }
     }
 }
@@ -61,7 +46,7 @@ impl std::str::FromStr for PermissionMode {
 impl RunOptions {
     /// The flags `tact-ui` and the host bootstrap both understand.
     ///
-    /// Kept as an ordered list rather than two hand-written builders: a flag
+    /// Kept as one ordered list rather than two hand-written builders: a flag
     /// added for one runner must reach the other, and a single list is what
     /// makes that visible.
     pub fn to_flags(&self) -> Vec<String> {
@@ -93,28 +78,8 @@ impl RunOptions {
             provider: self.provider.clone(),
             model: self.model.clone(),
             base_url: self.base_url.clone(),
-            permission_mode: Some(self.permission_mode.into()),
+            permission_mode: Some(self.permission_mode),
             ..Default::default()
-        }
-    }
-}
-
-impl From<PermissionMode> for tact::permission::PermissionMode {
-    fn from(mode: PermissionMode) -> Self {
-        match mode {
-            PermissionMode::Default => Self::Default,
-            PermissionMode::Plan => Self::Plan,
-            PermissionMode::Auto => Self::Auto,
-        }
-    }
-}
-
-impl From<tact::permission::PermissionMode> for PermissionMode {
-    fn from(mode: tact::permission::PermissionMode) -> Self {
-        match mode {
-            tact::permission::PermissionMode::Default => Self::Default,
-            tact::permission::PermissionMode::Plan => Self::Plan,
-            tact::permission::PermissionMode::Auto => Self::Auto,
         }
     }
 }
@@ -150,13 +115,15 @@ mod tests {
     }
 
     #[test]
-    fn unset_options_are_omitted_rather_than_sent_blank() {
+    fn an_unconfigured_run_asks_for_auto() {
+        // The one place eval differs from the product's default of `Default`.
         let options = RunOptions::default();
+        assert_eq!(options.permission_mode, PermissionMode::Auto);
         assert_eq!(options.to_flags(), ["--permission-mode", "auto"]);
     }
 
     #[test]
-    fn cli_args_and_flags_agree_on_permission_mode() {
+    fn flags_and_cli_args_agree_on_permission_mode() {
         for mode in [
             PermissionMode::Default,
             PermissionMode::Plan,
@@ -166,8 +133,7 @@ mod tests {
                 permission_mode: mode,
                 ..Default::default()
             };
-            let expected = tact::permission::PermissionMode::from(mode);
-            assert_eq!(options.to_cli_args().permission_mode, Some(expected));
+            assert_eq!(options.to_cli_args().permission_mode, Some(mode));
         }
     }
 }

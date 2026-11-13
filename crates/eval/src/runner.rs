@@ -18,13 +18,21 @@ use serde::{Deserialize, Serialize};
 pub use tact::AgentLoopStop;
 
 /// One tool call as the run saw it.
+///
+/// `name`, `args`, and `duration_ms` are [`Option`] because the two runners do
+/// not see the same things. The host runner reads them from `StepResult`; the
+/// CLI runner can read a name and duration only from a finished-step log line,
+/// and a provider-activity failure line carries neither. A field one runner
+/// cannot observe stays `None` instead of being guessed, so a report never
+/// compares a real argument summary against an error message under one name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolRecord {
-    pub name: String,
-    /// Argument summary, truncated the way the tool card shows it.
-    pub args: String,
+    pub name: Option<String>,
+    pub args: Option<String>,
     pub status: ToolStatus,
     pub duration_ms: Option<u64>,
+    /// The step's message, or the failure text for a line that named no tool.
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,13 +43,19 @@ pub enum ToolStatus {
     Cancelled,
 }
 
+/// Token counts, with the provider-reported extras optional.
+///
+/// `prompt` and `completion` come from both runners. Cache-hit and reasoning
+/// tokens are only on `AgentUpdate::TokenUsage`, which the CLI path cannot see
+/// (its log line has no field for them), so they are `None` there rather than
+/// `0`. A zero would read as "the provider reported no cache hits", which is a
+/// different claim from "this runner cannot observe it".
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenTotals {
     pub prompt: u64,
     pub completion: u64,
-    /// Cache-hit prompt tokens, when the provider reports them.
-    pub cache_hit: u64,
-    pub reasoning: u64,
+    pub cache_hit: Option<u64>,
+    pub reasoning: Option<u64>,
 }
 
 /// Everything one attempt produced, described the same way by both runners.
@@ -149,6 +163,44 @@ pub struct RunOutcome {
     pub work_dir: std::path::PathBuf,
 }
 
+/// Which runner executed a case. A closed set, so a report cannot carry a
+/// misspelled runner name that nothing recognises.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunnerKind {
+    /// In process, through the same bootstrap as the product frontends.
+    Host,
+    /// A separate `tact-ui headless` process.
+    Cli,
+}
+
+impl RunnerKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Host => "host",
+            Self::Cli => "cli",
+        }
+    }
+}
+
+impl std::fmt::Display for RunnerKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for RunnerKind {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "host" => Ok(Self::Host),
+            "cli" => Ok(Self::Cli),
+            other => Err(format!("unknown runner {other:?}; expected host or cli")),
+        }
+    }
+}
+
 /// What a run executed under, as the runner itself knows it.
 ///
 /// `model` and `base_url` are [`Option`] because the CLI runner can be told to
@@ -159,15 +211,13 @@ pub struct RunOutcome {
 pub struct RunIdentity {
     pub model: Option<String>,
     pub base_url: Option<String>,
-    /// Always known: the run declares it, and it defaults to `auto`.
-    pub permission_mode: String,
+    pub permission_mode: tact_protocol::PermissionMode,
 }
 
 /// One runner: the only thing that differs between the CLI and host paths.
 #[async_trait::async_trait]
 pub trait Runner: Send + Sync {
-    /// Short name for the report, e.g. `host` or `cli`.
-    fn name(&self) -> &'static str;
+    fn kind(&self) -> RunnerKind;
 
     /// The configuration this runner executes under, for the report header.
     fn identity(&self) -> RunIdentity;

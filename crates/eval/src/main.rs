@@ -2,8 +2,10 @@
 
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand, ValueEnum};
-use tact_eval::{CliRunner, EvalSuite, HostRunner, PermissionMode, RunOptions, Runner, run_suite};
+use clap::{Parser, Subcommand};
+use tact_eval::{
+    CliRunner, EvalSuite, HostRunner, PermissionMode, RunOptions, Runner, RunnerKind, run_suite,
+};
 
 #[derive(Parser, Debug)]
 #[command(version, about = "Run Tact agent evaluation suites")]
@@ -20,13 +22,17 @@ enum Command {
     Validate { suite: PathBuf },
 }
 
+fn parse_runner(value: &str) -> Result<RunnerKind, String> {
+    value.parse()
+}
+
 #[derive(Parser, Debug)]
 struct RunArgs {
     /// Directory of `*.toml` case files
     suite: PathBuf,
 
     /// Which runner executes the cases
-    #[arg(long, value_enum, default_value_t = RunnerKind::Host)]
+    #[arg(long, value_parser = parse_runner, default_value = "host")]
     runner: RunnerKind,
 
     /// Attempts per case; pass@k uses this as k
@@ -49,12 +55,6 @@ struct RunArgs {
     options: OptionArgs,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-enum RunnerKind {
-    Host,
-    Cli,
-}
-
 /// The flags both runners accept, spelled as `tact-ui` spells them.
 #[derive(Parser, Debug, Clone, Default)]
 struct OptionArgs {
@@ -66,22 +66,22 @@ struct OptionArgs {
     model: Option<String>,
     #[arg(long)]
     base_url: Option<String>,
-    #[arg(long, value_parser = parse_permission)]
+    #[arg(long)]
     permission_mode: Option<PermissionMode>,
-}
-
-fn parse_permission(value: &str) -> Result<PermissionMode, String> {
-    value.parse()
 }
 
 impl OptionArgs {
     fn run_options(&self) -> RunOptions {
+        // Start from `RunOptions::default()` so the eval-specific `auto` default
+        // lives in exactly one place. `PermissionMode::default()` is the
+        // product's `Default` (ask first), which headless cannot honour.
+        let defaults = RunOptions::default();
         RunOptions {
             config: self.config.clone(),
             provider: self.provider.clone(),
             model: self.model.clone(),
             base_url: self.base_url.clone(),
-            permission_mode: self.permission_mode.unwrap_or_default(),
+            permission_mode: self.permission_mode.unwrap_or(defaults.permission_mode),
         }
     }
 }
@@ -119,9 +119,7 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
             Box::new(HostRunner::new(options))
         }
         RunnerKind::Cli => {
-            let binary = args
-                .binary
-                .unwrap_or_else(tact_eval::host_runner::default_cli_binary);
+            let binary = args.binary.unwrap_or_else(tact_eval::default_cli_binary);
             Box::new(CliRunner::new(binary).with_options(options))
         }
     };
@@ -138,4 +136,46 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A run with no `--permission-mode` must be `auto`.
+    ///
+    /// `PermissionMode::default()` is the product's `Default`, which asks
+    /// before a write. Headless cannot answer, so taking that default would
+    /// silently deny every tool the suite needs.
+    #[test]
+    fn an_unstated_permission_mode_is_auto_not_the_product_default() {
+        let options = OptionArgs::default().run_options();
+        assert_eq!(options.permission_mode, PermissionMode::Auto);
+    }
+
+    #[test]
+    fn a_stated_permission_mode_wins() {
+        let options = OptionArgs {
+            permission_mode: Some(PermissionMode::Plan),
+            ..Default::default()
+        }
+        .run_options();
+        assert_eq!(options.permission_mode, PermissionMode::Plan);
+    }
+
+    #[test]
+    fn the_flags_are_the_ones_tact_ui_parses() {
+        // The flags this crate builds and the flags `CliArgs` accepts are one
+        // contract; a rename on either side fails here rather than at run time.
+        let flags = RunOptions {
+            provider: Some("openai".into()),
+            model: Some("m".into()),
+            base_url: Some("http://x".into()),
+            permission_mode: PermissionMode::Auto,
+            ..Default::default()
+        }
+        .to_flags();
+        tact::config::CliArgs::try_parse_from(std::iter::once("tact-ui".to_string()).chain(flags))
+            .expect("every emitted flag is accepted by CliArgs");
+    }
 }

@@ -178,6 +178,13 @@ its own process-global config, which the in-process runner cannot have.
 `run_suite` iterates sequentially and the README says the parallelism belongs
 one level up, in a caller that starts several `tact-eval` processes.
 
+**Move the headless log grammar into `tact_protocol`, with a formatter and a
+parser side by side.** Rejected for now, on scope. It is the right fix for the
+hand-synced format, and it would let the CLI runner report cache and reasoning
+tokens. It changes product code, so it is its own change with its own tests. The
+interim parser is written so a line it cannot attribute stays attributed to
+nothing, rather than inventing a tool name from an error message.
+
 ## Tradeoffs accepted
 
 We accept that the CLI runner cannot report a stop reason or turn count in

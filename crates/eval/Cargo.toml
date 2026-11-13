@@ -28,12 +28,12 @@ regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
-tempfile = { workspace = true }
 tokio = { workspace = true, features = ["fs", "process", "sync", "time", "macros", "rt-multi-thread"] }
 toml = { workspace = true }
 uuid = { workspace = true }
 walkdir = { workspace = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 wiremock = "0.6"

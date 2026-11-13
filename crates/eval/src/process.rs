@@ -15,19 +15,29 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::{Child, Command};
 
+/// How a child ended. Three outcomes, because two cannot say what happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildEnd {
+    Exited(std::process::ExitStatus),
+    /// The budget expired and the child was killed with its process group.
+    TimedOut,
+}
+
 /// What one child produced, whether or not it finished on its own.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ChildOutcome {
     pub stdout: String,
     pub stderr: String,
-    pub status: Option<std::process::ExitStatus>,
-    /// The budget expired and the child was killed.
-    pub timed_out: bool,
+    pub end: ChildEnd,
 }
 
 impl ChildOutcome {
     pub fn succeeded(&self) -> bool {
-        !self.timed_out && self.status.is_some_and(|status| status.success())
+        matches!(self.end, ChildEnd::Exited(status) if status.success())
+    }
+
+    pub fn timed_out(&self) -> bool {
+        self.end == ChildEnd::TimedOut
     }
 }
 
@@ -57,20 +67,24 @@ pub async fn run_child(mut command: Command, timeout: Duration) -> std::io::Resu
     let stdout_reader = tokio::spawn(read_to_string(stdout));
     let stderr_reader = tokio::spawn(read_to_string(stderr));
 
-    let status = match tokio::time::timeout(timeout, child.wait()).await {
-        Ok(status) => status.ok(),
+    // A failed `wait` is an OS error, not a timeout, and it is returned as one:
+    // reporting it as a budget overrun would blame the case for the harness.
+    let end = match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(Ok(status)) => ChildEnd::Exited(status),
+        Ok(Err(error)) => {
+            let _ = child.start_kill();
+            return Err(error);
+        }
         Err(_) => {
             kill_tree(&mut child).await;
-            None
+            ChildEnd::TimedOut
         }
     };
-    let timed_out = status.is_none();
 
     Ok(ChildOutcome {
         stdout: stdout_reader.await.unwrap_or_default(),
         stderr: stderr_reader.await.unwrap_or_default(),
-        status,
-        timed_out,
+        end,
     })
 }
 
@@ -123,7 +137,7 @@ mod tests {
         assert!(outcome.succeeded());
         assert_eq!(outcome.stdout.trim(), "out");
         assert_eq!(outcome.stderr.trim(), "err");
-        assert!(!outcome.timed_out);
+        assert!(!outcome.timed_out());
     }
 
     #[tokio::test]
@@ -131,7 +145,7 @@ mod tests {
         let outcome = run_child(shell("echo before; sleep 30"), Duration::from_millis(300))
             .await
             .unwrap();
-        assert!(outcome.timed_out);
+        assert!(outcome.timed_out());
         assert!(!outcome.succeeded());
         assert_eq!(
             outcome.stdout.trim(),
@@ -152,7 +166,7 @@ mod tests {
         .await
         .expect("run_child must return while a grandchild holds the pipe")
         .unwrap();
-        assert!(outcome.timed_out);
+        assert!(outcome.timed_out());
     }
 
     #[tokio::test]
@@ -161,7 +175,13 @@ mod tests {
             .await
             .unwrap();
         assert!(!outcome.succeeded());
-        assert_eq!(outcome.status.and_then(|status| status.code()), Some(3));
+        assert_eq!(
+            match outcome.end {
+                ChildEnd::Exited(status) => status.code(),
+                ChildEnd::TimedOut => None,
+            },
+            Some(3)
+        );
         assert_eq!(outcome.stderr.trim(), "boom");
     }
 }

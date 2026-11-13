@@ -6,20 +6,26 @@
 //! [`RunArtifact`] and a work directory and never learn which runner produced
 //! them, so a suite scores the same way either way.
 //!
-//! The public surface is three verbs: load a suite, run it, grade it.
+//! The public surface is three verbs: load a suite, run it, grade it. The host
+//! path has a fourth step before the first verb, because it reads process-global
+//! settings: `tact::config::init_from_args` must run once, and `HostRunner` says
+//! so rather than failing per case.
+//!
+//! `process`, `suite`, and the runner modules stay private; their types reach
+//! callers through the re-exports below.
 
-pub mod case;
-pub mod cli_runner;
-pub mod grader;
-pub mod host_runner;
-pub mod options;
-pub mod process;
-pub mod report;
-pub mod runner;
-pub mod suite;
+mod case;
+mod cli_runner;
+mod grader;
+mod host_runner;
+mod options;
+mod process;
+mod report;
+mod runner;
+mod suite;
 
 pub use case::{EvalCase, FileAssertion, GraderSpec, Isolation, TextAssertion};
-pub use cli_runner::CliRunner;
+pub use cli_runner::{CliRunner, default_cli_binary};
 pub use grader::{Grade, Verdict, grade};
 pub use host_runner::HostRunner;
 pub use options::{PermissionMode, RunOptions};
@@ -27,7 +33,8 @@ pub use report::{
     CaseOutcome, CaseSummary, EvalReport, REPORT_SCHEMA_VERSION, ReportMeta, suite_fingerprint,
 };
 pub use runner::{
-    RunArtifact, RunFailure, RunOutcome, Runner, StopView, TokenTotals, ToolRecord, ToolStatus,
+    RunArtifact, RunFailure, RunIdentity, RunOutcome, Runner, RunnerKind, StopView, TokenTotals,
+    ToolRecord, ToolStatus,
 };
 pub use suite::EvalSuite;
 
@@ -51,7 +58,15 @@ pub async fn run_suite(
         for attempt in 1..=attempts {
             let outcome = runner.run(case, attempt).await;
             let grades = grader::grade(case, &outcome.work_dir, &outcome.artifact).await;
-            outcomes.push(CaseOutcome::from_parts(outcome.artifact, grades));
+            let judged_on_answer = case
+                .graders
+                .iter()
+                .any(|grader| matches!(grader, GraderSpec::Answer { .. }));
+            outcomes.push(CaseOutcome::from_parts(
+                outcome.artifact,
+                grades,
+                judged_on_answer,
+            ));
 
             // The work dir is scratch: a run leaves a full source tree plus a
             // SQLite session behind, and a suite of any size would fill the
@@ -62,7 +77,7 @@ pub async fn run_suite(
 
     Ok(EvalReport::new(
         ReportMeta {
-            runner: runner.name().to_string(),
+            runner: runner.kind(),
             model: identity.model,
             base_url: identity.base_url,
             permission_mode: identity.permission_mode,

@@ -68,17 +68,6 @@ pub async fn grade(case: &EvalCase, work_dir: &Path, artifact: &crate::RunArtifa
             verdict,
         });
     }
-
-    // A run that crashed cannot be graded on its output, even when the files
-    // happen to look right: the harness failed, not the agent.
-    if let Some(failure) = &artifact.failure {
-        grades.push(Grade {
-            grader: "run".into(),
-            verdict: Verdict::Inconclusive {
-                reason: failure.to_string(),
-            },
-        });
-    }
     grades
 }
 
@@ -104,8 +93,13 @@ async fn run_command(
         }
     };
 
-    if outcome.timed_out {
-        return Ok((false, format!("timed out after {timeout_secs}s")));
+    // A grader that hangs is a harness problem, not a decision about the agent.
+    // Reporting it as `Fail` would turn a broken `cargo test` invocation into a
+    // fake regression.
+    if outcome.timed_out() {
+        return Err(Verdict::Inconclusive {
+            reason: format!("grader timed out after {timeout_secs}s"),
+        });
     }
     let passed = outcome.succeeded();
     let mut combined = outcome.stdout;
@@ -334,7 +328,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_crashed_run_is_inconclusive_even_when_files_pass() {
+    async fn grading_does_not_restate_the_run_failure() {
+        // The run's failure lives on `CaseOutcome::failure` and is applied by
+        // `CaseOutcome::verdict`. A second copy here would be the same fact
+        // stored twice, and the two could disagree.
         let dir = tempfile::tempdir().unwrap();
         let mut failed = artifact();
         failed.failure = Some(crate::RunFailure::Timeout { limit_secs: 5 });
@@ -347,10 +344,7 @@ mod tests {
             &failed,
         )
         .await;
-        assert!(
-            grades
-                .iter()
-                .any(|grade| matches!(grade.verdict, Verdict::Inconclusive { .. }))
-        );
+        assert_eq!(grades.len(), 1, "only the declared grader is graded");
+        assert!(grades[0].verdict.is_pass());
     }
 }

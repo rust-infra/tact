@@ -60,6 +60,10 @@ fn default_isolation() -> Isolation {
 impl EvalCase {
     /// Load one case file. `id` defaults to the file stem so a suite never
     /// carries two cases under one name by accident.
+    ///
+    /// A fixture path is not checked here: a relative one only means something
+    /// next to the suite directory, which this function does not know.
+    /// `EvalSuite::load` resolves it and then validates.
     pub fn load(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("cannot read case {}", path.display()))?;
@@ -71,25 +75,17 @@ impl EvalCase {
                 .map(|stem| stem.to_string_lossy().into_owned())
                 .context("case file has no stem")?;
         }
-        case.validate(path)?;
+        case.validate_shape(path)?;
         Ok(case)
     }
 
-    fn validate(&self, path: &Path) -> Result<()> {
+    /// Everything that can be decided from the file alone.
+    pub(crate) fn validate_shape(&self, path: &Path) -> Result<()> {
         if self.prompt.trim().is_empty() {
             anyhow::bail!("{}: prompt is empty", path.display());
         }
         if self.timeout_secs == 0 {
             anyhow::bail!("{}: timeout_secs must be positive", path.display());
-        }
-        if let Isolation::Copy { fixture } = &self.isolation
-            && !fixture.is_dir()
-        {
-            anyhow::bail!(
-                "{}: fixture {} is not a directory",
-                path.display(),
-                fixture.display()
-            );
         }
         for grader in &self.graders {
             grader.validate(path)?;
@@ -247,18 +243,27 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_fixture_is_rejected_at_load_time() {
+    fn a_case_file_does_not_resolve_its_own_fixture() {
+        // A relative fixture only means something next to the suite directory,
+        // which a single case file does not know. `EvalSuite::load` resolves and
+        // checks it, and its own tests cover that.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("fixtured.toml");
         std::fs::write(
             &path,
-            "prompt = \"x\"\n[isolation]\nkind = \"copy\"\nfixture = \"/nonexistent/fixture\"\n",
+            "prompt = \"x\"\n[isolation]\nkind = \"copy\"\nfixture = \"fixtures/nope\"\n",
         )
         .unwrap();
 
-        let error = EvalCase::load(&path).unwrap_err().to_string();
+        let case = EvalCase::load(&path).expect("shape is valid");
 
-        assert!(error.contains("not a directory"), "{error}");
+        assert_eq!(
+            case.isolation,
+            Isolation::Copy {
+                fixture: PathBuf::from("fixtures/nope")
+            },
+            "the path stays as written until the suite resolves it"
+        );
     }
 
     #[test]

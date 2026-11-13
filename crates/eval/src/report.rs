@@ -2,8 +2,8 @@
 //!
 //! A report that omits the model, endpoint, and permission mode cannot be
 //! compared with the next one, so [`ReportMeta`] records them. A runner that
-//! genuinely does not know one writes `unset`, which reads as "not recorded"
-//! rather than as a configured blank.
+//! genuinely does not know one writes `null`, which reads as "not recorded"
+//! rather than as a configured blank; only the text summary spells it `unset`.
 
 use std::collections::BTreeMap;
 
@@ -16,13 +16,13 @@ use crate::runner::{RunArtifact, TokenTotals};
 /// What the run was, so two reports can be compared.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReportMeta {
-    pub runner: String,
+    pub runner: crate::RunnerKind,
     /// `None` when the runner cannot see the model it ran under. Distinct from
     /// a model named "unset", and it serializes as `null` rather than a
     /// string that looks configured.
     pub model: Option<String>,
     pub base_url: Option<String>,
-    pub permission_mode: String,
+    pub permission_mode: tact_protocol::PermissionMode,
     pub attempts: u32,
     /// Stable hash of the case set, so a changed suite is visible without
     /// diffing two JSON files by eye.
@@ -36,6 +36,11 @@ pub struct ReportMeta {
 pub struct CaseOutcome {
     pub case_id: String,
     pub attempt: u32,
+    /// Whether the case that produced this attempt declared an `answer`
+    /// grader. Carried because the fold in [`Self::verdict`] needs it and the
+    /// grades alone cannot say (a passing file grader looks the same either
+    /// way).
+    pub judged_on_answer: bool,
     pub grades: Vec<Grade>,
     pub answer: String,
     pub session_id: Option<String>,
@@ -48,10 +53,11 @@ pub struct CaseOutcome {
 }
 
 impl CaseOutcome {
-    pub fn from_parts(artifact: RunArtifact, grades: Vec<Grade>) -> Self {
+    pub fn from_parts(artifact: RunArtifact, grades: Vec<Grade>, judged_on_answer: bool) -> Self {
         Self {
             case_id: artifact.case_id,
             attempt: artifact.attempt,
+            judged_on_answer,
             grades,
             answer: artifact.answer,
             session_id: artifact.session_id,
@@ -74,10 +80,21 @@ impl CaseOutcome {
     /// Otherwise a single failing grader fails the attempt, and a grader that
     /// could not decide makes it inconclusive: a case is not passed on partial
     /// evidence.
+    ///
+    /// An `EmptyTurn` needs an `answer` grader to pass. Such a run wrote no
+    /// text, so its file graders may still be right, but nothing shows the
+    /// request was answered. Without an `answer` grader a pass would rest on
+    /// side effects alone.
     pub fn verdict(&self) -> Verdict {
         if let Some(failure) = &self.failure {
             return Verdict::Inconclusive {
                 reason: failure.to_string(),
+            };
+        }
+
+        if self.stop == Some(crate::StopView::EmptyTurn) && !self.judged_on_answer {
+            return Verdict::Inconclusive {
+                reason: "the run produced no answer and the case declares no answer grader".into(),
             };
         }
 
@@ -233,17 +250,21 @@ impl EvalReport {
 
 /// A stable fingerprint over the case set.
 ///
-/// Hashes each case's id and prompt, so editing a prompt invalidates the
-/// comparison even when the id does not change.
+/// Hashes the whole case, not just its id and prompt. A tightened grader, a
+/// changed pattern, a different isolation mode, or a shorter timeout all change
+/// what the suite decides, so all of them must change the fingerprint; otherwise
+/// two reports look comparable while grading different things.
 pub fn suite_fingerprint(cases: &[EvalCase]) -> String {
     use sha2::{Digest, Sha256};
 
     let mut hasher = Sha256::new();
     for case in cases {
-        hasher.update(case.id.as_bytes());
-        hasher.update([0]);
-        hasher.update(case.prompt.as_bytes());
-        hasher.update([0]);
+        // `EvalCase` is `Serialize` and its fields are the whole definition, so
+        // the serialized form is the canonical tuple. A field added later is
+        // covered without editing this function.
+        let encoded = serde_json::to_vec(case).unwrap_or_default();
+        hasher.update((encoded.len() as u64).to_le_bytes());
+        hasher.update(encoded);
     }
     format!("{:x}", hasher.finalize())[..16].to_string()
 }
@@ -257,6 +278,7 @@ mod tests {
         CaseOutcome {
             case_id: case_id.into(),
             attempt,
+            judged_on_answer: true,
             grades: vec![Grade {
                 grader: "g".into(),
                 verdict,
@@ -275,10 +297,10 @@ mod tests {
     fn report(outcomes: Vec<CaseOutcome>) -> EvalReport {
         EvalReport::new(
             ReportMeta {
-                runner: "host".into(),
+                runner: crate::RunnerKind::Host,
                 model: Some("m".into()),
                 base_url: Some("u".into()),
-                permission_mode: "auto".into(),
+                permission_mode: tact_protocol::PermissionMode::Auto,
                 attempts: 2,
                 suite_fingerprint: "fp".into(),
                 started_at: "s".into(),
@@ -293,6 +315,22 @@ mod tests {
         let report = report(Vec::new());
         let json: serde_json::Value = serde_json::from_str(&report.to_json().unwrap()).unwrap();
         assert_eq!(json["schema_version"], REPORT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn an_empty_answer_cannot_pass_a_case_that_does_not_judge_the_answer() {
+        // The file grader passed, but the model wrote nothing, so nothing
+        // shows the request was answered.
+        let mut silent = outcome("c", 1, Verdict::Pass);
+        silent.stop = Some(crate::StopView::EmptyTurn);
+        silent.judged_on_answer = false;
+
+        assert!(!silent.verdict().is_pass(), "{:?}", silent.verdict());
+
+        // With an answer grader the verdict is that grader's to make.
+        let mut judged = silent.clone();
+        judged.judged_on_answer = true;
+        assert!(judged.verdict().is_pass());
     }
 
     #[test]
@@ -392,5 +430,30 @@ mod tests {
             suite_fingerprint(std::slice::from_ref(&base)),
             suite_fingerprint(&[edited])
         );
+    }
+
+    #[test]
+    fn the_fingerprint_changes_when_a_grader_or_timeout_changes() {
+        // Both change what the suite decides, so both must invalidate a
+        // comparison even though id and prompt are untouched.
+        let base = EvalCase {
+            id: "a".into(),
+            prompt: "one".into(),
+            timeout_secs: 1,
+            isolation: crate::Isolation::Empty,
+            graders: Vec::new(),
+        };
+        let baseline = suite_fingerprint(std::slice::from_ref(&base));
+
+        let mut timed = base.clone();
+        timed.timeout_secs = 2;
+        assert_ne!(baseline, suite_fingerprint(&[timed]));
+
+        let mut graded = base.clone();
+        graded.graders = vec![crate::GraderSpec::Command {
+            name: "g".into(),
+            command: "true".into(),
+        }];
+        assert_ne!(baseline, suite_fingerprint(&[graded]));
     }
 }

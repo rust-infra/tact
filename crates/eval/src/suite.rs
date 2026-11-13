@@ -13,11 +13,14 @@ use crate::case::{EvalCase, Isolation};
 #[derive(Debug, Clone)]
 pub struct EvalSuite {
     cases: Vec<EvalCase>,
-    root: PathBuf,
 }
 
 impl EvalSuite {
     /// Load every `*.toml` under `dir`, sorted by id so a run is reproducible.
+    ///
+    /// A relative `fixture` is resolved against `dir` here, at the boundary
+    /// where the suite's location is known, and then validated. Resolving it
+    /// later would make a case depend on the process's working directory.
     pub fn load(dir: impl AsRef<Path>) -> Result<Self> {
         let dir = dir.as_ref();
         let mut cases = Vec::new();
@@ -28,7 +31,9 @@ impl EvalSuite {
             if path.extension().is_none_or(|ext| ext != "toml") {
                 continue;
             }
-            cases.push(EvalCase::load(&path)?);
+            let mut case = EvalCase::load(&path)?;
+            resolve_fixture(&mut case, dir, &path)?;
+            cases.push(case);
         }
         if cases.is_empty() {
             anyhow::bail!("no *.toml cases in {}", dir.display());
@@ -42,27 +47,39 @@ impl EvalSuite {
             }
         }
 
-        Ok(Self {
-            cases,
-            root: dir.to_path_buf(),
-        })
+        Ok(Self { cases })
     }
 
     pub fn cases(&self) -> &[EvalCase] {
         &self.cases
     }
+}
 
-    pub fn root(&self) -> &Path {
-        &self.root
+/// Resolve a relative fixture against the suite directory and check it exists.
+///
+/// This is where the fixture contract lives, because it is the only place that
+/// knows both the case and the directory the case was loaded from.
+fn resolve_fixture(case: &mut EvalCase, suite_dir: &Path, case_path: &Path) -> Result<()> {
+    if let Isolation::Copy { fixture } = &mut case.isolation {
+        if fixture.is_relative() {
+            *fixture = suite_dir.join(&*fixture);
+        }
+        if !fixture.is_dir() {
+            anyhow::bail!(
+                "{}: fixture {} is not a directory",
+                case_path.display(),
+                fixture.display()
+            );
+        }
     }
+    Ok(())
 }
 
 /// Make this attempt's working directory.
 ///
-/// Relative fixture paths resolve against the suite root, so a case file can
-/// say `fixture = "fixtures/broken-rust"` without knowing where it is loaded
-/// from at runtime.
-pub fn prepare_work_dir(case: &EvalCase) -> Result<PathBuf> {
+/// Fixtures arrive absolute: `EvalSuite::load` resolves them, so this does not
+/// depend on the process's working directory.
+pub(crate) fn prepare_work_dir(case: &EvalCase) -> Result<PathBuf> {
     let dir = std::env::temp_dir()
         .join("tact-eval")
         .join(&case.id)
@@ -121,6 +138,44 @@ mod tests {
         let error = EvalSuite::load(dir.path()).unwrap_err().to_string();
 
         assert!(error.contains("duplicate case id"), "{error}");
+    }
+
+    #[test]
+    fn a_relative_fixture_resolves_against_the_suite_dir() {
+        let suite_dir = tempfile::tempdir().unwrap();
+        let fixture = suite_dir.path().join("fixtures/seed");
+        std::fs::create_dir_all(&fixture).unwrap();
+        std::fs::write(fixture.join("seed.txt"), "seed").unwrap();
+        std::fs::write(
+            suite_dir.path().join("copied.toml"),
+            "prompt = \"p\"\n[isolation]\nkind = \"copy\"\nfixture = \"fixtures/seed\"\n",
+        )
+        .unwrap();
+
+        let suite = EvalSuite::load(suite_dir.path()).unwrap();
+
+        let case = &suite.cases()[0];
+        match &case.isolation {
+            Isolation::Copy { fixture } => {
+                assert!(fixture.is_absolute(), "{}", fixture.display());
+                assert!(fixture.ends_with("fixtures/seed"));
+            }
+            other => panic!("expected a copy isolation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_missing_relative_fixture_is_rejected_at_load() {
+        let suite_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            suite_dir.path().join("broken.toml"),
+            "prompt = \"p\"\n[isolation]\nkind = \"copy\"\nfixture = \"fixtures/nope\"\n",
+        )
+        .unwrap();
+
+        let error = EvalSuite::load(suite_dir.path()).unwrap_err().to_string();
+
+        assert!(error.contains("not a directory"), "{error}");
     }
 
     #[test]
