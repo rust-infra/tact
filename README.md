@@ -466,6 +466,22 @@ per step, grouped by turn, showing kind, status, duration, input, and output,
 with a lane overview above it. It reads the run the way an auditor does, which
 scrolling the conversation does not. Detail: [`docs/design/tui-trajectory.md`](./docs/design/tui-trajectory.md).
 
+### 🧪 Agent Evaluation
+
+`crates/eval` runs the agent against a suite of cases and scores each run on
+its evidence, not on what the model says it did. Two runners produce the same
+artifact: one in process (typed stop reason, turn count, cache tokens), one
+spawning `tact-ui headless` (works against a release binary or a container).
+Graders check the work directory, a shell command, and the final answer.
+
+```bash
+tact-eval validate suites/smoke        # no model, no key: CI can run this
+tact-eval run suites/smoke --attempts 3 --strict
+```
+
+See [`crates/eval/README.md`](./crates/eval/README.md) and
+[`book/29_chapter_eval_zh.html`](./book/29_chapter_eval_zh.html).
+
 ### 🌳 Git Worktree Isolation
 
 Each task can run in its own `git worktree` lane. No branch switching, no stash dancing. Agents work in parallel without stepping on each other.
@@ -577,7 +593,7 @@ The agent loop:
 See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the crate table, dependency
 graph, permission decision order, hook events, and protocol, and the
 [book](./book/index_zh.html) for chapter-length walkthroughs (compaction,
-recovery, tools, agent loop, Goals, bash sandbox).
+recovery, tools, agent loop, Goals, bash sandbox, evaluation).
 
 ---
 

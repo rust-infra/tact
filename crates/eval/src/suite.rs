@@ -1,8 +1,8 @@
 //! A directory of cases, and the per-attempt work directory both runners share.
 //!
-//! Work directories are separated by attempt *and* case id, because two cases
-//! running at once would otherwise write the same `.tact/tact.db` and trip the
-//! per-workdir session lock.
+//! Work directories are separated by attempt *and* case id. Each attempt then
+//! gets its own `.tact/tact.db`, and its sessions have their own ids, so two
+//! cases running at once share neither the database nor a session row.
 
 use std::path::{Path, PathBuf};
 

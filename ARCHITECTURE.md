@@ -847,3 +847,4 @@ If you are reading older branches or notes, the following major evolutions have 
 | [`docs/compaction.md`](./docs/compaction.md) | Context compaction behavior and tuning. |
 | [`docs/parallel_tool_execution.md`](./docs/parallel_tool_execution.md) | Tool resource conflicts and wave scheduling. |
 | [`docs/token_usage_schema.md`](./docs/token_usage_schema.md) | SQLite `token_usages` schema, cache metrics, `request_body` debug column. |
+| [`book/29_chapter_eval_zh.html`](./book/29_chapter_eval_zh.html) | Agent evaluation: case suites, the two runners, grading, and report comparability. |

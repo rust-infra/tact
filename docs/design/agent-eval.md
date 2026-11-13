@@ -147,9 +147,22 @@ observer sender to a detached task with no time limit, so waiting for the
 channel to close waits for that command, and a run with a background job would
 never report at all.
 
+The fold in `CaseOutcome::verdict` is the one place that decides an attempt.
+A recorded `RunFailure` outranks every grader, because whatever a grader saw of
+a half-finished attempt describes the harness, not the agent. An `EmptyTurn`
+needs an `answer` grader to pass: its file graders may be right, but nothing
+shows the request was answered. A run the harness itself stopped, including one
+that returned `RunStop::Cancelled` after the budget fired, is recorded as a
+timeout rather than graded.
+
+`ReportMeta` embeds the `RunIdentity` rather than copying its three fields, so a
+field added to what a runner reports cannot be forgotten at the report. The
+suite fingerprint hashes the cases *as written*, before a relative fixture
+resolves, so the same suite fingerprints the same from any working directory.
+
 Isolation is one directory per attempt, under `$TMPDIR/tact-eval/<case>/<uuid>`,
-deleted after grading. Not a git worktree: session locking is per working
-directory, so distinct directories make parallel attempts safe by construction,
+deleted after grading. Not a git worktree: each attempt gets its own
+`.tact/tact.db` and session id, so neither the lock nor the database is shared,
 and a worktree would carry the repository's own `.tact/` state into a file
 comparison.
 
