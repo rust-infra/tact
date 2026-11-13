@@ -10,6 +10,12 @@ cargo run -p tact_eval -- run suites/smoke \
   --provider openai --model gpt-test --base-url http://127.0.0.1:8080/v1
 ```
 
+Or point at a config file instead of flags:
+
+```bash
+cargo run -p tact_eval -- run suites/smoke --config path/to/tact.toml
+```
+
 The report goes to stderr as a table and to stdout as JSON. `--json-out FILE`
 moves the JSON to a file, `--attempts N` runs each case N times (the `pass@k`
 denominator), and `--strict` exits non-zero when any case fails every attempt.
