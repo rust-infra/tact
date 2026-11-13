@@ -20,6 +20,13 @@ The report goes to stderr as a table and to stdout as JSON. `--json-out FILE`
 moves the JSON to a file, `--attempts N` runs each case N times (the `pass@k`
 denominator), and `--strict` exits non-zero when any case fails every attempt.
 
+Check that a suite is well formed without a model, a binary, or an API key.
+This is the part CI can run on every pull request:
+
+```bash
+cargo run -p tact_eval -- validate suites/smoke
+```
+
 ## A case
 
 ```toml

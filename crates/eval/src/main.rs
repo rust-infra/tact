@@ -16,6 +16,8 @@ struct Cli {
 enum Command {
     /// Run a suite of cases
     Run(RunArgs),
+    /// Check that every case parses and validates, without calling a model
+    Validate { suite: PathBuf },
 }
 
 #[derive(Parser, Debug)]
@@ -89,7 +91,19 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Run(args) => run(args).await,
+        Command::Validate { suite } => validate(&suite),
     }
+}
+
+/// Parse and validate every case, then report how many there are.
+///
+/// This is the part of the harness CI can run with no API key and no binary:
+/// a broken case file, a fixture that moved, and an invalid pattern all fail
+/// here instead of halfway through a paid run.
+fn validate(dir: &std::path::Path) -> anyhow::Result<()> {
+    let suite = EvalSuite::load(dir)?;
+    println!("{} case(s) valid in {}", suite.cases().len(), dir.display());
+    Ok(())
 }
 
 async fn run(args: RunArgs) -> anyhow::Result<()> {
