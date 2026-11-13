@@ -150,6 +150,15 @@ impl GraderSpec {
                 if assertions.is_empty() {
                     anyhow::bail!("{}: grader {name} asserts nothing", path.display());
                 }
+                for assertion in assertions {
+                    if let FileAssertion::Matches {
+                        pattern,
+                        path: file,
+                    } = assertion
+                    {
+                        check_pattern(path, name, &file.display().to_string(), pattern)?;
+                    }
+                }
             }
             Self::Answer { name, assertions } => {
                 if name.trim().is_empty() {
@@ -158,10 +167,30 @@ impl GraderSpec {
                 if assertions.is_empty() {
                     anyhow::bail!("{}: grader {name} asserts nothing", path.display());
                 }
+                for assertion in assertions {
+                    if let TextAssertion::Matches { pattern } = assertion {
+                        check_pattern(path, name, "the answer", pattern)?;
+                    }
+                }
             }
         }
         Ok(())
     }
+}
+
+/// A pattern that does not compile is a broken case, not a failed run.
+///
+/// Rejecting it at load time keeps it from surfacing as `Verdict::Fail`, where
+/// it would read as "the agent did not do this" when the truth is "the suite
+/// asked an impossible question".
+fn check_pattern(case: &Path, grader: &str, subject: &str, pattern: &str) -> Result<()> {
+    regex::Regex::new(pattern).map_err(|error| {
+        anyhow::anyhow!(
+            "{}: grader {grader} has an invalid pattern for {subject}: {error}",
+            case.display()
+        )
+    })?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -230,6 +259,31 @@ mod tests {
         let error = EvalCase::load(&path).unwrap_err().to_string();
 
         assert!(error.contains("not a directory"), "{error}");
+    }
+
+    #[test]
+    fn an_invalid_regex_is_rejected_at_load_time_not_as_a_failed_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad-regex.toml");
+        std::fs::write(
+            &path,
+            r#"
+prompt = "x"
+
+[[graders]]
+kind = "answer"
+name = "shape"
+
+[[graders.assertions]]
+kind = "matches"
+pattern = "(unclosed"
+"#,
+        )
+        .unwrap();
+
+        let error = EvalCase::load(&path).unwrap_err().to_string();
+
+        assert!(error.contains("invalid pattern"), "{error}");
     }
 
     #[test]
