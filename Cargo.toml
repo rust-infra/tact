@@ -14,6 +14,7 @@ members = [
     "crates/desktop_core",
     "crates/desktop",
     "crates/tool_refactor_macros",
+    "crates/eval",
 ]
 resolver = "2"
 

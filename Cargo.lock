@@ -9180,6 +9180,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "tact_eval"
+version = "2.0.6"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "clap",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tact",
+ "tact_host",
+ "tact_protocol",
+ "tempfile",
+ "tokio",
+ "toml 0.8.23",
+ "uuid",
+ "walkdir",
+ "wiremock",
+]
+
+[[package]]
 name = "tact_host"
 version = "2.0.6"
 dependencies = [

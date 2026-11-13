@@ -1,0 +1,11 @@
+prompt = "Reply with exactly the word: ready"
+
+timeout_secs = 60
+
+[[graders]]
+kind = "answer"
+name = "says-ready"
+
+[[graders.assertions]]
+kind = "contains"
+text = "ready"

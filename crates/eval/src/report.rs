@@ -1,0 +1,343 @@
+//! The suite result: one row per attempt, plus the reproducibility header.
+//!
+//! A report that omits the model, endpoint, and permission mode cannot be
+//! compared with the next one, so [`ReportMeta`] records them and the runner is
+//! refused when they cannot be determined.
+
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
+use crate::case::EvalCase;
+use crate::grader::{Grade, Verdict};
+use crate::runner::{RunArtifact, TokenTotals};
+
+/// What the run was, so two reports can be compared.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReportMeta {
+    pub runner: String,
+    pub model: String,
+    pub base_url: String,
+    pub permission_mode: String,
+    pub attempts: u32,
+    /// Stable hash of the case set, so a changed suite is visible without
+    /// diffing two JSON files by eye.
+    pub suite_fingerprint: String,
+    pub started_at: String,
+    pub finished_at: String,
+}
+
+/// One attempt's verdict and evidence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaseOutcome {
+    pub case_id: String,
+    pub attempt: u32,
+    pub grades: Vec<Grade>,
+    pub answer: String,
+    pub session_id: Option<String>,
+    pub tokens: TokenTotals,
+    pub duration_ms: u64,
+    pub stop: Option<crate::StopView>,
+    pub turns: Option<u32>,
+    pub tools: Vec<crate::ToolRecord>,
+    pub failure: Option<crate::RunFailure>,
+}
+
+impl CaseOutcome {
+    pub fn from_parts(artifact: RunArtifact, grades: Vec<Grade>) -> Self {
+        Self {
+            case_id: artifact.case_id,
+            attempt: artifact.attempt,
+            grades,
+            answer: artifact.answer,
+            session_id: artifact.session_id,
+            tokens: artifact.tokens,
+            duration_ms: artifact.duration_ms,
+            stop: artifact.stop,
+            turns: artifact.turns,
+            tools: artifact.tools,
+            failure: artifact.failure,
+        }
+    }
+
+    /// One verdict per attempt, folded from its graders.
+    ///
+    /// A single failing grader fails the attempt. Otherwise an inconclusive
+    /// grader makes the whole attempt inconclusive: a case is not passed on
+    /// partial evidence.
+    pub fn verdict(&self) -> Verdict {
+        let mut inconclusive = None;
+        for grade in &self.grades {
+            match &grade.verdict {
+                Verdict::Pass => {}
+                Verdict::Fail { reason } => {
+                    return Verdict::Fail {
+                        reason: format!("{}: {reason}", grade.grader),
+                    };
+                }
+                Verdict::Inconclusive { reason } => {
+                    inconclusive.get_or_insert_with(|| reason.clone());
+                }
+            }
+        }
+        inconclusive.map_or(Verdict::Pass, |reason| Verdict::Inconclusive { reason })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvalReport {
+    pub meta: ReportMeta,
+    pub outcomes: Vec<CaseOutcome>,
+}
+
+/// Per-case rollup across attempts.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CaseSummary {
+    pub case_id: String,
+    pub passes: u32,
+    pub failures: u32,
+    pub inconclusive: u32,
+    pub attempts: u32,
+}
+
+impl CaseSummary {
+    /// `passes / attempts`, or `None` when nothing was decisive.
+    pub fn pass_rate(&self) -> Option<f64> {
+        let decisive = self.passes + self.failures;
+        (decisive > 0).then(|| f64::from(self.passes) / f64::from(decisive))
+    }
+}
+
+impl EvalReport {
+    pub fn new(meta: ReportMeta, outcomes: Vec<CaseOutcome>) -> Self {
+        Self { meta, outcomes }
+    }
+
+    pub fn summaries(&self) -> Vec<CaseSummary> {
+        let mut by_case: BTreeMap<&str, CaseSummary> = BTreeMap::new();
+        for outcome in &self.outcomes {
+            let summary = by_case
+                .entry(outcome.case_id.as_str())
+                .or_insert_with(|| CaseSummary {
+                    case_id: outcome.case_id.clone(),
+                    passes: 0,
+                    failures: 0,
+                    inconclusive: 0,
+                    attempts: 0,
+                });
+            summary.attempts += 1;
+            match outcome.verdict() {
+                Verdict::Pass => summary.passes += 1,
+                Verdict::Fail { .. } => summary.failures += 1,
+                Verdict::Inconclusive { .. } => summary.inconclusive += 1,
+            }
+        }
+        by_case.into_values().collect()
+    }
+
+    /// Cases where at least one attempt passed. This is `pass@k` with attempts
+    /// as k, which is the number a noisy model run should be judged on.
+    pub fn cases_passing_any(&self) -> usize {
+        self.summaries()
+            .iter()
+            .filter(|summary| summary.passes > 0)
+            .count()
+    }
+
+    /// Cases where every attempt passed. The stricter number, and the one a
+    /// regression gate should use.
+    pub fn cases_passing_all(&self) -> usize {
+        self.summaries()
+            .iter()
+            .filter(|summary| summary.failures == 0 && summary.inconclusive == 0)
+            .count()
+    }
+
+    pub fn to_json(&self) -> serde_json::Result<String> {
+        serde_json::to_string_pretty(self)
+    }
+
+    /// A short terminal summary. Failure and unknown counts are separate lines
+    /// so a run with a broken grader cannot read as a clean run.
+    pub fn to_text(&self) -> String {
+        use std::fmt::Write as _;
+
+        let mut out = String::new();
+        let _ = writeln!(
+            out,
+            "runner={} model={} endpoint={} mode={} attempts={}",
+            self.meta.runner,
+            self.meta.model,
+            self.meta.base_url,
+            self.meta.permission_mode,
+            self.meta.attempts
+        );
+        let _ = writeln!(out, "suite={}", self.meta.suite_fingerprint);
+        let _ = writeln!(out);
+
+        for summary in self.summaries() {
+            let rate = summary
+                .pass_rate()
+                .map(|rate| format!("{:.0}%", rate * 100.0))
+                .unwrap_or_else(|| "n/a".into());
+            let _ = writeln!(
+                out,
+                "{:<32} pass {}/{} ({}), fail {}, unknown {}",
+                summary.case_id,
+                summary.passes,
+                summary.attempts,
+                rate,
+                summary.failures,
+                summary.inconclusive
+            );
+        }
+
+        let _ = writeln!(
+            out,
+            "\ncases passing any attempt: {}/{}\ncases passing every attempt: {}/{}",
+            self.cases_passing_any(),
+            self.summaries().len(),
+            self.cases_passing_all(),
+            self.summaries().len()
+        );
+        out
+    }
+}
+
+/// A stable fingerprint over the case set.
+///
+/// Hashes each case's id and prompt, so editing a prompt invalidates the
+/// comparison even when the id does not change.
+pub fn suite_fingerprint(cases: &[EvalCase]) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    for case in cases {
+        hasher.update(case.id.as_bytes());
+        hasher.update([0]);
+        hasher.update(case.prompt.as_bytes());
+        hasher.update([0]);
+    }
+    format!("{:x}", hasher.finalize())[..16].to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Grade, Verdict};
+
+    fn outcome(case_id: &str, attempt: u32, verdict: Verdict) -> CaseOutcome {
+        CaseOutcome {
+            case_id: case_id.into(),
+            attempt,
+            grades: vec![Grade {
+                grader: "g".into(),
+                verdict,
+            }],
+            answer: "a".into(),
+            session_id: None,
+            tokens: TokenTotals::default(),
+            duration_ms: 1,
+            stop: None,
+            turns: None,
+            tools: Vec::new(),
+            failure: None,
+        }
+    }
+
+    fn report(outcomes: Vec<CaseOutcome>) -> EvalReport {
+        EvalReport::new(
+            ReportMeta {
+                runner: "host".into(),
+                model: "m".into(),
+                base_url: "u".into(),
+                permission_mode: "auto".into(),
+                attempts: 2,
+                suite_fingerprint: "fp".into(),
+                started_at: "s".into(),
+                finished_at: "f".into(),
+            },
+            outcomes,
+        )
+    }
+
+    #[test]
+    fn a_single_failing_grader_fails_the_attempt() {
+        let mut one = outcome("c", 1, Verdict::Pass);
+        one.grades.push(Grade {
+            grader: "second".into(),
+            verdict: Verdict::Fail {
+                reason: "nope".into(),
+            },
+        });
+        assert!(matches!(one.verdict(), Verdict::Fail { .. }));
+    }
+
+    #[test]
+    fn an_inconclusive_grader_does_not_pass_the_attempt() {
+        let one = outcome(
+            "c",
+            1,
+            Verdict::Inconclusive {
+                reason: "no grader".into(),
+            },
+        );
+        assert!(!one.verdict().is_pass());
+    }
+
+    #[test]
+    fn pass_at_k_and_pass_all_differ_when_attempts_disagree() {
+        let report = report(vec![
+            outcome("a", 1, Verdict::Pass),
+            outcome(
+                "a",
+                2,
+                Verdict::Fail {
+                    reason: "flaky".into(),
+                },
+            ),
+            outcome("b", 1, Verdict::Pass),
+            outcome("b", 2, Verdict::Pass),
+        ]);
+        assert_eq!(report.cases_passing_any(), 2);
+        assert_eq!(report.cases_passing_all(), 1);
+    }
+
+    #[test]
+    fn pass_rate_ignores_inconclusive_attempts() {
+        let report = report(vec![
+            outcome("a", 1, Verdict::Pass),
+            outcome(
+                "a",
+                2,
+                Verdict::Inconclusive {
+                    reason: "harness".into(),
+                },
+            ),
+        ]);
+        let summary = &report.summaries()[0];
+        assert_eq!(
+            summary.pass_rate(),
+            Some(1.0),
+            "1 pass, 0 decisive failures"
+        );
+    }
+
+    #[test]
+    fn the_fingerprint_changes_when_a_prompt_changes() {
+        let base = EvalCase {
+            id: "a".into(),
+            prompt: "one".into(),
+            timeout_secs: 1,
+            isolation: crate::Isolation::Empty,
+            graders: Vec::new(),
+        };
+        let mut edited = base.clone();
+        edited.prompt = "two".into();
+
+        assert_ne!(
+            suite_fingerprint(std::slice::from_ref(&base)),
+            suite_fingerprint(&[edited])
+        );
+    }
+}

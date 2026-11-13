@@ -1,0 +1,19 @@
+prompt = """
+Create a file named hello.txt in the current directory.
+Its contents must be exactly this line: hello eval
+"""
+
+timeout_secs = 180
+
+[[graders]]
+kind = "files"
+name = "hello-file"
+
+[[graders.assertions]]
+kind = "exists"
+path = "hello.txt"
+
+[[graders.assertions]]
+kind = "contains"
+path = "hello.txt"
+text = "hello eval"
