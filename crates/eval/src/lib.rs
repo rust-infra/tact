@@ -23,7 +23,9 @@ pub use cli_runner::CliRunner;
 pub use grader::{Grade, Verdict, grade};
 pub use host_runner::HostRunner;
 pub use options::{PermissionMode, RunOptions};
-pub use report::{CaseOutcome, CaseSummary, EvalReport, ReportMeta, suite_fingerprint};
+pub use report::{
+    CaseOutcome, CaseSummary, EvalReport, REPORT_SCHEMA_VERSION, ReportMeta, suite_fingerprint,
+};
 pub use runner::{
     RunArtifact, RunFailure, RunOutcome, Runner, StopView, TokenTotals, ToolRecord, ToolStatus,
 };

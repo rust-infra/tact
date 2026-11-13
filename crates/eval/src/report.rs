@@ -88,8 +88,16 @@ impl CaseOutcome {
     }
 }
 
+/// Bumped when the on-disk shape changes incompatibly.
+///
+/// A report is written by one version and read by another (a CI job's artifact,
+/// an external platform's ingest), so the reader gets a number to check instead
+/// of guessing from which fields happen to be present.
+pub const REPORT_SCHEMA_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvalReport {
+    pub schema_version: u32,
     pub meta: ReportMeta,
     pub outcomes: Vec<CaseOutcome>,
 }
@@ -114,7 +122,11 @@ impl CaseSummary {
 
 impl EvalReport {
     pub fn new(meta: ReportMeta, outcomes: Vec<CaseOutcome>) -> Self {
-        Self { meta, outcomes }
+        Self {
+            schema_version: REPORT_SCHEMA_VERSION,
+            meta,
+            outcomes,
+        }
     }
 
     pub fn summaries(&self) -> Vec<CaseSummary> {
@@ -263,6 +275,13 @@ mod tests {
             },
             outcomes,
         )
+    }
+
+    #[test]
+    fn every_report_carries_its_schema_version() {
+        let report = report(Vec::new());
+        let json: serde_json::Value = serde_json::from_str(&report.to_json().unwrap()).unwrap();
+        assert_eq!(json["schema_version"], REPORT_SCHEMA_VERSION);
     }
 
     #[test]
