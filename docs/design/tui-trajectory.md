@@ -231,6 +231,31 @@ from `StepResult.duration_us` (measured by the kernel). Thinking durations come
 from `ActiveThinkingBlock.started_at`. Anything else shows `—`, not a
 stopwatch the UI invented.
 
+Three cases report nothing, and each is now handled on its own terms:
+
+| case | why nothing was reported | what the page shows |
+|---|---|---|
+| `StepFailed` | the update carries no duration field at all | `~1.2s`, the ledger's own clock, marked as an estimate |
+| hosted `web_search` | `ProviderActivityKind::WebSearch { duration }` is `Option` and the provider may omit it | `~…` estimate |
+| a cancelled call | the call never produced a result | `~…` estimate |
+
+**Measurement and estimate are separate fields and never merge.**
+`duration_ms` is the producer's reading and is what the summary sums;
+`estimated_ms` is the ledger's own clock, which starts when the ledger first
+sees the call and can therefore be longer than the real one. The row renders an
+estimate with a leading `~` and the detail panel names which of the two it is.
+The summary's measured total counts only `duration_ms`, so a total is either
+backed by producers or absent.
+
+An estimate of zero is suppressed: it means the ledger saw start and finish in
+the same instant, which is a fact about a test double, not a duration.
+
+**One bug this section exposed.** `ThinkingChunk::Finished` closed the record
+inside `observe`, and the app reports the measured elapsed from a later call, so
+every thinking record lost its duration. `Finished` now leaves the block open
+and `finish_thinking` closes it, falling back to the most recent duration-less
+thinking record when a record arrived in between.
+
 ## What the page looks like
 
 At 24 rows, the whole frame:

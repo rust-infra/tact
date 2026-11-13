@@ -200,6 +200,14 @@ jobs:
           MODEL: ${{ secrets.MODEL }}
           API_KEY: ${{ secrets.API_KEY }}
           BASE_URL: ${{ secrets.BASE_URL }}
+          # `ModelError` is deliberately flattened before it reaches the shell:
+          # every permanent failure prints the same "provider request failed",
+          # so a bad key and an unknown model look identical. The telemetry
+          # span keeps what the flattened message drops — provider, protocol,
+          # model, endpoint host, and `status_class` (authentication,
+          # transient, ...). `RUST_LOG` is what makes tact-ui install the
+          # subscriber at all, and its events go to a file, not stderr.
+          RUST_LOG: tact_llm=info
         run: |
           set -euo pipefail
           # `-e`: a non-zero exit fails the job instead of publishing an empty
@@ -227,17 +235,29 @@ jobs:
           # waits for it, unlike a process substitution. `pipefail` (above)
           # keeps a tact-ui failure from being masked by tee's exit status.
           # tact-ui flushes each log line itself, so no `stdbuf` is needed.
+          # `set -e` would abort here on a tact-ui failure and skip the two
+          # diagnostics below — exactly the run they exist for. Capture the
+          # status, print, then fail.
+          status=0
           ./target/release/tact-ui \
             --provider "$PROVIDER" \
             --api-key "$API_KEY" \
             --base-url "$BASE_URL" \
             --model "$MODEL" \
             --permission-mode auto \
-            headless "$(cat prompt.txt)" 2>&1 > review.md | tee review.log
+            headless "$(cat prompt.txt)" 2>&1 > review.md | tee review.log || status=$?
+          # The telemetry that explains a failure is not on stderr: tact-ui
+          # writes it to `.tact/logs/`. Lift the model-call lines into the step
+          # output so the reason survives in the Actions log itself.
+          if compgen -G ".tact/logs/tact-*.log" > /dev/null; then
+            echo "--- model calls (telemetry) ---"
+            grep -h "tact_llm" .tact/logs/tact-*.log | tail -30 || true
+          fi
           echo "--- review log (tail) ---"
           tail -20 review.log || true
           echo "--- review body ---"
           cat review.md
+          exit "$status"
 
       # Uploaded even when the run fails or is cancelled: the point of the log
       # is to explain a run that did not finish, and those are exactly the runs
@@ -251,6 +271,7 @@ jobs:
             review.log
             review.md
             review-range.txt
+            .tact/logs/tact-*.log
           if-no-files-found: ignore
           retention-days: 14
 
@@ -281,6 +302,17 @@ jobs:
               cat review.md
             else
               echo "_No review was produced._"
+            fi
+            # The step output is truncated to the last few thousand lines, and
+            # a 10-minute build pushes the model-call telemetry out of it. The
+            # summary is what a reader opens first, so keep the reason here.
+            if compgen -G ".tact/logs/tact-*.log" > /dev/null; then
+              echo ""
+              echo "### Model call telemetry (last 20)"
+              echo '```'
+              grep -h "tact_llm.call\|model call failed" .tact/logs/tact-*.log \
+                | tail -20 || true
+              echo '```'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 

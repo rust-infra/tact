@@ -183,6 +183,15 @@ pub struct TrajectoryRecord {
     pub at: Option<String>,
     /// The record's own duration, only when a producer reported one.
     pub duration_ms: Option<u64>,
+    /// A duration the ledger timed itself, when no producer reported one.
+    ///
+    /// Never summed into the measured total and never rendered in the same
+    /// form as a measurement: the ledger's clock starts when it first sees the
+    /// call, which can be after the producer's, so this is an upper bound
+    /// rather than a reading. It exists because `StepFailed` carries no
+    /// duration at all, and a failed call with no time is less useful than an
+    /// approximate one labelled as such.
+    pub estimated_ms: Option<u64>,
     /// What the caller sent, when this record has a request body.
     pub input: Option<String>,
     /// What came back, when this record has a result body.
@@ -224,6 +233,7 @@ impl TrajectoryRecord {
             tool_name: None,
             at: None,
             duration_ms: None,
+            estimated_ms: None,
             input: None,
             output: None,
             output_truncated: false,
@@ -244,6 +254,20 @@ impl TrajectoryRecord {
     pub fn duration_label(&self) -> Option<String> {
         let ms = self.duration_ms?;
         Some(format_duration_ms(ms))
+    }
+
+    /// The row's time, marked when it is the ledger's estimate rather than a
+    /// producer's measurement. `~` is the whole difference: a reader must be
+    /// able to tell which one they are looking at.
+    pub fn time_label(&self) -> Option<String> {
+        if let Some(label) = self.duration_label() {
+            return Some(label);
+        }
+        // Zero means the ledger saw start and finish in the same instant, which
+        // is a fact about test doubles, not a duration a reader should be shown.
+        self.estimated_ms
+            .filter(|ms| *ms > 0)
+            .map(|ms| format!("~{}", format_duration_ms(ms)))
     }
 }
 
@@ -275,8 +299,13 @@ pub struct TrajectoryLog {
     open_thinking: Option<usize>,
     /// Index of the assistant record still collecting deltas, if any.
     open_assistant: Option<usize>,
-    /// Index of each in-flight tool record, keyed by its provider call id.
-    open_tools: std::collections::HashMap<String, usize>,
+    /// Each in-flight tool record's index and when this ledger first saw it.
+    ///
+    /// The clock is the ledger's own, used only as a fallback: a producer that
+    /// reports `duration_us` wins, because its measurement is the real one.
+    /// Without a fallback a failed tool shows no time at all, since
+    /// `StepFailed` carries no duration field.
+    open_tools: std::collections::HashMap<String, (usize, std::time::Instant)>,
 }
 
 impl TrajectoryLog {
@@ -372,7 +401,21 @@ impl TrajectoryLog {
     /// bare marker, and the live state that held `started_at` is discarded when
     /// the block settles. The caller therefore passes what it already computed.
     pub fn finish_thinking(&mut self, elapsed: Duration) {
-        self.close_open_thinking(Some(elapsed));
+        if self.open_thinking.is_some() {
+            self.close_open_thinking(Some(elapsed));
+            return;
+        }
+        // The block may already have been closed by a record that arrived
+        // between `Finished` and this call (a tool call, or a new message). The
+        // measurement still belongs to that block, so it is stamped on the last
+        // thinking record that has no duration yet.
+        if let Some(record) =
+            self.records.iter_mut().rev().find(|record| {
+                record.kind == TrajectoryKind::Thinking && record.duration_ms.is_none()
+            })
+        {
+            record.duration_ms = Some(elapsed.as_millis() as u64);
+        }
     }
 
     /// Close the assistant record when its message finishes.
@@ -401,23 +444,27 @@ impl TrajectoryLog {
                 record.tool_name = Some(tool_name.clone());
                 record.input = non_empty(arg_full);
                 let index = self.records.len() - 1;
-                self.open_tools.insert(tool_id.clone(), index);
+                self.open_tools
+                    .insert(tool_id.clone(), (index, std::time::Instant::now()));
             }
             AgentUpdate::StepStarted { tool_id, .. } => {
                 self.close_open_thinking(None);
                 self.close_open_assistant();
-                if let Some(index) = self.open_tools.get(tool_id).copied() {
+                if let Some((index, _)) = self.open_tools.get(tool_id).copied() {
                     self.records[index].status = Some(TrajectoryStatus::Running);
                 }
             }
             AgentUpdate::StepFinished {
                 tool_id, result, ..
             } => {
-                if let Some(index) = self.open_tools.remove(tool_id) {
+                if let Some((index, started)) = self.open_tools.remove(tool_id) {
                     let record = &mut self.records[index];
                     record.live_tail = None;
                     record.status = Some(TrajectoryStatus::from_step(result.status));
                     record.duration_ms = result.duration_us.map(|us| us / 1_000);
+                    if record.duration_ms.is_none() {
+                        record.estimated_ms = Some(started.elapsed().as_millis() as u64);
+                    }
                     let body = result
                         .detail
                         .as_deref()
@@ -452,7 +499,7 @@ impl TrajectoryLog {
             AgentUpdate::ToolProgress {
                 tool_id, chunks, ..
             } => {
-                if let Some(index) = self.open_tools.get(tool_id).copied() {
+                if let Some((index, _)) = self.open_tools.get(tool_id).copied() {
                     // The last non-empty line, not the whole stream: a ledger row
                     // is one cell, and the point is that something is happening.
                     let mut tail = None;
@@ -485,9 +532,13 @@ impl TrajectoryLog {
                 error,
                 ..
             } => {
-                if let Some(index) = self.open_tools.remove(tool_id) {
+                if let Some((index, started)) = self.open_tools.remove(tool_id) {
                     let record = &mut self.records[index];
                     record.status = Some(TrajectoryStatus::Failed);
+                    // `StepFailed` carries no duration, so the ledger's own
+                    // clock is the only evidence. It is recorded as an estimate,
+                    // never as a measurement.
+                    record.estimated_ms = Some(started.elapsed().as_millis() as u64);
                     record.output = Some(error.clone());
                     record.search = search_haystack(record);
                 } else {
@@ -523,7 +574,13 @@ impl TrajectoryLog {
                     record.text.push_str(text.trim());
                     record.search = search_haystack(record);
                 }
-                ThinkingChunk::Finished => self.close_open_thinking(None),
+                ThinkingChunk::Finished => {
+                    // Deliberately leaves the block open. `Finished` is a bare
+                    // marker with no wall clock; the app reports the measured
+                    // elapsed from a later call (`finish_thinking`), and closing
+                    // here would discard it. Any subsequent record closes the
+                    // block anyway, so nothing is left dangling.
+                }
             },
             AgentUpdate::StreamChunk(text) => {
                 self.close_open_thinking(None);
@@ -548,13 +605,16 @@ impl TrajectoryLog {
             AgentUpdate::TaskCancelled => {
                 self.close_open_thinking(None);
                 self.close_open_assistant();
-                for index in self.open_tools.values().copied().collect::<Vec<_>>() {
+                for (index, started) in self.open_tools.values().copied().collect::<Vec<_>>() {
                     let record = &mut self.records[index];
                     if record.status == Some(TrajectoryStatus::Running)
                         || record.status == Some(TrajectoryStatus::Queued)
                     {
                         record.status = Some(TrajectoryStatus::Cancelled);
                         record.live_tail = None;
+                        // A cancelled call ran for however long it ran. No
+                        // producer reported it, so it is an estimate.
+                        record.estimated_ms = Some(started.elapsed().as_millis() as u64);
                     }
                 }
                 self.open_tools.clear();
@@ -1645,6 +1705,197 @@ mod memory_tests {
         assert_eq!(
             log.get(0).expect("record").output.as_deref(),
             Some("the message body")
+        );
+    }
+}
+
+#[cfg(test)]
+mod thinking_duration_tests {
+    use super::*;
+    use std::time::Duration;
+    use tact_protocol::ThinkingChunk;
+
+    /// The app path: `observe` sees `Finished` first and closes the block, then
+    /// the shell reports the measured elapsed. The elapsed must land.
+    #[test]
+    fn an_elapsed_reported_after_finished_still_lands() {
+        let mut log = TrajectoryLog::new();
+        log.begin_turn();
+        log.observe(&AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
+        log.observe(&AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+            "reasoning".into(),
+        )));
+        log.observe(&AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+        log.finish_thinking(Duration::from_millis(1_234));
+
+        let record = log.get(0).expect("record");
+        assert_eq!(
+            record.duration_ms,
+            Some(1_234),
+            "a thinking block's measured wall clock must not be dropped"
+        );
+    }
+}
+
+#[cfg(test)]
+mod duration_source_tests {
+    use super::*;
+    use tact_protocol::{StepResult, ToolPresentationInfo};
+
+    fn call_without_producer_duration(id: &str) -> Vec<AgentUpdate> {
+        vec![
+            AgentUpdate::StepQueued {
+                idx: 0,
+                tool_id: id.into(),
+                tool_name: "sleep".into(),
+                arg_summary: "1s".into(),
+                arg_full: String::new(),
+                presentation: ToolPresentationInfo::generic("sleep"),
+            },
+            AgentUpdate::StepFinished {
+                idx: 0,
+                run_id: None,
+                tool_id: id.into(),
+                result: StepResult {
+                    tool: "sleep".into(),
+                    arg_summary: String::new(),
+                    arg_full: None,
+                    status: StepStatus::Success,
+                    message: "ok".into(),
+                    detail: None,
+                    duration_us: None,
+                    permission_label: None,
+                    presentation: ToolPresentationInfo::generic("sleep"),
+                },
+            },
+        ]
+    }
+
+    /// The rule the design states: a producer's measurement and the ledger's
+    /// own clock are different evidence and must never be confused.
+    #[test]
+    fn a_failed_tool_gets_an_estimate_not_a_measurement() {
+        let mut log = TrajectoryLog::new();
+        log.begin_turn();
+        log.observe(&AgentUpdate::StepQueued {
+            idx: 0,
+            tool_id: "call-1".into(),
+            tool_name: "bash".into(),
+            arg_summary: "false".into(),
+            arg_full: String::new(),
+            presentation: ToolPresentationInfo::generic("bash"),
+        });
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        log.observe(&AgentUpdate::StepFailed {
+            idx: 0,
+            run_id: None,
+            tool_id: "call-1".into(),
+            arg_summary: "false".into(),
+            error: "exit 1".into(),
+        });
+
+        let record = log.get(0).expect("record");
+        assert_eq!(
+            record.duration_ms, None,
+            "StepFailed carries no duration, so nothing was measured"
+        );
+        assert!(
+            record.estimated_ms.is_some(),
+            "but the ledger's clock saw the call, so it can estimate"
+        );
+        let label = record.time_label().expect("a time is shown");
+        assert!(label.starts_with('~'), "the estimate is marked: {label}");
+    }
+
+    #[test]
+    fn a_measurement_is_never_marked_as_an_estimate() {
+        let mut log = TrajectoryLog::new();
+        log.begin_turn();
+        log.observe(&AgentUpdate::StepQueued {
+            idx: 0,
+            tool_id: "call-1".into(),
+            tool_name: "bash".into(),
+            arg_summary: "true".into(),
+            arg_full: String::new(),
+            presentation: ToolPresentationInfo::generic("bash"),
+        });
+        log.observe(&AgentUpdate::StepFinished {
+            idx: 0,
+            run_id: None,
+            tool_id: "call-1".into(),
+            result: StepResult {
+                tool: "bash".into(),
+                arg_summary: String::new(),
+                arg_full: None,
+                status: StepStatus::Success,
+                message: "ok".into(),
+                detail: None,
+                duration_us: Some(2_500_000),
+                permission_label: None,
+                presentation: ToolPresentationInfo::generic("bash"),
+            },
+        });
+
+        let record = log.get(0).expect("record");
+        assert_eq!(record.duration_ms, Some(2_500));
+        assert_eq!(record.estimated_ms, None, "the estimate is not needed");
+        assert_eq!(record.time_label().as_deref(), Some("2.5s"));
+    }
+
+    /// The summary's measured total must not absorb estimates: a total that
+    /// mixed the two would be a number the page cannot back.
+    #[test]
+    fn the_summary_ignores_estimates() {
+        let mut log = TrajectoryLog::new();
+        log.begin_turn();
+        for update in call_without_producer_duration("call-1") {
+            log.observe(&update);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        log.observe(&AgentUpdate::StepQueued {
+            idx: 1,
+            tool_id: "call-2".into(),
+            tool_name: "bash".into(),
+            arg_summary: "x".into(),
+            arg_full: String::new(),
+            presentation: ToolPresentationInfo::generic("bash"),
+        });
+        log.observe(&AgentUpdate::StepFailed {
+            idx: 1,
+            run_id: None,
+            tool_id: "call-2".into(),
+            arg_summary: "x".into(),
+            error: "boom".into(),
+        });
+
+        let summary = log.summary();
+        assert_eq!(
+            summary.measured, 0,
+            "no producer reported a duration for either call"
+        );
+        assert_eq!(summary.measured_ms, 0, "so the total stays empty");
+    }
+
+    #[test]
+    fn a_cancelled_call_still_carries_an_estimate() {
+        let mut log = TrajectoryLog::new();
+        log.begin_turn();
+        log.observe(&AgentUpdate::StepQueued {
+            idx: 0,
+            tool_id: "call-1".into(),
+            tool_name: "bash".into(),
+            arg_summary: "sleep 100".into(),
+            arg_full: String::new(),
+            presentation: ToolPresentationInfo::generic("bash"),
+        });
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        log.observe(&AgentUpdate::TaskCancelled);
+
+        let record = log.get(0).expect("record");
+        assert_eq!(record.status, Some(TrajectoryStatus::Cancelled));
+        assert!(
+            record.estimated_ms.is_some(),
+            "a cancelled call ran for however long it ran"
         );
     }
 }

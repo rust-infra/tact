@@ -11754,15 +11754,21 @@ impl DesktopRoot {
         let title_label = argument_label("title", self.snapshot.language);
         let archive_label = self.text(TextKey::Archive);
         let restore_label = self.text(TextKey::Restore);
-        // While the controller is starting a session, another switch has
-        // nothing to act on: it would close a host that is still coming up.
-        // The rows keep their position but stop accepting the click, so a
-        // burst of clicks cannot queue a burst of starts. Teardown is
-        // excluded on purpose — closing is retryable, and a click during it
-        // is how a close that is taking too long is retried.
+        // While the controller is moving between hosts, another switch has
+        // nothing to act on: it would tear down a host that is still being
+        // built. The rows keep their position but stop accepting the click, so
+        // a burst of clicks cannot queue a burst of starts. Teardown is
+        // excluded on purpose — closing is retryable, and a click during it is
+        // how a close that is taking too long is retried.
+        //
+        // `Starting` is excluded for the same reason as in the controller: it
+        // spans `bootstrap_session`, which connects every MCP server (60s init
+        // plus 30s tool list each) before the first `HostEvent::Ready`. During
+        // that window the transcript is empty, so a click that switched away
+        // is the only useful thing the list can offer.
         let switching = matches!(
             self.snapshot.session.phase,
-            SessionPhase::Opening | SessionPhase::Starting | SessionPhase::Switching
+            SessionPhase::Opening | SessionPhase::Switching
         );
         let manager_view = crate::ui::session_manager::SessionManagerView {
             project_filter: self
@@ -23224,6 +23230,56 @@ mod tests {
         assert!(
             window.debug_bounds("command-form-overlay").is_none(),
             "confirming removal must dismiss the confirmation surface"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// A session row stays clickable while the host is still starting.
+    ///
+    /// `Starting` spans `bootstrap_session`, which connects every MCP server
+    /// before the first `HostEvent::Ready` (60s init plus a 30s tool list per
+    /// server). The transcript is empty for that whole window, so a row that
+    /// refuses the click leaves the user with nothing to do but wait for the
+    /// slowest server. The controller accepts the switch; the row must offer it.
+    #[gpui::test]
+    fn session_rows_stay_clickable_while_the_host_is_starting(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(900.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                install_two_project_sessions(this, cx);
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.session.phase = SessionPhase::Starting;
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+                this.session_project_filter = None;
+                this.open_overlay(Overlay::SessionManager);
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        let row = window
+            .debug_bounds("manager-session-session-a")
+            .expect("the starting session's row must render");
+
+        let before = window.update(|_, cx| {
+            root.update(cx, |this, _| {
+                this.dispatched_intents
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            })
+        });
+        window.simulate_click(row.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        let after = window.update(|_, cx| {
+            root.update(cx, |this, _| {
+                this.dispatched_intents
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            })
+        });
+
+        assert!(
+            after > before,
+            "a click on a session row while the host is starting dispatched nothing"
         );
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);

@@ -1238,19 +1238,26 @@ impl DesktopActor {
         Ok(())
     }
 
-    /// Whether a session start is still running.
+    /// Whether a session start is still moving the window between hosts.
     ///
-    /// A switch moves the visible host aside and then starts the target. One
-    /// that arrives while another target is still starting would park a
-    /// half-started session and stack more work behind it. The actor drops
-    /// those instead of queueing them; one deliberate switch is quick, and a
-    /// queue of them looks exactly like a freeze. A teardown that is already
-    /// underway is deliberately not covered: closing is retryable, and another
-    /// switch is the only way out of a close that is taking too long.
+    /// Covers only the phases where a *teardown* is underway: `Opening` (the
+    /// project is still being read) and `Switching` (`begin_session_switch`
+    /// ran and the old UI state is gone). A switch that arrives there would
+    /// park a half-built session and stack work behind it, so those clicks are
+    /// dropped rather than queued — one deliberate switch is quick, and a
+    /// queue of them looks exactly like a freeze.
+    ///
+    /// `Starting` is deliberately **not** covered. It means the target host
+    /// exists and its `bootstrap_session` is still running, which on this
+    /// platform includes connecting every MCP server at 60s init plus 30s
+    /// tool-list budget per server. The window is otherwise empty during that
+    /// time, so refusing the click is not protecting anything: it just pins
+    /// the user to the slowest server in their config. Switching away parks
+    /// the starting host (see `leave_current_session`) and starts the target.
     fn session_switch_in_flight(&self) -> bool {
         matches!(
             self.state.session.phase,
-            SessionPhase::Opening | SessionPhase::Starting | SessionPhase::Switching
+            SessionPhase::Opening | SessionPhase::Switching
         )
     }
 
@@ -1291,8 +1298,16 @@ impl DesktopActor {
     /// Running and idle hosts enter the same project-keyed warm pool. Idle
     /// hosts beyond the pool limit close in a detached task so the switch path
     /// never waits for a host drain.
+    ///
+    /// A host that has not reported `Ready` is closed instead of parked. It is
+    /// still inside `bootstrap_session`, and on this platform that window is
+    /// dominated by MCP connection attempts (`MCP_INIT_TIMEOUT` plus
+    /// `MCP_LIST_TOOLS_TIMEOUT` per server). Parking one would keep an
+    /// abandoned start alive and connecting for as long as it takes, one per
+    /// click, and none of them could ever become usable: the user has already
+    /// left. Switching back re-starts that session from the store.
     async fn leave_current_session(&mut self) -> Result<(), String> {
-        let Some(host) = self.host.take() else {
+        let Some(mut host) = self.host.take() else {
             return Ok(());
         };
         let project_id = self
@@ -1301,20 +1316,39 @@ impl DesktopActor {
             .map(|project| project.id.clone())
             .ok_or_else(|| "no project open".to_string())?;
         let session_id = host.session_id().to_string();
+        let ui = self.state.take_session_ui();
+        let queue = std::mem::take(&mut self.queue);
+        let restore_failure = self.restore_failure.take();
+        let pending_host_event = self.pending_host_event.take();
+        let host_events_closed = self.host_events_closed;
+        self.host_events_closed = false;
+
+        if matches!(
+            ui.session.phase,
+            SessionPhase::Opening | SessionPhase::Starting
+        ) {
+            self.closing.push(ClosingHost {
+                project_id,
+                task: tokio::spawn(async move {
+                    let _ = host.close().await;
+                }),
+            });
+            return Ok(());
+        }
+
         self.parked.insert(
             (project_id.clone(), session_id),
             ParkedSession {
                 project_id,
                 host,
-                ui: self.state.take_session_ui(),
-                queue: std::mem::take(&mut self.queue),
-                restore_failure: self.restore_failure.take(),
-                pending_host_event: self.pending_host_event.take(),
-                host_events_closed: self.host_events_closed,
+                ui,
+                queue,
+                restore_failure,
+                pending_host_event,
+                host_events_closed,
                 parked_at: Instant::now(),
             },
         );
-        self.host_events_closed = false;
         // Eviction waits for the next parked drain. That drain folds events
         // already queued on the host into its state first, so a just-arrived
         // gate or stream event cannot be mistaken for an idle host and closed.
@@ -3944,6 +3978,96 @@ mod tests {
                 .count(),
             1,
             "the session was reopened: {log:?}"
+        );
+    }
+
+    /// A click that lands while a host is still starting must still switch.
+    ///
+    /// This is the desktop's cold-start shape: `bootstrap_session` connects
+    /// every MCP server before it reports `HostEvent::Ready`, and each server
+    /// has a 60s init budget plus a 30s tool-list budget. The session phase
+    /// therefore sits in `Starting` for as long as that takes, with the
+    /// transcript empty and nothing to type into.
+    ///
+    /// Switching away from it is not a conflict with it. The click parks the
+    /// starting host and starts the target, exactly like any other switch;
+    /// dropping the click leaves the window stuck on the slowest server.
+    #[tokio::test]
+    async fn a_switch_lands_while_the_host_is_still_starting() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_project(tmp.path());
+        seed_sessions(tmp.path(), &["slow-session", "elsewhere"]).await;
+        let factory = FakeFactory::deferred_ready();
+        let (controller, _events) =
+            DesktopController::start_with_factory(config(tmp.path()), factory.clone()).unwrap();
+        controller.when_idle().await.unwrap();
+        assert_eq!(
+            controller.snapshot().session.phase,
+            SessionPhase::Starting,
+            "the fixture must still be starting for this test to mean anything"
+        );
+
+        controller
+            .dispatch(DesktopIntent::ResumeSession {
+                session_id: SessionId("elsewhere".into()),
+            })
+            .unwrap();
+        controller.when_idle().await.unwrap();
+
+        assert!(
+            factory
+                .log
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|entry| entry.starts_with("open:")),
+            "the switch never reached the host factory: {:?}",
+            factory.log.lock().unwrap()
+        );
+        assert_eq!(
+            controller.snapshot().sessions.selected,
+            Some(SessionId("elsewhere".into())),
+            "the clicked row must become the selection"
+        );
+    }
+
+    /// Leaving a host that never became ready closes it instead of parking it.
+    ///
+    /// The cold-start window is dominated by MCP connection attempts, so a
+    /// parked half-started host would keep connecting for up to a minute per
+    /// server long after the user switched away. Nothing can adopt it either:
+    /// the click already moved on. Closing releases the session lock and the
+    /// sockets; switching back rebuilds from the store.
+    #[tokio::test]
+    async fn leaving_a_starting_host_closes_it_instead_of_parking() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_project(tmp.path());
+        let factory = FakeFactory::deferred_ready();
+        let (controller, _events) =
+            DesktopController::start_with_factory(config(tmp.path()), factory.clone()).unwrap();
+        controller.when_idle().await.unwrap();
+        assert_eq!(
+            controller.snapshot().session.phase,
+            SessionPhase::Starting,
+            "the fixture must still be starting for this test to mean anything"
+        );
+
+        controller
+            .dispatch(DesktopIntent::ResumeSession {
+                session_id: SessionId("elsewhere".into()),
+            })
+            .unwrap();
+        controller.when_idle().await.unwrap();
+
+        let log = factory.log.lock().unwrap().clone();
+        assert!(
+            log.iter().any(|entry| entry.starts_with("close:")),
+            "the abandoned starting host was not closed: {log:?}"
+        );
+        assert_eq!(
+            controller.snapshot().sessions.selected,
+            Some(SessionId("elsewhere".into())),
+            "the switch must still land"
         );
     }
 
