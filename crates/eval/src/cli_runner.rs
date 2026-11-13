@@ -105,6 +105,12 @@ impl Runner for CliRunner {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        // A new process group, so the timeout can kill the whole tree. The
+        // agent spawns MCP servers, background commands, and subagents; killing
+        // only the direct child leaves those running against the work dir that
+        // grading is about to read.
+        #[cfg(unix)]
+        command.process_group(0);
 
         let mut child = match command.spawn() {
             Ok(child) => child,
@@ -118,29 +124,45 @@ impl Runner for CliRunner {
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
 
-        // One timeout over both pipes and the exit status, because a run that
-        // hangs on a tool must fail even when it keeps printing progress.
-        let collected = tokio::time::timeout(Duration::from_secs(case.timeout_secs), async {
-            let (stdout, stderr) = tokio::join!(read_all(stdout), read_lines(stderr));
-            let status = child.wait().await;
-            (stdout, stderr, status)
-        })
-        .await;
+        // The readers run as their own tasks so that a timeout can still read
+        // what the child printed before it hung: that log is the only account
+        // of what a wedged run was doing.
+        let stdout_reader = tokio::spawn(read_all(stdout));
+        let stderr_reader = tokio::spawn(read_lines(stderr));
 
-        let (stdout, stderr_lines, status) = match collected {
-            Ok(collected) => collected,
+        let mut killed = false;
+        let status = match tokio::time::timeout(
+            Duration::from_secs(case.timeout_secs),
+            child.wait(),
+        )
+        .await
+        {
+            Ok(status) => status.ok(),
             Err(_) => {
-                let _ = child.start_kill();
-                let _ = child.wait().await;
-                artifact.failure = Some(RunFailure::Timeout {
-                    limit_secs: case.timeout_secs,
-                });
-                artifact.duration_ms = crate::runner::elapsed_ms(start);
-                return RunOutcome { artifact, work_dir };
+                kill_tree(&mut child).await;
+                killed = true;
+                None
             }
         };
 
-        let status = status.ok();
+        // Once the child is gone its pipes close, so both readers finish. The
+        // join is outside the timeout on purpose: after a kill there is nothing
+        // left that could hold the pipe open.
+        let stdout = stdout_reader.await.unwrap_or_default();
+        let stderr_lines = stderr_reader.await.unwrap_or_default();
+
+        if killed {
+            artifact.failure = Some(RunFailure::Timeout {
+                limit_secs: case.timeout_secs,
+            });
+            artifact.session_id = parse_session_id(&stderr_lines);
+            artifact.tools = parse_tools(&stderr_lines);
+            artifact.tokens = parse_tokens(&stderr_lines);
+            artifact.turns = parse_turns(&stderr_lines);
+            artifact.duration_ms = crate::runner::elapsed_ms(start);
+            return RunOutcome { artifact, work_dir };
+        }
+
         let stderr_text = stderr_lines.join("\n");
         artifact.session_id = parse_session_id(&stderr_lines);
         artifact.tools = parse_tools(&stderr_lines);
@@ -161,6 +183,25 @@ impl Runner for CliRunner {
         artifact.duration_ms = crate::runner::elapsed_ms(start);
         RunOutcome { artifact, work_dir }
     }
+}
+
+/// Kill the child and everything it spawned, then reap the direct child.
+///
+/// The child leads its own process group (see `process_group(0)`), so a signal
+/// to that group reaches MCP servers and background commands too. Signalling
+/// only the child would leave those writing into a work dir that grading reads.
+async fn kill_tree(child: &mut tokio::process::Child) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        // A negative pid addresses the process group. Failure is ignored: the
+        // group may already be gone, and the direct kill below is what
+        // guarantees the reaper gets an exit status.
+        unsafe {
+            libc::kill(-i32::try_from(pid).unwrap_or(i32::MAX), libc::SIGKILL);
+        }
+    }
+    let _ = child.start_kill();
+    let _ = child.wait().await;
 }
 
 async fn read_all(reader: impl AsyncRead + Unpin) -> String {
