@@ -116,15 +116,38 @@ async fn a_host_run_reports_the_answer_stop_reason_usage_and_verdict() {
         .mount(&server)
         .await;
 
+    // An explicit config file, not flags plus whatever `$HOME` holds.
+    //
+    // `load_toml_config` writes the default template into `$HOME/.tact/` on a
+    // first run and then reads it back, and that template sets
+    // `[llm.providers.openai] protocol = "responses"`. On a machine without a
+    // config, the run would therefore call `/responses` while this test serves
+    // `/chat/completions`. Naming the protocol here makes the test independent
+    // of the machine it runs on.
+    let config_path = unique_dir("config").join("tact.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "eval-model"
+base_url = "{base}"
+protocol = "chat_completions"
+"#,
+            base = server.uri()
+        ),
+    )
+    .unwrap();
     let options = RunOptions {
-        provider: Some("openai".into()),
-        model: Some("eval-model".into()),
-        base_url: Some(server.uri()),
+        config: Some(config_path.clone()),
+        permission_mode: tact_eval::PermissionMode::Auto,
         ..Default::default()
     };
-    let mut args = options.to_cli_args();
-    args.api_key = Some("sk-test".into());
-    tact::config::init_from_args(&args).expect("config install");
+    tact::config::init_from_args(&options.to_cli_args()).expect("config install");
 
     let suite_dir = unique_dir("suite");
     write_case(&suite_dir, "answers", "please answer");
@@ -143,7 +166,8 @@ async fn a_host_run_reports_the_answer_stop_reason_usage_and_verdict() {
         .expect("answers case ran");
     assert_eq!(
         answered.answer, "hello from eval",
-        "the final message text reaches the report"
+        "the final message text reaches the report (failure: {:?})",
+        answered.failure
     );
     assert!(
         answered.verdict().is_pass(),
