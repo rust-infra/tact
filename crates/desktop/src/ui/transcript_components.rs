@@ -606,6 +606,10 @@ impl RenderOnce for ToolCall {
                                     ElementId::Name(format!("{}-input", self.id).into()),
                                     format!("```\n{input}\n```"),
                                 )
+                                // Same size as the composer's text: markdown
+                                // inherits `rem`, which is 16px, while an
+                                // input renders at `text_sm` (14px).
+                                .text_size(gpui::rems(crate::theme::BODY_TEXT_SIZE_REM))
                                 .selectable(true),
                             ),
                     );
@@ -629,6 +633,7 @@ impl RenderOnce for ToolCall {
                                     ElementId::Name(format!("{}-output", self.id).into()),
                                     output.to_string(),
                                 )
+                                .text_size(gpui::rems(crate::theme::BODY_TEXT_SIZE_REM))
                                 .selectable(true),
                             ),
                     );

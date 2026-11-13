@@ -420,6 +420,23 @@ fn alpha(hex: u32, opacity: f32) -> Hsla {
     rgba(hex << 8 | ((opacity * 255.0) as u32)).into()
 }
 
+/// The size of body text that is not an input: tool output, transcript bodies,
+/// the trajectory detail panel.
+///
+/// Matches what an input renders at. `gpui-component`'s input defaults to
+/// `Size::Medium`, and `input_text_size(Medium)` is `text_sm`, which is
+/// `0.875rem`. Markdown with no explicit size inherits `rem` instead, which is
+/// 1rem and therefore a full step larger, so anything showing the same bytes an
+/// input would show has to say this out loud.
+///
+/// In `rem`, not pixels: `rem_size` scales with the reader's text scale, and a
+/// hard-coded `px` would ignore it.
+///
+/// Deliberately not asserted in a test: comparing a constant to a literal
+/// cannot fail, so the check would be theatre. The doc comment above is where
+/// the value's provenance lives, and `0.875 < 1` is the whole invariant.
+pub const BODY_TEXT_SIZE_REM: f32 = 0.875;
+
 pub const fn native_font_family() -> &'static str {
     #[cfg(target_os = "macos")]
     {

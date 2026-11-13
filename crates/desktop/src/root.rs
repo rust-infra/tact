@@ -6043,7 +6043,7 @@ impl DesktopRoot {
                     div()
                         .w(px(88.))
                         .flex_none()
-                        .text_size(px(11.))
+                        .text_size(gpui::rems(crate::theme::BODY_TEXT_SIZE_REM))
                         .text_color(cx.theme().muted_foreground)
                         .child(label),
                 )
@@ -6051,7 +6051,7 @@ impl DesktopRoot {
                     div()
                         .flex_1()
                         .min_w_0()
-                        .text_size(px(11.))
+                        .text_size(gpui::rems(crate::theme::BODY_TEXT_SIZE_REM))
                         .font_family("Lilex")
                         .child(
                             value.unwrap_or_else(|| self.text(TextKey::DetailNoValue).to_string()),
@@ -6069,7 +6069,10 @@ impl DesktopRoot {
                 .border_color(cx.theme().border)
                 .bg(cx.theme().group_box)
                 .p(px(8.))
-                .text_size(px(11.))
+                // Matches the composer's text rather than shrinking the body:
+                // this panel shows the same bytes the tool card does, and the
+                // two must not disagree about how they read.
+                .text_size(gpui::rems(crate::theme::BODY_TEXT_SIZE_REM))
                 .font_family("Lilex")
                 .child(body.unwrap_or_else(|| self.text(TextKey::DetailNoValue).to_string()))
         };
