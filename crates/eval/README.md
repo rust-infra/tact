@@ -54,7 +54,8 @@ does not carry them and `AgentLoopOutcome` never leaves the process.
 `--runner cli` spawns `tact-ui headless`. It works against a release binary or a
 container, and reports only what that process writes: final answer, tool lines,
 token totals, and an inferred stop reason. Fields it cannot see stay `null` in
-the report instead of being filled with zeroes.
+the report instead of being filled with zeroes. `session_id` is recorded either
+way, so a reviewer can open the run's transcript in `.tact/tact.db`.
 
 Both runners write the same `CaseOutcome` and go through the same graders, so a
 suite scores the same way either way. Because the host runner reads
