@@ -66,10 +66,21 @@ impl CaseOutcome {
 
     /// One verdict per attempt, folded from its graders.
     ///
-    /// A single failing grader fails the attempt. Otherwise an inconclusive
-    /// grader makes the whole attempt inconclusive: a case is not passed on
-    /// partial evidence.
+    /// A run that failed cannot produce a failing grade for the agent: whatever
+    /// the graders saw describes a half-finished attempt. So a recorded
+    /// [`crate::RunFailure`] wins over every grader and makes the attempt
+    /// inconclusive, which keeps a harness problem out of the model's numbers.
+    ///
+    /// Otherwise a single failing grader fails the attempt, and a grader that
+    /// could not decide makes it inconclusive: a case is not passed on partial
+    /// evidence.
     pub fn verdict(&self) -> Verdict {
+        if let Some(failure) = &self.failure {
+            return Verdict::Inconclusive {
+                reason: failure.to_string(),
+            };
+        }
+
         let mut inconclusive = None;
         for grade in &self.grades {
             match &grade.verdict {
@@ -282,6 +293,25 @@ mod tests {
         let report = report(Vec::new());
         let json: serde_json::Value = serde_json::from_str(&report.to_json().unwrap()).unwrap();
         assert_eq!(json["schema_version"], REPORT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn a_failed_run_outranks_a_failing_grader() {
+        // A timed-out attempt whose grader also fails is a harness problem, not
+        // a model failure, and must not be counted in the pass rate.
+        let mut failed = outcome(
+            "c",
+            1,
+            Verdict::Fail {
+                reason: "file missing".into(),
+            },
+        );
+        failed.failure = Some(crate::RunFailure::Timeout { limit_secs: 5 });
+
+        match failed.verdict() {
+            Verdict::Inconclusive { reason } => assert!(reason.contains("timed out"), "{reason}"),
+            other => panic!("expected inconclusive, got {other:?}"),
+        }
     }
 
     #[test]
