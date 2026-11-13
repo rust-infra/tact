@@ -83,28 +83,20 @@ pub async fn grade(case: &EvalCase, work_dir: &Path, artifact: &crate::RunArtifa
 }
 
 /// `Ok((passed, output))`, or a verdict when the grader itself could not run.
+///
+/// The grader runs through the same helper as a case run, so an over-budget
+/// `cargo test` is killed with whatever it spawned rather than only the shell
+/// that launched it.
 async fn run_command(
     work_dir: &Path,
     command: &str,
     timeout_secs: u64,
 ) -> Result<(bool, String), Verdict> {
     let mut child = tokio::process::Command::new("sh");
-    child
-        .arg("-c")
-        .arg(command)
-        .current_dir(work_dir)
-        .stdin(std::process::Stdio::null())
-        // Piped here rather than by `Command::output`, because the timeout has
-        // to cover a child that was already spawned.
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true);
+    child.arg("-c").arg(command).current_dir(work_dir);
 
-    // Building the child here, rather than awaiting `Command::output`, is what
-    // makes the timeout kill the grader: `kill_on_drop` is set on `child`, so
-    // dropping it on timeout terminates the process instead of leaking it.
-    let child = match child.spawn() {
-        Ok(child) => child,
+    let outcome = match crate::process::run_child(child, Duration::from_secs(timeout_secs)).await {
+        Ok(outcome) => outcome,
         Err(error) => {
             return Err(Verdict::Inconclusive {
                 reason: format!("grader could not start: {error}"),
@@ -112,22 +104,13 @@ async fn run_command(
         }
     };
 
-    let output =
-        match tokio::time::timeout(Duration::from_secs(timeout_secs), child.wait_with_output())
-            .await
-        {
-            Ok(Ok(output)) => output,
-            Ok(Err(error)) => {
-                return Err(Verdict::Inconclusive {
-                    reason: format!("grader failed: {error}"),
-                });
-            }
-            Err(_) => return Ok((false, format!("timed out after {timeout_secs}s"))),
-        };
-
-    let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
-    combined.push_str(&String::from_utf8_lossy(&output.stderr));
-    Ok((output.status.success(), combined))
+    if outcome.timed_out {
+        return Ok((false, format!("timed out after {timeout_secs}s")));
+    }
+    let passed = outcome.succeeded();
+    let mut combined = outcome.stdout;
+    combined.push_str(&outcome.stderr);
+    Ok((passed, combined))
 }
 
 fn check_files(work_dir: &Path, assertions: &[FileAssertion]) -> Verdict {

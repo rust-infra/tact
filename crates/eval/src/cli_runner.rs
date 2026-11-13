@@ -11,10 +11,8 @@
 //! numbers.
 
 use std::path::PathBuf;
-use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
 
 use crate::case::EvalCase;
@@ -101,19 +99,15 @@ impl Runner for CliRunner {
             .arg("--notifications=false")
             .arg("headless")
             .arg(&case.prompt)
-            .current_dir(&work_dir)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        // A new process group, so the timeout can kill the whole tree. The
-        // agent spawns MCP servers, background commands, and subagents; killing
-        // only the direct child leaves those running against the work dir that
-        // grading is about to read.
-        #[cfg(unix)]
-        command.process_group(0);
+            .current_dir(&work_dir);
 
-        let mut child = match command.spawn() {
-            Ok(child) => child,
+        let outcome = match crate::process::run_child(
+            command,
+            Duration::from_secs(case.timeout_secs),
+        )
+        .await
+        {
+            Ok(outcome) => outcome,
             Err(error) => {
                 artifact.failure = Some(RunFailure::startup(error.to_string()));
                 artifact.duration_ms = crate::runner::elapsed_ms(start);
@@ -121,117 +115,33 @@ impl Runner for CliRunner {
             }
         };
 
-        let stdout = child.stdout.take().expect("piped stdout");
-        let stderr = child.stderr.take().expect("piped stderr");
-
-        // The readers run as their own tasks so that a timeout can still read
-        // what the child printed before it hung: that log is the only account
-        // of what a wedged run was doing.
-        let stdout_reader = tokio::spawn(read_all(stdout));
-        let stderr_reader = tokio::spawn(read_lines(stderr));
-
-        let mut killed = false;
-        let status = match tokio::time::timeout(
-            Duration::from_secs(case.timeout_secs),
-            child.wait(),
-        )
-        .await
-        {
-            Ok(status) => status.ok(),
-            Err(_) => {
-                kill_tree(&mut child).await;
-                killed = true;
-                None
-            }
-        };
-
-        // Once the child is gone its pipes close, so both readers finish. The
-        // join is outside the timeout on purpose: after a kill there is nothing
-        // left that could hold the pipe open.
-        let stdout = stdout_reader.await.unwrap_or_default();
-        let stderr_lines = stderr_reader.await.unwrap_or_default();
-
-        if killed {
-            artifact.failure = Some(RunFailure::Timeout {
-                limit_secs: case.timeout_secs,
-            });
-            artifact.session_id = parse_session_id(&stderr_lines);
-            artifact.tools = parse_tools(&stderr_lines);
-            artifact.tokens = parse_tokens(&stderr_lines);
-            artifact.turns = parse_turns(&stderr_lines);
-            artifact.duration_ms = crate::runner::elapsed_ms(start);
-            return RunOutcome { artifact, work_dir };
-        }
-
-        let stderr_text = stderr_lines.join("\n");
+        let stderr_lines: Vec<String> = outcome.stderr.lines().map(str::to_string).collect();
         artifact.session_id = parse_session_id(&stderr_lines);
         artifact.tools = parse_tools(&stderr_lines);
         artifact.tokens = parse_tokens(&stderr_lines);
         artifact.turns = parse_turns(&stderr_lines);
-        artifact.stop = parse_stop(&stderr_lines, status);
+        artifact.answer = outcome.stdout.trim_end().to_string();
+        artifact.duration_ms = crate::runner::elapsed_ms(start);
 
-        if !status.is_some_and(|status| status.success()) {
+        if outcome.timed_out {
+            artifact.failure = Some(RunFailure::Timeout {
+                limit_secs: case.timeout_secs,
+            });
+            return RunOutcome { artifact, work_dir };
+        }
+
+        artifact.stop = parse_stop(&stderr_lines, outcome.status);
+
+        if !outcome.succeeded() {
             artifact.failure = Some(RunFailure::harness(format!(
-                "tact-ui exited {status:?}: {}",
-                tail(&stderr_text)
+                "tact-ui exited {:?}: {}",
+                outcome.status,
+                tail(&outcome.stderr)
             )));
         }
 
-        // stdout is the final answer by contract; trailing newlines are not
-        // part of it.
-        artifact.answer = stdout.trim_end().to_string();
-        artifact.duration_ms = crate::runner::elapsed_ms(start);
         RunOutcome { artifact, work_dir }
     }
-}
-
-/// Kill the child and everything it spawned, then reap the direct child.
-///
-/// The child leads its own process group (see `process_group(0)`), so a signal
-/// to that group reaches MCP servers and background commands too. Signalling
-/// only the child would leave those writing into a work dir that grading reads.
-async fn kill_tree(child: &mut tokio::process::Child) {
-    #[cfg(unix)]
-    if let Some(pid) = child.id() {
-        // A negative pid addresses the process group. Failure is ignored: the
-        // group may already be gone, and the direct kill below is what
-        // guarantees the reaper gets an exit status.
-        unsafe {
-            libc::kill(-i32::try_from(pid).unwrap_or(i32::MAX), libc::SIGKILL);
-        }
-    }
-    let _ = child.start_kill();
-    let _ = child.wait().await;
-}
-
-async fn read_all(reader: impl AsyncRead + Unpin) -> String {
-    let mut buf = String::new();
-    let mut reader = BufReader::new(reader);
-    let mut line = String::new();
-    // Line by line rather than `read_to_string` so a multi-byte character split
-    // across a chunk boundary cannot fail the whole read.
-    while let Ok(count) = reader.read_line(&mut line).await {
-        if count == 0 {
-            break;
-        }
-        buf.push_str(&line);
-        line.clear();
-    }
-    buf
-}
-
-async fn read_lines(reader: impl AsyncRead + Unpin) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut reader = BufReader::new(reader);
-    let mut line = String::new();
-    while let Ok(count) = reader.read_line(&mut line).await {
-        if count == 0 {
-            break;
-        }
-        lines.push(line.trim_end().to_string());
-        line.clear();
-    }
-    lines
 }
 
 /// `[session id: <id>]`, printed by headless on stderr at teardown.

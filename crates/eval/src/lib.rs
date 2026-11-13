@@ -13,6 +13,7 @@ pub mod cli_runner;
 pub mod grader;
 pub mod host_runner;
 pub mod options;
+pub mod process;
 pub mod report;
 pub mod runner;
 pub mod suite;
