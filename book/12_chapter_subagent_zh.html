@@ -761,6 +761,13 @@ settings。这也修复了只读逃逸：<code>Plan</code> 父级不再能 spawn
 overlay，会被长标题写掉）。点击卡片<strong>页脚</strong>（运行中
 <code>Click for buffered output</code>、成功后 <code>[Open]</code>、失败
 <code>Click for full error</code>；2026-11-01 起三种相位都可点）进入<strong>子代理视图</strong>（<code>ToolPopupKind::SubagentTranscript</code>）。
+页脚的命中矩形必须<strong>等于画出来的那行字</strong>，这有两个容易漏掉的偏移：卡片画在
+块缩进 <code>LOG_TOOL_BLOCK_INDENT</code> 之内（矩形也要缩进，否则整整左移 8 列），
+以及画出来的页脚是 <code>card_bottom_text()</code> 而不是 <code>card_bottom</code>——
+运行中的卡片永远带 <code>5/20 lines | </code> 前缀，按后者量出来的矩形只盖住标签的一半。
+同一条规则也管 meta 行：文字被 <code>[Cancel]</code> 挤窄时，<code>[Open]</code> 提示的矩形必须
+跟着缩，否则它压住按钮、把取消点成「打开视图」（2026-11-14 修，见
+<a href="./26_chapter_issue_zh.html">26 章</a>）。
 卡片正文本身不再响应单击：单击只起手一次拖选、双击才选中文字，与
 Thinking 卡片一致。</p>
 <p>正文不响应点击带来一个必须显式补的洞：<strong>卡片没有正文时</strong>

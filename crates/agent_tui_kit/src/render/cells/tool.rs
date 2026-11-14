@@ -373,20 +373,33 @@ impl ToolCell {
     /// render-loop overlay had.)
     fn render_meta_row(&self, row_area: Rect, buf: &mut Buffer) {
         buf.set_style(row_area, Style::default().bg(self.bg));
+        let text_area = self.meta_text_area(row_area);
+        if text_area.width > 0 {
+            Paragraph::new(vec![self.meta_line()]).render(text_area, buf);
+        }
+        if let Some(button_area) = self.cancel_button_area(row_area) {
+            self.cancel_button().render(button_area, buf);
+        }
+    }
+
+    /// The columns of the meta row the text itself gets.
+    ///
+    /// Whole row when this card has no `[Cancel]`; otherwise everything left of
+    /// the button, with one blank column between text and button. One helper for
+    /// both the paint and the two hit rects on this row, because three
+    /// measurements of the same row had already drifted: a rect for a glyph that
+    /// the clip removed is worse than no rect at all — the click runs whatever
+    /// owns those columns instead.
+    fn meta_text_area(&self, row_area: Rect) -> Rect {
         let Some(button_area) = self.cancel_button_area(row_area) else {
-            Paragraph::new(vec![self.meta_line()]).render(row_area, buf);
-            return;
+            return row_area;
         };
-        let text_area = Rect::new(
+        Rect::new(
             row_area.x,
             row_area.y,
             button_area.x.saturating_sub(row_area.x).saturating_sub(1),
             1,
-        );
-        if text_area.width > 0 {
-            Paragraph::new(vec![self.meta_line()]).render(text_area, buf);
-        }
-        self.cancel_button().render(button_area, buf);
+        )
     }
 
     fn card_inner_rows(&self) -> usize {
@@ -469,18 +482,38 @@ impl ToolCell {
     }
 
     /// Screen rect of a collapsed tool's `[Open]` meta-row button.
+    ///
+    /// Measured off the row the cell actually draws: the text is clipped to
+    /// [`Self::meta_text_area`] (a live subagent's `[Cancel]` takes the row's
+    /// right end), and the action is the tail *of that clipped text*. The two
+    /// used to be measured independently, so a clipped hint kept a full-width
+    /// rect over columns that were no longer the button — a live card's
+    /// `[Cancel]` sat under it, and the click opened the transcript instead of
+    /// cancelling.
     pub fn collapsed_open_button_rect(&self, area: Rect, skip_lines: usize) -> Option<Rect> {
-        if self.collapsed_action.is_none() || skip_lines >= self.height(area.width) as usize {
+        let action = self.collapsed_action.as_deref()?;
+        if skip_lines >= self.height(area.width) as usize || skip_lines > TOOL_META_ROW {
             return None;
         }
         let row =
             crate::render::util::indent_rect(area, crate::render::util::LOG_TOOL_BLOCK_INDENT);
-        let action_width = UnicodeWidthStr::width(self.collapsed_action.as_deref()?) as u16;
-        let text_width = self.meta_line().width() as u16;
-        (action_width > 0 && text_width >= action_width && row.width >= action_width).then(|| {
+        let row = Rect::new(
+            row.x,
+            row.y + (TOOL_META_ROW - skip_lines) as u16,
+            row.width,
+            1,
+        );
+        let text_area = self.meta_text_area(row);
+        let action_width = UnicodeWidthStr::width(action) as u16;
+        // `Paragraph` truncates at the area it is given instead of wrapping, so
+        // a row too long for its columns loses its *tail* — which is the action
+        // itself. There is then no button on screen, and claiming one would put
+        // a hit rect over whatever the row does show.
+        let text_width = UnicodeWidthStr::width(self.meta_line().to_string().as_str()) as u16;
+        (action_width > 0 && text_width <= text_area.width).then(|| {
             Rect::new(
-                row.x + text_width - action_width,
-                row.y + TOOL_META_ROW.saturating_sub(skip_lines) as u16,
+                text_area.x + text_width - action_width,
+                text_area.y,
                 action_width,
                 1,
             )
@@ -501,20 +534,39 @@ impl ToolCell {
     /// `Click for buffered output` while the child streams, `[Open]` once it
     /// finished, `Click for full error` when it failed. Returns `None` when the
     /// footer is clipped or the card is not a subagent.
+    ///
+    /// The rect is the footer *as drawn*, which costs two details that used to
+    /// be missed:
+    ///
+    /// * the card is painted inside the block indent
+    ///   ([`LOG_TOOL_BLOCK_INDENT`]), so the rect has to be indented too —
+    ///   measuring it off the un-indented slice put it eight columns left of the
+    ///   glyphs, which left the right-hand part of the label dead;
+    /// * the drawn footer is [`Self::card_bottom_text`], progress prefix
+    ///   included (`5/20 lines | [Open]`), not the bare `card_bottom` — with
+    ///   the prefix the label starts later and runs longer, so measuring
+    ///   `card_bottom` put most of it outside the hit rect. That is exactly the
+    ///   live card, the one a reader clicks: it always has a prefix.
     pub fn subagent_open_button_rect(&self, area: Rect, skip_lines: usize) -> Option<Rect> {
         if self.card_only || !self.is_subagent || !self.has_detail_card {
             return None;
         }
         let card_total = 1 + self.card_inner_rows() + 1;
         let card_skip = skip_lines.saturating_sub(TOOL_HEADER_ROWS);
-        if card_skip >= card_total
-            || card_skip + (area.height as usize) < TOOL_HEADER_ROWS + card_total
-        {
+        // Case A of [`Renderable::render_partial`] draws the bottom border with
+        // its title; a partially visible card (case B) draws a bare border, so
+        // there is no label to click there.
+        if card_skip != 0 || card_skip + (area.height as usize) < TOOL_HEADER_ROWS + card_total {
             return None;
         }
         let bottom_y = area.y + (TOOL_HEADER_ROWS + card_total - 1 - skip_lines) as u16;
-        let width = UnicodeWidthStr::width(self.card_bottom.as_str()) as u16;
-        (width > 0).then(|| Rect::new(area.x + 1, bottom_y, width, 1))
+        // Same indent as the paint, then the block's own left border: that is
+        // where `Block::title_bottom` starts the footer text.
+        let card =
+            crate::render::util::indent_rect(area, crate::render::util::LOG_TOOL_BLOCK_INDENT);
+        let width = UnicodeWidthStr::width(self.card_bottom_text().as_str())
+            .min(card.width.saturating_sub(2) as usize) as u16;
+        (width > 0).then(|| Rect::new(card.x + 1, bottom_y, width, 1))
     }
     fn card_bottom_text(&self) -> String {
         if self.detail_total_lines > self.detail_preview.len() {
@@ -1269,6 +1321,70 @@ mod tests {
         assert!(cell.subagent_cancel_button_rect(area, 0).is_none());
     }
 
+    /// The meta row can carry two controls at once: the `[Cancel]` a live
+    /// subagent draws at its right end, and the `[Open]` hint a card with no
+    /// body draws at the end of its *text*. The hint has to be measured against
+    /// the columns the text actually gets, or it lands on top of the button and
+    /// eats its clicks.
+    #[test]
+    fn the_open_hint_never_lands_on_the_cancel_button() {
+        let mut output = make_output(false, 0, 0);
+        output.phase = ToolPhase::Running;
+        output.visual_kind = tact_protocol::ToolVisualKind::Subagent;
+        output.permission_label = Some("Always allow this tool for the whole workspace".into());
+
+        for width in [50u16, 60, 70, 100] {
+            let cell = tool_cell_mode(output.clone(), false, None).with_subagent_cancel(true);
+            let area = Rect::new(0, 0, width, 2);
+            let mut buf = Buffer::empty(area);
+            cell.render(area, &mut buf);
+
+            let cancel = cell
+                .subagent_cancel_button_rect(area, 0)
+                .unwrap_or_else(|| panic!("width {width}: [Cancel] is drawn"));
+            // The drawn glyphs are the button's own columns.
+            let row: String = (0..width)
+                .map(|x| buf[(x, TOOL_META_ROW as u16)].symbol().to_string())
+                .collect();
+            let drawn: String = row
+                .chars()
+                .skip(cancel.x as usize)
+                .take(cancel.width as usize)
+                .collect();
+            assert_eq!(
+                drawn, "[Cancel]",
+                "width {width}: the rect must be the glyphs, row: {row:?}"
+            );
+
+            match cell.collapsed_open_button_rect(area, 0) {
+                Some(hint) => {
+                    assert!(
+                        !hint.intersects(cancel),
+                        "width {width}: the hint at {hint:?} covers [Cancel] at {cancel:?}"
+                    );
+                    // A rect that survived the clip must sit on its own glyphs:
+                    // the row's text ends right where the hint begins.
+                    let before: String = row
+                        .chars()
+                        .skip(hint.x as usize)
+                        .take(hint.width as usize)
+                        .collect();
+                    assert!(
+                        before.contains("Open"),
+                        "width {width}: the hint must be over the hint, got {before:?} \
+                         in {row:?}"
+                    );
+                }
+                // Clipped away: `Paragraph` truncates the row, so the tail (the
+                // hint) is simply not on screen. No rect is the honest answer.
+                None => assert!(
+                    !row.contains("Open"),
+                    "width {width}: no rect, yet the hint is drawn, row: {row:?}"
+                ),
+            }
+        }
+    }
+
     /// The footer is the subagent popup's click target for a live card too —
     /// its label is literally "Click for buffered output", so the rect must not
     /// be limited to a finished card.
@@ -1294,6 +1410,83 @@ mod tests {
                 .subagent_open_button_rect(area, 0)
                 .is_none()
         );
+    }
+
+    /// The footer's hit rect has to be the *drawn* footer: inside the block
+    /// indent, starting at the card's left border, and as wide as the label the
+    /// border actually carries.
+    ///
+    /// Both halves were wrong in a way nothing caught, because the bug only
+    /// showed up through the real renderer and a real click: the rect was
+    /// measured off the un-indented slice (eight columns left of the glyphs) and
+    /// off `card_bottom` instead of `card_bottom_text()` (missing the
+    /// `5/20 lines | ` prefix, which is present on exactly the live card a
+    /// reader clicks). Every column of the label past the rect's end was dead,
+    /// and the longer the label, the deader the footer got.
+    #[test]
+    fn subagent_footer_hit_rect_matches_the_footer_it_draws() {
+        use crate::render::util::LOG_TOOL_BLOCK_INDENT;
+
+        /// The four footers a subagent card can carry: live with and without
+        /// the progress prefix, finished, and failed.
+        fn shapes() -> Vec<(&'static str, ToolRenderOutput)> {
+            let mut live_short = make_output(true, 2, 2);
+            live_short.phase = ToolPhase::Running;
+            live_short.live_detail = true;
+            let mut live_long = make_output(true, 5, 20);
+            live_long.phase = ToolPhase::Running;
+            live_long.live_detail = true;
+            let finished = make_output(true, 2, 2);
+            let mut failed = make_output(true, 2, 2);
+            failed.phase = ToolPhase::Failed;
+            failed.error_message = Some("child blew up".into());
+            vec![
+                ("live, no prefix", live_short),
+                ("live, `5/20 lines | `", live_long),
+                ("finished, `[Open]`", finished),
+                ("failed", failed),
+            ]
+        }
+
+        for (shape, mut output) in shapes() {
+            output.visual_kind = tact_protocol::ToolVisualKind::Subagent;
+            let cell = tool_cell(output);
+            // The host hands the cell exactly its own height
+            // (`LogColumnRenderer::cell_slice`); a taller area would let the
+            // card's borders fill the slack and the geometry would be a fixture
+            // artifact rather than the one on screen.
+            let area = Rect::new(0, 0, 60, cell.height(60));
+            let mut buf = Buffer::empty(area);
+            cell.render(area, &mut buf);
+
+            let rect = cell
+                .subagent_open_button_rect(area, 0)
+                .unwrap_or_else(|| panic!("{shape}: the footer is clickable"));
+            // One entry per screen column: a border glyph is multi-byte, so a
+            // byte slice would land mid-character.
+            let cells: Vec<String> = (0..area.width)
+                .map(|x| buf[(x, rect.y)].symbol().to_string())
+                .collect();
+            let row: String = cells.join("");
+            assert_eq!(
+                rect.x,
+                LOG_TOOL_BLOCK_INDENT + 1,
+                "{shape}: the rect must start at the card's left border, row: {row:?}"
+            );
+            let drawn: String = cells[rect.x as usize..(rect.x + rect.width) as usize].concat();
+            assert_eq!(
+                drawn,
+                cell.card_bottom_text(),
+                "{shape}: the rect must cover the drawn footer exactly"
+            );
+            // The rect ends with the label: the next cell is the border line
+            // that continues to the card's right corner.
+            assert_eq!(
+                cells[rect.right() as usize],
+                "─",
+                "{shape}: the rect must end with the label, row: {row:?}"
+            );
+        }
     }
 
     #[test]

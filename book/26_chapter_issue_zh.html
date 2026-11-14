@@ -375,6 +375,7 @@
 </div>
 <div class="toc-group">
 <ol class="toc-list">
+<li class="toc-l2"><a href="#2026-11-14--%E5%AD%90%E4%BB%A3%E7%90%86%E5%AE%9E%E6%97%B6%E8%BE%93%E5%87%BA%E5%8D%A1%E7%89%87%E7%9A%84%E9%A1%B5%E8%84%9A%E7%82%B9%E4%B8%8D%E5%8A%A8" title="2026-11-14 — 子代理实时输出卡片的页脚点不动"><span class="toc-label">2026-11-14 — 子代理实时输出卡片的页脚点不动</span></a></li>
 <li class="toc-l2"><a href="#2026-10-22--headless-%E6%97%A5%E5%BF%97%E5%8F%AA%E7%9C%8B%E5%88%B0%E4%B8%80%E5%8D%8A%E4%BA%8B%E4%BB%B6%E4%B8%80%E4%B8%AA-sink-%E7%BB%9F%E4%B8%80%E5%88%86%E5%8F%91" title="2026-10-22 — headless 日志只看到一半事件：一个 sink 统一分发"><span class="toc-label">2026-10-22 — headless 日志只看到一半事件：一个 sink 统一分发</span></a></li>
 <li class="toc-l2"><a href="#2026-10-22--pid-1-%E8%BA%AB%E4%BB%BD%E5%8F%AF%E8%AF%BB%E4%B8%8E%E5%90%A6%E6%98%AF%E5%B9%B3%E5%8F%B0%E7%AD%96%E7%95%A5" title="2026-10-22 — pid 1 的身份「可读与否」是平台策略，测试不能替它做假设"><span class="toc-label">2026-10-22 — pid 1 的身份「可读与否」是平台策略，测试不能替它做假设</span></a></li>
 <li class="toc-l2"><a href="#2026-10-21-runner-%E5%BE%AA%E7%8E%AF%E7%9A%84%E4%B8%89%E5%A4%84%E6%98%BE%E5%BC%8F%E5%8C%96" title="2026-10-21 — Runner 循环的三处显式化"><span class="toc-label">2026-10-21 — Runner 循环的三处显式化</span></a></li>
@@ -801,6 +802,59 @@ bugfix日志</strong>，记录有用户可见或 API
 <a href="../ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> 和对应章节，
 更早的设计与实施记录保存在 Git 历史中。正文中出现的旧 spec / plan
 文件名只用于标识当时的修订，文件本身已删除。</p>
+<h2 id="2026-11-14--子代理实时输出卡片的页脚点不动">2026-11-14 — 子代理实时输出卡片的页脚点不动</h2>
+<p><strong>现象：</strong> 子代理正在跑时，卡片页脚写着
+<code>Click for buffered output</code>，但点它没反应；只有点最左边几个字符才会进视图。</p>
+<p><strong>根因：</strong> 页脚的命中矩形和画出来的那行字不是同一段列。
+<code>ToolCell::subagent_open_button_rect</code> 用
+<code>Rect::new(area.x + 1, …)</code> 量宽度，而卡片是画在块缩进
+（<code>LOG_TOOL_BLOCK_INDENT</code> = 8）之内的，于是矩形整体左移 8 列——矩形最右
+8 列落到标签外面，标签最右 8 列是死区。第二处更隐蔽：宽度按
+<code>card_bottom</code> 量，但真正画出来的是
+<code>card_bottom_text()</code>，运行中的卡片永远带
+<code>5/20 lines | </code> 前缀。前缀越长标签画得越靠右、也越长，矩形却不变，于是
+「实时输出」这张最该点开的卡片反而最点不动——行数越多越点不动。</p>
+<p><strong>决策：</strong> 命中矩形只由「将要画出来的东西」推导：先按
+<code>LOG_TOOL_BLOCK_INDENT</code> 缩进，再加卡片左边框那一列，宽度取
+<code>card_bottom_text()</code> 并夹到卡片内宽。顺带把
+<code>card_skip != 0</code> 也收进来：部分可见的卡片（<code>render_partial</code> 的 case
+B）只画一条裸边框，不画页脚文字，那里本来就没有可点的标签。</p>
+<p><strong>同时修的第二个洞：</strong> 同一个视图在第一轮对话里是<em>空白</em>的。
+<code>ToolTranscript</code> 是创建 <code>transcripts</code> 表项的唯一入口，所以子代理刚
+开口、还没提交任何条目的那段时间，表里根本没有这个 id；而
+<code>prepare_subagent_popup</code> 与 <code>render_subagent_body</code> 都把「表里没有」
+当成「没东西可画」直接返回。之前那条「流式文本本身也算内容」的守卫因此永远走不到——
+它被放在了一个更早的 <code>let … else { return }</code> 后面。现在缺表项等于空 transcript
+（<code>revision = 0</code>），流式文本正常建 layout。</p>
+<p><strong>第三个洞（同一类，一行两控件）：</strong> 运行中的卡片 meta 行右端画
+<code>[Cancel]</code>，无正文时文字末尾还带 <code>[Open]</code> 提示。提示的矩形按
+<code>meta_line()</code> 的<em>未裁剪</em>宽度量，而 meta 文字实际只拿到
+<code>[Cancel]</code> 左侧的列；于是提示矩形整个压到按钮上，点 <code>[Cancel]</code>
+实际打开了视图、取消发不出去（宽度 70、带长 permission 标签时必现）。现在
+<code>meta_text_area()</code> 成为这一行唯一的几何来源（画和两个矩形都读它），并且
+<code>Paragraph</code> 是按给定宽度<strong>截断</strong>而不是换行——标签被裁掉时就不该存在
+命中矩形，所以提示在放不下时返回 <code>None</code>，而不是把矩形留在别人的字上。</p>
+<p><strong>验证：</strong>
+<code>subagent_footer_hit_rect_matches_the_footer_it_draws</code> 逐列比对矩形与画出的
+单元格（四种页脚形态：无前缀实时、带
+<code>5/20 lines | </code> 实时、完成 <code>[Open]</code>、失败），两处旧写法分别单独回退都会红。
+<code>every_column_of_a_subagent_footer_opens_the_transcript</code>
+走真实渲染器 + 真实点击，把标签的每一列都点一遍（旧代码在第 19/25 列失败；
+46 列的窄终端会裁掉页脚，矩形必须跟着裁）。
+<code>a_live_subagent_cards_cancel_button_is_not_covered_by_the_open_hint</code>
+（真实渲染器 + 真实点击，3 种宽度 × 有无长 permission 标签）与 kit 侧的
+<code>the_open_hint_never_lands_on_the_cancel_button</code> 盯住第三个洞。
+<code>a_child_thats_streaming_before_its_first_committed_entry_draws_its_text</code>
+与扩成两态的
+<code>streaming_alone_builds_a_layout_before_any_committed_entry</code> 盯住空白视图。</p>
+<p><strong>Pointers：</strong>
+<code>crates/agent_tui_kit/src/render/cells/tool.rs</code>（<code>subagent_open_button_rect</code>、
+<code>collapsed_open_button_rect</code>、<code>meta_text_area</code>）、
+<code>crates/agent_tui_kit/src/render/popups/subagent_popup.rs</code>
+（<code>prepare_subagent_popup</code> / <code>render_subagent_body</code>）、
+<code>crates/tui/src/render/log_render_tests.rs</code>、
+<code>crates/tui/src/render/popup_scene_tests.rs</code>；设计说明见
+<a href="./12_chapter_subagent_zh.html">12 章</a> §6。</p>
 <h2 id="2026-10-22--headless-日志只看到一半事件一个-sink-统一分发">2026-10-22 — headless 日志只看到一半事件：一个 sink 统一分发</h2>
 <table>
 <thead>
