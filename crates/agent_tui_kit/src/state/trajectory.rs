@@ -691,7 +691,15 @@ impl TrajectoryLog {
     pub fn restore_assistant(&mut self, text: &str) -> TrajectoryRecordId {
         let collapsed = collapse_whitespace(text);
         let record = self.append(TrajectoryKind::Assistant, collapsed);
-        record.output = non_empty(text);
+        // Same cap as a restored tool result: the row's body feeds the detail
+        // panel from memory, and a long answer would otherwise sit there
+        // unbounded for the life of the session while claiming to be complete.
+        // An empty body stays absent, matching the live path.
+        if !text.trim().is_empty() {
+            let (body, truncated) = cap_body(text);
+            record.output = Some(body);
+            record.output_truncated = truncated;
+        }
         record.search = search_haystack(record);
         record.id
     }
@@ -701,9 +709,11 @@ impl TrajectoryLog {
     /// Recorded without opening a turn, because it is not something the reader
     /// asked for. `label` names where it came from.
     pub fn restore_context(&mut self, label: &str, text: &str) -> TrajectoryRecordId {
-        let text = match first_line(text).as_str() {
-            "" => label.to_string(),
-            first => format!("{label}: {first}"),
+        let first = first_line(text);
+        let text = if first.is_empty() {
+            label.to_string()
+        } else {
+            format!("{label}: {first}")
         };
         let record = self.append(TrajectoryKind::Context, text);
         record.search = search_haystack(record);
@@ -2117,5 +2127,64 @@ mod duration_source_tests {
         assert_eq!(record.kind, TrajectoryKind::Thinking);
         assert_eq!(record.text, "(redacted)");
         assert_eq!(record.output, None);
+    }
+
+    /// Two calls sharing a tool id: the result attaches to the later one.
+    ///
+    /// Provider ids are supposed to be unique, but a resumed transcript can
+    /// hold a repeated id after a retry. Attaching to the first would overwrite
+    /// a finished call with an older result and leave the newer row stateless.
+    #[test]
+    fn a_repeated_tool_id_attaches_its_result_to_the_latest_call() {
+        let mut log = TrajectoryLog::new();
+        log.restore_tool_use("call-1", "bash", Some(r#"{"command":"first"}"#));
+        log.restore_tool_use("call-1", "bash", Some(r#"{"command":"second"}"#));
+        log.restore_tool_result("call-1", "the real output", Some(TrajectoryStatus::Success));
+
+        let [first, second] = log.records() else {
+            panic!("two calls");
+        };
+        assert_eq!(first.output, None, "the older call keeps no result");
+        assert_eq!(second.output.as_deref(), Some("the real output"));
+        assert_eq!(second.status, Some(TrajectoryStatus::Success));
+    }
+
+    /// A restored prompt carries no arrival time, because the transcript has
+    /// none to offer.
+    #[test]
+    fn a_restored_prompt_has_no_arrival_time() {
+        let mut log = TrajectoryLog::new();
+        log.begin_turn();
+        log.push_user("from a previous run", None);
+
+        assert_eq!(log.records()[0].at, None);
+    }
+
+    /// A restored assistant body is capped, and says so when it is.
+    ///
+    /// The detail panel reads `output` from memory. A 40 KB answer restored
+    /// uncapped would sit there for the session and read as complete.
+    #[test]
+    fn a_restored_assistant_body_is_capped_and_marked() {
+        let mut log = TrajectoryLog::new();
+        let long = "x".repeat(OUTPUT_CAP_BYTES + 100);
+        log.restore_assistant(&long);
+
+        let record = &log.records()[0];
+        assert_eq!(
+            record.output.as_deref().map(str::len),
+            Some(OUTPUT_CAP_BYTES)
+        );
+        assert!(record.output_truncated, "a cut body must say so");
+    }
+
+    /// An empty assistant text stores no body, matching the live path.
+    #[test]
+    fn a_restored_empty_assistant_stores_no_body() {
+        let mut log = TrajectoryLog::new();
+        log.restore_assistant("   ");
+
+        assert_eq!(log.records()[0].output, None);
+        assert!(!log.records()[0].output_truncated);
     }
 }

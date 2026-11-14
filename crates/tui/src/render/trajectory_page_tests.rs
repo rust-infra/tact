@@ -985,3 +985,33 @@ async fn restarting_a_saved_session_rebuilds_the_ledger() {
         "and so is the prompt that opened the turn"
     );
 }
+
+/// A restored record carries no arrival time, because the transcript has none.
+///
+/// Stamping `now` would date a prompt from yesterday as today. The design note
+/// names this rule explicitly: absent facts stay absent.
+#[test]
+fn a_restored_record_has_no_arrival_time() {
+    use tact::{AgentContentBlock, AgentMessage, AgentRole, MessageOrigin};
+
+    let mut app = make_app();
+    app.restore_trajectory(&[AgentMessage::new(
+        AgentRole::User,
+        MessageOrigin::User,
+        vec![AgentContentBlock::Text {
+            text: "a prompt from a previous run".into(),
+        }],
+    )]);
+
+    let user = app
+        .trajectory
+        .records()
+        .iter()
+        .find(|record| record.kind == TrajectoryKind::User)
+        .expect("the prompt is restored");
+    assert_eq!(
+        user.at, None,
+        "a restored prompt must not be stamped with the current clock, got {:?}",
+        user.at
+    );
+}

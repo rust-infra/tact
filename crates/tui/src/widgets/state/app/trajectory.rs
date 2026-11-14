@@ -316,6 +316,16 @@ impl App {
         }
     }
 
+    /// Open a turn while restoring, without claiming an arrival time.
+    ///
+    /// The transcript stores no timestamp, so this cannot reuse the live path's
+    /// `begin_trajectory_turn`: that stamps `now`, which would date a prompt
+    /// from a previous run as today.
+    fn restore_trajectory_turn(&mut self, prompt: &str) {
+        self.trajectory.begin_turn();
+        self.trajectory.push_user(prompt.to_string(), None);
+    }
+
     /// Restore both views a resumed session needs: the log's cells and the
     /// trajectory ledger.
     ///
@@ -405,7 +415,7 @@ impl App {
                         }
                     }
                     if !prompt.trim().is_empty() {
-                        self.begin_trajectory_turn(&prompt);
+                        self.restore_trajectory_turn(&prompt);
                     }
                 }
                 AgentRole::Assistant => {

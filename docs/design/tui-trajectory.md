@@ -430,6 +430,9 @@ rules they follow:
   invented. A result whose status was never recorded (`Unknown`, from rows
   written before that column existed) restores with `status = None`, so the row
   cannot claim a call succeeded when nothing recorded that it did.
+- **A restored body is capped like a live one.** Assistant text goes through the
+  same `cap_body` as a tool result, so a long answer cannot sit in the ledger
+  unbounded for the session while the detail panel reads as complete.
 - **Redacted reasoning keeps its row and loses its body.** The provider hid the
   text on purpose; re-showing it would defeat the redaction. The row still
   proves a block existed, which is what the ledger is for.

@@ -316,10 +316,12 @@ pub fn model_error(error: LlmError) -> ModelError {
 
 /// Lower an adapter error, recording its safe HTTP class on `handle`.
 ///
-/// This is the single place where a provider failure becomes a [`ModelError`],
-/// so it is also the single place that has to guarantee the message is safe to
-/// render: [`LlmError::user_message`] keeps the HTTP status and drops the
-/// response body, the request URL, and anything else the provider supplied.
+/// This is the one place where a *provider* failure becomes a [`ModelError`],
+/// so it is also the place that has to guarantee the message is safe to render:
+/// [`LlmError::user_message`] keeps the HTTP status and drops the response body,
+/// the request URL, and anything else the provider supplied. Cancellation is
+/// the exception that proves it: those are raised as `ModelError::new` with
+/// Tact's own text, because the provider never ran.
 pub(crate) fn model_error_with(
     error: LlmError,
     handle: &crate::telemetry::SpanHandle,
