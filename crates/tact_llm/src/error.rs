@@ -69,3 +69,62 @@ pub enum HttpErrorClass {
     Transient,
     Permanent,
 }
+
+impl HttpErrorClass {
+    /// Stable, body-free label for user-facing text.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Authentication => "authentication failed",
+            Self::ContextOverflow => "context too large",
+            Self::Transient => "temporarily unavailable",
+            Self::Permanent => "request rejected",
+        }
+    }
+}
+
+impl LlmError {
+    /// Whether resending the same request can plausibly succeed unchanged.
+    ///
+    /// This is the recovery decision, not the diagnostic: a `400` stays false
+    /// even when its body reads like a rate limit, and a `429` stays true.
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            Self::HttpError { class, .. } => *class == HttpErrorClass::Transient,
+            Self::Request(_) => true,
+            _ => false,
+        }
+    }
+
+    /// Body-free description that is safe to show a user.
+    ///
+    /// The provider's own text never appears here: an error body can echo the
+    /// prompt, a credential, or a gateway's HTML page, and a transport error's
+    /// `Display` embeds the request URL (which a proxy may key on). What is
+    /// kept is the part that is metadata and that a user acts on — the HTTP
+    /// status and its class. Variants whose text Tact authors itself
+    /// (`Auth`, `Unsupported`, `Mock`) are passed through, because those
+    /// strings contain no provider payload and dropping them would leave the
+    /// user with nothing to fix.
+    pub fn user_message(&self) -> String {
+        match self {
+            Self::HttpError { status, class, .. } => {
+                format!("provider returned HTTP {status} ({})", class.label())
+            }
+            Self::Anthropic(_) => "provider error (invalid or interrupted response)".to_string(),
+            #[cfg(feature = "openai-chat")]
+            Self::OpenAi(_) => "provider error (invalid or interrupted response)".to_string(),
+            #[cfg(feature = "openai-responses")]
+            Self::OpenAiResponses(_) => {
+                "provider error (invalid or interrupted response)".to_string()
+            }
+            Self::Serialization(_) => "provider response was not valid JSON for this protocol; \
+                 the endpoint may not be an API"
+                .to_string(),
+            Self::Request(_) => "connection to the provider failed or was interrupted".to_string(),
+            Self::StreamParse(_) => "provider stream was malformed or ended early".to_string(),
+            Self::Unsupported(message) | Self::UnsupportedHook(message) => message.clone(),
+            Self::Auth(message) => message.clone(),
+            Self::Mock(message) => message.clone(),
+        }
+    }
+}

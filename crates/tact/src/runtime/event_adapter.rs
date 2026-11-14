@@ -179,9 +179,19 @@ impl TactEventBridge {
                     run_id: run.run_id.to_string(),
                 });
             }
-            AgentEvent::RunFailed { run, .. } => {
+            AgentEvent::RunFailed { error, run } => {
+                // The kernel already computed both halves: `message` (what
+                // failed) and `detail` (what to change). Passing them through
+                // is what lets a host render a failure without a second lookup
+                // it cannot perform — `info()` is crate-private for exactly the
+                // reason that a host should not have to reconstruct it.
                 self.events.send(AgentUpdate::RunFailed {
                     run_id: run.run_id.to_string(),
+                    retryable: error.retryable,
+                    message: Some(match error.detail.as_deref() {
+                        Some(detail) => format!("{}. {detail}", error.message),
+                        None => error.message.clone(),
+                    }),
                 });
             }
             AgentEvent::MessageStarted { message_id, .. } => {
@@ -624,8 +634,68 @@ mod tests {
         ));
         assert!(matches!(
             &updates[1],
-            AgentUpdate::RunFailed { run_id } if run_id == "run-2"
+            AgentUpdate::RunFailed { run_id, .. } if run_id == "run-2"
         ));
+    }
+
+    /// The banner reads this. Dropping the text here is what left the desktop
+    /// able to say only "the run failed" while the TUI log knew the cause.
+    #[test]
+    fn a_failed_run_carries_its_reason_and_retry_class() {
+        let (bridge, mut rx) = bridge();
+        bridge.emit(AgentEvent::RunFailed {
+            error: tact_agent_api::RuntimeErrorInfo::new(
+                tact_agent_api::RunPhase::Stream,
+                "model call failed: provider returned HTTP 400",
+            )
+            .with_detail("check the model name")
+            .with_retryable(true),
+            run: run_context("run-1"),
+        });
+
+        let updates = drain(&mut rx);
+        match &updates[0] {
+            AgentUpdate::RunFailed {
+                retryable,
+                message,
+                run_id,
+            } => {
+                assert_eq!(run_id, "run-1");
+                assert!(*retryable);
+                let message = message.as_deref().expect("the reason must survive");
+                assert!(message.contains("HTTP 400"), "{message}");
+                assert!(message.contains("check the model name"), "{message}");
+            }
+            other => panic!("expected RunFailed, got {other:?}"),
+        }
+    }
+
+    /// A bare failure stays renderable: no message, and no retry offered.
+    #[test]
+    fn a_failed_run_without_detail_reports_no_retry() {
+        let (bridge, mut rx) = bridge();
+        bridge.emit(AgentEvent::RunFailed {
+            error: tact_agent_api::RuntimeErrorInfo::new(
+                tact_agent_api::RunPhase::Commit,
+                "transcript commit failed",
+            ),
+            run: run_context("run-1"),
+        });
+
+        let updates = drain(&mut rx);
+        match &updates[0] {
+            AgentUpdate::RunFailed {
+                retryable, message, ..
+            } => {
+                assert!(!retryable);
+                assert_eq!(
+                    message.as_deref(),
+                    Some("transcript commit failed"),
+                    "the message is always present"
+                );
+            }
+            other => panic!("expected RunFailed, got {other:?}"),
+        }
     }
 
     #[test]

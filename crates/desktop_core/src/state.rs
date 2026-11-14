@@ -385,7 +385,7 @@ impl DesktopState {
                 {
                     outcome.matched_finished = true;
                 }
-                AgentUpdate::RunFailed { run_id }
+                AgentUpdate::RunFailed { run_id, .. }
                     if self.active_run.as_deref() == Some(run_id.as_str()) =>
                 {
                     outcome.matched_failed = true;
@@ -516,7 +516,11 @@ impl DesktopState {
                 // A compaction activation that never saw `TurnStats` leaves the
                 // previous phase and timer untouched.
             }
-            AgentUpdate::RunFailed { run_id } => {
+            AgentUpdate::RunFailed {
+                run_id,
+                retryable: _,
+                message: _,
+            } => {
                 let failed_pending = self.pending_run.as_deref() == Some(run_id.as_str());
                 let failed_active = self.active_run.as_deref() == Some(run_id.as_str());
                 if failed_pending {

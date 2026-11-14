@@ -436,16 +436,20 @@ impl TranscriptReducer {
                     self.active_loop = None;
                 }
             }
-            AgentUpdate::RunFailed { run_id } => {
+            AgentUpdate::RunFailed {
+                run_id,
+                retryable,
+                message,
+            } => {
                 if self.pending_run.as_deref() == Some(run_id.as_str())
                     && self.active_run.as_deref() != Some(run_id.as_str())
                 {
                     self.pending_run = None;
                     return delta;
                 }
-                if self.active_run.as_deref() == Some(run_id.as_str())
-                    || self.pending_run.as_deref() == Some(run_id.as_str())
-                {
+                let matched_run = self.active_run.as_deref() == Some(run_id.as_str())
+                    || self.pending_run.as_deref() == Some(run_id.as_str());
+                if matched_run {
                     if let Some(group) = self.active_group.take() {
                         self.fail_group(group);
                         self.last_finished_rows.push(group);
@@ -465,6 +469,19 @@ impl TranscriptReducer {
                         self.last_finished_rows.push(row);
                         delta.changed(row);
                     }
+                }
+                // The kernel knows why it stopped; a row is how the desktop
+                // surfaces that. Skipped for an unmatched run (a stale event
+                // from another activation) so it cannot write into this one.
+                if matched_run && let Some(message) = message {
+                    let row = self.push_row(
+                        None,
+                        RowBody::Error(ErrorRow {
+                            message: Arc::from(message.as_str()),
+                            retryable,
+                        }),
+                    );
+                    delta.changed(row);
                 }
                 if self.pending_run.as_deref() == Some(run_id.as_str()) {
                     self.pending_run = None;
@@ -3067,6 +3084,8 @@ mod tests {
         reducer.apply_agent_update(
             AgentUpdate::RunFailed {
                 run_id: "run-1".into(),
+                retryable: false,
+                message: None,
             },
             &context(1),
         );
@@ -3076,6 +3095,67 @@ mod tests {
         assert_eq!(
             reducer.latest_tool_view().map(|tool| tool.status),
             Some(RowStatus::Failed)
+        );
+    }
+
+    /// The failed-run row is what a desktop user scrolled to; it has to carry
+    /// the kernel's reason and its retry class, not just "failed".
+    #[test]
+    fn a_failed_run_writes_an_error_row_with_its_reason() {
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-1");
+        turn(&mut reducer);
+
+        reducer.apply_agent_update(
+            AgentUpdate::RunFailed {
+                run_id: "run-1".into(),
+                retryable: true,
+                message: Some("Kimi is temporarily unreachable at api.moonshot.cn".into()),
+            },
+            &context(1),
+        );
+
+        let error = reducer
+            .view()
+            .rows
+            .iter()
+            .find_map(|row| match &row.body {
+                RowBody::Error(error) => Some(error.clone()),
+                _ => None,
+            })
+            .expect("a failed run leaves a row");
+        assert!(
+            error.message.contains("api.moonshot.cn"),
+            "{}",
+            error.message
+        );
+        assert!(error.retryable);
+    }
+
+    /// A run that produced no reason must not invent one, and must not offer a
+    /// retry it cannot justify.
+    #[test]
+    fn a_failed_run_without_a_reason_writes_no_error_row() {
+        let mut reducer = TranscriptReducer::new();
+        run_started(&mut reducer, "run-1");
+        turn(&mut reducer);
+
+        reducer.apply_agent_update(
+            AgentUpdate::RunFailed {
+                run_id: "run-1".into(),
+                retryable: false,
+                message: None,
+            },
+            &context(1),
+        );
+
+        assert!(
+            !reducer
+                .view()
+                .rows
+                .iter()
+                .any(|row| matches!(row.body, RowBody::Error(_))),
+            "no reason means no row"
         );
     }
 

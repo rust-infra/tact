@@ -1365,6 +1365,33 @@ fn truncated_turn_message(outcome: AgentLoopOutcome) -> String {
     )
 }
 
+/// Turns a failed turn into the line the reader sees.
+///
+/// A bare `e.to_string()` here produced `Error: model call failed: model call
+/// failed: ...` chains that named no cause and no next step. When the failure
+/// is a typed model error, [`tact::recovery::model_failure_advice`] names the
+/// provider, the model, and what to change; everything else keeps its own
+/// message, since non-provider failures already say what went wrong.
+fn turn_failure_message(agent: &Agent, error: &anyhow::Error) -> String {
+    let Some(model_error) = tact::recovery::model_error_of(error) else {
+        return error.to_string();
+    };
+    let metadata = agent.provider_metadata();
+    let advice = tact::recovery::model_failure_advice(model_error, metadata.as_ref());
+    match advice.action {
+        Some(action) => format!("{}. {}", capitalize_first(&advice.headline), action),
+        None => capitalize_first(&advice.headline),
+    }
+}
+
+fn capitalize_first(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
 fn is_active_run_error(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         matches!(
@@ -2141,7 +2168,8 @@ async fn handle_user_command_with_account(
                         agent.emit_update(AgentUpdate::TaskCancelled);
                     }
                     Err(e) => {
-                        agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(e.to_string())));
+                        let message = turn_failure_message(agent, &e);
+                        agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(message)));
                     }
                 }
                 break;

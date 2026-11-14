@@ -178,22 +178,229 @@ pub fn classify_model_error(error: &tact_agent_api::ModelError) -> FailureKind {
     match error.kind {
         tact_agent_api::ModelErrorKind::ContextOverflow => FailureKind::PromptTooLong,
         tact_agent_api::ModelErrorKind::Transient => FailureKind::Transient,
-        tact_agent_api::ModelErrorKind::Permanent
-        | tact_agent_api::ModelErrorKind::Cancelled
-        | tact_agent_api::ModelErrorKind::Unsupported => FailureKind::Permanent,
+        // `Authentication` is not retryable: the same key produces the same 401
+        // no matter how many times it is sent. Everything unknown is treated
+        // the same way — retrying something we cannot classify only spends the
+        // user's quota.
+        _ => FailureKind::Permanent,
     }
+}
+
+/// What a user should see when a model call failed.
+///
+/// The adapter layer cannot produce this: it knows the class of failure but not
+/// which provider, model, or endpoint is configured, and it deliberately keeps
+/// provider text out of its message. The product layer knows all of that, so
+/// this is where a sentence with an action in it can be written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelFailureAdvice {
+    /// One line: what happened, naming provider/model/host where known.
+    pub headline: String,
+    /// One line: what to change. `None` only for cancellation, which is not a
+    /// failure the user has to fix.
+    pub action: Option<String>,
+    /// Whether resending unchanged could succeed.
+    pub retryable: bool,
+}
+
+/// Builds the user-facing text for a failed model call.
+///
+/// `metadata` is `None` when the call never reached a built provider (an
+/// unavailable snapshot), in which case the text stays generic instead of
+/// inventing a provider name.
+pub fn model_failure_advice(
+    error: &tact_agent_api::ModelError,
+    metadata: Option<&tact_llm::ProviderMetadata>,
+) -> ModelFailureAdvice {
+    use tact_agent_api::ModelErrorKind;
+
+    let provider = metadata
+        .map(|metadata| metadata.provider().to_string())
+        .unwrap_or_else(|| "provider".to_string());
+    let model = metadata
+        .map(|metadata| metadata.model().to_string())
+        .unwrap_or_else(|| "the configured model".to_string());
+    let host = metadata
+        .map(|metadata| metadata.endpoint_host())
+        .unwrap_or_default();
+    let at = if host.is_empty() {
+        String::new()
+    } else {
+        format!(" at {host}")
+    };
+
+    match error.kind {
+        ModelErrorKind::Cancelled => ModelFailureAdvice {
+            headline: "model call cancelled".to_string(),
+            action: None,
+            retryable: false,
+        },
+        ModelErrorKind::ContextOverflow => ModelFailureAdvice {
+            headline: format!(
+                "the conversation no longer fits {model}'s context window ({provider})"
+            ),
+            action: Some(
+                "run /compact to summarize the session, raise the context window, or start a new \
+                 session"
+                    .to_string(),
+            ),
+            retryable: false,
+        },
+        ModelErrorKind::Transient => ModelFailureAdvice {
+            headline: format!(
+                "{provider} is temporarily unreachable{at}, and every automatic retry failed"
+            ),
+            action: Some(
+                "check the network or proxy, then resend the message; nothing in the request \
+                 needs to change"
+                    .to_string(),
+            ),
+            retryable: true,
+        },
+        ModelErrorKind::Unsupported => ModelFailureAdvice {
+            headline: format!("{provider} does not support this operation"),
+            action: Some(
+                "switch provider or turn off the feature that requested it; the request itself \
+                 cannot be made compatible"
+                    .to_string(),
+            ),
+            retryable: false,
+        },
+        ModelErrorKind::Authentication => ModelFailureAdvice {
+            headline: format!("{provider} rejected the credential for {model}{at}"),
+            action: Some(credentials_action(&provider, metadata.is_some())),
+            retryable: false,
+        },
+        // `Permanent` and any kind a newer adapter adds: the adapter's message
+        // is already body-free and often names the concrete mismatch (a
+        // rejected status, a model that does not match, a cursor from another
+        // endpoint). Keeping it is the difference between "something failed"
+        // and "this is what to fix".
+        _ => {
+            let headline = match host.as_str() {
+                "" => format!("{provider} rejected the request for {model}"),
+                _ => format!("{provider} rejected the request for {model} at {host}"),
+            };
+            let action = permanent_action(error, metadata);
+            ModelFailureAdvice {
+                headline,
+                action: Some(action),
+                retryable: false,
+            }
+        }
+    }
+}
+
+/// Where this provider's key comes from, as a sentence.
+///
+/// Naming the settings path is the whole point: "authentication failed" without
+/// a location makes the user search the docs, and the location is already known
+/// here. The environment variable is `TACT_API_KEY` — the one the CLI actually
+/// reads (`config/cli.rs`) — not a per-provider `FOO_API_KEY`, which exists only
+/// in this repo's live-test conventions and would send the user somewhere that
+/// does nothing.
+fn credentials_action(provider: &str, has_metadata: bool) -> String {
+    if has_metadata {
+        format!(
+            "set a working API key for {provider} in [llm.providers.{provider}] api_key \
+             (config.toml or .tact/settings.json), or pass --api-key / set TACT_API_KEY, then \
+             resend the message"
+        )
+    } else {
+        format!(
+            "set a working API key for {provider} in [llm.providers.{provider}] api_key, then \
+             resend the message"
+        )
+    }
+}
+
+/// The actionable half of a permanent failure.
+///
+/// Reads the adapter's message for the one thing it cannot say: which setting
+/// it was. The message text is Tact's own (see `LlmError::user_message`), never
+/// a provider body, so matching on it is not reading provider prose.
+fn permanent_action(
+    error: &tact_agent_api::ModelError,
+    metadata: Option<&tact_llm::ProviderMetadata>,
+) -> String {
+    let message = error.message.to_ascii_lowercase();
+    let provider = metadata
+        .map(|metadata| metadata.provider().to_string())
+        .unwrap_or_else(|| "this provider".to_string());
+
+    // A 401/403 can still arrive as `Permanent` from an adapter that reports
+    // the status inside a protocol-level error (the Anthropic path wraps its
+    // HTTP failures in `MessageError::ApiError`). Same fix, same sentence.
+    if message.contains("authentication")
+        || message.contains("credential")
+        || message.contains("http 401")
+        || message.contains("http 403")
+    {
+        return credentials_action(&provider, metadata.is_some());
+    }
+    if message.contains("max_output_tokens") || message.contains("max_tokens") {
+        return "lower max_tokens (Settings → Max tokens) or raise limits.max_output_tokens for \
+                this provider"
+            .to_string();
+    }
+    if message.contains("does not match the provider's configured model") {
+        return "switch to the model this provider was built for (/model), or rebuild the provider \
+                by re-selecting it"
+            .to_string();
+    }
+    if message.contains("conversation state") || message.contains("cursor") {
+        return "start a new session; the saved conversation state belongs to a different provider \
+                or endpoint"
+            .to_string();
+    }
+    if message.contains("not valid json") || message.contains("stream was malformed") {
+        return "check base_url for this provider: the endpoint did not return this protocol's \
+                JSON, which usually means a wrong path or a proxy error page"
+            .to_string();
+    }
+    if message.contains("safety classifier") || message.contains("refusal") {
+        return "rephrase the request, or switch to a model with different safety filters; \
+                resending it unchanged will be refused again"
+            .to_string();
+    }
+    if message.contains("http 404") {
+        return "check the model name and base_url for this provider; the endpoint or model does \
+                not exist"
+            .to_string();
+    }
+    if message.contains("http 400") || message.contains("http 422") {
+        return "the provider rejected the request shape; check the model name and any per-model \
+                options for this provider"
+            .to_string();
+    }
+    format!(
+        "check the model name, base_url, and credentials for {provider}; the provider rejected \
+         the request"
+    )
 }
 
 /// Classifies a boxed error, downcasting to [`tact_llm::LlmError`] when the
 /// typed cause survived (see `Agent::stream_message`).
 pub fn classify_error(error: &anyhow::Error) -> FailureKind {
-    if let Some(model_error) = error.downcast_ref::<tact_agent_api::ModelError>() {
+    if let Some(model_error) = model_error_of(error) {
         return classify_model_error(model_error);
     }
     match error.downcast_ref::<tact_llm::LlmError>() {
         Some(llm_error) => classify_llm_error(llm_error),
         None => classify_text(&error.to_string()),
     }
+}
+
+/// The typed model error inside a boxed failure, if one survived.
+///
+/// The kernel now wraps the whole [`tact_agent_api::ModelError`] instead of a
+/// string (see `KernelError::Model`), so the failure class is still recoverable
+/// at the host boundary. Hosts use this to build user-facing text without
+/// taking a direct dependency on the agent API crate.
+pub fn model_error_of(error: &anyhow::Error) -> Option<&tact_agent_api::ModelError> {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<tact_agent_api::ModelError>())
 }
 
 /// Exponential back-off delay with millisecond jitter.
@@ -414,5 +621,144 @@ mod tests {
             summary,
             "http request failed: error sending request for url"
         );
+    }
+
+    fn metadata(provider: &str, model: &str, endpoint: &str) -> tact_llm::ProviderMetadata {
+        tact_llm::custom_chat(provider, model, endpoint)
+            .anonymous()
+            .limits(tact_llm::ModelLimits::new(Some(200_000), 8_192).expect("limits"))
+            .build()
+            .expect("a custom provider builds without credentials")
+            .metadata()
+            .clone()
+    }
+
+    /// The whole point of the advice: a permanent failure names something the
+    /// reader can change. "provider request failed" was the regression.
+    #[test]
+    fn a_permanent_failure_names_a_provider_and_an_action() {
+        use tact_agent_api::{ModelError, ModelErrorKind};
+
+        let metadata = metadata("deepseek", "deepseek-v4.1", "https://api.deepseek.com");
+        let error = ModelError::new(ModelErrorKind::Permanent, "provider returned HTTP 401");
+        let advice = model_failure_advice(&error, Some(&metadata));
+
+        assert!(advice.headline.contains("deepseek"), "{}", advice.headline);
+        assert!(
+            advice.headline.contains("deepseek-v4.1"),
+            "{}",
+            advice.headline
+        );
+        assert!(
+            advice.headline.contains("api.deepseek.com"),
+            "{}",
+            advice.headline
+        );
+        let action = advice.action.expect("a permanent failure has an action");
+        assert!(action.contains("API key"), "{action}");
+        assert!(!advice.retryable);
+    }
+
+    #[test]
+    fn a_rejected_model_name_points_at_the_model_setting() {
+        use tact_agent_api::{ModelError, ModelErrorKind};
+
+        let error = ModelError::new(
+            ModelErrorKind::Permanent,
+            "request model 'x' does not match the provider's configured model 'y'; \
+             switch the model (/model) or rebuild the provider",
+        );
+        let advice = model_failure_advice(&error, None);
+        assert!(advice.headline.contains("provider"), "{}", advice.headline);
+        let action = advice.action.clone().expect("action");
+        assert!(action.contains("/model"), "{action}");
+    }
+
+    #[test]
+    fn a_transient_failure_is_the_one_that_offers_a_retry() {
+        use tact_agent_api::{ModelError, ModelErrorKind};
+
+        let metadata = metadata("kimi", "kimi-k2", "https://api.moonshot.cn");
+        let error = ModelError::new(ModelErrorKind::Transient, "unreachable");
+        let advice = model_failure_advice(&error, Some(&metadata));
+        assert!(advice.retryable);
+        assert!(advice.headline.contains("kimi"), "{}", advice.headline);
+        assert!(advice.action.expect("action").contains("network"));
+    }
+
+    /// A credential problem is not a request problem: no retry button, and the
+    /// action names where the key lives so the user does not have to search.
+    #[test]
+    fn a_rejected_credential_names_where_the_key_lives() {
+        use tact_agent_api::{ModelError, ModelErrorKind};
+
+        let metadata = metadata("anthropic", "claude-test", "https://api.anthropic.com");
+        let error = ModelError::new(
+            ModelErrorKind::Authentication,
+            "provider returned HTTP 401 (authentication failed)",
+        );
+        let advice = model_failure_advice(&error, Some(&metadata));
+
+        assert!(!advice.retryable, "the same key would fail again");
+        assert!(
+            advice.headline.contains("credential"),
+            "{}",
+            advice.headline
+        );
+        let action = advice.action.expect("action");
+        assert!(action.contains("llm.providers.anthropic"), "{action}");
+        // `TACT_API_KEY` is the variable the CLI actually reads. The
+        // per-provider `FOO_API_KEY` spelling exists only in this repo's
+        // ignored live tests, so pointing a user at it would be a dead end.
+        assert!(action.contains("TACT_API_KEY"), "{action}");
+        assert!(!action.contains("ANTHROPIC_API_KEY"), "{action}");
+    }
+
+    /// Authentication must not be classified as retryable by the recovery loop
+    /// either, or the kernel would burn the budget against a dead key.
+    #[test]
+    fn authentication_is_never_retried() {
+        use tact_agent_api::{ModelError, ModelErrorKind};
+
+        let error = ModelError::new(ModelErrorKind::Authentication, "401");
+        assert_eq!(classify_model_error(&error), FailureKind::Permanent);
+        assert!(!error.is_retryable());
+    }
+
+    #[test]
+    fn a_context_overflow_points_at_compaction() {
+        use tact_agent_api::{ModelError, ModelErrorKind};
+
+        let error = ModelError::new(ModelErrorKind::ContextOverflow, "too large");
+        let advice = model_failure_advice(&error, None);
+        assert!(advice.action.expect("action").contains("/compact"));
+        assert!(!advice.retryable);
+    }
+
+    /// Cancellation is not a failure the reader has to fix, so it must not
+    /// grow an "action" line telling them to change a setting.
+    #[test]
+    fn cancellation_carries_no_action() {
+        use tact_agent_api::{ModelError, ModelErrorKind};
+
+        let error = ModelError::new(ModelErrorKind::Cancelled, "model call cancelled");
+        assert!(model_failure_advice(&error, None).action.is_none());
+    }
+
+    /// The advice is rendered to users, so it must never carry a provider body
+    /// even when the adapter message is the one being inspected.
+    #[test]
+    fn advice_never_echoes_a_provider_body() {
+        use tact_agent_api::{ModelError, ModelErrorKind};
+
+        let error = ModelError::new(
+            ModelErrorKind::Permanent,
+            "provider returned HTTP 400 (request rejected)",
+        );
+        let advice = model_failure_advice(&error, None);
+        let rendered = format!("{} {}", advice.headline, advice.action.unwrap_or_default());
+        assert!(!rendered.contains("SECRET"), "{rendered}");
+        // The body-free wording the adapter emits is what the advice reads.
+        assert!(!rendered.contains("{\"error\""), "{rendered}");
     }
 }
