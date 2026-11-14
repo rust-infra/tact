@@ -24,6 +24,12 @@ questions and the book chapter explains the design and its history.
   token accounting.
 - [`agent_guidelines.md`](agent_guidelines.md): tool-use guidance for coding
   agents that work in this repository.
+- [`crates/eval/README.md`](../crates/eval/README.md): case suites, the two
+  evaluation runners, and how graders read a run's evidence.
+- [`design/agent-eval.md`](design/agent-eval.md): why the verification harness
+  is a separate crate, why the stop reason is optional, and what was rejected.
+- [`book/29_chapter_eval_zh.html`](../book/29_chapter_eval_zh.html): the
+  long-form chapter on cases, runners, grading, and report comparability.
 
 ## Terminal UI
 

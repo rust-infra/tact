@@ -665,7 +665,19 @@ pub enum AgentUpdate {
     /// The matching kernel activation completed or was cancelled.
     RunFinished { run_id: String },
     /// The matching kernel activation failed before producing a successful result.
-    RunFailed { run_id: String },
+    ///
+    /// Carries the failure text and its retry class, not just the id: the
+    /// kernel already knows both (`RuntimeErrorInfo`), and dropping them here
+    /// was why the desktop firewall banner could only say "failed" while the
+    /// TUI log said *why*. Consumers that only need the boundary can still read
+    /// `run_id`, and producers that have no detail emit `None`.
+    RunFailed {
+        run_id: String,
+        /// True when resending unchanged could plausibly succeed.
+        retryable: bool,
+        /// One line naming the cause and the next step, when known.
+        message: Option<String>,
+    },
     /// A model response started. It precedes that response's first delta when
     /// the provider emits an identity hint.
     MessageStarted { message_id: String },

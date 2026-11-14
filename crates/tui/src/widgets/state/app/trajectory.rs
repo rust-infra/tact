@@ -10,7 +10,7 @@ use agent_tui_kit::{
     state::trajectory::TrajectoryLog,
 };
 
-use super::super::{App, InputMode};
+use super::super::{App, InputMode, SurfaceId};
 
 impl App {
     /// Open the page, taking the main area and the keyboard.
@@ -35,6 +35,10 @@ impl App {
         self.show_trajectory = false;
         self.trajectory_page.filter_editing = false;
         self.input_mode = InputMode::Insert;
+        // A closed page must not keep its hit rect: the wheel would route to a
+        // surface that is no longer drawn, and `trajectory_content_rows` would
+        // size the ledger from the last frame it was open.
+        self.mouse.clear_area(SurfaceId::TrajectoryPage);
         self.dirty = true;
     }
 
@@ -72,6 +76,58 @@ impl App {
         };
         self.trajectory_page.selected = self.trajectory.get(order[next]).map(|record| record.id);
         self.trajectory_page.follow = false;
+        self.scroll_trajectory_to_selection();
+        self.dirty = true;
+    }
+
+    /// Wheel scrolling over the ledger.
+    ///
+    /// The wheel moves the same thing `j`/`k` does — the selection, one record
+    /// per notch — rather than the raw painted offset. Two reasons: a record is
+    /// the unit the reader is scanning (the log's line stepper exists because
+    /// prose is read line by line, a ledger is not), and keeping one cursor
+    /// means the wheel cannot desynchronize the selection from what is on
+    /// screen. `scroll_trajectory_to_selection` already handles the viewport.
+    ///
+    /// Down at the last record re-arms `follow`: the reader has arrived at the
+    /// live tail, which is exactly what `G` means, so the page should resume
+    /// tracking the run instead of freezing one row short of the next append.
+    pub(crate) fn trajectory_scroll_by(&mut self, delta: isize) {
+        if delta == 0 {
+            return;
+        }
+        let rows = ledger_rows(&self.trajectory, &self.trajectory_page.filter);
+        let order: Vec<usize> = rows.iter().filter_map(|row| row.record).collect();
+        if order.is_empty() {
+            return;
+        }
+        self.materialize_trajectory_offset();
+        let position = self
+            .trajectory_page
+            .selected
+            .and_then(|id| self.trajectory.position_of(id))
+            .and_then(|index| order.iter().position(|candidate| *candidate == index))
+            .unwrap_or(0);
+
+        if delta.is_negative() {
+            let next = position.saturating_sub(delta.unsigned_abs());
+            self.trajectory_page.selected =
+                self.trajectory.get(order[next]).map(|record| record.id);
+            self.trajectory_page.follow = false;
+        } else {
+            let last = order.len() - 1;
+            let next = (position + delta as usize).min(last);
+            self.trajectory_page.selected =
+                self.trajectory.get(order[next]).map(|record| record.id);
+            if next == last {
+                // Arriving at the tail re-arms following, the same contract as
+                // the subagent view's wheel and the log's bottom pill.
+                self.trajectory_page.follow = true;
+                self.trajectory_page.scroll = 0;
+            } else {
+                self.trajectory_page.follow = false;
+            }
+        }
         self.scroll_trajectory_to_selection();
         self.dirty = true;
     }
@@ -149,7 +205,7 @@ impl App {
     /// own top and bottom borders.
     pub(crate) fn trajectory_content_rows(&self) -> u16 {
         self.mouse
-            .trajectory_page_area
+            .area(SurfaceId::TrajectoryPage)
             .height
             .saturating_sub(2)
             .max(1)
@@ -259,6 +315,163 @@ impl App {
             self.select_latest_trajectory_record();
         }
     }
+
+    /// Restore both views a resumed session needs: the log's cells and the
+    /// trajectory ledger.
+    ///
+    /// One entry point rather than two calls at the startup site, because the
+    /// two reads have to stay in step: the log renders the prose and the ledger
+    /// the evidence, and restoring only one leaves a page that disagrees with
+    /// the transcript. It is also what makes the wiring testable — `run_tui`
+    /// itself needs a terminal.
+    ///
+    /// Two queries, not one merged read: `load_session` yields the legacy
+    /// `Message` shape the log's renderer consumes, and `load_agent_session`
+    /// the agent shape that still carries each tool result's status. Widening
+    /// the log's input to carry a fact it never reads would touch every branch
+    /// of that renderer for nothing.
+    pub(crate) async fn restore_session_views(&mut self) {
+        let Some(store) = self.session_store.clone() else {
+            return;
+        };
+        if let Ok(messages) = store.load_session(&self.session_id).await
+            && !messages.is_empty()
+        {
+            self.load_history(messages);
+        }
+        if let Ok(messages) = store.load_agent_session(&self.session_id).await
+            && !messages.is_empty()
+        {
+            self.restore_trajectory(&messages);
+        }
+    }
+
+    /// Rebuild the ledger from a resumed session's transcript.
+    ///
+    /// A resumed session replays stored messages rather than the live update
+    /// stream, so without this the page opens empty while the transcript still
+    /// holds every tool call the run made. The agent-shaped transcript is the
+    /// input, not the legacy `Message`: only it carries each tool result's
+    /// terminal status, and a restored row that guessed "success" would be
+    /// worse than one that shows none.
+    ///
+    /// Turn numbering follows the prompts, exactly as
+    /// [`Self::begin_trajectory_turn`] does live. Injected cells are evidence,
+    /// not turns, so they are recorded and do not open one.
+    pub(crate) fn restore_trajectory(&mut self, messages: &[tact::AgentMessage]) {
+        use tact::{AgentContentBlock, AgentRole, MessageOrigin};
+
+        for message in messages {
+            if message.role == AgentRole::User
+                && matches!(message.origin, MessageOrigin::InjectedContext { .. })
+            {
+                let text = plain_text(&message.content);
+                if !text.trim().is_empty() {
+                    self.trajectory.restore_context("hook context", &text);
+                }
+                continue;
+            }
+            if message.role == AgentRole::User
+                && matches!(message.origin, MessageOrigin::GoalContext)
+            {
+                continue;
+            }
+
+            match message.role {
+                AgentRole::User => {
+                    // The prompt opens the turn; the tool results in the same
+                    // logical message answer calls from the turn before it.
+                    let prompt = message
+                        .content
+                        .iter()
+                        .filter_map(|block| match block {
+                            AgentContentBlock::Text { text } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    for block in &message.content {
+                        if let AgentContentBlock::ToolResult {
+                            tool_use_id,
+                            content,
+                            status,
+                        } = block
+                        {
+                            self.trajectory.restore_tool_result(
+                                tool_use_id,
+                                content,
+                                restore_status(*status),
+                            );
+                        }
+                    }
+                    if !prompt.trim().is_empty() {
+                        self.begin_trajectory_turn(&prompt);
+                    }
+                }
+                AgentRole::Assistant => {
+                    for block in &message.content {
+                        match block {
+                            AgentContentBlock::Text { text } => {
+                                if !text.trim().is_empty() {
+                                    self.trajectory.restore_assistant(text);
+                                }
+                            }
+                            AgentContentBlock::Thinking { thinking, .. } => {
+                                self.trajectory.restore_thinking(thinking, false);
+                            }
+                            AgentContentBlock::RedactedThinking { .. } => {
+                                self.trajectory.restore_thinking("", true);
+                            }
+                            AgentContentBlock::ToolUse { id, name, input } => {
+                                let raw = input.to_string();
+                                self.trajectory.restore_tool_use(id, name, Some(&raw));
+                            }
+                            // An assistant turn carries no results, and an
+                            // image is not evidence a ledger row can hold.
+                            AgentContentBlock::ToolResult { .. }
+                            | AgentContentBlock::Image { .. } => {}
+                        }
+                    }
+                }
+            }
+        }
+        if self.show_trajectory {
+            self.select_latest_trajectory_record();
+        }
+    }
+}
+
+/// The concatenated text blocks of a logical message.
+fn plain_text(blocks: &[tact::AgentContentBlock]) -> String {
+    blocks
+        .iter()
+        .filter_map(|block| match block {
+            tact::AgentContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The persisted status of one tool result, in the ledger's vocabulary.
+///
+/// `Unknown` — a row written before the status column existed — maps to `None`:
+/// the ledger then shows no status rather than claiming the call succeeded.
+fn restore_status(
+    status: tact::ToolResultStatus,
+) -> Option<agent_tui_kit::state::trajectory::TrajectoryStatus> {
+    use agent_tui_kit::state::trajectory::TrajectoryStatus;
+    match status {
+        tact::ToolResultStatus::Success => Some(TrajectoryStatus::Success),
+        tact::ToolResultStatus::Failed => Some(TrajectoryStatus::Failed),
+        tact::ToolResultStatus::Cancelled => Some(TrajectoryStatus::Cancelled),
+        tact::ToolResultStatus::Unknown => None,
+    }
+}
+
+/// `HH:MM` in local time, matching the rest of the TUI's stamps.
+fn now_label() -> String {
+    chrono::Local::now().format("%H:%M").to_string()
 }
 
 /// Whether this update changed a record that is already in the ledger.
@@ -272,9 +485,4 @@ fn changed_running_record(update: &tact_protocol::AgentUpdate) -> bool {
             | tact_protocol::AgentUpdate::ThinkingChunk(_)
             | tact_protocol::AgentUpdate::StreamChunk(_)
     )
-}
-
-/// `HH:MM` in local time, matching the rest of the TUI's stamps.
-fn now_label() -> String {
-    chrono::Local::now().format("%H:%M").to_string()
 }

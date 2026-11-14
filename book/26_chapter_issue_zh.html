@@ -375,6 +375,10 @@
 </div>
 <div class="toc-group">
 <ol class="toc-list">
+<li class="toc-l2"><a href="#2026-11-13--trajectory-%E5%9C%A8%E9%87%8D%E5%90%AF%E5%90%8E%E4%BB%8E%E4%BC%9A%E8%AF%9D%E8%AE%B0%E5%BD%95%E9%87%8D%E5%BB%BA" title="2026-11-13 — Trajectory 在重启后从会话记录重建"><span class="toc-label">2026-11-13 — Trajectory 在重启后从会话记录重建</span></a></li>
+<li class="toc-l2"><a href="#2026-11-13--trajectory-%E9%A1%B5%E6%94%AF%E6%8C%81%E9%BC%A0%E6%A0%87%E6%BB%9A%E8%BD%AE" title="2026-11-13 — Trajectory 页支持鼠标滚轮"><span class="toc-label">2026-11-13 — Trajectory 页支持鼠标滚轮</span></a></li>
+<li class="toc-l2"><a href="#2026-11-13--%E5%87%AD%E6%8D%AE%E6%8F%90%E7%A4%BA%E6%9B%BE%E6%8C%87%E5%90%91%E4%B8%8D%E5%AD%98%E5%9C%A8%E7%9A%84%E7%8E%AF%E5%A2%83%E5%8F%98%E9%87%8F" title="2026-11-13 — 凭据提示曾指向不存在的环境变量"><span class="toc-label">2026-11-13 — 凭据提示曾指向不存在的环境变量</span></a></li>
+<li class="toc-l2"><a href="#2026-11-13--%E6%A8%A1%E5%9E%8B%E8%B0%83%E7%94%A8%E5%A4%B1%E8%B4%A5%E4%B8%8D%E5%86%8D%E5%8F%AA%E8%AF%B4-provider-request-failed" title="2026-11-13 — 模型调用失败不再只说 provider request failed"><span class="toc-label">2026-11-13 — 模型调用失败不再只说 provider request failed</span></a></li>
 <li class="toc-l2"><a href="#2026-10-22--headless-%E6%97%A5%E5%BF%97%E5%8F%AA%E7%9C%8B%E5%88%B0%E4%B8%80%E5%8D%8A%E4%BA%8B%E4%BB%B6%E4%B8%80%E4%B8%AA-sink-%E7%BB%9F%E4%B8%80%E5%88%86%E5%8F%91" title="2026-10-22 — headless 日志只看到一半事件：一个 sink 统一分发"><span class="toc-label">2026-10-22 — headless 日志只看到一半事件：一个 sink 统一分发</span></a></li>
 <li class="toc-l2"><a href="#2026-10-22--pid-1-%E8%BA%AB%E4%BB%BD%E5%8F%AF%E8%AF%BB%E4%B8%8E%E5%90%A6%E6%98%AF%E5%B9%B3%E5%8F%B0%E7%AD%96%E7%95%A5" title="2026-10-22 — pid 1 的身份「可读与否」是平台策略，测试不能替它做假设"><span class="toc-label">2026-10-22 — pid 1 的身份「可读与否」是平台策略，测试不能替它做假设</span></a></li>
 <li class="toc-l2"><a href="#2026-10-21-runner-%E5%BE%AA%E7%8E%AF%E7%9A%84%E4%B8%89%E5%A4%84%E6%98%BE%E5%BC%8F%E5%8C%96" title="2026-10-21 — Runner 循环的三处显式化"><span class="toc-label">2026-10-21 — Runner 循环的三处显式化</span></a></li>
@@ -801,6 +805,223 @@ bugfix日志</strong>，记录有用户可见或 API
 <a href="../ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> 和对应章节，
 更早的设计与实施记录保存在 Git 历史中。正文中出现的旧 spec / plan
 文件名只用于标识当时的修订，文件本身已删除。</p>
+<h2 id="2026-11-13--trajectory-在重启后从会话记录重建">2026-11-13 — Trajectory 在重启后从会话记录重建</h2>
+<p><strong>现象：</strong> <code>/trajectory</code> 关掉 TUI 再 <code>--resume</code> 回来就是空的，
+而同一个会话的 Log 里历史消息都在。页面像是只活在进程内存里。</p>
+<p><strong>根因：</strong> 它确实只活在内存里。<code>TrajectoryLog</code> 只在
+<code>observe(&amp;AgentUpdate)</code> 里增长，而重启时没有 update 流可观察；启动路径
+<code>run_tui</code> 读了 <code>load_session</code> 喂给 <code>load_history</code>，
+但那是 legacy <code>Message</code> 形，<code>load_history</code> 只渲染文本块，
+<strong>thinking / tool_use / tool_result 全被跳过</strong>——正好是 ledger 存在的理由。</p>
+<p><strong>决策：</strong>
+(1) <code>TrajectoryLog</code> 新增
+<code>restore_assistant</code> / <code>restore_thinking</code> /
+<code>restore_tool_use</code> / <code>restore_tool_result</code> /
+<code>restore_context</code>，把「重建」与「观察实时流」分成两个入口。
+(2) 重建读 <strong><code>load_agent_session</code></strong>（<code>AgentMessage</code>）而不是
+<code>load_session</code>：只有前者还带着每条 tool result 的
+<code>ToolResultStatus</code>（SQLite 的 <code>tool_statuses</code> 列）。
+(3) 启动逻辑收进 <code>App::restore_session_views</code>，<code>run_tui</code> 只调它一次，
+这样接线本身可测（<code>run_tui</code> 本体需要终端）。
+(4) <code>tact</code> re-export <code>AgentMessage</code> / <code>AgentContentBlock</code> /
+<code>ToolResultStatus</code> 等，TUI 不必新增依赖。</p>
+<p><strong>两条不变量：</strong></p>
+<ul>
+<li><strong>没有的事实不编。</strong> 重建出的调用没有实测时长、没有到达时刻，所以
+<code>duration_ms</code> 与 <code>at</code> 保持 <code>None</code>；状态列出现之前的旧行解成
+<code>Unknown</code>，重建后 <code>status = None</code>——绝不显示 Success。</li>
+<li><strong>redacted thinking 留行不留体。</strong> provider 故意隐藏正文，重新显示等于废掉脱敏；
+行本身仍证明「存在过这个块」。</li>
+</ul>
+<p><strong>其他取舍：</strong> 找不到对应调用的孤立 result 直接丢弃（记录是调用，无锚点的 result
+会排在它所答的调用上方）；行首预览用无依赖的字段扫描而非 JSON 解析器（kit 的唯一协议依赖仍是
+<code>tact_protocol</code>，完整输入仍在 <code>record.input</code> 里供 detail 面板看）。</p>
+<p><strong>验证：</strong> 端到端跑真实库：会话
+<code>68cfb5b0…</code>（1174 条消息）重建出 1079 条记录（10 turns、180 Assistant、188
+Thinking、701 Tool），首行即真实的 <code>bash</code> 调用及其 Success 状态。测试：
+<code>restarting_a_saved_session_rebuilds_the_ledger</code>（写真实 sqlite 再走
+<code>restore_session_views</code>，去接线后变红——已验证）、
+<code>a_resumed_session_restores_the_ledger</code>、
+<code>a_restored_result_with_unknown_status_shows_no_status</code>、
+<code>restored_redacted_thinking_keeps_the_row_without_the_text</code>、
+<code>restored_injected_context_does_not_open_a_turn</code>，以及 kit 侧 5 条
+（<code>a_restored_call_attaches_its_result_by_id</code> 等）。
+<code>cargo test --workspace</code>、<code>cargo clippy --workspace --all-targets</code>、
+<code>scripts/check-rust.sh</code> 全绿。</p>
+<p><strong>已知缺口：</strong> 若某次 tool 调用被 compaction 摘掉、而它的 result 仍在 transcript
+里，该 result 会丢失——实时路径有同样的不对称（<code>StepFinished</code> 无
+<code>StepQueued</code> 时另起一条记录），重建若强行修复就会与当时看到的样子不一致。</p>
+<p><strong>Pointers：</strong>
+<code>crates/agent_tui_kit/src/state/trajectory.rs</code>（<code>restore_*</code>、
+<code>input_preview</code>）、
+<code>crates/tui/src/widgets/state/app/trajectory.rs</code>（<code>restore_session_views</code>、
+<code>restore_trajectory</code>）、<code>crates/tui/src/lib.rs</code>、
+<code>crates/tact/src/lib.rs</code>（re-export）、
+<code>crates/tact/src/store/session_store/sqlite.rs</code>（<code>load_agent_session</code>）、
+<code>docs/design/tui-trajectory.md</code>（新增「Across a restart」）。</p>
+<h2 id="2026-11-13--trajectory-页支持鼠标滚轮">2026-11-13 — Trajectory 页支持鼠标滚轮</h2>
+<p><strong>现象：</strong> <code>/trajectory</code> 打开后只能用
+<code>j</code>/<code>k</code>/<code>g</code>/<code>G</code> 翻记录，滚轮在页面上完全没反应；
+设计文档 <code>docs/design/tui-trajectory.md</code> 却写着「Wheel scrolling over the ledger
+works through the existing <code>SurfaceId</code> hit-rect mechanism」——那句话描述的是意图，
+不是实现。</p>
+<p><strong>根因（两处，一处在文档里）：</strong>
+(1) <code>handlers/mouse.rs</code> 的滚轮阶梯只认 <code>has_overlay_popup</code> /
+<code>show_subagent_view</code> / <code>in_task_panel</code> / <code>in_log</code>，没有
+<code>show_trajectory</code> 分支；<code>SurfaceId::TrajectoryPage</code> 在
+<code>scroll_list_popup</code> 的 match 里落进「无光标」分支，于是滚轮什么也不做。
+(2) 页面另存了一份 <code>MouseState::trajectory_page_area</code>，与
+<code>SurfaceId</code> 表里的矩形重复，而且 <code>close_trajectory_page</code>
+从不清理它。</p>
+<p><strong>决策：</strong>
+(1) 滚轮就是指针版的 <code>j</code>/<code>k</code>：一个新 notch 移动一条记录
+（<code>TRAJECTORY_WHEEL_STEP = 1</code>），到底部重新挂上 <code>follow</code>
+（与 subagent 视图滚轮、Log 底部 pill 同一契约）。步长按记录而非绘制行，因为页面有游标：
+按行步进要么一跳多条记录，要么把游标留在视口外。
+(2) 分派看 <code>show_trajectory</code>，不看命中矩形，且排在 <code>hit.in_log</code>
+<strong>之前</strong>：页面占据整个主区域，指针落在边框（不绘制 ledger 的那些行）上也该翻页；
+而 Log 的命中矩形只在绘制 log 的帧里刷新，页面打开期间它保留着打开前的旧矩形，arm 排在
+<code>hit.in_log</code> 之后会把每个 notch 交给被盖住的 log。
+(3) 删掉 <code>trajectory_page_area</code>，高度改读
+<code>mouse.area(SurfaceId::TrajectoryPage)</code>——一个矩形，不是两个；
+<code>close_trajectory_page</code> 调 <code>clear_area</code>，关掉的页面既不会用陈旧帧给
+ledger 定高，也不会再响应点测。</p>
+<p><strong>变更后：</strong> 滚轮在页面任意位置（含边框）按一条记录步进，方向对称；到达最后一条
+记录时重新跟随，下一次 append 会把最新记录带进视野而不是卡在上一行；关页后同一个 notch 回到
+Log。</p>
+<p><strong>验证：</strong> 新增 5 条测试，并逐条做过变异验证（改坏实现后确实变红）：
+<code>the_wheel_moves_the_selection_one_record_per_notch</code>（移除两处
+<code>show_trajectory</code> 臂 → 红）、
+<code>the_wheel_re_arms_following_at_the_tail</code>（移除向下臂 → 红）、
+<code>the_page_outranks_a_stale_log_rect</code>（把臂挪到 <code>hit.in_log</code> 之后 →
+红）、
+<code>closing_returns_insert_mode_and_clears_the_hit_area</code>（去掉
+<code>clear_area</code> → 红）、
+<code>the_wheel_over_the_page_never_scrolls_the_log</code>（构造 120 行长 log
+让断言真有牙齿：短 log 本来就不能滚，删掉实现也不会红）。
+<code>cargo test -p tui --lib</code>（816）、<code>cargo test --workspace</code>、
+<code>cargo clippy --workspace --all-targets</code> 全绿。</p>
+<p><strong>未做的：</strong> 页面没有滚动条，也没有「已滚离底部」的徽标——它的
+<code>follow</code> 是选中最后一条记录，不是滚动位置，加滚动条就要先决定它表示游标还是偏移。
+detail 面板内部的滚动仍只走键盘。</p>
+<p><strong>Pointers：</strong>
+<code>crates/tui/src/handlers/mouse.rs</code>（<code>handle_mouse_scroll_up/down</code>）、
+<code>crates/tui/src/widgets/state/app/trajectory.rs</code>（<code>trajectory_scroll_by</code>、
+<code>close_trajectory_page</code>、<code>trajectory_content_rows</code>）、
+<code>crates/tui/src/widgets/state/app/scroll.rs</code>（<code>TRAJECTORY_WHEEL_STEP</code>）、
+<code>crates/agent_tui_kit/src/state/mouse_state.rs</code>（删掉重复字段）、
+<code>crates/tui/src/render/trajectory_page_tests.rs</code>、
+<code>docs/design/tui-trajectory.md</code>（把「已经这样工作」改成实际契约）。</p>
+<h2 id="2026-11-13--凭据提示曾指向不存在的环境变量">2026-11-13 — 凭据提示曾指向不存在的环境变量</h2>
+<p><strong>现象：</strong> 上面那条「模型调用失败」条目第一版给的修复指引是
+<code>&lt;PROVIDER&gt;_API_KEY</code>（如 <code>ANTHROPIC_API_KEY</code>）。用户照着设置
+不会有任何效果——Tact 根本不读这个变量。</p>
+<p><strong>根因：</strong> 那个命名来自本仓库 <code>#[ignore]</code> 的 live 测试约定
+（<code>DEEPSEEK_API_KEY</code> / <code>KIMI_API_KEY</code> / <code>OPENAI_API_KEY_TEST</code>，
+只为真实端点测试读取），不是产品读取路径。<code>config/cli.rs</code> 里真正的 CLI 环境变量
+只有一个：<code>TACT_API_KEY</code>；配置文件路径是
+<code>[llm.providers.&lt;name&gt;] api_key</code>（<code>resolve.rs</code> 的
+<code>args.api_key → entry.api_key</code>）。</p>
+<p><strong>决策：</strong> 提示改为
+「<code>[llm.providers.&lt;name&gt;] api_key</code>，或 <code>--api-key</code> / 设
+<code>TACT_API_KEY</code>」，并加断言禁止再出现 per-provider 拼法。这正是本轮改动要消灭的
+那一类问题——文案看起来有指引，实际指向死胡同——所以它同样需要一条测试兜住。</p>
+<p><strong>验证：</strong>
+<code>a_rejected_credential_names_where_the_key_lives</code> 断言含
+<code>llm.providers.anthropic</code> 与 <code>TACT_API_KEY</code>，并显式断言
+<strong>不含</strong> <code>ANTHROPIC_API_KEY</code>。</p>
+<p><strong>Pointers：</strong> <code>crates/tact/src/recovery.rs</code>
+（<code>credentials_action</code>）、<code>crates/tact/src/config/cli.rs</code>、
+<code>crates/tact/src/config/resolve.rs</code>、<code>config.example.toml</code>。</p>
+<h2 id="2026-11-13--模型调用失败不再只说-provider-request-failed">2026-11-13 — 模型调用失败不再只说 <code>provider request failed</code></h2>
+<p><strong>现象：</strong> 任何一次模型调用失败，用户看到的一律是
+<code>❌ Error: model call failed: provider request failed</code>。凭据无效、模型名写错、
+base_url 指到网关、上下文超限、网络抖动重试耗尽，全都是同一句，而且没有任何下一步。
+用户唯一能做的只有来问人。</p>
+<p><strong>根因（四处，逐层把信息丢掉）：</strong>
+(1) <code>tact_llm</code> 的 <code>stable_error</code> 按 <code>ModelErrorKind</code>
+<strong>无条件覆写</strong> message，<code>Permanent</code> 因此固定成那五个词。它把「HTTP
+响应体不可信」这条安全约束过度泛化成了「所有永久性文案都不可信」，连 Tact 自己拼的
+<code>Auth</code>、cursor 校验文案也一起抹掉。
+(2) <code>KernelError::Model(String)</code> 只装字符串，<code>ModelErrorKind</code>
+在 kernel 边界就丢了，产品层拿不到判型。
+(3) driver 用 <code>AgentErrorKind::Other(e.to_string())</code> 直出，不再加工。
+(4) <code>AgentUpdate::RunFailed</code> 只带 <code>run_id</code>，桌面端的
+<code>FailureView { kind, retryable, retry_label }</code> 这套「可行动」结构从来没接到模型调用上。</p>
+<p><strong>决策：把脱敏和可诊断分开，而不是二选一。</strong>
+(1) <code>LlmError::user_message()</code> 成为唯一的降级点：保留 HTTP 状态码与类别，丢掉响应体、
+请求 URL（代理常在路径里带 key）与 header；<code>Auth</code> / <code>Unsupported</code> /
+<code>Mock</code> 这些由 Tact 自己撰写的文案原样通过。
+(2) <code>stable_error</code> 不再替换文案，只做单行化与长度封顶（<code>bounded_line</code>）。
+(3) <code>KernelError::Model</code> 改为携带 <code>ModelError</code>（<code>#[source]</code>），
+<code>RuntimeErrorInfo.detail</code> 顺带写上一步建议。
+(4) 新增 <code>recovery::model_failure_advice</code>：用 <code>ModelErrorKind</code> +
+<code>ProviderMetadata</code>（provider / model / <code>endpoint_host</code>）产出
+<code>{ headline, action, retryable }</code>。它故意放在产品层而不是 SDK：只有这里同时知道
+判型和配置。
+(5) <code>ProviderMetadata::endpoint_host()</code> 只给 host（含非默认端口），不给 path。
+(6) driver 的 <code>Err(e)</code> 改走 <code>turn_failure_message</code>。</p>
+<p><strong>变更后：</strong> 同一次失败现在会说清楚「谁、在哪、怎么办」，例如
+<em>“Deepseek rejected the request for deepseek-v4.1 at api.deepseek.com. check the API key for
+deepseek …”</em>；<code>Transient</code> 是唯一 <code>retryable</code> 的一档，文案明说
+「请求本身不需要改」；<code>Cancelled</code> 不带 action。</p>
+<p><strong>未泄漏（保留的守卫）：</strong>
+<code>docs/tact-llm-redaction.md</code> 的清单不变；
+<code>tests/stable_requests.rs</code> 的 canary 测试仍要求错误文本里不出现响应体标记、
+api key 与用户 prompt；<code>redaction_guard.rs</code> 的源码级禁令不变。新增测试断言
+<code>user_message()</code> 不含 <code>http://</code> / <code>https://</code>。</p>
+<p><strong>验证：</strong>
+<code>cargo test -p tact_llm --features openai-chat,telemetry --lib</code>（120）、
+<code>cargo test -p tact_agent_core</code>（71）、
+<code>cargo test -p tact</code>（1547）、
+<code>cargo test -p tact_host</code>（125）、
+<code>cargo test -p tui</code>（811）、
+<code>cargo test -p tact_llm --features openai-responses --test stable_requests</code>（2）
+全部通过；<code>cargo clippy --all-targets</code> 无告警。新增回归测试：
+<code>a_permanent_failure_names_a_provider_and_an_action</code>、
+<code>a_permanent_failure_is_not_flattened_to_one_boilerplate_line</code>、
+<code>a_provider_http_failure_names_the_status_but_not_the_url</code>。</p>
+<p><strong>第二轮（同一天补齐上面两项）：</strong></p>
+<ul>
+<li><code>ModelErrorKind</code> 新增 <code>Authentication</code>，401/403 与
+<code>LlmError::Auth</code> 都归入；<code>is_retryable()</code> 恒 <code>false</code>。
+枚举随之标记 <code>#[non_exhaustive]</code>，并新增
+<code>ModelError::class_label()</code>，未知值兜底 <code>"permanent"</code>，
+下游不必每次升级改 <code>match</code>。凭据类提示点名
+<code>[llm.providers.&lt;provider&gt;] api_key</code>、<code>--api-key</code> 与
+<code>TACT_API_KEY</code>。</li>
+<li><code>AgentUpdate::RunFailed</code> 改为携带
+<code>retryable</code> + <code>message: Option&lt;String&gt;</code>；
+<code>RuntimeErrorInfo</code> 加 <code>#[serde(default)] retryable</code>（旧 payload
+解成 <code>false</code>）。桌面端横幅优先用 driver 的 <code>AgentUpdate::Error</code>
+文案、退回 kernel 文本，并按 <code>retryable</code> 决定是否画 Retry；
+transcript reducer 用同一条信息写 <code>ErrorRow</code>（不再硬编码
+<code>retryable: true</code>）。</li>
+</ul>
+<p><strong>第二轮验证：</strong>
+<code>cargo test --workspace</code> 全绿；
+<code>cargo clippy --workspace --all-targets</code> 无告警。新增回归：
+<code>a_rejected_credential_lowers_to_authentication</code>、
+<code>an_unresolvable_credential_lowers_to_authentication</code>、
+<code>a_forbidden_response_lowers_to_authentication</code>、
+<code>a_rejected_credential_names_where_the_key_lives</code>、
+<code>authentication_is_never_retried</code>、
+<code>a_failed_run_carries_its_reason_and_retry_class</code>、
+<code>a_failed_run_writes_an_error_row_with_its_reason</code>、
+<code>a_kernel_failure_reason_reaches_the_banner</code>、
+<code>error_info_without_retryable_decodes_as_not_retryable</code>。</p>
+<p><strong>仍未做的：</strong> TUI 的 <code>RunFailed</code> 仍被当作
+「改变 busy 状态、不写日志行」的元事件处理 —— 用户可见的那句话来自
+<code>AgentUpdate::Error</code>，所以这不是缺口；但若将来有 producer 只发
+<code>RunFailed</code>，TUI 侧需要同样的兜底。</p>
+<p><strong>Pointers：</strong>
+<code>crates/tact_llm/src/error.rs</code>（<code>user_message</code>、<code>is_retryable</code>）、
+<code>crates/tact_llm/src/builder.rs</code>（<code>stable_error</code>、<code>bounded_line</code>、<code>validate</code>）、
+<code>crates/tact_llm/src/metadata.rs</code>（<code>endpoint_host</code>）、
+<code>crates/agent_core/src/deps.rs</code>（<code>KernelError::Model</code>、<code>advisory</code>）、
+<code>crates/tact/src/recovery.rs</code>（<code>model_failure_advice</code>、<code>model_error_of</code>）、
+<code>crates/tact_host/src/driver.rs</code>（<code>turn_failure_message</code>）、
+<a href="./22_chapter_llm_zh.html">第 22 章</a> §12。</p>
 <h2 id="2026-10-22--headless-日志只看到一半事件一个-sink-统一分发">2026-10-22 — headless 日志只看到一半事件：一个 sink 统一分发</h2>
 <table>
 <thead>

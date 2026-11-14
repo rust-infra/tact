@@ -2771,6 +2771,8 @@ impl DesktopActor {
         let mut run_finished = false;
         let mut run_cancelled = false;
         let mut run_failed = false;
+        let mut failed_run_detail: Option<(String, bool)> = None;
+        let mut agent_error_message: Option<String> = None;
         let mut became_ready = false;
         let mut gates_hinted = false;
         let mut drained = 0usize;
@@ -2811,6 +2813,23 @@ impl DesktopActor {
                         ));
                     }
                     run_failed |= matches!(&update, tact_protocol::AgentUpdate::Error(_));
+                    if let tact_protocol::AgentUpdate::Error(error) = &update {
+                        agent_error_message = Some(error.to_string());
+                    }
+                    // The kernel's own terminal failure carries the reason and
+                    // the retry class, so the failure banner can say what went
+                    // wrong instead of only that the run ended. A later `Error`
+                    // update (the driver's own rendering) replaces this with the
+                    // user-facing sentence, which is the more specific of the
+                    // two; both keep the same retry decision.
+                    if let tact_protocol::AgentUpdate::RunFailed {
+                        retryable,
+                        message: Some(message),
+                        ..
+                    } = &update
+                    {
+                        failed_run_detail = Some((message.clone(), *retryable));
+                    }
                     run_finished |= matches!(
                         &update,
                         tact_protocol::AgentUpdate::TaskComplete(_)
@@ -2901,6 +2920,26 @@ impl DesktopActor {
             };
             self.state.session.phase = SessionPhase::Ready;
             self.state.runtime.queue_paused |= run_cancelled;
+        }
+        // The banner is the one place a desktop user reads why the run stopped.
+        // Prefer the driver's user-facing sentence (`AgentUpdate::Error`, which
+        // names the provider and the fix) and fall back to the kernel's own
+        // `RunFailed` text, which at least names the failure class.
+        if run_failed {
+            let banner = agent_error_message
+                .as_ref()
+                .map(|message| (message.clone(), false));
+            let banner = banner.or(failed_run_detail);
+            if let Some((message, retryable)) = banner {
+                self.state.failure = Some(FailureView {
+                    kind: FailureKind::Other,
+                    message: Arc::from(message.as_str()),
+                    retryable,
+                    retry_label: retryable
+                        .then(|| Arc::from(localized(self.state.language, "Retry", "重试"))),
+                });
+                force_publish = true;
+            }
         }
         if became_ready
             && let Some(extension_host) = self.host.as_ref().map(|host| host.extension_host())
@@ -5462,6 +5501,8 @@ mod tests {
             AgentUpdate::StreamChunk("partial answer".into()),
             AgentUpdate::RunFailed {
                 run_id: "run-1".into(),
+                retryable: false,
+                message: None,
             },
             AgentUpdate::Error(AgentErrorKind::Other("provider failed".into())),
         ] {
@@ -5475,6 +5516,60 @@ mod tests {
         });
         assert_eq!(snapshot.runtime.current_phase, RunPhase::Failed);
         assert_eq!(assistant_status, Some(crate::RowStatus::Failed));
+        // The user-facing sentence from the driver wins over the kernel's
+        // class-level text, and a permanent failure offers no retry button.
+        let failure = snapshot
+            .failure
+            .as_ref()
+            .expect("a failed run sets the banner");
+        assert_eq!(failure.message.as_ref(), "provider failed");
+        assert!(!failure.retryable);
+    }
+
+    /// The kernel branch: with no driver `Error` to override it, the banner
+    /// still says why, and honours the retry class the kernel reported.
+    #[tokio::test]
+    async fn a_kernel_failure_reason_reaches_the_banner() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_project(tmp.path());
+        let factory = FakeFactory::new();
+        let (controller, _events) =
+            DesktopController::start_with_factory(config(tmp.path()), factory.clone()).unwrap();
+        wait_ready(&controller).await;
+        for update in [
+            AgentUpdate::RunStarted {
+                run_id: "run-1".into(),
+            },
+            AgentUpdate::TurnStats {
+                run_id: Some("run-1".into()),
+                turns_taken: 1,
+                max_turns: None,
+            },
+            AgentUpdate::RunFailed {
+                run_id: "run-1".into(),
+                retryable: true,
+                message: Some(
+                    "Kimi is temporarily unreachable at api.moonshot.cn, and every automatic \
+                     retry failed"
+                        .into(),
+                ),
+            },
+        ] {
+            factory.emit(HostEvent::agent(update));
+        }
+        controller.when_idle().await.unwrap();
+        let snapshot = controller.snapshot();
+        let failure = snapshot
+            .failure
+            .as_ref()
+            .expect("a failed run sets the banner");
+        assert!(
+            failure.message.contains("api.moonshot.cn"),
+            "{}",
+            failure.message
+        );
+        assert!(failure.retryable);
+        assert!(failure.retry_label.is_some(), "a retry button is offered");
     }
 
     #[tokio::test]

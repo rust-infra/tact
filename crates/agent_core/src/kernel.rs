@@ -476,7 +476,7 @@ impl AgentKernel {
                         )
                         .await?;
                     if matches!(outcome, CompactionOutcome::Skipped { .. }) {
-                        return Err(KernelError::Model(error.to_string()));
+                        return Err(KernelError::Model(error));
                     }
                     self.events.emit(AgentEvent::TurnFinished {
                         turn: state.total_turns,
@@ -485,7 +485,7 @@ impl AgentKernel {
                     continue;
                 }
                 ModelAttempt::Error(error) => {
-                    return Err(KernelError::Model(error.to_string()));
+                    return Err(KernelError::Model(error));
                 }
                 ModelAttempt::Complete { response, call } => (*response, *call),
             };
@@ -652,13 +652,24 @@ impl AgentKernel {
                     .await?;
                 }
                 StopReason::Refusal => {
-                    return Err(KernelError::Model(
-                        "model refused to process this request (stop_reason=refusal)".into(),
-                    ));
+                    // The provider's safety classifier answered 200 with a
+                    // refusal. That is a content problem, not a transport or
+                    // config one, so the user-facing text says so: retrying
+                    // verbatim will refuse again.
+                    return Err(KernelError::Model(ModelError::new(
+                        ModelErrorKind::Permanent,
+                        "the model's safety classifier refused this request \
+                         (stop_reason=refusal); rephrase the prompt or switch to a model with \
+                         different filters",
+                    )));
                 }
                 StopReason::Unknown { raw } => {
-                    return Err(KernelError::Model(format!(
-                        "model returned unknown stop reason {raw:?}"
+                    return Err(KernelError::Model(ModelError::new(
+                        ModelErrorKind::Permanent,
+                        format!(
+                            "the model returned stop reason {raw:?}, which this build does not \
+                             understand; update tact or switch provider"
+                        ),
                     )));
                 }
                 StopReason::ToolUse if calls.is_empty() => {

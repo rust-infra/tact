@@ -880,6 +880,19 @@ impl Agent {
         &self.runtime.events
     }
 
+    /// Facts about the provider this agent calls, when the stable provider is
+    /// in use.
+    ///
+    /// Hosts need this to turn a bare `ModelError` into a sentence that names
+    /// what to fix: the error carries the failure class but never the provider
+    /// or endpoint. `None` means the legacy client path, where there is no
+    /// built provider to describe.
+    #[must_use]
+    pub fn provider_metadata(&self) -> Option<tact_llm::ProviderMetadata> {
+        self.active_model_snapshot()
+            .map(|snapshot| snapshot.metadata)
+    }
+
     /// The current persisted session id, when this agent has a session store.
     pub fn session_id(&self) -> Option<&str> {
         self.runtime.session_id.as_deref()

@@ -1,0 +1,999 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.12.1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Agent 评测（Evaluation）</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      color: light-dark(#1a1a1a, #fdfdfd);
+      background-color: #fdfdfd;
+      background-color: light-dark(#fdfdfd, #1a1a1a);
+      color-scheme: light dark;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        color-scheme: light only;
+      }
+      html, body, pre, code {
+        background-color: transparent;
+      }
+      body, a, a:visited, blockquote {
+        color: black;
+      }
+      pre, code {
+        padding: 0;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a, a:visited {
+      color: inherit;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid;
+      border-color: #e6e6e6;
+      border-color: light-dark(#e6e6e6, #4c4c4c);
+      color: #606060;
+      color: light-dark(#606060, #b6b6b6);
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid currentColor;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid currentColor;
+      border-bottom: 1px solid currentColor;
+    }
+    th {
+      border-top: 1px solid currentColor;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      max-width: 900px; margin: 0 auto; padding: 40px 24px 120px;
+      font: 16px/1.75 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      color: #1f2328;
+    }
+    h1 { font-size: 30px; border-bottom: 2px solid #e4e6ea; padding-bottom: 12px; }
+    h2 { font-size: 23px; margin-top: 44px; border-bottom: 1px solid #eceef1; padding-bottom: 8px; }
+    h3 { font-size: 18px; margin-top: 32px; }
+    code { background: #f4f5f7; padding: 2px 6px; border-radius: 4px; font-size: 13.5px; }
+    pre:not(.mermaid) { background: #f6f7f9; padding: 14px 16px; border-radius: 8px; overflow-x: auto; }
+    pre:not(.mermaid) code { background: none; padding: 0; }
+    blockquote {
+      margin: 18px 0; padding: 10px 18px; border-left: 4px solid #c9d4e6;
+      background: #f7f9fc; border-radius: 0 8px 8px 0; color: #3d4653;
+    }
+    table { border-collapse: collapse; margin: 18px 0; width: 100%; font-size: 15px; }
+    th, td { border: 1px solid #e0e3e8; padding: 8px 12px; text-align: left; vertical-align: top; }
+    th { background: #f6f7f9; }
+    hr { border: none; border-top: 1px solid #e4e6ea; margin: 40px 0; }
+    .mermaid { margin: 24px 0; text-align: center; }
+    .lab { background: #fffdf5; border: 1px dashed #d8c07a; border-radius: 10px; padding: 8px 22px 22px; }
+    .lab h2 { border: none; }
+  </style>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({
+      startOnLoad: true,
+      securityLevel: "loose",
+      theme: "base",
+      fontFamily: '-apple-system, "SF Pro Text", "PingFang SC", sans-serif',
+      themeVariables: {
+        fontSize: "15px",
+        lineColor: "#8a93a3",
+        primaryTextColor: "#1f2328",
+        edgeLabelBackground: "#ffffff",
+      },
+      flowchart: { curve: "basis", nodeSpacing: 46, rankSpacing: 58, padding: 12 },
+      state: { nodeSpacing: 40, rankSpacing: 52 },
+    });
+  </script>
+  <style>
+    /* ---- book directory (generated by scripts/book-chapter-html.py) ---- */
+    /* Added after load so a deep link lands instantly; later jumps glide. */
+    html.toc-smooth { scroll-behavior: smooth; }
+    @media (prefers-reduced-motion: reduce) { html.toc-smooth { scroll-behavior: auto; } }
+    body.has-toc {
+      display: grid; grid-template-columns: 288px minmax(0, 1fr);
+      align-items: start; max-width: none; margin: 0; padding: 0;
+    }
+    body.has-toc > main {
+      box-sizing: border-box; width: 100%; max-width: 900px;
+      margin: 0 auto; padding: 40px 24px 120px;
+    }
+    body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 28px; }
+
+    .book-toc {
+      position: sticky; top: 0; align-self: start; z-index: 30;
+      box-sizing: border-box; height: 100vh;
+      display: flex; flex-direction: column;
+      background: #f5f6fa; border-right: 1px solid #e9ecf1;
+      overflow-y: auto; overscroll-behavior: contain;
+      font: 14px/1.5 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    }
+    .toc-card {
+      display: flex; align-items: center; gap: 10px;
+      margin: 18px 14px 0; padding: 13px 12px 13px 16px;
+      background: #fff; border-radius: 14px;
+      box-shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 10px 24px -18px rgba(16, 24, 40, .35);
+    }
+    .toc-icon { display: inline-flex; color: #8b93a1; }
+    .toc-icon svg { width: 18px; height: 18px; }
+    .toc-title {
+      flex: 1; font-size: 15px; font-weight: 600; color: #545b68;
+      letter-spacing: .02em;
+    }
+    .toc-collapse {
+      appearance: none; border: 0; border-radius: 999px;
+      background: #eef0f4; color: #6b7280; cursor: pointer;
+      font: inherit; font-size: 12px; line-height: 1; padding: 7px 12px;
+    }
+    .toc-collapse:hover { background: #e4e7ed; color: #4b5563; }
+
+    .toc-group { padding-top: 18px; }
+    .toc-group-label {
+      margin: 0; padding: 0 14px 4px 56px;
+      font-size: 11px; font-weight: 600; letter-spacing: .14em; color: #a0a8b4;
+    }
+    .toc-list { position: relative; list-style: none; margin: 0; padding: 4px 0 2px; }
+    .toc-list::before {
+      content: ""; position: absolute; left: 31px; top: 19px; bottom: 19px;
+      width: 2px; border-radius: 1px; background: #e3e8ef;
+    }
+    .toc-list li { position: relative; }
+    .toc-list li::before {
+      content: ""; position: absolute; left: 28px; top: 50%;
+      width: 8px; height: 8px; margin-top: -4px; border-radius: 50%;
+      background: #b9c1cc;
+      transition: background .15s, width .15s, height .15s, margin .15s, left .15s, box-shadow .15s;
+    }
+    .toc-list > li > a, .toc-list > li > .toc-label {
+      display: block; box-sizing: border-box;
+      margin-right: 8px; padding: 9px 10px 9px 56px; border-radius: 8px;
+      color: #6f7784; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-list > li > a:hover { background: #eceff5; color: #3f4652; }
+    .toc-list .toc-l2 > a { color: #5b6270; font-weight: 500; }
+    .toc-list .toc-l3 > a, .toc-list .toc-l3 > .toc-label { padding-left: 76px; font-size: 13px; color: #7d8592; }
+    .toc-list .toc-l3 > a:hover { color: #4b5563; }
+    .toc-list > li > a > .toc-label {
+      display: block; overflow: hidden;
+      white-space: nowrap; text-overflow: ellipsis;
+    }
+    .toc-list .is-active > a,
+    .toc-list .is-active > a:hover { color: #2f74f0; font-weight: 600; }
+    .toc-list .is-active::before {
+      left: 27px; width: 10px; height: 10px; margin-top: -5px;
+      background: #2f74f0; box-shadow: 0 0 0 4px rgba(47, 116, 240, .12);
+    }
+    .toc-list .toc-l2.is-source > a { color: #7c8493; }
+    .toc-list .toc-l2.is-source > a:hover { color: #4b5563; }
+
+    .toc-index {
+      display: inline-flex; align-items: center; gap: 4px; flex: none;
+      padding: 5px 8px; border-radius: 7px;
+      font-size: 12px; line-height: 1; color: #7c8493; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-index:hover { background: #eceff5; color: #2f74f0; }
+    .toc-index svg { width: 12px; height: 12px; }
+
+    .toc-fab {
+      position: fixed; top: 14px; left: 14px; z-index: 40;
+      display: none; align-items: center; gap: 7px;
+      padding: 8px 13px 8px 11px; border: 1px solid #e3e7ee; border-radius: 999px;
+      background: rgba(255, 255, 255, .94); backdrop-filter: blur(8px);
+      box-shadow: 0 6px 20px -10px rgba(16, 24, 40, .35);
+      color: #5b6270; font: inherit; font-size: 12.5px; cursor: pointer;
+    }
+    .toc-fab .toc-icon svg { width: 15px; height: 15px; }
+    .toc-scrim { display: none; }
+
+    @media (min-width: 1100px) {
+      html[data-toc="closed"] body.has-toc { display: block; }
+      html[data-toc="closed"] .book-toc { display: none; }
+      html[data-toc="closed"] .toc-fab { display: inline-flex; }
+    }
+    @media (max-width: 1099px) {
+      body.has-toc { display: block; }
+      body.has-toc > main { padding-top: 72px; }
+      body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 76px; }
+      .book-toc {
+        position: fixed; inset: 0 auto 0 0; width: min(86vw, 320px); height: 100dvh;
+        transform: translateX(-102%); transition: transform .22s ease;
+      }
+      html[data-toc="open"] .book-toc {
+        transform: none; box-shadow: 24px 0 60px -30px rgba(16, 24, 40, .45);
+      }
+      html[data-toc="open"] .toc-scrim {
+        display: block; position: fixed; inset: 0; z-index: 25;
+        background: rgba(17, 24, 39, .28);
+      }
+      .toc-fab { display: inline-flex; }
+      html[data-toc="open"] .toc-fab { display: none; }
+    }
+    @media print {
+      .book-toc, .toc-fab, .toc-scrim { display: none !important; }
+      body.has-toc { display: block; }
+      body.has-toc > main { max-width: none; padding: 0; }
+    }
+  </style>
+  <script>
+    (function () {
+      var narrow = false, stored = null;
+      try { narrow = matchMedia("(max-width: 1099px)").matches; } catch (e) {}
+      try { stored = localStorage.getItem("tact-book-toc"); } catch (e) {}
+      document.documentElement.dataset.toc =
+        narrow || stored === "closed" ? "closed" : "open";
+    })();
+  </script>
+</head>
+<body class="has-toc">
+<button class="toc-fab" type="button" aria-label="展开目录"><span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span><span>目录</span></button>
+<div class="toc-scrim"></div>
+<nav class="book-toc" id="book-toc" aria-label="目录">
+<div class="toc-card">
+<span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span>
+<span class="toc-title">目录</span>
+<a class="toc-index" href="index_zh.html" title="返回全书总目录"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg><span>总目录</span></a>
+<button class="toc-collapse" type="button" aria-expanded="true">收起</button>
+</div>
+<div class="toc-group">
+<ol class="toc-list">
+<li class="toc-l2"><a href="#1-%E4%B8%BA%E4%BB%80%E4%B9%88%E9%9C%80%E8%A6%81%E4%B8%80%E4%B8%AA%E7%8B%AC%E7%AB%8Bcrate" title="1. 为什么需要一个独立 crate"><span class="toc-label">1. 为什么需要一个独立 crate</span></a></li>
+<li class="toc-l2"><a href="#2-%E4%B8%89%E6%9D%A1%E6%9D%A5%E8%87%AA%E6%97%A2%E6%9C%89%E5%AE%9E%E7%8E%B0%E7%9A%84%E7%BA%A6%E6%9D%9F" title="2. 三条来自既有实现的约束"><span class="toc-label">2. 三条来自既有实现的约束</span></a></li>
+<li class="toc-l3"><a href="#agentupdate-%E4%B8%8D%E5%8F%AF%E5%BA%8F%E5%88%97%E5%8C%96%E4%B8%94%E4%B8%A2%E6%8E%89%E7%BB%93%E6%9E%9C" title="AgentUpdate 不可序列化，且丢掉结果"><span class="toc-label">AgentUpdate 不可序列化，且丢掉结果</span></a></li>
+<li class="toc-l3"><a href="#%E9%85%8D%E7%BD%AE%E6%98%AF%E8%BF%9B%E7%A8%8B%E5%85%A8%E5%B1%80%E7%9A%84" title="配置是进程全局的"><span class="toc-label">配置是进程全局的</span></a></li>
+<li class="toc-l3"><a href="#headless-%E6%97%A0%E6%B3%95%E5%9B%9E%E7%AD%94%E6%9D%83%E9%99%90%E6%8F%90%E7%A4%BA" title="headless 无法回答权限提示"><span class="toc-label">headless 无法回答权限提示</span></a></li>
+<li class="toc-l2"><a href="#3-%E7%94%A8%E4%BE%8B" title="3. 用例"><span class="toc-label">3. 用例</span></a></li>
+<li class="toc-l2"><a href="#4-%E5%88%A4%E5%88%86%E5%99%A8" title="4. 判分器"><span class="toc-label">4. 判分器</span></a></li>
+<li class="toc-l3"><a href="#verdict-%E6%98%AF%E4%B8%89%E6%80%81" title="Verdict 是三态"><span class="toc-label">Verdict 是三态</span></a></li>
+<li class="toc-l2"><a href="#5-%E4%B8%A4%E4%B8%AA-runner" title="5. 两个 runner"><span class="toc-label">5. 两个 runner</span></a></li>
+<li class="toc-l3"><a href="#hostrunner%E8%BF%9B%E7%A8%8B%E5%86%85" title="HostRunner（进程内）"><span class="toc-label">HostRunner（进程内）</span></a></li>
+<li class="toc-l3"><a href="#clirunner%E5%AD%90%E8%BF%9B%E7%A8%8B" title="CliRunner（子进程）"><span class="toc-label">CliRunner（子进程）</span></a></li>
+<li class="toc-l3"><a href="#%E4%B8%A4%E8%BE%B9%E7%9A%84%E8%AF%81%E6%8D%AE%E5%BF%85%E9%A1%BB%E5%90%8C%E5%90%8D%E5%90%8C%E4%B9%89" title="两边的证据必须同名同义"><span class="toc-label">两边的证据必须同名同义</span></a></li>
+<li class="toc-l2"><a href="#6-%E8%B6%85%E6%97%B6%E4%B8%8E%E8%BF%9B%E7%A8%8B" title="6. 超时与进程"><span class="toc-label">6. 超时与进程</span></a></li>
+<li class="toc-l3"><a href="#%E8%B6%85%E6%97%B6%E7%9A%84%E8%BF%90%E8%A1%8C%E4%B8%8D%E8%83%BD%E8%A2%AB%E5%88%A4%E4%B8%BA%E9%80%9A%E8%BF%87" title="超时的运行不能被判为通过"><span class="toc-label">超时的运行不能被判为通过</span></a></li>
+<li class="toc-l3"><a href="#%E8%BF%9B%E7%A8%8B%E7%BB%84%E4%B8%8E%E5%AE%83%E5%A4%9F%E4%B8%8D%E5%88%B0%E7%9A%84%E5%9C%B0%E6%96%B9" title="进程组与它够不到的地方"><span class="toc-label">进程组与它够不到的地方</span></a></li>
+<li class="toc-l3"><a href="#%E8%AF%BB%E5%8F%96%E5%BF%85%E9%A1%BB%E6%9C%89%E7%95%8C" title="读取必须有界"><span class="toc-label">读取必须有界</span></a></li>
+<li class="toc-l2"><a href="#7-%E9%9A%94%E7%A6%BB%E4%B8%8E%E6%88%90%E6%9C%AC" title="7. 隔离与成本"><span class="toc-label">7. 隔离与成本</span></a></li>
+<li class="toc-l2"><a href="#8-%E6%8A%A5%E5%91%8A%E4%B8%8E%E5%8F%AF%E6%AF%94%E6%80%A7" title="8. 报告与可比性"><span class="toc-label">8. 报告与可比性</span></a></li>
+<li class="toc-l2"><a href="#9-%E5%91%BD%E4%BB%A4%E8%A1%8C" title="9. 命令行"><span class="toc-label">9. 命令行</span></a></li>
+<li class="toc-l2"><a href="#10-%E4%B8%8D%E6%98%AF%E5%AF%86%E9%97%AD%E7%9A%84" title="10. 不是密闭的"><span class="toc-label">10. 不是密闭的</span></a></li>
+<li class="toc-l2"><a href="#11-%E5%BD%93%E5%89%8D%E9%99%90%E5%88%B6" title="11. 当前限制"><span class="toc-label">11. 当前限制</span></a></li>
+<li class="toc-l2"><a href="#12-%E4%B8%8E%E7%8E%B0%E6%9C%89%E9%A2%86%E5%9F%9F%E7%9A%84%E5%85%B3%E7%B3%BB" title="12. 与现有领域的关系"><span class="toc-label">12. 与现有领域的关系</span></a></li>
+<li class="toc-l2"><a href="#%E7%9B%B8%E5%85%B3%E6%96%87%E6%A1%A3" title="相关文档"><span class="toc-label">相关文档</span></a></li>
+</ol>
+</div>
+</nav>
+<main>
+<h1 id="agent-评测evaluation">Agent 评测（Evaluation）</h1>
+<blockquote>
+<p><strong>文档状态：已实现（2026-11-13）。</strong>
+本章描述 <code>crates/eval</code> 提供的评测能力：用例格式、两个 runner、
+判分器、报告与可比性。它是一套验证工具，不是产品运行时的一部分。</p>
+</blockquote>
+<p>评测要回答一个问题：某次改动让 Agent 变好了还是变坏了。回答问题需要三样东西同时成立：
+用例可重复、证据来自运行本身而不是模型自述、两次运行的数字可比。
+Tact 的既有结构让这三件事都不显然，本章先解释约束，再给出形状。</p>
+<hr />
+<h2 id="1-为什么需要一个独立crate">1. 为什么需要一个独立 crate</h2>
+<p>评测代码依赖产品：它要启动会话、跑真实内核、读真实用量。
+产品不依赖评测。这条方向由
+<code>scripts/check-packaging.py</code> 强制：任何其他 crate 依赖
+<code>tact_eval</code>，构建即失败。</p>
+<p>这条围栏的作用不是洁癖。如果评测挂在 <code>tact-ui</code> 里，
+suite runner、判分器和报告格式就会随产品二进制一起发布，
+变成 semver 表面的一部分，也会把评测专用依赖拖进每一次产品构建。</p>
+<table>
+<thead>
+<tr>
+<th>位置</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/eval/src/case.rs</code></td>
+<td>用例与判分器声明，TOML 解析与校验</td>
+</tr>
+<tr>
+<td><code>crates/eval/src/suite.rs</code></td>
+<td>加载目录、解析 fixture、准备每次尝试的工作目录</td>
+</tr>
+<tr>
+<td><code>crates/eval/src/runner.rs</code></td>
+<td><code>RunArtifact</code>、<code>RunIdentity</code>、<code>Runner</code> trait</td>
+</tr>
+<tr>
+<td><code>crates/eval/src/host_runner.rs</code></td>
+<td>进程内运行，拿得到类型化停止原因</td>
+</tr>
+<tr>
+<td><code>crates/eval/src/cli_runner.rs</code></td>
+<td>子进程运行 <code>tact-ui headless</code></td>
+</tr>
+<tr>
+<td><code>crates/eval/src/process.rs</code></td>
+<td>子进程的统一生命周期：超时、进程组、有界读取</td>
+</tr>
+<tr>
+<td><code>crates/eval/src/grader.rs</code></td>
+<td>三种判分器与 verdict 折叠</td>
+</tr>
+<tr>
+<td><code>crates/eval/src/report.rs</code></td>
+<td>报告、汇总、指纹、schema 版本</td>
+</tr>
+<tr>
+<td><code>crates/eval/src/options.rs</code></td>
+<td>一次运行的配置，两个 runner 共用</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="2-三条来自既有实现的约束">2. 三条来自既有实现的约束</h2>
+<h3 id="agentupdate-不可序列化且丢掉结果">AgentUpdate 不可序列化，且丢掉结果</h3>
+<p><code>tact_protocol::AgentUpdate</code> 只有 <code>Debug</code> 和
+<code>Clone</code>；它的 <code>RunFinished { run_id }</code> 不带 outcome。
+<code>tact::AgentLoopStop</code> 是为进程内 Goal Runner 设计的，
+刻意不带 serde。于是停止原因、轮次数、工具调用数只在跑它的进程活着时存在。</p>
+<p>这直接决定了 <code>RunArtifact::stop</code> 和 <code>turns</code> 是
+<code>Option</code> 而不是带默认值的枚举。看不见的 runner 说
+<code>None</code>，报告渲染成 unknown；写成 0 会让一个猜测混进套件的平均值。</p>
+<h3 id="配置是进程全局的">配置是进程全局的</h3>
+<p><code>tact::config::install</code> 每次进程只装一次。
+模型、endpoint、权限模式因此属于一次运行，不属于单个用例。
+用例文件里写 <code>model</code> 会是个进程内 runner 无法兑现的旋钮，
+而撒谎的旋钮比没有旋钮更糟。</p>
+<p>推论是并行的位置在上一层：<code>run_suite</code> 顺序执行，
+需要不同配置的调用方启动多个 <code>tact-eval</code> 进程。</p>
+<h3 id="headless-无法回答权限提示">headless 无法回答权限提示</h3>
+<p><code>tact-ui headless</code> 只能跑在 <code>auto</code> 或
+<code>plan</code>。默认权限模式是 <code>Default</code>（每次询问），
+headless 会把每个需要工具的用例都判成失败。因此
+<code>RunOptions</code> 的默认是 <code>Auto</code>，且这处偏离只写在一个
+<code>impl Default</code> 里。</p>
+<hr />
+<h2 id="3-用例">3. 用例</h2>
+<p>用例是可版本化的数据，每个用例一个 <code>*.toml</code>。</p>
+<pre><code class="language-toml">prompt = &quot;Create hello.txt containing exactly: hello eval&quot;
+timeout_secs = 180
+
+[isolation]
+kind = &quot;copy&quot;          # 或 &quot;empty&quot;
+fixture = &quot;fixtures/seed&quot;
+
+[[graders]]
+kind = &quot;files&quot;
+name = &quot;hello-file&quot;
+
+[[graders.assertions]]
+kind = &quot;contains&quot;
+path = &quot;hello.txt&quot;
+text = &quot;hello eval&quot;</code></pre>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>缺省取文件名，套件内必须唯一</td>
+</tr>
+<tr>
+<td><code>prompt</code></td>
+<td>用户会给 Agent 的那句话</td>
+</tr>
+<tr>
+<td><code>timeout_secs</code></td>
+<td>整次尝试的墙钟预算，默认 300</td>
+</tr>
+<tr>
+<td><code>isolation</code></td>
+<td><code>empty</code> 或 <code>copy { fixture }</code></td>
+</tr>
+<tr>
+<td><code>graders</code></td>
+<td>决定用例成败的判分器列表</td>
+</tr>
+</tbody>
+</table>
+<p><code>EvalCase</code> 用 <code>deny_unknown_fields</code>。
+把 <code>timeout_secs</code> 拼成 <code>timeout_sec</code> 会让加载失败，
+而不是悄悄退回默认值——一个本想限制慢用例的预算，若静默失效，
+判分就会按错误的预算进行。</p>
+<p>校验分两层。<code>EvalCase::load</code> 只判断文件本身能决定的事：
+prompt 非空、超时为正、判分器合法、正则能编译。
+fixture 是否存在要等 <code>EvalSuite::load</code>，
+因为相对路径只有相对套件目录才有意义。</p>
+<p>正则错误在加载期拒绝，而不是判分期。否则它会以
+<code>Fail</code> 的形式出现，读起来像"Agent 没做到"，
+而真相是"用例提了一个不可能的问题"。</p>
+<hr />
+<h2 id="4-判分器">4. 判分器</h2>
+<p>判分器只读两样东西：runner 产出的 <code>RunArtifact</code>，
+和运行留下的工作目录。它不知道是哪个 runner 跑的，
+也从不询问模型"你觉得自己做完了吗"。</p>
+<table>
+<thead>
+<tr>
+<th>kind</th>
+<th>判定</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>command</code></td>
+<td>在用例目录执行 shell 命令，退出码 0 通过</td>
+</tr>
+<tr>
+<td><code>files</code></td>
+<td><code>exists</code>、<code>absent</code>、<code>contains</code>、<code>matches</code></td>
+</tr>
+<tr>
+<td><code>answer</code></td>
+<td><code>contains</code>、<code>not_contains</code>、<code>matches</code>、<code>non_empty</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="verdict-是三态">Verdict 是三态</h3>
+<pre><code class="language-rust">enum Verdict {
+    Pass,
+    Fail { reason: String },
+    Inconclusive { reason: String },
+}</code></pre>
+<p>三态不是过度设计。把"无法判断"并入"失败"，
+一次坏掉的 harness 就会变成一次假回归；
+并入"通过"，一个没测到的用例就会伪装成绿灯。</p>
+<p>折叠规则按优先级排列，写在 <code>CaseOutcome::verdict</code>：</p>
+<ol type="1">
+<li>记录了 <code>RunFailure</code>（超时、启动失败、harness 错误）→
+<code>Inconclusive</code>。harness 的问题不计入模型成绩。</li>
+<li>运行是 <code>EmptyTurn</code> 且用例没有 <code>answer</code> 判分器 →
+<code>Inconclusive</code>。文件判分器可能通过，但没有任何证据表明请求被回答了。</li>
+<li>任一判分器 <code>Fail</code> → <code>Fail</code>，并带上判分器名。</li>
+<li>任一判分器 <code>Inconclusive</code> → <code>Inconclusive</code>。</li>
+<li>否则 <code>Pass</code>。</li>
+</ol>
+<p>没有判分器的用例同样判 <code>Inconclusive</code>，不是通过。</p>
+<hr />
+<h2 id="5-两个-runner">5. 两个 runner</h2>
+<h3 id="hostrunner进程内">HostRunner（进程内）</h3>
+<p>直接调用 <code>bootstrap_session</code> 与
+<code>agent_loop_detailed</code>，与 TUI、headless 用同一套启动路径。
+它唯一能拿到的东西是 <code>AgentLoopOutcome</code>：
+真实停止原因、轮次数、工具调用数。这是它存在的理由。</p>
+<p>它刻意不走 <code>tact_host::HostSession</code>。后者把一轮对话暴露成
+<code>UserCommand::SubmitTask</code> 加
+<code>HostEvent::Agent(AgentUpdate)</code>，而
+<code>AgentUpdate</code> 不带 outcome，走它就等于把类型化的停止原因换成从日志里猜。</p>
+<p>代价是配置进程全局，一次运行的用例共享同一个模型和权限模式。
+这也是 <code>run_suite</code> 顺序执行的原因。</p>
+<h3 id="clirunner子进程">CliRunner（子进程）</h3>
+<p>启动 <code>tact-ui headless</code>，读它写入的三样东西：
+stdout 上的最终答案、stderr 上的每行一个事件、退出码。
+它能对 release 二进制或容器工作，这正是 CI 需要的形状。</p>
+<p>它读不到的字段留 <code>None</code>：缓存命中 token、推理 token、
+工具参数摘要。日志行里没有这些字段，所以是 unknown，不是 0。</p>
+<h3 id="两边的证据必须同名同义">两边的证据必须同名同义</h3>
+<p>两个 runner 产出同一个 <code>RunArtifact</code>，
+过同一批判分器，因此同一套件在两条路径上得分方式一致。
+两处刻意的差异都在类型上可见：</p>
+<pre><code class="language-rust">struct ToolRecord {
+    name: Option&lt;String&gt;,      // 日志行没点名工具时是 None
+    args: Option&lt;String&gt;,
+    message: Option&lt;String&gt;,
+    status: ToolStatus,
+    duration_ms: Option&lt;u64&gt;,
+}
+
+struct TokenTotals {
+    prompt: u64,
+    completion: u64,
+    cache_hit: Option&lt;u64&gt;,    // CLI 路径看不到
+    reasoning: Option&lt;u64&gt;,
+}</code></pre>
+<p>CLI 日志里 <code>[tool failed]</code> 有两种来源：完成步骤
+（<code>[tool failed] {tool} {message} (Nms)</code>）与
+provider 活动失败（<code>[tool failed] {error}</code>，不点名任何工具）。
+把后者当成前者，就会把一句错误信息读成工具名。
+所以只有行本身能证明时才归因，否则 <code>name</code> 为
+<code>None</code>、文本进 <code>message</code>。</p>
+<hr />
+<h2 id="6-超时与进程">6. 超时与进程</h2>
+<p>评测里最容易出错的不是判分，是"什么时候该停"。</p>
+<h3 id="超时的运行不能被判为通过">超时的运行不能被判为通过</h3>
+<p>到预算时 HostRunner 调用协作取消，而 agent loop 会返回
+<code>RunStop::Cancelled</code>。如果只按 loop 的返回值分类，
+一次"先写好文件、再卡住"的运行会拿文件判分器判定通过。
+所以 runner 记住预算是否耗尽，无论 loop 怎么返回都记为
+<code>RunFailure::Timeout</code>，让这次尝试落在 <code>Inconclusive</code>。</p>
+<h3 id="进程组与它够不到的地方">进程组与它够不到的地方</h3>
+<p><code>process::run_child</code> 让子进程自成一个进程组，
+超时对整组发信号。这能收掉留在组里的孙进程。</p>
+<p>但 Tact 自己的 <code>bash</code> 工具和
+<code>background_run</code> 会把它们的子进程放进新的进程组，
+超时时仍在运行的工具有可能不在被杀的组里。模块文档直说这条边界，
+不假装覆盖。要覆盖需要按平台枚举后代进程，那是另一个改动。</p>
+<h3 id="读取必须有界">读取必须有界</h3>
+<p>子进程正常退出，但孙进程（<code>cmd &amp;</code>）仍持有 stdout 时，
+管道不会关闭。无界的读取会一直等到孙进程结束——
+对判分器来说，一个开发服务器就能让整个套件挂死。
+现在等待有上限，输出在读到时即写入共享缓冲，
+所以截断也不会把已到的内容一起丢掉。</p>
+<hr />
+<h2 id="7-隔离与成本">7. 隔离与成本</h2>
+<p>每次尝试在自己的目录里跑：<code>$TMPDIR/tact-eval/&lt;case&gt;/&lt;uuid&gt;</code>。
+相对 fixture 在 <code>EvalSuite::load</code> 时相对套件目录解析并校验；
+之后判分只读这个目录，与进程 cwd 无关。</p>
+<p>判分后目录被删除。一次运行会留下整棵源码树和一个 SQLite 会话，
+任何规模的套件都会把磁盘填满。删除也解释了为什么报告里的
+<code>session_id</code> 是标签而不是句柄：它指向的
+<code>.tact/tact.db</code> 在读者看到 JSON 时已经不存在。</p>
+<p>每次尝试有自己的 <code>.tact/tact.db</code> 和 session id，
+所以会话锁与数据库都不共享。这是并行安全的结构性保证，
+而不是靠加锁。</p>
+<hr />
+<h2 id="8-报告与可比性">8. 报告与可比性</h2>
+<p>报告是 stderr 上的一张表加 stdout 上的 JSON。
+JSON 带 <code>schema_version</code>，因为报告由一个版本写出、
+由另一个版本读取（CI 产物、外部平台摄入），读者需要一个数字来判断兼容性。</p>
+<p>下面是 <code>suites/smoke</code> 用 CLI runner 跑两次的真实输出：</p>
+<pre><code>runner=cli model=unset endpoint=unset mode=auto attempts=2
+suite=9549eddcaa2ae102
+
+answer-only                      pass 2/2 (100%), fail 0, unknown 0
+write-a-file                     pass 2/2 (100%), fail 0, unknown 0
+
+cases passing any attempt: 2/2
+cases passing every attempt: 2/2</code></pre>
+<p><code>model</code> 与 <code>endpoint</code> 为 <code>unset</code>
+是因为这次运行没有传模型参数，而不是配置为空：
+runner 不知道它跑的模型，于是如实说不知道。</p>
+<table>
+<thead>
+<tr>
+<th>指标</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cases passing any attempt</code></td>
+<td><code>pass@k</code>，k 为 <code>--attempts</code>，适合噪声大的模型</td>
+</tr>
+<tr>
+<td><code>cases passing every attempt</code></td>
+<td>严格口径，回归门禁用这个</td>
+</tr>
+<tr>
+<td><code>pass_rate</code></td>
+<td>忽略 inconclusive 尝试；全无决定性尝试时为 <code>n/a</code>，不是 0</td>
+</tr>
+</tbody>
+</table>
+<p><code>ReportMeta</code> 记录 runner、身份（模型、endpoint、权限模式）、
+尝试次数，以及整个用例集的指纹。指纹哈希用例的书写形式——
+prompt、超时、隔离、判分器——所以改了判分器或超时都会改变指纹，
+不能把两个不同套件的结果放在一起比较。
+它特意在 fixture 解析为绝对路径之前取值，
+使同一套件在任何工作目录下指纹一致。</p>
+<p><code>identity.model</code> 为 <code>null</code> 表示 runner 看不到，
+典型情况是完全由 <code>--config</code> 驱动的 CLI 运行。
+两个都为 <code>null</code> 的运行并不因此可比，配置要自己核对。</p>
+<hr />
+<h2 id="9-命令行">9. 命令行</h2>
+<pre><code class="language-bash"># 不需要模型、二进制或 API key 的部分，适合每个 PR 跑
+tact-eval validate suites/smoke
+
+# 跑一次套件
+tact-eval run suites/smoke \
+  --runner host --attempts 3 \
+  --provider deepseek --model deepseek-v4-pro
+
+# 黑盒路径，对着已安装的二进制
+tact-eval run suites/smoke --runner cli --binary ./target/release/tact-ui
+
+# 回归门禁
+tact-eval run suites/smoke --strict --json-out target/eval/report.json</code></pre>
+<p><code>--strict</code> 只在每个用例的每次尝试都通过时退出 0。
+一次失败或一次 inconclusive 都会让整个运行失败，
+所以它适合小而精的套件，不适合测噪声大的模型。</p>
+<p>相对 <code>--config</code> 与 <code>--binary</code> 都会在构造时规范化为绝对路径，
+因为每次尝试都在用例自己的目录里启动子进程。</p>
+<hr />
+<h2 id="10-不是密闭的">10. 不是密闭的</h2>
+<p>一次尝试会继承操作者的 <code>$HOME</code>：
+<code>~/.tact/config.toml</code>、<code>hooks.json</code>、用户 skill、
+插件缓存、按仓库划分的 memory 目录都会影响运行。
+<code>--config</code> 只固定模型配置，别的都不固定。</p>
+<p>需要密闭的套件应把 <code>HOME</code> 指向临时目录：</p>
+<pre><code class="language-bash">HOME=$(mktemp -d) tact-eval run suites/smoke --runner cli ...</code></pre>
+<p>这条在文档里说明而不在 harness 里强制，因为强制会破坏
+开发者在本机跑自己的套件这个常见场景。</p>
+<hr />
+<h2 id="11-当前限制">11. 当前限制</h2>
+<table>
+<thead>
+<tr>
+<th>限制</th>
+<th>原因</th>
+<th>下一步</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CLI 路径没有类型化停止原因</td>
+<td>日志没有该字段</td>
+<td>给 headless 加 <code>--events ndjson</code>，写 <code>AgentEvent</code></td>
+</tr>
+<tr>
+<td>CLI 路径的 stderr 语法是手抄的</td>
+<td>格式定义在 <code>headless_log.rs</code></td>
+<td>把 <code>format_event</code>/<code>parse_line</code> 移到 <code>tact_protocol</code></td>
+</tr>
+<tr>
+<td>缓存/推理 token 在 CLI 路径为 <code>None</code></td>
+<td>日志行无字段</td>
+<td>同上</td>
+</tr>
+<tr>
+<td>进程组杀不到 <code>bash</code>/<code>background_run</code> 的子进程</td>
+<td>它们各建新进程组</td>
+<td>按平台枚举后代，或 Linux PID namespace</td>
+</tr>
+<tr>
+<td>运行结束后工作目录已删</td>
+<td>磁盘成本</td>
+<td><code>--keep-work-dir</code> 用于复查</td>
+</tr>
+<tr>
+<td>无 LLM 评委判分器</td>
+<td>评委需要先对着已知判定的套件校准</td>
+<td>有了稳定套件之后再加</td>
+</tr>
+<tr>
+<td>用例不并行</td>
+<td>配置进程全局</td>
+<td>由调用方启动多个进程</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="12-与现有领域的关系">12. 与现有领域的关系</h2>
+<table>
+<thead>
+<tr>
+<th>章节</th>
+<th>关系</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="./18_chapter_agent_loop_zh.html">18. Agent 主循环</a></td>
+<td><code>agent_loop_detailed</code> 的返回值就是 host runner 的证据来源</td>
+</tr>
+<tr>
+<td><a href="./24_chapter_testing_zh.html">24. 测试策略</a></td>
+<td>单测验证代码正确；评测验证 Agent 行为，两者互补</td>
+</tr>
+<tr>
+<td><a href="./25_chapter_protocol_zh.html">25. Agent–TUI 协议</a></td>
+<td><code>AgentUpdate</code> 不带 outcome，这是 <code>Option</code> 字段的由来</td>
+</tr>
+<tr>
+<td><a href="./28_chapter_goal_zh.html">28. Agent Goal</a></td>
+<td>Goal 的 criteria/evidence 是验收模型；评测不写入 Goal 存储</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="相关文档">相关文档</h2>
+<ul>
+<li><code>crates/eval/README.md</code>：用法与字段速查。</li>
+<li><code>docs/design/agent-eval.md</code>：为什么这样设计，以及被否决的方案。</li>
+<li><code>ARCHITECTURE.md</code> §0：crate 边界与依赖方向。</li>
+</ul>
+</main>
+<script>
+  (() => {
+    const root = document.documentElement;
+    const nav = document.getElementById("book-toc");
+    if (!nav) return;
+    const main = document.querySelector("main");
+    const mq = matchMedia("(max-width: 1099px)");
+    const KEY = "tact-book-toc";
+    const collapse = nav.querySelector(".toc-collapse");
+    const fab = document.querySelector(".toc-fab");
+    const scrim = document.querySelector(".toc-scrim");
+    const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const save = (v) => { try { localStorage.setItem(KEY, v); } catch (e) {} };
+    const set = (open) => {
+      root.dataset.toc = open ? "open" : "closed";
+      if (collapse) collapse.setAttribute("aria-expanded", String(open));
+      if (!mq.matches) save(open ? "open" : "closed");
+    };
+    if (collapse) collapse.addEventListener("click", () => set(root.dataset.toc !== "open"));
+    if (fab) fab.addEventListener("click", () => set(true));
+    if (scrim) scrim.addEventListener("click", () => set(false));
+    addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && root.dataset.toc === "open") set(false);
+    });
+    mq.addEventListener("change", () => {
+      let stored = null;
+      try { stored = localStorage.getItem(KEY); } catch (e) {}
+      set(mq.matches ? false : stored !== "closed");
+    });
+
+    // Mermaid renders after load and changes the page height, which would leave
+    // a jump short of its heading. Hold the target until the layout settles.
+    let pending = null;
+    let pendingUntil = 0;
+    const align = (heading, behavior) => {
+      heading.scrollIntoView({ behavior, block: "start" });
+    };
+    // The resting offset differs between the sticky sidebar and the drawer
+    // (28px vs 76px), so read it from the heading instead of assuming one.
+    const rest = (heading) =>
+      parseFloat(getComputedStyle(heading).scrollMarginTop) || 0;
+    const aim = (heading, behavior) => {
+      pending = heading;
+      pendingUntil = performance.now() + 5000;
+      align(heading, behavior);
+    };
+    const settle = () => {
+      if (!pending) return;
+      if (performance.now() > pendingUntil) { pending = null; return; }
+      const offset = rest(pending);
+      const top = pending.getBoundingClientRect().top;
+      if (Math.abs(top - offset) <= 2) return;
+      const want = Math.round(top + scrollY - offset);
+      const max = document.documentElement.scrollHeight - innerHeight;
+      // A heading inside the last screenful cannot reach the top: park at the
+      // bottom instead of stopping short of it.
+      if (want > max) {
+        window.scrollTo({ top: max, behavior: "auto" });
+        pending = null;
+      } else if (performance.now() > pendingUntil - 4200) {
+        // Keep holding until the last resize: mermaid may re-render again.
+        align(pending, "auto");
+      }
+    };
+    if ("ResizeObserver" in window && main) {
+      new ResizeObserver(settle).observe(main);
+    }
+
+    // A clicked entry keeps the highlight until the reader scrolls by hand;
+    // otherwise a heading near the page end would hand it to a later section.
+    let chosen = null;
+    const release = () => {
+      if (!chosen) return;
+      chosen = null;
+      pending = null;
+      pick();
+    };
+    ["wheel", "touchstart", "keydown"].forEach((type) =>
+      addEventListener(type, release, { passive: true })
+    );
+
+    // Deep links must land before smooth scrolling is switched on, otherwise the
+    // browser's own fragment jump can be interrupted mid-flight.
+    const glide = () => root.classList.add("toc-smooth");
+    const deep = location.hash ? decodeURIComponent(location.hash.slice(1)) : null;
+    if (calm) root.classList.add("toc-smooth");
+    else setTimeout(glide, 400);
+    if (deep) {
+      const heading = document.getElementById(deep);
+      if (heading) aim(heading, "auto");
+    }
+
+    const links = new Map();
+    let active = null;
+    nav.querySelectorAll('a[href^="#"]').forEach((a) => {
+      let id = a.getAttribute("href").slice(1);
+      try { id = decodeURIComponent(id); } catch (e) {}
+      const heading = document.getElementById(id);
+      if (!heading) return;
+      links.set(id, a);
+      a.addEventListener("click", () => {
+        if (mq.matches) set(false);
+        chosen = a;
+        mark(a);
+        aim(heading, calm ? "auto" : "smooth");
+      });
+    });
+    const heads = [...document.querySelectorAll("main h2[id], main h3[id]")]
+      .filter((h) => links.has(h.id));
+
+    const reveal = (a) => {
+      const r = a.getBoundingClientRect();
+      const n = nav.getBoundingClientRect();
+      if (r.top < n.top + 72) nav.scrollTop += r.top - n.top - 72;
+      else if (r.bottom > n.bottom - 16) nav.scrollTop += r.bottom - n.bottom + 16;
+    };
+    let primed = false;
+    const mark = (a, follow = true) => {
+      if (a === active) return;
+      if (active) {
+        active.parentElement.classList.remove("is-active");
+        active.removeAttribute("aria-current");
+      }
+      active = a || null;
+      if (!active) return;
+      active.parentElement.classList.add("is-active");
+      active.setAttribute("aria-current", "location");
+      if (follow) reveal(active);
+    };
+    const pick = () => {
+      if (!heads.length) return;
+      if (chosen) { mark(chosen, false); return; }
+      // The active entry is the last heading that has passed the reading line
+      // (a quarter of the viewport down, capped at 160px).
+      const y = scrollY + Math.min(innerHeight * 0.25, 160);
+      let found = heads[0];
+      for (const h of heads) {
+        if (h.getBoundingClientRect().top + scrollY <= y) found = h;
+        else break;
+      }
+      if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) {
+        found = heads[heads.length - 1];
+      }
+      mark(links.get(found.id), primed);
+      primed = true;
+    };
+    let ticking = false;
+    addEventListener("scroll", () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => { ticking = false; pick(); });
+    }, { passive: true });
+    addEventListener("resize", pick);
+    if (deep) {
+      const landed = links.get(deep);
+      if (landed) mark(landed);
+    }
+    pick();
+  })();
+</script>
+
+</body>
+</html>

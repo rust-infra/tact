@@ -315,6 +315,11 @@ pub fn model_error(error: LlmError) -> ModelError {
 }
 
 /// Lower an adapter error, recording its safe HTTP class on `handle`.
+///
+/// This is the single place where a provider failure becomes a [`ModelError`],
+/// so it is also the single place that has to guarantee the message is safe to
+/// render: [`LlmError::user_message`] keeps the HTTP status and drops the
+/// response body, the request URL, and anything else the provider supplied.
 pub(crate) fn model_error_with(
     error: LlmError,
     handle: &crate::telemetry::SpanHandle,
@@ -322,13 +327,20 @@ pub(crate) fn model_error_with(
     if let LlmError::HttpError { class, .. } = &error {
         crate::telemetry::record_status_class(handle, *class);
     }
-    let message = error.to_string();
+    let message = error.user_message();
     let retry_after = match &error {
         LlmError::HttpError { retry_after, .. } => *retry_after,
         _ => None,
     };
     let kind = match &error {
         LlmError::Unsupported(_) | LlmError::UnsupportedHook(_) => ModelErrorKind::Unsupported,
+        // A credential that cannot even be resolved never reaches HTTP, but it
+        // is the same user problem as a 401, so it gets the same class.
+        LlmError::Auth(_) => ModelErrorKind::Authentication,
+        LlmError::HttpError {
+            class: HttpErrorClass::Authentication,
+            ..
+        } => ModelErrorKind::Authentication,
         LlmError::HttpError {
             class: HttpErrorClass::ContextOverflow,
             ..
@@ -602,5 +614,45 @@ mod tests {
         })
         .expect_err("unknown cursors must be a typed error");
         assert_eq!(error.kind, ModelErrorKind::Permanent);
+    }
+
+    /// The class a host acts on: a 401 is not "permanent, try editing the
+    /// prompt", it is "replace the key", so it must not arrive as `Permanent`.
+    #[test]
+    fn a_rejected_credential_lowers_to_authentication() {
+        let error = model_error(crate::error::LlmError::HttpError {
+            status: 401,
+            class: crate::error::HttpErrorClass::Authentication,
+            retry_after: None,
+        });
+        assert_eq!(error.kind, ModelErrorKind::Authentication);
+        assert!(!error.is_retryable());
+        assert!(
+            error.message.contains("401"),
+            "the status stays for diagnostics: {}",
+            error.message
+        );
+    }
+
+    /// A credential that cannot be resolved never reaches HTTP, but it is the
+    /// same user problem, so it gets the same class.
+    #[test]
+    fn an_unresolvable_credential_lowers_to_authentication() {
+        let error = model_error(crate::error::LlmError::Auth(
+            "credential is unavailable".to_string(),
+        ));
+        assert_eq!(error.kind, ModelErrorKind::Authentication);
+        assert!(!error.is_retryable());
+    }
+
+    /// A 403 is authorization, not a malformed request: same fix as 401.
+    #[test]
+    fn a_forbidden_response_lowers_to_authentication() {
+        let error = model_error(crate::error::LlmError::HttpError {
+            status: 403,
+            class: crate::error::HttpErrorClass::Authentication,
+            retry_after: None,
+        });
+        assert_eq!(error.kind, ModelErrorKind::Authentication);
     }
 }

@@ -146,6 +146,14 @@ pub(crate) fn handle_mouse_scroll_up(app: &mut App, hit: MousePanelHit) {
     } else if app.show_subagent_view {
         // A wheel-up is the same decision as `k`: stop following the tail.
         app.subagent_scroll_by(-(crate::widgets::state::app::scroll::SUBAGENT_WHEEL_STEP as isize));
+    } else if app.show_trajectory {
+        // The page owns the main area, so the wheel means "previous record"
+        // here whatever the pointer is over. Gating on the hit rect instead
+        // would make the wheel do nothing whenever the pointer drifted onto
+        // the page's border or a width the ledger does not paint.
+        app.trajectory_scroll_by(
+            -(crate::widgets::state::app::scroll::TRAJECTORY_WHEEL_STEP as isize),
+        );
     } else if hit.in_task_panel && sticky_scrollable(app) {
         app.mouse.in_task_panel = true;
         scroll_active_sticky(app, -1);
@@ -162,6 +170,10 @@ pub(crate) fn handle_mouse_scroll_down(app: &mut App, hit: MousePanelHit) {
     } else if app.show_subagent_view {
         // Wheel-down re-arms following once it reaches the end (the helper).
         app.subagent_scroll_by(crate::widgets::state::app::scroll::SUBAGENT_WHEEL_STEP as isize);
+    } else if app.show_trajectory {
+        app.trajectory_scroll_by(
+            crate::widgets::state::app::scroll::TRAJECTORY_WHEEL_STEP as isize,
+        );
     } else if hit.in_task_panel && sticky_scrollable(app) {
         app.mouse.in_task_panel = true;
         scroll_active_sticky(app, 1);

@@ -7,7 +7,7 @@
 //! the keyboard back and clears every hit rect, that only one page is up at a
 //! time, and that the keys reach the ledger.
 
-use agent_tui_kit::state::trajectory::TrajectoryKind;
+use agent_tui_kit::state::trajectory::{TrajectoryKind, TrajectoryStatus};
 use tact_protocol::{AgentUpdate, StepResult, StepStatus, ToolPresentationInfo};
 use tokio::sync::mpsc::unbounded_channel;
 
@@ -53,6 +53,30 @@ fn press(app: &mut crate::widgets::state::App, code: crossterm::event::KeyCode) 
     // reachable from Normal mode.
     let (tx, _rx) = unbounded_channel();
     crate::handlers::handle_normal_mode_for_page_tests(app, key(code), &tx);
+}
+
+/// One wheel notch, through the real mouse dispatcher.
+fn wheel(app: &mut crate::widgets::state::App, kind: crossterm::event::MouseEventKind) {
+    // The middle of an 80x30 frame: inside the page body, so a test that only
+    // cares about the page does not depend on where its border happens to be.
+    wheel_at(app, kind, 40, 15);
+}
+
+fn wheel_at(
+    app: &mut crate::widgets::state::App,
+    kind: crossterm::event::MouseEventKind,
+    column: u16,
+    row: u16,
+) {
+    crate::handle_mouse_event(
+        app,
+        crossterm::event::MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        },
+    );
 }
 
 /// A run with two turns and a few records, which is the smallest shape that
@@ -104,10 +128,10 @@ fn closing_returns_insert_mode_and_clears_the_hit_area() {
     let mut app = app_with_a_run();
     app.open_trajectory_page();
     render_app_text(&mut app, 80, 24);
-    assert!(
-        app.mouse.trajectory_page_area.height > 0,
-        "the page records where it painted"
-    );
+    let painted = app
+        .mouse
+        .area(crate::widgets::state::SurfaceId::TrajectoryPage);
+    assert!(painted.height > 0, "the page records where it painted");
 
     app.close_trajectory_page();
 
@@ -118,6 +142,22 @@ fn closing_returns_insert_mode_and_clears_the_hit_area() {
         "the reader must be able to type again"
     );
     assert!(!app.trajectory_page.filter_editing);
+    // A closed page that kept its rect would both size the ledger from a stale
+    // frame and swallow wheel events meant for the log underneath.
+    assert_eq!(
+        app.mouse
+            .area(crate::widgets::state::SurfaceId::TrajectoryPage),
+        ratatui::layout::Rect::default(),
+        "the closed page must not keep a hit rect"
+    );
+    assert!(
+        !app.mouse.hits(
+            crate::widgets::state::SurfaceId::TrajectoryPage,
+            painted.x,
+            painted.y
+        ),
+        "nothing answers a point inside a closed page"
+    );
 }
 
 #[test]
@@ -516,5 +556,432 @@ fn the_log_still_gets_every_update_the_page_consumed() {
     assert!(
         app.log.items.len() > log_len,
         "the page observes; it must not intercept the log's own stream"
+    );
+}
+
+/// The wheel is the pointer's `j`/`k`: one record per notch, in both
+/// directions, without leaving the page or touching the log.
+#[test]
+fn the_wheel_moves_the_selection_one_record_per_notch() {
+    let mut app = app_with_a_run();
+    app.open_trajectory_page();
+    render_app_text(&mut app, 80, 30);
+    let count = app.trajectory.len();
+    assert!(count >= 3, "the fixture needs a ledger to scroll");
+
+    press(&mut app, crossterm::event::KeyCode::Char('g'));
+    let first = app.trajectory_page.selected.expect("selection");
+
+    wheel(&mut app, crossterm::event::MouseEventKind::ScrollDown);
+    let second = app.trajectory_page.selected.expect("selection");
+    assert_ne!(second, first, "a notch down moves one record");
+    assert!(
+        !app.trajectory_page.follow,
+        "leaving the tail stops following"
+    );
+
+    wheel(&mut app, crossterm::event::MouseEventKind::ScrollUp);
+    assert_eq!(
+        app.trajectory_page.selected,
+        Some(first),
+        "a notch up moves back"
+    );
+}
+
+/// Arriving at the tail with the wheel re-arms following, so the next append
+/// keeps the newest record in view instead of freezing a row short.
+#[test]
+fn the_wheel_re_arms_following_at_the_tail() {
+    let mut app = app_with_a_run();
+    app.open_trajectory_page();
+    render_app_text(&mut app, 80, 30);
+
+    press(&mut app, crossterm::event::KeyCode::Char('g'));
+    assert!(!app.trajectory_page.follow);
+
+    // One notch per record, so walk the whole ledger rather than guessing.
+    for _ in 0..app.trajectory.len() {
+        wheel(&mut app, crossterm::event::MouseEventKind::ScrollDown);
+    }
+
+    assert!(
+        app.trajectory_page.follow,
+        "the wheel reached the tail, which is what following means"
+    );
+    let last = app.trajectory.records().last().expect("a record").id;
+    assert_eq!(app.trajectory_page.selected, Some(last));
+}
+
+/// The page owns the main area, so the wheel belongs to it wherever the pointer
+/// is — including over the border, which the ledger does not paint.
+///
+/// The log here is deliberately long enough to scroll: with a short log the
+/// assertion would hold even if the page never got the event, because a log
+/// that cannot scroll cannot move.
+#[test]
+fn the_wheel_over_the_page_never_scrolls_the_log() {
+    let mut app = make_app();
+    for index in 0..120 {
+        app.add_system_message(format!("log line {index}"));
+    }
+    app.begin_trajectory_turn("go");
+    app.open_trajectory_page();
+    render_app_text(&mut app, 80, 30);
+    // Sanity: this log really can scroll, so the assertion below has teeth.
+    app.scroll_log_up(1);
+    let scrolled = app.log_scroll.visual_top;
+    app.scroll_log_down(1);
+    let before = app.log_scroll.visual_top;
+
+    // (0, 0) is the page's outer corner, outside the ledger's own body.
+    wheel_at(&mut app, crossterm::event::MouseEventKind::ScrollDown, 0, 0);
+
+    assert_eq!(
+        app.log_scroll.visual_top, before,
+        "the log underneath must not move (it had {scrolled} rows above it)"
+    );
+    assert!(app.show_trajectory, "the wheel does not close the page");
+}
+
+/// The page outranks a stale Log rect.
+///
+/// The Log's hit area is only refreshed on frames that paint the log; while the
+/// page is up it holds the last rect from before it opened. Nothing clears it,
+/// so the dispatch order is what keeps the wheel on the page — a `show_trajectory`
+/// arm placed after `hit.in_log` would hand every notch to the hidden log.
+#[test]
+fn the_page_outranks_a_stale_log_rect() {
+    let mut app = make_app();
+    for index in 0..120 {
+        app.add_system_message(format!("log line {index}"));
+    }
+    app.begin_trajectory_turn("go");
+    app.handle_agent_update(queued("call-1", "read_file", "src/lib.rs"));
+    app.handle_agent_update(finished("call-1", "read_file", Some(1_200_000)));
+    app.open_trajectory_page();
+    render_app_text(&mut app, 80, 30);
+
+    // Reproduce the real world: the Log rect still describes this frame's
+    // main area even though the page paints over it.
+    let page = app
+        .mouse
+        .area(crate::widgets::state::SurfaceId::TrajectoryPage);
+    app.mouse
+        .set_area(crate::widgets::state::SurfaceId::Log, page);
+    press(&mut app, crossterm::event::KeyCode::Char('g'));
+    let first = app.trajectory_page.selected;
+    let log_before = app.log_scroll.visual_top;
+
+    wheel_at(
+        &mut app,
+        crossterm::event::MouseEventKind::ScrollDown,
+        page.x + 1,
+        page.y + 1,
+    );
+
+    assert_ne!(
+        app.trajectory_page.selected, first,
+        "down: the page must consume the notch, not the log rect under it"
+    );
+    assert_eq!(
+        app.log_scroll.visual_top, log_before,
+        "down: the hidden log must not scroll"
+    );
+
+    wheel_at(
+        &mut app,
+        crossterm::event::MouseEventKind::ScrollUp,
+        page.x + 1,
+        page.y + 1,
+    );
+    assert_eq!(
+        app.trajectory_page.selected, first,
+        "up: the page must consume the notch, not the log rect under it"
+    );
+    assert_eq!(
+        app.log_scroll.visual_top, log_before,
+        "up: the hidden log must not scroll"
+    );
+}
+
+/// Closing the page hands the wheel back: with no trajectory rect the same
+/// notch must reach the log again.
+#[test]
+fn closing_the_page_returns_the_wheel_to_the_log() {
+    let mut app = app_with_a_run();
+    app.open_trajectory_page();
+    render_app_text(&mut app, 80, 30);
+    let selected = app.trajectory_page.selected;
+
+    app.close_trajectory_page();
+    render_app_text(&mut app, 80, 30);
+    wheel_at(&mut app, crossterm::event::MouseEventKind::ScrollDown, 0, 0);
+
+    assert_eq!(
+        app.trajectory_page.selected, selected,
+        "a closed page ignores the wheel"
+    );
+}
+
+/// A resumed session rebuilds the ledger instead of opening it empty.
+///
+/// The stored transcript is the only durable record of what a run did, and the
+/// log deliberately drops the blocks the ledger exists to hold, so restoring
+/// from the messages is the only way `/trajectory` can survive a restart.
+#[test]
+fn a_resumed_session_restores_the_ledger() {
+    use tact::{AgentContentBlock, AgentMessage, AgentRole, MessageOrigin, ToolResultStatus};
+
+    let mut app = make_app();
+
+    let prompt = AgentMessage::new(
+        AgentRole::User,
+        MessageOrigin::User,
+        vec![AgentContentBlock::Text {
+            text: "why does the retry test fail".into(),
+        }],
+    );
+    let call = AgentMessage::new(
+        AgentRole::Assistant,
+        MessageOrigin::Assistant,
+        vec![
+            AgentContentBlock::Thinking {
+                thinking: "look at the fixture".into(),
+                signature: String::new(),
+            },
+            AgentContentBlock::ToolUse {
+                id: "call-1".into(),
+                name: "read_file".into(),
+                input: serde_json::json!({ "path": "src/lib.rs" }),
+            },
+        ],
+    );
+    let result = AgentMessage::new(
+        AgentRole::User,
+        MessageOrigin::ToolResult,
+        vec![AgentContentBlock::ToolResult {
+            tool_use_id: "call-1".into(),
+            content: "fn main() {}".into(),
+            status: ToolResultStatus::Success,
+        }],
+    );
+
+    app.restore_trajectory(&[prompt, call, result]);
+
+    let kinds: Vec<_> = app.trajectory.records().iter().map(|r| r.kind).collect();
+    assert_eq!(
+        kinds,
+        vec![
+            TrajectoryKind::User,
+            TrajectoryKind::Thinking,
+            TrajectoryKind::Tool,
+        ],
+        "each stored block becomes exactly one record"
+    );
+    let tool = &app.trajectory.records()[2];
+    assert_eq!(tool.tool_name.as_deref(), Some("read_file"));
+    assert_eq!(tool.status, Some(TrajectoryStatus::Success));
+    assert_eq!(
+        tool.output.as_deref(),
+        Some("fn main() {}"),
+        "the result is attached by tool id"
+    );
+    assert_eq!(
+        tool.text, "read_file src/lib.rs",
+        "the row names the file the call was about"
+    );
+}
+
+/// A result whose status was never recorded must not claim success.
+///
+/// Rows written before the status column existed decode as `Unknown`; showing
+/// `Success` for them would tell the reader a call worked when nothing recorded
+/// that it did.
+#[test]
+fn a_restored_result_with_unknown_status_shows_no_status() {
+    use tact::{AgentContentBlock, AgentMessage, AgentRole, MessageOrigin, ToolResultStatus};
+
+    let mut app = make_app();
+    let call = AgentMessage::new(
+        AgentRole::Assistant,
+        MessageOrigin::Assistant,
+        vec![AgentContentBlock::ToolUse {
+            id: "call-1".into(),
+            name: "bash".into(),
+            input: serde_json::json!({ "command": "cargo test" }),
+        }],
+    );
+    let result = AgentMessage::new(
+        AgentRole::User,
+        MessageOrigin::ToolResult,
+        vec![AgentContentBlock::ToolResult {
+            tool_use_id: "call-1".into(),
+            content: "output".into(),
+            status: ToolResultStatus::Unknown,
+        }],
+    );
+
+    app.restore_trajectory(&[call, result]);
+
+    let tool = app
+        .trajectory
+        .records()
+        .iter()
+        .find(|record| record.kind == TrajectoryKind::Tool)
+        .expect("the call is in the ledger");
+    assert_eq!(tool.status, None, "an unrecorded status stays unrecorded");
+    assert_eq!(tool.output.as_deref(), Some("output"));
+}
+
+/// Redacted reasoning keeps its row but not its body.
+#[test]
+fn restored_redacted_thinking_keeps_the_row_without_the_text() {
+    use tact::{AgentContentBlock, AgentMessage, AgentRole, MessageOrigin};
+
+    let mut app = make_app();
+    let message = AgentMessage::new(
+        AgentRole::Assistant,
+        MessageOrigin::Assistant,
+        vec![AgentContentBlock::RedactedThinking {
+            data: "opaque".into(),
+        }],
+    );
+
+    app.restore_trajectory(&[message]);
+
+    let thinking = app
+        .trajectory
+        .records()
+        .iter()
+        .find(|record| record.kind == TrajectoryKind::Thinking)
+        .expect("the block is recorded");
+    assert_eq!(thinking.text, "(redacted)");
+    assert!(
+        !thinking
+            .output
+            .as_deref()
+            .unwrap_or_default()
+            .contains("opaque"),
+        "the redacted payload must not be re-shown"
+    );
+}
+
+/// Injected context is evidence, not a prompt: it must not open a second turn.
+#[test]
+fn restored_injected_context_does_not_open_a_turn() {
+    use tact::{AgentContentBlock, AgentMessage, AgentRole, MessageOrigin};
+
+    let mut app = make_app();
+    let prompt = AgentMessage::new(
+        AgentRole::User,
+        MessageOrigin::User,
+        vec![AgentContentBlock::Text {
+            text: "real turn".into(),
+        }],
+    );
+    let injected = AgentMessage::new(
+        AgentRole::User,
+        MessageOrigin::InjectedContext {
+            source: "plugin codex".into(),
+        },
+        vec![AgentContentBlock::Text {
+            text: "briefing body".into(),
+        }],
+    );
+
+    app.restore_trajectory(&[prompt, injected]);
+
+    let context = app
+        .trajectory
+        .records()
+        .iter()
+        .find(|record| record.kind == TrajectoryKind::Context)
+        .expect("the briefing is recorded");
+    assert!(context.text.contains("briefing"), "{}", context.text);
+    let turns: Vec<u32> = app
+        .trajectory
+        .records()
+        .iter()
+        .map(|record| record.turn)
+        .collect();
+    assert_eq!(
+        turns,
+        vec![1, 1],
+        "both records belong to the one real turn: {turns:?}"
+    );
+}
+
+/// The startup wiring: a saved session is read back and the ledger rebuilt.
+///
+/// The tests above call `restore_trajectory` directly, which proves the mapping
+/// but not that a restart reaches it. This one writes a transcript to a real
+/// store and runs the same entry point `run_tui` does, so removing the call
+/// from `restore_session_views` fails here.
+#[tokio::test]
+async fn restarting_a_saved_session_rebuilds_the_ledger() {
+    use tact::{AgentContentBlock, AgentMessage, AgentRole, MessageOrigin, ToolResultStatus};
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let db = tmp.path().join("tact.db");
+    let store = tact::store::open_sqlite_session_store(&db)
+        .await
+        .expect("store opens");
+    store
+        .ensure_session_row("session-1", "/tmp", "")
+        .await
+        .expect("session row");
+
+    let user = AgentMessage::new(
+        AgentRole::User,
+        MessageOrigin::User,
+        vec![AgentContentBlock::Text {
+            text: "audit the retry path".into(),
+        }],
+    );
+    let call = AgentMessage::new(
+        AgentRole::Assistant,
+        MessageOrigin::Assistant,
+        vec![AgentContentBlock::ToolUse {
+            id: "call-1".into(),
+            name: "read_file".into(),
+            input: serde_json::json!({ "path": "src/retry.rs" }),
+        }],
+    );
+    let result = AgentMessage::new(
+        AgentRole::User,
+        MessageOrigin::ToolResult,
+        vec![AgentContentBlock::ToolResult {
+            tool_use_id: "call-1".into(),
+            content: "fn retry() {}".into(),
+            status: ToolResultStatus::Success,
+        }],
+    );
+    for (ordinal, message) in [user, call, result].iter().enumerate() {
+        store
+            .append_agent_message("session-1", message, ordinal as i64)
+            .await
+            .expect("append");
+    }
+
+    let mut app = make_app();
+    app.session_id = "session-1".into();
+    app.session_store = Some(store);
+    app.restore_session_views().await;
+
+    let tool = app
+        .trajectory
+        .records()
+        .iter()
+        .find(|record| record.kind == TrajectoryKind::Tool)
+        .expect("the saved tool call is in the ledger");
+    assert_eq!(tool.tool_name.as_deref(), Some("read_file"));
+    assert_eq!(tool.status, Some(TrajectoryStatus::Success));
+    assert_eq!(tool.output.as_deref(), Some("fn retry() {}"));
+    assert!(
+        app.trajectory
+            .records()
+            .iter()
+            .any(|record| record.kind == TrajectoryKind::User),
+        "and so is the prompt that opened the turn"
     );
 }
