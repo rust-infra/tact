@@ -375,6 +375,7 @@
 </div>
 <div class="toc-group">
 <ol class="toc-list">
+<li class="toc-l2"><a href="#2026-11-13--trajectory-%E9%A1%B5%E6%94%AF%E6%8C%81%E9%BC%A0%E6%A0%87%E6%BB%9A%E8%BD%AE" title="2026-11-13 — Trajectory 页支持鼠标滚轮"><span class="toc-label">2026-11-13 — Trajectory 页支持鼠标滚轮</span></a></li>
 <li class="toc-l2"><a href="#2026-11-13--%E5%87%AD%E6%8D%AE%E6%8F%90%E7%A4%BA%E6%9B%BE%E6%8C%87%E5%90%91%E4%B8%8D%E5%AD%98%E5%9C%A8%E7%9A%84%E7%8E%AF%E5%A2%83%E5%8F%98%E9%87%8F" title="2026-11-13 — 凭据提示曾指向不存在的环境变量"><span class="toc-label">2026-11-13 — 凭据提示曾指向不存在的环境变量</span></a></li>
 <li class="toc-l2"><a href="#2026-11-13--%E6%A8%A1%E5%9E%8B%E8%B0%83%E7%94%A8%E5%A4%B1%E8%B4%A5%E4%B8%8D%E5%86%8D%E5%8F%AA%E8%AF%B4-provider-request-failed" title="2026-11-13 — 模型调用失败不再只说 provider request failed"><span class="toc-label">2026-11-13 — 模型调用失败不再只说 provider request failed</span></a></li>
 <li class="toc-l2"><a href="#2026-10-22--headless-%E6%97%A5%E5%BF%97%E5%8F%AA%E7%9C%8B%E5%88%B0%E4%B8%80%E5%8D%8A%E4%BA%8B%E4%BB%B6%E4%B8%80%E4%B8%AA-sink-%E7%BB%9F%E4%B8%80%E5%88%86%E5%8F%91" title="2026-10-22 — headless 日志只看到一半事件：一个 sink 统一分发"><span class="toc-label">2026-10-22 — headless 日志只看到一半事件：一个 sink 统一分发</span></a></li>
@@ -803,6 +804,59 @@ bugfix日志</strong>，记录有用户可见或 API
 <a href="../ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> 和对应章节，
 更早的设计与实施记录保存在 Git 历史中。正文中出现的旧 spec / plan
 文件名只用于标识当时的修订，文件本身已删除。</p>
+<h2 id="2026-11-13--trajectory-页支持鼠标滚轮">2026-11-13 — Trajectory 页支持鼠标滚轮</h2>
+<p><strong>现象：</strong> <code>/trajectory</code> 打开后只能用
+<code>j</code>/<code>k</code>/<code>g</code>/<code>G</code> 翻记录，滚轮在页面上完全没反应；
+设计文档 <code>docs/design/tui-trajectory.md</code> 却写着「Wheel scrolling over the ledger
+works through the existing <code>SurfaceId</code> hit-rect mechanism」——那句话描述的是意图，
+不是实现。</p>
+<p><strong>根因（两处，一处在文档里）：</strong>
+(1) <code>handlers/mouse.rs</code> 的滚轮阶梯只认 <code>has_overlay_popup</code> /
+<code>show_subagent_view</code> / <code>in_task_panel</code> / <code>in_log</code>，没有
+<code>show_trajectory</code> 分支；<code>SurfaceId::TrajectoryPage</code> 在
+<code>scroll_list_popup</code> 的 match 里落进「无光标」分支，于是滚轮什么也不做。
+(2) 页面另存了一份 <code>MouseState::trajectory_page_area</code>，与
+<code>SurfaceId</code> 表里的矩形重复，而且 <code>close_trajectory_page</code>
+从不清理它。</p>
+<p><strong>决策：</strong>
+(1) 滚轮就是指针版的 <code>j</code>/<code>k</code>：一个新 notch 移动一条记录
+（<code>TRAJECTORY_WHEEL_STEP = 1</code>），到底部重新挂上 <code>follow</code>
+（与 subagent 视图滚轮、Log 底部 pill 同一契约）。步长按记录而非绘制行，因为页面有游标：
+按行步进要么一跳多条记录，要么把游标留在视口外。
+(2) 分派看 <code>show_trajectory</code>，不看命中矩形，且排在 <code>hit.in_log</code>
+<strong>之前</strong>：页面占据整个主区域，指针落在边框（不绘制 ledger 的那些行）上也该翻页；
+而 Log 的命中矩形只在绘制 log 的帧里刷新，页面打开期间它保留着打开前的旧矩形，arm 排在
+<code>hit.in_log</code> 之后会把每个 notch 交给被盖住的 log。
+(3) 删掉 <code>trajectory_page_area</code>，高度改读
+<code>mouse.area(SurfaceId::TrajectoryPage)</code>——一个矩形，不是两个；
+<code>close_trajectory_page</code> 调 <code>clear_area</code>，关掉的页面既不会用陈旧帧给
+ledger 定高，也不会再响应点测。</p>
+<p><strong>变更后：</strong> 滚轮在页面任意位置（含边框）按一条记录步进，方向对称；到达最后一条
+记录时重新跟随，下一次 append 会把最新记录带进视野而不是卡在上一行；关页后同一个 notch 回到
+Log。</p>
+<p><strong>验证：</strong> 新增 5 条测试，并逐条做过变异验证（改坏实现后确实变红）：
+<code>the_wheel_moves_the_selection_one_record_per_notch</code>（移除两处
+<code>show_trajectory</code> 臂 → 红）、
+<code>the_wheel_re_arms_following_at_the_tail</code>（移除向下臂 → 红）、
+<code>the_page_outranks_a_stale_log_rect</code>（把臂挪到 <code>hit.in_log</code> 之后 →
+红）、
+<code>closing_returns_insert_mode_and_clears_the_hit_area</code>（去掉
+<code>clear_area</code> → 红）、
+<code>the_wheel_over_the_page_never_scrolls_the_log</code>（构造 120 行长 log
+让断言真有牙齿：短 log 本来就不能滚，删掉实现也不会红）。
+<code>cargo test -p tui --lib</code>（816）、<code>cargo test --workspace</code>、
+<code>cargo clippy --workspace --all-targets</code> 全绿。</p>
+<p><strong>未做的：</strong> 页面没有滚动条，也没有「已滚离底部」的徽标——它的
+<code>follow</code> 是选中最后一条记录，不是滚动位置，加滚动条就要先决定它表示游标还是偏移。
+detail 面板内部的滚动仍只走键盘。</p>
+<p><strong>Pointers：</strong>
+<code>crates/tui/src/handlers/mouse.rs</code>（<code>handle_mouse_scroll_up/down</code>）、
+<code>crates/tui/src/widgets/state/app/trajectory.rs</code>（<code>trajectory_scroll_by</code>、
+<code>close_trajectory_page</code>、<code>trajectory_content_rows</code>）、
+<code>crates/tui/src/widgets/state/app/scroll.rs</code>（<code>TRAJECTORY_WHEEL_STEP</code>）、
+<code>crates/agent_tui_kit/src/state/mouse_state.rs</code>（删掉重复字段）、
+<code>crates/tui/src/render/trajectory_page_tests.rs</code>、
+<code>docs/design/tui-trajectory.md</code>（把「已经这样工作」改成实际契约）。</p>
 <h2 id="2026-11-13--凭据提示曾指向不存在的环境变量">2026-11-13 — 凭据提示曾指向不存在的环境变量</h2>
 <p><strong>现象：</strong> 上面那条「模型调用失败」条目第一版给的修复指引是
 <code>&lt;PROVIDER&gt;_API_KEY</code>（如 <code>ANTHROPIC_API_KEY</code>）。用户照着设置

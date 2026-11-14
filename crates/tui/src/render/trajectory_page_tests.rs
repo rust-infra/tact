@@ -55,6 +55,30 @@ fn press(app: &mut crate::widgets::state::App, code: crossterm::event::KeyCode) 
     crate::handlers::handle_normal_mode_for_page_tests(app, key(code), &tx);
 }
 
+/// One wheel notch, through the real mouse dispatcher.
+fn wheel(app: &mut crate::widgets::state::App, kind: crossterm::event::MouseEventKind) {
+    // The middle of an 80x30 frame: inside the page body, so a test that only
+    // cares about the page does not depend on where its border happens to be.
+    wheel_at(app, kind, 40, 15);
+}
+
+fn wheel_at(
+    app: &mut crate::widgets::state::App,
+    kind: crossterm::event::MouseEventKind,
+    column: u16,
+    row: u16,
+) {
+    crate::handle_mouse_event(
+        app,
+        crossterm::event::MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        },
+    );
+}
+
 /// A run with two turns and a few records, which is the smallest shape that
 /// exercises turn numbering and the ledger.
 fn app_with_a_run() -> crate::widgets::state::App {
@@ -104,10 +128,10 @@ fn closing_returns_insert_mode_and_clears_the_hit_area() {
     let mut app = app_with_a_run();
     app.open_trajectory_page();
     render_app_text(&mut app, 80, 24);
-    assert!(
-        app.mouse.trajectory_page_area.height > 0,
-        "the page records where it painted"
-    );
+    let painted = app
+        .mouse
+        .area(crate::widgets::state::SurfaceId::TrajectoryPage);
+    assert!(painted.height > 0, "the page records where it painted");
 
     app.close_trajectory_page();
 
@@ -118,6 +142,22 @@ fn closing_returns_insert_mode_and_clears_the_hit_area() {
         "the reader must be able to type again"
     );
     assert!(!app.trajectory_page.filter_editing);
+    // A closed page that kept its rect would both size the ledger from a stale
+    // frame and swallow wheel events meant for the log underneath.
+    assert_eq!(
+        app.mouse
+            .area(crate::widgets::state::SurfaceId::TrajectoryPage),
+        ratatui::layout::Rect::default(),
+        "the closed page must not keep a hit rect"
+    );
+    assert!(
+        !app.mouse.hits(
+            crate::widgets::state::SurfaceId::TrajectoryPage,
+            painted.x,
+            painted.y
+        ),
+        "nothing answers a point inside a closed page"
+    );
 }
 
 #[test]
@@ -516,5 +556,169 @@ fn the_log_still_gets_every_update_the_page_consumed() {
     assert!(
         app.log.items.len() > log_len,
         "the page observes; it must not intercept the log's own stream"
+    );
+}
+
+/// The wheel is the pointer's `j`/`k`: one record per notch, in both
+/// directions, without leaving the page or touching the log.
+#[test]
+fn the_wheel_moves_the_selection_one_record_per_notch() {
+    let mut app = app_with_a_run();
+    app.open_trajectory_page();
+    render_app_text(&mut app, 80, 30);
+    let count = app.trajectory.len();
+    assert!(count >= 3, "the fixture needs a ledger to scroll");
+
+    press(&mut app, crossterm::event::KeyCode::Char('g'));
+    let first = app.trajectory_page.selected.expect("selection");
+
+    wheel(&mut app, crossterm::event::MouseEventKind::ScrollDown);
+    let second = app.trajectory_page.selected.expect("selection");
+    assert_ne!(second, first, "a notch down moves one record");
+    assert!(
+        !app.trajectory_page.follow,
+        "leaving the tail stops following"
+    );
+
+    wheel(&mut app, crossterm::event::MouseEventKind::ScrollUp);
+    assert_eq!(
+        app.trajectory_page.selected,
+        Some(first),
+        "a notch up moves back"
+    );
+}
+
+/// Arriving at the tail with the wheel re-arms following, so the next append
+/// keeps the newest record in view instead of freezing a row short.
+#[test]
+fn the_wheel_re_arms_following_at_the_tail() {
+    let mut app = app_with_a_run();
+    app.open_trajectory_page();
+    render_app_text(&mut app, 80, 30);
+
+    press(&mut app, crossterm::event::KeyCode::Char('g'));
+    assert!(!app.trajectory_page.follow);
+
+    // One notch per record, so walk the whole ledger rather than guessing.
+    for _ in 0..app.trajectory.len() {
+        wheel(&mut app, crossterm::event::MouseEventKind::ScrollDown);
+    }
+
+    assert!(
+        app.trajectory_page.follow,
+        "the wheel reached the tail, which is what following means"
+    );
+    let last = app.trajectory.records().last().expect("a record").id;
+    assert_eq!(app.trajectory_page.selected, Some(last));
+}
+
+/// The page owns the main area, so the wheel belongs to it wherever the pointer
+/// is — including over the border, which the ledger does not paint.
+///
+/// The log here is deliberately long enough to scroll: with a short log the
+/// assertion would hold even if the page never got the event, because a log
+/// that cannot scroll cannot move.
+#[test]
+fn the_wheel_over_the_page_never_scrolls_the_log() {
+    let mut app = make_app();
+    for index in 0..120 {
+        app.add_system_message(format!("log line {index}"));
+    }
+    app.begin_trajectory_turn("go");
+    app.open_trajectory_page();
+    render_app_text(&mut app, 80, 30);
+    // Sanity: this log really can scroll, so the assertion below has teeth.
+    app.scroll_log_up(1);
+    let scrolled = app.log_scroll.visual_top;
+    app.scroll_log_down(1);
+    let before = app.log_scroll.visual_top;
+
+    // (0, 0) is the page's outer corner, outside the ledger's own body.
+    wheel_at(&mut app, crossterm::event::MouseEventKind::ScrollDown, 0, 0);
+
+    assert_eq!(
+        app.log_scroll.visual_top, before,
+        "the log underneath must not move (it had {scrolled} rows above it)"
+    );
+    assert!(app.show_trajectory, "the wheel does not close the page");
+}
+
+/// The page outranks a stale Log rect.
+///
+/// The Log's hit area is only refreshed on frames that paint the log; while the
+/// page is up it holds the last rect from before it opened. Nothing clears it,
+/// so the dispatch order is what keeps the wheel on the page — a `show_trajectory`
+/// arm placed after `hit.in_log` would hand every notch to the hidden log.
+#[test]
+fn the_page_outranks_a_stale_log_rect() {
+    let mut app = make_app();
+    for index in 0..120 {
+        app.add_system_message(format!("log line {index}"));
+    }
+    app.begin_trajectory_turn("go");
+    app.handle_agent_update(queued("call-1", "read_file", "src/lib.rs"));
+    app.handle_agent_update(finished("call-1", "read_file", Some(1_200_000)));
+    app.open_trajectory_page();
+    render_app_text(&mut app, 80, 30);
+
+    // Reproduce the real world: the Log rect still describes this frame's
+    // main area even though the page paints over it.
+    let page = app
+        .mouse
+        .area(crate::widgets::state::SurfaceId::TrajectoryPage);
+    app.mouse
+        .set_area(crate::widgets::state::SurfaceId::Log, page);
+    press(&mut app, crossterm::event::KeyCode::Char('g'));
+    let first = app.trajectory_page.selected;
+    let log_before = app.log_scroll.visual_top;
+
+    wheel_at(
+        &mut app,
+        crossterm::event::MouseEventKind::ScrollDown,
+        page.x + 1,
+        page.y + 1,
+    );
+
+    assert_ne!(
+        app.trajectory_page.selected, first,
+        "down: the page must consume the notch, not the log rect under it"
+    );
+    assert_eq!(
+        app.log_scroll.visual_top, log_before,
+        "down: the hidden log must not scroll"
+    );
+
+    wheel_at(
+        &mut app,
+        crossterm::event::MouseEventKind::ScrollUp,
+        page.x + 1,
+        page.y + 1,
+    );
+    assert_eq!(
+        app.trajectory_page.selected, first,
+        "up: the page must consume the notch, not the log rect under it"
+    );
+    assert_eq!(
+        app.log_scroll.visual_top, log_before,
+        "up: the hidden log must not scroll"
+    );
+}
+
+/// Closing the page hands the wheel back: with no trajectory rect the same
+/// notch must reach the log again.
+#[test]
+fn closing_the_page_returns_the_wheel_to_the_log() {
+    let mut app = app_with_a_run();
+    app.open_trajectory_page();
+    render_app_text(&mut app, 80, 30);
+    let selected = app.trajectory_page.selected;
+
+    app.close_trajectory_page();
+    render_app_text(&mut app, 80, 30);
+    wheel_at(&mut app, crossterm::event::MouseEventKind::ScrollDown, 0, 0);
+
+    assert_eq!(
+        app.trajectory_page.selected, selected,
+        "a closed page ignores the wheel"
     );
 }

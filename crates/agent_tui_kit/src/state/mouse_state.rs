@@ -311,10 +311,6 @@ pub struct MouseState {
     /// the view is drawn, cleared when it closes — a zero-size rect hits
     /// nothing.
     pub subagent_back_area: Rect,
-    /// The trajectory page's painted area, refreshed each frame while the page
-    /// is up and cleared when it closes. The page derives its content height
-    /// from this, so a stale rect would size the ledger wrong.
-    pub trajectory_page_area: Rect,
     /// Hit area of the subagent view's back-to-bottom pill, refreshed each
     /// frame and cleared on close. Empty while the view follows its tail.
     pub subagent_scroll_back_area: Rect,

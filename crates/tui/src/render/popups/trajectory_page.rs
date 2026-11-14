@@ -5,8 +5,9 @@
 //! the log the reader may want to cross-reference. Same hosting form as the
 //! subagent view.
 //!
-//! Everything here is wiring: record the hit area the page uses to learn its
-//! own height, then hand the pure kit renderer the theme and the state.
+//! Everything here is wiring: record the hit area (the same rect the wheel is
+//! routed by and the page reads its own height from — one rect, not two), then
+//! hand the pure kit renderer the theme and the state.
 
 use ratatui::{Frame, layout::Rect};
 
@@ -14,7 +15,6 @@ use crate::widgets::state::{App, SurfaceId};
 
 pub(crate) fn render_trajectory_view(frame: &mut Frame, area: Rect, app: &mut App) {
     app.mouse.set_area(SurfaceId::TrajectoryPage, area);
-    app.mouse.trajectory_page_area = area;
 
     let log = app.trajectory_log();
     let state = app.trajectory_page_state();
