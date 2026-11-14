@@ -375,6 +375,7 @@
 </div>
 <div class="toc-group">
 <ol class="toc-list">
+<li class="toc-l2"><a href="#2026-11-13--trajectory-%E5%9C%A8%E9%87%8D%E5%90%AF%E5%90%8E%E4%BB%8E%E4%BC%9A%E8%AF%9D%E8%AE%B0%E5%BD%95%E9%87%8D%E5%BB%BA" title="2026-11-13 — Trajectory 在重启后从会话记录重建"><span class="toc-label">2026-11-13 — Trajectory 在重启后从会话记录重建</span></a></li>
 <li class="toc-l2"><a href="#2026-11-13--trajectory-%E9%A1%B5%E6%94%AF%E6%8C%81%E9%BC%A0%E6%A0%87%E6%BB%9A%E8%BD%AE" title="2026-11-13 — Trajectory 页支持鼠标滚轮"><span class="toc-label">2026-11-13 — Trajectory 页支持鼠标滚轮</span></a></li>
 <li class="toc-l2"><a href="#2026-11-13--%E5%87%AD%E6%8D%AE%E6%8F%90%E7%A4%BA%E6%9B%BE%E6%8C%87%E5%90%91%E4%B8%8D%E5%AD%98%E5%9C%A8%E7%9A%84%E7%8E%AF%E5%A2%83%E5%8F%98%E9%87%8F" title="2026-11-13 — 凭据提示曾指向不存在的环境变量"><span class="toc-label">2026-11-13 — 凭据提示曾指向不存在的环境变量</span></a></li>
 <li class="toc-l2"><a href="#2026-11-13--%E6%A8%A1%E5%9E%8B%E8%B0%83%E7%94%A8%E5%A4%B1%E8%B4%A5%E4%B8%8D%E5%86%8D%E5%8F%AA%E8%AF%B4-provider-request-failed" title="2026-11-13 — 模型调用失败不再只说 provider request failed"><span class="toc-label">2026-11-13 — 模型调用失败不再只说 provider request failed</span></a></li>
@@ -804,6 +805,60 @@ bugfix日志</strong>，记录有用户可见或 API
 <a href="../ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> 和对应章节，
 更早的设计与实施记录保存在 Git 历史中。正文中出现的旧 spec / plan
 文件名只用于标识当时的修订，文件本身已删除。</p>
+<h2 id="2026-11-13--trajectory-在重启后从会话记录重建">2026-11-13 — Trajectory 在重启后从会话记录重建</h2>
+<p><strong>现象：</strong> <code>/trajectory</code> 关掉 TUI 再 <code>--resume</code> 回来就是空的，
+而同一个会话的 Log 里历史消息都在。页面像是只活在进程内存里。</p>
+<p><strong>根因：</strong> 它确实只活在内存里。<code>TrajectoryLog</code> 只在
+<code>observe(&amp;AgentUpdate)</code> 里增长，而重启时没有 update 流可观察；启动路径
+<code>run_tui</code> 读了 <code>load_session</code> 喂给 <code>load_history</code>，
+但那是 legacy <code>Message</code> 形，<code>load_history</code> 只渲染文本块，
+<strong>thinking / tool_use / tool_result 全被跳过</strong>——正好是 ledger 存在的理由。</p>
+<p><strong>决策：</strong>
+(1) <code>TrajectoryLog</code> 新增
+<code>restore_assistant</code> / <code>restore_thinking</code> /
+<code>restore_tool_use</code> / <code>restore_tool_result</code> /
+<code>restore_context</code>，把「重建」与「观察实时流」分成两个入口。
+(2) 重建读 <strong><code>load_agent_session</code></strong>（<code>AgentMessage</code>）而不是
+<code>load_session</code>：只有前者还带着每条 tool result 的
+<code>ToolResultStatus</code>（SQLite 的 <code>tool_statuses</code> 列）。
+(3) 启动逻辑收进 <code>App::restore_session_views</code>，<code>run_tui</code> 只调它一次，
+这样接线本身可测（<code>run_tui</code> 本体需要终端）。
+(4) <code>tact</code> re-export <code>AgentMessage</code> / <code>AgentContentBlock</code> /
+<code>ToolResultStatus</code> 等，TUI 不必新增依赖。</p>
+<p><strong>两条不变量：</strong></p>
+<ul>
+<li><strong>没有的事实不编。</strong> 重建出的调用没有实测时长、没有到达时刻，所以
+<code>duration_ms</code> 与 <code>at</code> 保持 <code>None</code>；状态列出现之前的旧行解成
+<code>Unknown</code>，重建后 <code>status = None</code>——绝不显示 Success。</li>
+<li><strong>redacted thinking 留行不留体。</strong> provider 故意隐藏正文，重新显示等于废掉脱敏；
+行本身仍证明「存在过这个块」。</li>
+</ul>
+<p><strong>其他取舍：</strong> 找不到对应调用的孤立 result 直接丢弃（记录是调用，无锚点的 result
+会排在它所答的调用上方）；行首预览用无依赖的字段扫描而非 JSON 解析器（kit 的唯一协议依赖仍是
+<code>tact_protocol</code>，完整输入仍在 <code>record.input</code> 里供 detail 面板看）。</p>
+<p><strong>验证：</strong> 端到端跑真实库：会话
+<code>68cfb5b0…</code>（1174 条消息）重建出 1079 条记录（10 turns、180 Assistant、188
+Thinking、701 Tool），首行即真实的 <code>bash</code> 调用及其 Success 状态。测试：
+<code>restarting_a_saved_session_rebuilds_the_ledger</code>（写真实 sqlite 再走
+<code>restore_session_views</code>，去接线后变红——已验证）、
+<code>a_resumed_session_restores_the_ledger</code>、
+<code>a_restored_result_with_unknown_status_shows_no_status</code>、
+<code>restored_redacted_thinking_keeps_the_row_without_the_text</code>、
+<code>restored_injected_context_does_not_open_a_turn</code>，以及 kit 侧 5 条
+（<code>a_restored_call_attaches_its_result_by_id</code> 等）。
+<code>cargo test --workspace</code>、<code>cargo clippy --workspace --all-targets</code>、
+<code>scripts/check-rust.sh</code> 全绿。</p>
+<p><strong>已知缺口：</strong> 若某次 tool 调用被 compaction 摘掉、而它的 result 仍在 transcript
+里，该 result 会丢失——实时路径有同样的不对称（<code>StepFinished</code> 无
+<code>StepQueued</code> 时另起一条记录），重建若强行修复就会与当时看到的样子不一致。</p>
+<p><strong>Pointers：</strong>
+<code>crates/agent_tui_kit/src/state/trajectory.rs</code>（<code>restore_*</code>、
+<code>input_preview</code>）、
+<code>crates/tui/src/widgets/state/app/trajectory.rs</code>（<code>restore_session_views</code>、
+<code>restore_trajectory</code>）、<code>crates/tui/src/lib.rs</code>、
+<code>crates/tact/src/lib.rs</code>（re-export）、
+<code>crates/tact/src/store/session_store/sqlite.rs</code>（<code>load_agent_session</code>）、
+<code>docs/design/tui-trajectory.md</code>（新增「Across a restart」）。</p>
 <h2 id="2026-11-13--trajectory-页支持鼠标滚轮">2026-11-13 — Trajectory 页支持鼠标滚轮</h2>
 <p><strong>现象：</strong> <code>/trajectory</code> 打开后只能用
 <code>j</code>/<code>k</code>/<code>g</code>/<code>G</code> 翻记录，滚轮在页面上完全没反应；

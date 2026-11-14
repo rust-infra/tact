@@ -344,6 +344,7 @@ rather than a conversation:
 | live | follows the child's tail | follows until the reader scrolls up |
 | wheel | `SUBAGENT_WHEEL_STEP` (3 visual lines) | `TRAJECTORY_WHEEL_STEP` (1 record) |
 | state kept across close | scroll, expanded steps | scroll, selection, filter, tab, overview |
+| across a restart | — (re-read from the session) | rebuilt from the saved transcript |
 
 **No popup chrome.** The page does not use `render_popup_chrome`: no `Clear`
 (it covers nothing), no centred geometry, no footer hint row (it would spend
@@ -406,6 +407,43 @@ neither sizes the ledger from a stale frame nor answers a point test.
 Live: while the page is open, `App::handle_agent_update` appends to the record
 log and the page repaints, the way `/tasks-dag` re-renders its lines
 (`crates/tui/src/widgets/state/app/agent.rs:689`).
+
+## Across a restart
+
+The ledger is rebuilt from the saved session, not left empty.
+`run_tui` calls `App::restore_session_views`, which reads the session twice:
+
+- `load_session` → `Message` → `load_history` for the log's prose.
+- `load_agent_session` → `AgentMessage` → `restore_trajectory` for the ledger.
+
+Two reads rather than one, because they need different shapes. Only the
+agent-shaped transcript still carries each tool result's terminal status
+(`tool_statuses`), and widening the log's input to carry a fact it never reads
+would touch every branch of that renderer.
+
+`TrajectoryLog` grew `restore_assistant` / `restore_thinking` /
+`restore_tool_use` / `restore_tool_result` / `restore_context` for this. Two
+rules they follow:
+
+- **Absent facts stay absent.** A restored call has no measured duration and no
+  arrival time, so `duration_ms` and `at` stay `None` rather than being
+  invented. A result whose status was never recorded (`Unknown`, from rows
+  written before that column existed) restores with `status = None`, so the row
+  cannot claim a call succeeded when nothing recorded that it did.
+- **Redacted reasoning keeps its row and loses its body.** The provider hid the
+  text on purpose; re-showing it would defeat the redaction. The row still
+  proves a block existed, which is what the ledger is for.
+
+A restored result with no matching call is dropped rather than appended: the
+call is the record, and an unanchored result would sit above the call it
+answers. `input_preview` derives the row label from the raw tool input without
+a JSON parser — the kit's only protocol dependency stays `tact_protocol`, and
+the full input is still in `record.input` for the detail panel.
+
+Known gap: a tool call whose `tool_use` block was compacted away but whose
+result remains in the transcript loses that result. The live path has the same
+asymmetry (`StepFinished` without `StepQueued` appends a standalone record), so
+a restore that fought it would disagree with what the run looked like live.
 
 What "live" means concretely, because a page that only appends rows is not
 live enough to watch a run:

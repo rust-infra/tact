@@ -7,7 +7,7 @@
 //! the keyboard back and clears every hit rect, that only one page is up at a
 //! time, and that the keys reach the ledger.
 
-use agent_tui_kit::state::trajectory::TrajectoryKind;
+use agent_tui_kit::state::trajectory::{TrajectoryKind, TrajectoryStatus};
 use tact_protocol::{AgentUpdate, StepResult, StepStatus, ToolPresentationInfo};
 use tokio::sync::mpsc::unbounded_channel;
 
@@ -720,5 +720,268 @@ fn closing_the_page_returns_the_wheel_to_the_log() {
     assert_eq!(
         app.trajectory_page.selected, selected,
         "a closed page ignores the wheel"
+    );
+}
+
+/// A resumed session rebuilds the ledger instead of opening it empty.
+///
+/// The stored transcript is the only durable record of what a run did, and the
+/// log deliberately drops the blocks the ledger exists to hold, so restoring
+/// from the messages is the only way `/trajectory` can survive a restart.
+#[test]
+fn a_resumed_session_restores_the_ledger() {
+    use tact::{AgentContentBlock, AgentMessage, AgentRole, MessageOrigin, ToolResultStatus};
+
+    let mut app = make_app();
+
+    let prompt = AgentMessage::new(
+        AgentRole::User,
+        MessageOrigin::User,
+        vec![AgentContentBlock::Text {
+            text: "why does the retry test fail".into(),
+        }],
+    );
+    let call = AgentMessage::new(
+        AgentRole::Assistant,
+        MessageOrigin::Assistant,
+        vec![
+            AgentContentBlock::Thinking {
+                thinking: "look at the fixture".into(),
+                signature: String::new(),
+            },
+            AgentContentBlock::ToolUse {
+                id: "call-1".into(),
+                name: "read_file".into(),
+                input: serde_json::json!({ "path": "src/lib.rs" }),
+            },
+        ],
+    );
+    let result = AgentMessage::new(
+        AgentRole::User,
+        MessageOrigin::ToolResult,
+        vec![AgentContentBlock::ToolResult {
+            tool_use_id: "call-1".into(),
+            content: "fn main() {}".into(),
+            status: ToolResultStatus::Success,
+        }],
+    );
+
+    app.restore_trajectory(&[prompt, call, result]);
+
+    let kinds: Vec<_> = app.trajectory.records().iter().map(|r| r.kind).collect();
+    assert_eq!(
+        kinds,
+        vec![
+            TrajectoryKind::User,
+            TrajectoryKind::Thinking,
+            TrajectoryKind::Tool,
+        ],
+        "each stored block becomes exactly one record"
+    );
+    let tool = &app.trajectory.records()[2];
+    assert_eq!(tool.tool_name.as_deref(), Some("read_file"));
+    assert_eq!(tool.status, Some(TrajectoryStatus::Success));
+    assert_eq!(
+        tool.output.as_deref(),
+        Some("fn main() {}"),
+        "the result is attached by tool id"
+    );
+    assert_eq!(
+        tool.text, "read_file src/lib.rs",
+        "the row names the file the call was about"
+    );
+}
+
+/// A result whose status was never recorded must not claim success.
+///
+/// Rows written before the status column existed decode as `Unknown`; showing
+/// `Success` for them would tell the reader a call worked when nothing recorded
+/// that it did.
+#[test]
+fn a_restored_result_with_unknown_status_shows_no_status() {
+    use tact::{AgentContentBlock, AgentMessage, AgentRole, MessageOrigin, ToolResultStatus};
+
+    let mut app = make_app();
+    let call = AgentMessage::new(
+        AgentRole::Assistant,
+        MessageOrigin::Assistant,
+        vec![AgentContentBlock::ToolUse {
+            id: "call-1".into(),
+            name: "bash".into(),
+            input: serde_json::json!({ "command": "cargo test" }),
+        }],
+    );
+    let result = AgentMessage::new(
+        AgentRole::User,
+        MessageOrigin::ToolResult,
+        vec![AgentContentBlock::ToolResult {
+            tool_use_id: "call-1".into(),
+            content: "output".into(),
+            status: ToolResultStatus::Unknown,
+        }],
+    );
+
+    app.restore_trajectory(&[call, result]);
+
+    let tool = app
+        .trajectory
+        .records()
+        .iter()
+        .find(|record| record.kind == TrajectoryKind::Tool)
+        .expect("the call is in the ledger");
+    assert_eq!(tool.status, None, "an unrecorded status stays unrecorded");
+    assert_eq!(tool.output.as_deref(), Some("output"));
+}
+
+/// Redacted reasoning keeps its row but not its body.
+#[test]
+fn restored_redacted_thinking_keeps_the_row_without_the_text() {
+    use tact::{AgentContentBlock, AgentMessage, AgentRole, MessageOrigin};
+
+    let mut app = make_app();
+    let message = AgentMessage::new(
+        AgentRole::Assistant,
+        MessageOrigin::Assistant,
+        vec![AgentContentBlock::RedactedThinking {
+            data: "opaque".into(),
+        }],
+    );
+
+    app.restore_trajectory(&[message]);
+
+    let thinking = app
+        .trajectory
+        .records()
+        .iter()
+        .find(|record| record.kind == TrajectoryKind::Thinking)
+        .expect("the block is recorded");
+    assert_eq!(thinking.text, "(redacted)");
+    assert!(
+        !thinking
+            .output
+            .as_deref()
+            .unwrap_or_default()
+            .contains("opaque"),
+        "the redacted payload must not be re-shown"
+    );
+}
+
+/// Injected context is evidence, not a prompt: it must not open a second turn.
+#[test]
+fn restored_injected_context_does_not_open_a_turn() {
+    use tact::{AgentContentBlock, AgentMessage, AgentRole, MessageOrigin};
+
+    let mut app = make_app();
+    let prompt = AgentMessage::new(
+        AgentRole::User,
+        MessageOrigin::User,
+        vec![AgentContentBlock::Text {
+            text: "real turn".into(),
+        }],
+    );
+    let injected = AgentMessage::new(
+        AgentRole::User,
+        MessageOrigin::InjectedContext {
+            source: "plugin codex".into(),
+        },
+        vec![AgentContentBlock::Text {
+            text: "briefing body".into(),
+        }],
+    );
+
+    app.restore_trajectory(&[prompt, injected]);
+
+    let context = app
+        .trajectory
+        .records()
+        .iter()
+        .find(|record| record.kind == TrajectoryKind::Context)
+        .expect("the briefing is recorded");
+    assert!(context.text.contains("briefing"), "{}", context.text);
+    let turns: Vec<u32> = app
+        .trajectory
+        .records()
+        .iter()
+        .map(|record| record.turn)
+        .collect();
+    assert_eq!(
+        turns,
+        vec![1, 1],
+        "both records belong to the one real turn: {turns:?}"
+    );
+}
+
+/// The startup wiring: a saved session is read back and the ledger rebuilt.
+///
+/// The tests above call `restore_trajectory` directly, which proves the mapping
+/// but not that a restart reaches it. This one writes a transcript to a real
+/// store and runs the same entry point `run_tui` does, so removing the call
+/// from `restore_session_views` fails here.
+#[tokio::test]
+async fn restarting_a_saved_session_rebuilds_the_ledger() {
+    use tact::{AgentContentBlock, AgentMessage, AgentRole, MessageOrigin, ToolResultStatus};
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let db = tmp.path().join("tact.db");
+    let store = tact::store::open_sqlite_session_store(&db)
+        .await
+        .expect("store opens");
+    store
+        .ensure_session_row("session-1", "/tmp", "")
+        .await
+        .expect("session row");
+
+    let user = AgentMessage::new(
+        AgentRole::User,
+        MessageOrigin::User,
+        vec![AgentContentBlock::Text {
+            text: "audit the retry path".into(),
+        }],
+    );
+    let call = AgentMessage::new(
+        AgentRole::Assistant,
+        MessageOrigin::Assistant,
+        vec![AgentContentBlock::ToolUse {
+            id: "call-1".into(),
+            name: "read_file".into(),
+            input: serde_json::json!({ "path": "src/retry.rs" }),
+        }],
+    );
+    let result = AgentMessage::new(
+        AgentRole::User,
+        MessageOrigin::ToolResult,
+        vec![AgentContentBlock::ToolResult {
+            tool_use_id: "call-1".into(),
+            content: "fn retry() {}".into(),
+            status: ToolResultStatus::Success,
+        }],
+    );
+    for (ordinal, message) in [user, call, result].iter().enumerate() {
+        store
+            .append_agent_message("session-1", message, ordinal as i64)
+            .await
+            .expect("append");
+    }
+
+    let mut app = make_app();
+    app.session_id = "session-1".into();
+    app.session_store = Some(store);
+    app.restore_session_views().await;
+
+    let tool = app
+        .trajectory
+        .records()
+        .iter()
+        .find(|record| record.kind == TrajectoryKind::Tool)
+        .expect("the saved tool call is in the ledger");
+    assert_eq!(tool.tool_name.as_deref(), Some("read_file"));
+    assert_eq!(tool.status, Some(TrajectoryStatus::Success));
+    assert_eq!(tool.output.as_deref(), Some("fn retry() {}"));
+    assert!(
+        app.trajectory
+            .records()
+            .iter()
+            .any(|record| record.kind == TrajectoryKind::User),
+        "and so is the prompt that opened the turn"
     );
 }

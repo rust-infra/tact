@@ -54,6 +54,16 @@ pub mod worktree;
 
 pub use agent::{Agent, AgentLoopOutcome, AgentLoopStop, AgentRuntime, AgentSystemPrompt};
 pub use cancel::{ActivationCancel, CancelController};
+/// The neutral transcript vocabulary, re-exported for hosts that read a stored
+/// session.
+///
+/// A resumed transcript carries facts the legacy `Message` shape cannot — most
+/// relevantly each tool result's terminal status — so a consumer that restores
+/// state from the store needs these types without taking its own dependency on
+/// the agent API crate.
+pub use tact_agent_api::{
+    AgentContentBlock, AgentMessage, AgentRole, MessageOrigin, ToolResultStatus,
+};
 pub use tact_llm::Tool as ToolSpec;
 use tact_llm::{ContentBlock, LlmProvider, MessageContent};
 

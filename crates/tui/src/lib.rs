@@ -311,13 +311,8 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         app.voice = crate::widgets::state::VoiceState::enabled(worker, missing_api_key);
     }
 
-    // Restore session history into the Log area after startup messages
-    if let Some(store) = &app.session_store
-        && let Ok(messages) = store.load_session(&app.session_id).await
-        && !messages.is_empty()
-    {
-        app.load_history(messages);
-    }
+    // Restore the log and the trajectory ledger from the saved session.
+    app.restore_session_views().await;
 
     // Record the previous terminal size so we can recompute layout on resize
     let term_size = terminal.size()?;

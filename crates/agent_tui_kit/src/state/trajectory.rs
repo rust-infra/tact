@@ -674,6 +674,100 @@ impl TrajectoryLog {
         self.append(TrajectoryKind::Diff, text).id
     }
 
+    /// Append a record rebuilt from a persisted transcript.
+    ///
+    /// A resumed session replays the store's messages, not the live update
+    /// stream, so the ledger has to be reconstructed from what the transcript
+    /// kept. What it kept is message-level: prompts, assistant text, reasoning
+    /// blocks, tool calls and their results. What it did not keep — per-call
+    /// duration, arrival time, a running call's live tail — stays absent rather
+    /// than being invented, which is the same rule the live path follows when a
+    /// producer reports no measurement. A restored row therefore never claims a
+    /// time it does not have.
+    ///
+    /// The caller maps the persisted blocks; this stays provider- and
+    /// transcript-agnostic so the kit keeps its single `tact_protocol`
+    /// dependency.
+    pub fn restore_assistant(&mut self, text: &str) -> TrajectoryRecordId {
+        let collapsed = collapse_whitespace(text);
+        let record = self.append(TrajectoryKind::Assistant, collapsed);
+        record.output = non_empty(text);
+        record.search = search_haystack(record);
+        record.id
+    }
+
+    /// A context cell: injected briefing or notice, as the transcript kept it.
+    ///
+    /// Recorded without opening a turn, because it is not something the reader
+    /// asked for. `label` names where it came from.
+    pub fn restore_context(&mut self, label: &str, text: &str) -> TrajectoryRecordId {
+        let text = match first_line(text).as_str() {
+            "" => label.to_string(),
+            first => format!("{label}: {first}"),
+        };
+        let record = self.append(TrajectoryKind::Context, text);
+        record.search = search_haystack(record);
+        record.id
+    }
+
+    /// A reasoning block as the transcript stored it.
+    ///
+    /// Redacted reasoning is recorded without its body: the provider kept the
+    /// text hidden on purpose, so re-showing it would defeat the redaction. The
+    /// row still says a block existed, which is the evidence the ledger is for.
+    pub fn restore_thinking(&mut self, text: &str, redacted: bool) -> TrajectoryRecordId {
+        let record = self.append(TrajectoryKind::Thinking, "");
+        if redacted {
+            record.text = "(redacted)".to_string();
+        } else {
+            record.text = first_line(text);
+            record.output = non_empty(text);
+        }
+        record.search = search_haystack(record);
+        record.id
+    }
+
+    /// A tool call. The `tool_id` is what its result will look up.
+    pub fn restore_tool_use(
+        &mut self,
+        tool_id: &str,
+        tool_name: &str,
+        input: Option<&str>,
+    ) -> TrajectoryRecordId {
+        let text = summary_line(tool_name, &input_preview(input));
+        let record = self.append(TrajectoryKind::Tool, text);
+        record.tool_id = Some(tool_id.to_string());
+        record.tool_name = non_empty(tool_name);
+        record.input = input.and_then(non_empty);
+        record.search = search_haystack(record);
+        record.id
+    }
+
+    /// The result of a restored call, matched by `tool_use_id`.
+    ///
+    /// `status` is `None` when the transcript recorded no terminal state (rows
+    /// written before `ToolResultStatus` existed decode as `Unknown`): the row
+    /// then shows no status instead of guessing `Success`, so a restored ledger
+    /// cannot claim a call worked when nothing recorded that it did.
+    pub fn restore_tool_result(
+        &mut self,
+        tool_id: &str,
+        output: &str,
+        status: Option<TrajectoryStatus>,
+    ) -> Option<TrajectoryRecordId> {
+        let index = self
+            .records
+            .iter()
+            .rposition(|record| record.tool_id.as_deref() == Some(tool_id))?;
+        let record = &mut self.records[index];
+        record.status = status;
+        let (body, truncated) = cap_body(output);
+        record.output = Some(body);
+        record.output_truncated = truncated;
+        record.search = search_haystack(record);
+        Some(record.id)
+    }
+
     fn append(&mut self, kind: TrajectoryKind, text: impl Into<String>) -> &mut TrajectoryRecord {
         self.next_id += 1;
         self.step = self.step.saturating_add(1);
@@ -752,6 +846,61 @@ fn cap_body(body: &str) -> (String, bool) {
 fn non_empty(text: &str) -> Option<String> {
     let trimmed = text.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// A one-line preview of a tool call's input, for the ledger row.
+///
+/// The live path gets `arg_summary` from the producer, which already chose what
+/// to show. A restored call only has the raw JSON, so this picks the value of
+/// the first field that names a target — deliberately without a JSON parser:
+/// the kit's only protocol dependency is `tact_protocol`, and a row label is
+/// not worth widening that. The full input stays in `record.input` for the
+/// detail panel, so nothing is lost by keeping this crude.
+fn input_preview(input: Option<&str>) -> String {
+    let Some(input) = input.map(str::trim).filter(|text| !text.is_empty()) else {
+        return String::new();
+    };
+    // `"field":"value"` in the order the tools declare them; the first hit
+    // wins, which is the field the call is about.
+    const TARGET_FIELDS: [&str; 6] = ["path", "file_path", "command", "pattern", "url", "query"];
+    for field in TARGET_FIELDS {
+        let needle = format!("\"{field}\"\\s*:\\s*\"");
+        if let Some(value) = extract_after(input, &needle) {
+            return first_line(&value);
+        }
+    }
+    first_line(input)
+}
+
+/// The decoded string value that follows `needle` in `haystack`.
+///
+/// Handles the escapes a JSON string can usefully carry in a one-line label and
+/// stops at the closing quote. A malformed payload simply finds nothing, and
+/// the caller falls back to the raw text.
+fn extract_after(haystack: &str, needle: &str) -> Option<String> {
+    // No regex crate here either: the pattern is a literal prefix plus an
+    // optional run of spaces around the colon, so scan it directly.
+    let key = needle.trim_end_matches("\\s*:\\s*\"");
+    let start = haystack.find(key)?;
+    let mut rest = &haystack[start + key.len()..];
+    rest = rest.trim_start();
+    rest = rest.strip_prefix(':')?.trim_start();
+    rest = rest.strip_prefix('"')?;
+    let mut value = String::new();
+    let mut chars = rest.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(value),
+            '\\' => match chars.next() {
+                Some('n') => value.push('\n'),
+                Some('t') => value.push('\t'),
+                Some(other) => value.push(other),
+                None => return Some(value),
+            },
+            other => value.push(other),
+        }
+    }
+    Some(value)
 }
 
 fn first_line(text: &str) -> String {
@@ -1897,5 +2046,76 @@ mod duration_source_tests {
             record.estimated_ms.is_some(),
             "a cancelled call ran for however long it ran"
         );
+    }
+
+    /// Restored rows carry what the transcript kept and invent nothing else.
+    #[test]
+    fn a_restored_call_attaches_its_result_by_id() {
+        let mut log = TrajectoryLog::new();
+        log.restore_tool_use("call-1", "read_file", Some(r#"{"path":"src/lib.rs"}"#));
+        let id = log
+            .restore_tool_result("call-1", "fn main() {}", Some(TrajectoryStatus::Success))
+            .expect("the call is in the ledger");
+
+        let record = log.records().first().expect("one record");
+        assert_eq!(record.id, id);
+        assert_eq!(record.text, "read_file src/lib.rs");
+        assert_eq!(record.status, Some(TrajectoryStatus::Success));
+        assert_eq!(record.output.as_deref(), Some("fn main() {}"));
+        assert_eq!(
+            record.duration_ms, None,
+            "a restored call has no measured duration, and must not claim one"
+        );
+    }
+
+    /// A result with no recorded status stays without one.
+    #[test]
+    fn a_restored_result_without_a_status_keeps_none() {
+        let mut log = TrajectoryLog::new();
+        log.restore_tool_use("call-1", "bash", Some(r#"{"command":"cargo test"}"#));
+        log.restore_tool_result("call-1", "output", None);
+
+        assert_eq!(log.records()[0].status, None);
+    }
+
+    /// A result whose call is not in the ledger is not a row of its own: the
+    /// call is the record, and silently appending an unanchored result would
+    /// put a result above the call it answers.
+    #[test]
+    fn a_restored_result_without_its_call_is_dropped() {
+        let mut log = TrajectoryLog::new();
+        assert!(
+            log.restore_tool_result("call-unknown", "orphan", None)
+                .is_none()
+        );
+        assert!(log.is_empty());
+    }
+
+    /// The preview picks the field the tool is about, not whatever comes first.
+    #[test]
+    fn a_restored_call_previews_the_target_field() {
+        assert_eq!(
+            input_preview(Some(r#"{"description":"x","path":"src/a.rs"}"#)),
+            "src/a.rs"
+        );
+        assert_eq!(
+            input_preview(Some(r#"{"command":"cargo test --all"}"#)),
+            "cargo test --all"
+        );
+        // Not JSON at all: the row still says something rather than nothing.
+        assert_eq!(input_preview(Some("plain text")), "plain text");
+        assert_eq!(input_preview(None), "");
+    }
+
+    /// Redacted reasoning keeps the row and loses the payload.
+    #[test]
+    fn a_restored_redacted_thinking_hides_its_body() {
+        let mut log = TrajectoryLog::new();
+        log.restore_thinking("opaque", true);
+
+        let record = &log.records()[0];
+        assert_eq!(record.kind, TrajectoryKind::Thinking);
+        assert_eq!(record.text, "(redacted)");
+        assert_eq!(record.output, None);
     }
 }
