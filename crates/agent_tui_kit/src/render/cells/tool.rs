@@ -492,17 +492,20 @@ impl ToolCell {
     /// cancelling.
     pub fn collapsed_open_button_rect(&self, area: Rect, skip_lines: usize) -> Option<Rect> {
         let action = self.collapsed_action.as_deref()?;
-        if skip_lines >= self.height(area.width) as usize || skip_lines > TOOL_META_ROW {
+        // The meta row has to be *inside this slice*, not merely past the top of
+        // the cell: a one-row slice draws the title and nothing else, so a rect
+        // for the meta row would land on a row the cell does not own and steal
+        // its clicks.
+        if skip_lines > TOOL_META_ROW {
+            return None;
+        }
+        let vis_off = TOOL_META_ROW - skip_lines;
+        if vis_off >= area.height as usize {
             return None;
         }
         let row =
             crate::render::util::indent_rect(area, crate::render::util::LOG_TOOL_BLOCK_INDENT);
-        let row = Rect::new(
-            row.x,
-            row.y + (TOOL_META_ROW - skip_lines) as u16,
-            row.width,
-            1,
-        );
+        let row = Rect::new(row.x, row.y + vis_off as u16, row.width, 1);
         let text_area = self.meta_text_area(row);
         let action_width = UnicodeWidthStr::width(action) as u16;
         // `Paragraph` truncates at the area it is given instead of wrapping, so
@@ -556,10 +559,32 @@ impl ToolCell {
         // Case A of [`Renderable::render_partial`] draws the bottom border with
         // its title; a partially visible card (case B) draws a bare border, so
         // there is no label to click there.
-        if card_skip != 0 || card_skip + (area.height as usize) < TOOL_HEADER_ROWS + card_total {
+        if card_skip != 0 {
             return None;
         }
-        let bottom_y = area.y + (TOOL_HEADER_ROWS + card_total - 1 - skip_lines) as u16;
+        // Follow the label wherever `Block` puts it, which is two rows:
+        //
+        // * the card's own bottom border, when the whole card fits this slice;
+        // * the slice's last row, when the card is taller than the slice. A
+        //   `Block` shrinks to the area it is given, and ratatui keeps the
+        //   bottom border inside the area by dropping interior rows, so the
+        //   label lands on the clip edge. It is on screen, so it is clickable.
+        //
+        // Requiring the whole cell to fit instead threw the rect away in both
+        // directions: the tail case (log follows the bottom, so a tall card is
+        // cut at its top and the footer is the row that survives) and the
+        // scrolled-up case.
+        let card_top = TOOL_HEADER_ROWS.saturating_sub(skip_lines);
+        if card_top >= area.height as usize {
+            // The card area itself is off the slice: `render_partial` draws
+            // nothing, so there is nothing to click.
+            return None;
+        }
+        let own_footer = TOOL_HEADER_ROWS + card_total - 1;
+        let vis_off = own_footer
+            .saturating_sub(skip_lines)
+            .min(area.height.saturating_sub(1) as usize);
+        let bottom_y = area.y + vis_off as u16;
         // Same indent as the paint, then the block's own left border: that is
         // where `Block::title_bottom` starts the footer text.
         let card =
@@ -1487,6 +1512,74 @@ mod tests {
                 "{shape}: the rect must end with the label, row: {row:?}"
             );
         }
+    }
+
+    /// A card taller than the slice it is drawn into keeps a footer label, and
+    /// `Block` puts that label on the slice's last row. The rect has to follow
+    /// it there rather than shrinking away.
+    #[test]
+    fn a_clipped_card_keeps_its_footer_rect_on_the_row_block_draws_it() {
+        let mut output = make_output(true, 6, 6);
+        output.phase = ToolPhase::Running;
+        output.live_detail = true;
+        output.visual_kind = tact_protocol::ToolVisualKind::Subagent;
+        let cell = tool_cell(output);
+        let full = cell.height(60);
+
+        // Slices from the tail (top clipped) and from the head (bottom clipped),
+        // each shorter than the cell.
+        for (skip_lines, height) in [(2usize, 4u16), (0, 4)] {
+            let area = Rect::new(0, 0, 60, height);
+            let mut buf = Buffer::empty(area);
+            cell.render_partial(area, &mut buf, skip_lines);
+
+            let rect = cell
+                .subagent_open_button_rect(area, skip_lines)
+                .unwrap_or_else(|| {
+                    panic!("skip {skip_lines}/{full}: the drawn footer must be clickable")
+                });
+            let cells: Vec<String> = (0..area.width)
+                .map(|x| buf[(x, rect.y)].symbol().to_string())
+                .collect();
+            let drawn: String = cells[rect.x as usize..(rect.right()) as usize].concat();
+            assert_eq!(
+                drawn,
+                cell.card_bottom_text(),
+                "skip {skip_lines}: the rect must be on the label Block drew, row: {:?}",
+                cells.concat()
+            );
+        }
+    }
+
+    /// A `[Open]` hint on a meta row the slice does not contain has no rect.
+    ///
+    /// A one-row slice draws the title only. The rect used to be placed at
+    /// `row.y + 1` regardless, which is a row outside the cell: in a real log
+    /// that row belongs to the next block, and the click would open this card's
+    /// popup from someone else's line.
+    #[test]
+    fn a_hint_on_a_row_the_slice_does_not_contain_has_no_rect() {
+        let mut output = make_output(false, 0, 0);
+        output.layout.detail_collapsed = true;
+        output.visual_kind = tact_protocol::ToolVisualKind::Subagent;
+        let cell = tool_cell(output);
+        assert!(
+            cell.collapsed_action.is_some(),
+            "fixture: the card carries the hint"
+        );
+
+        let short = Rect::new(0, 0, 60, 1);
+        assert!(
+            cell.collapsed_open_button_rect(short, 0).is_none(),
+            "a one-row slice draws the title, not the meta row"
+        );
+
+        // The row that is drawn keeps its rect.
+        let tall = Rect::new(0, 0, 60, 2);
+        let rect = cell
+            .collapsed_open_button_rect(tall, 0)
+            .expect("a two-row slice draws the meta row");
+        assert_eq!(rect.y, 1);
     }
 
     #[test]

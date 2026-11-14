@@ -816,9 +816,14 @@ bugfix日志</strong>，记录有用户可见或 API
 「实时输出」这张最该点开的卡片反而最点不动——行数越多越点不动。</p>
 <p><strong>决策：</strong> 命中矩形只由「将要画出来的东西」推导：先按
 <code>LOG_TOOL_BLOCK_INDENT</code> 缩进，再加卡片左边框那一列，宽度取
-<code>card_bottom_text()</code> 并夹到卡片内宽。顺带把
-<code>card_skip != 0</code> 也收进来：部分可见的卡片（<code>render_partial</code> 的 case
-B）只画一条裸边框，不画页脚文字，那里本来就没有可点的标签。</p>
+<code>card_bottom_text()</code> 并夹到卡片内宽。再补一条：矩形必须跟着 <code>Block</code>
+把标签画去的<em>那一行</em>走，而不是要求整个 cell 都落在切片里。卡片比 Log 正文高是常态
+（日志跟尾，所以高卡片从<strong>顶部</strong>被裁，页脚恰好是活下来的那一行）；滚到顶部时
+反过来从<strong>底部</strong>被裁，<code>Block</code> 仍会在裁切边画底边框和
+<code>title_bottom</code>。两个方向原来都没有命中矩形。现在取
+<code>min(卡片自身的页脚行, 切片最后一行)</code>；而部分可见的卡片
+（<code>render_partial</code> 的 case B，<code>card_skip != 0</code>）只画裸边框，那里本来
+就没有标签，返回 <code>None</code>。</p>
 <p><strong>同时修的第二个洞：</strong> 同一个视图在第一轮对话里是<em>空白</em>的。
 <code>ToolTranscript</code> 是创建 <code>transcripts</code> 表项的唯一入口，所以子代理刚
 开口、还没提交任何条目的那段时间，表里根本没有这个 id；而
@@ -834,6 +839,11 @@ B）只画一条裸边框，不画页脚文字，那里本来就没有可点的�
 <code>meta_text_area()</code> 成为这一行唯一的几何来源（画和两个矩形都读它），并且
 <code>Paragraph</code> 是按给定宽度<strong>截断</strong>而不是换行——标签被裁掉时就不该存在
 命中矩形，所以提示在放不下时返回 <code>None</code>，而不是把矩形留在别人的字上。</p>
+<p><strong>第四个（同一类，矩形落在 cell 外面）：</strong> 无正文卡片（含折叠态）的
+<code>[Open]</code> 提示挂在 meta 行上。矩形只判了 <code>skip_lines &gt; TOOL_META_ROW</code>，
+没判这一行是否<em>落在切片里</em>：Log 正文只有一行时，切片只画标题行，矩形却仍在
+<code>row.y + 1</code>，那一行在真实日志里属于下一个块，点别人的行会打开这张卡的弹窗。
+现在要求 <code>TOOL_META_ROW - skip_lines &lt; area.height</code>，画不到的行没有矩形。</p>
 <p><strong>验证：</strong>
 <code>subagent_footer_hit_rect_matches_the_footer_it_draws</code> 逐列比对矩形与画出的
 单元格（四种页脚形态：无前缀实时、带
@@ -841,6 +851,12 @@ B）只画一条裸边框，不画页脚文字，那里本来就没有可点的�
 <code>every_column_of_a_subagent_footer_opens_the_transcript</code>
 走真实渲染器 + 真实点击，把标签的每一列都点一遍（旧代码在第 19/25 列失败；
 46 列的窄终端会裁掉页脚，矩形必须跟着裁）。
+<code>a_footer_visible_in_a_short_viewport_is_clickable</code> 与
+<code>a_footer_on_a_clipped_card_is_clickable_in_both_directions</code>（真实渲染器 + 真实
+点击，视口 6/7/8/9 行，跟尾与滚到顶两个方向）盯住被裁的卡片；
+kit 侧的 <code>a_clipped_card_keeps_its_footer_rect_on_the_row_block_draws_it</code>
+把矩形对齐到 <code>Block</code> 实际画出的那些单元格；
+<code>a_hint_on_a_row_the_slice_does_not_contain_has_no_rect</code> 盯住第四个洞。
 <code>a_live_subagent_cards_cancel_button_is_not_covered_by_the_open_hint</code>
 （真实渲染器 + 真实点击，3 种宽度 × 有无长 permission 标签）与 kit 侧的
 <code>the_open_hint_never_lands_on_the_cancel_button</code> 盯住第三个洞。
@@ -849,7 +865,8 @@ B）只画一条裸边框，不画页脚文字，那里本来就没有可点的�
 <code>streaming_alone_builds_a_layout_before_any_committed_entry</code> 盯住空白视图。</p>
 <p><strong>Pointers：</strong>
 <code>crates/agent_tui_kit/src/render/cells/tool.rs</code>（<code>subagent_open_button_rect</code>、
-<code>collapsed_open_button_rect</code>、<code>meta_text_area</code>）、
+<code>collapsed_open_button_rect</code>、<code>meta_text_area</code>、<code>render_partial</code>
+的两种裁切形态）、
 <code>crates/agent_tui_kit/src/render/popups/subagent_popup.rs</code>
 （<code>prepare_subagent_popup</code> / <code>render_subagent_body</code>）、
 <code>crates/tui/src/render/log_render_tests.rs</code>、
