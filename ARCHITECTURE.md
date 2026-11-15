@@ -104,16 +104,18 @@ lives in `crates/tact_host`.
 `tact-acp` is a third frontend over `tact_host`, not a mode of the TUI. Each
 ACP session owns one `HostSession`; a per-session actor turns `AgentUpdate`
 into `session/update` notifications, maps `session/prompt` to
-`UserCommand::SubmitTask`, routes Tact's permission prompt through
+`UserCommand::SubmitTask` (or to a session action when the text is a `/name`
+or `$skill` the adapter owns), routes Tact's permission prompt through
 `session/request_permission`, and maps `Select` / `MultiSelect` questions to
-form elicitation. The actor is the single writer of the per-session model
-selection: `session/set_config_option` is applied only at a turn boundary,
-because a `SetModel` queued behind a running turn would also park the UI
-answers and cancellation that turn waits on. ACP v2 is still a draft, so the
-adapter pins `agent-client-protocol`'s `unstable_protocol_v2` feature and
-advertises the session baseline plus a model config option (text and
-resource-link prompts; client MCP servers are accepted and ignored, and
-`session/resume` replays no transcript).
+form elicitation. The actor is the single writer of the per-session config
+surface: model, permission mode, and thought level are applied only at a turn
+boundary, because a `SetModel` queued behind a running turn would also park the
+UI answers and cancellation that turn waits on. Client MCP servers are merged
+into the session's own `.mcp.json` resolution, so a client that supplies a
+stdio bridge gets its tools without any config write. ACP v2 is still a draft,
+so the adapter pins `agent-client-protocol`'s `unstable_protocol_v2` feature and
+advertises the session baseline plus commands, skills, image prompts, MCP
+transports, and session deletion (`session/resume` replays no transcript).
 
 ---
 
