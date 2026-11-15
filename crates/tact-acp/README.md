@@ -62,7 +62,10 @@ small wrapper script. Without `--config`, the normal config search paths apply.
   (`compact`, `stats`, `mcp`, `background`, `model`, `permission`, `thought`)
   plus every enabled skill as a `$name` entry. A client sends the chosen name
   back as `/name args` or `$name args`; the adapter routes those as session
-  actions, and an unrecognized name goes to the model as ordinary text.
+  actions, and an unrecognized name goes to the model as ordinary text. A
+  command is one line: text after it in the same prompt runs the command and is
+  then submitted as an ordinary turn. A command turn settles with its own idle,
+  because a client waits for one after every prompt.
 - Live state: `usage_update` from the reported token total and the configured
   context window, and `plan_update` from Tact's persistent task list. A client's
   context meter and todo panel therefore track the same numbers the TUI shows.
