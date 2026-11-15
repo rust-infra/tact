@@ -9,6 +9,7 @@ members = [
     "crates/tact",
     "crates/tact_host",
     "crates/tact-ui",
+    "crates/tact-acp",
     "crates/tact_llm",
     "crates/catalog",
     "crates/desktop_core",
@@ -19,14 +20,15 @@ resolver = "2"
 
 # A bare `cargo build` / `cargo run` / `cargo clippy` covers only the terminal
 # entry point. Without this, a default build also compiles every test and
-# example unit of all 14 members: touching one source file in `tact` cost 18.8s
+# example unit of every member: touching one source file in `tact` cost 18.8s
 # instead of 11.7s.
 #
 # `tact-ui` is the main binary and the one `cargo run` should mean. Desktop is
 # deliberately absent: it depends on `tact_desktop_core`, so listing it here
 # adds ~1.3s to every rebuild triggered by a `tact` edit and pulls gpui into a
 # loop that is usually reading TUI code. Build it with
-# `cargo build -p tact-desktop` (or `scripts/check-ui.sh`).
+# `cargo build -p tact-desktop` (or `scripts/check-ui.sh`). `tact-acp` is a
+# separate ACP frontend; build it with `cargo build -p tact-acp`.
 #
 # Every gate that must stay workspace-wide passes `--workspace` explicitly:
 # `scripts/check-rust.sh`, `.github/workflows/rust.yml`. This matters — a bare

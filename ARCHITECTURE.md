@@ -24,6 +24,7 @@ This project is a Cargo Workspace containing the following crates:
 | `crates/desktop_core`         | `tact_desktop_core`    | `2.0.6` (workspace) | GPUI-free desktop controller, transcript reducer, typed snapshots, project/session catalog, desktop settings, and host-session orchestration.                                                                                                           |
 | `crates/desktop`              | `tact-desktop`         | `2.0.6` (workspace) | Native GPUI desktop shell for macOS, Windows, and Linux. Thin UI over `tact_desktop_core` and `tact_catalog`, with Tact-owned gpui-component surfaces.                                                                                                  |
 | `crates/tact-ui`              | `tact-ui`              | `2.0.6` (workspace) | TUI adapter and CLI: terminal rendering/input plus headless CLI, consuming `tact_host` for shared orchestration.                                                                                                                                        |
+| `crates/tact-acp`             | `tact-acp`             | `2.0.6` (workspace) | ACP v2 stdio frontend: one `HostSession` per ACP session, streaming Transcript/tool updates and forwarding permission requests. Used by T3 Code's `Local command` provider.                                                                             |
 | `crates/tact_llm`             | `tact_llm`             | `2.0.6` (workspace) | Stable provider SDK and `tact_agent_api::ModelPort` implementation. `core` exposes the facade, builder, endpoint/limit/auth types, and a lazy stream; protocol adapters are feature-isolated behind `anthropic`, `openai-chat`, and `openai-responses`. |
 | `crates/tool_refactor_macros` | `tool_refactor_macros` | `2.0.6` (workspace) | Proc-macro `#[tool]` that generates `Tool` trait implementations from async functions.                                                                                                                                                                  |
 
@@ -33,6 +34,9 @@ Dependency graph:
 flowchart TB
     tact_ui["tact-ui"] --> tact
     tact_ui --> tact_host["tact_host"]
+    tact_acp["tact-acp"] --> tact
+    tact_acp --> tact_host
+    tact_acp --> tact_protocol
     tact_host --> tact
     tact_host --> tact_llm
     tact_host --> tact_protocol
@@ -84,17 +88,27 @@ Streaming is lazy, cancellation-first, and single-terminal. Product turns keep
 one immutable activation snapshot and use `Provider::with_session_id` for
 subagents so a child never inherits the parent's session header.
 
-Binaries produced by `crates/tact-ui`:
+Binaries:
 
 | Binary | Source | Mode |
 |---|---|---|
 | `tact-ui` | `crates/tact-ui/` | Interactive TUI by default; `headless` subcommand for CI / non-interactive |
+| `tact-acp` | `crates/tact-acp/` | ACP v2 agent over stdio; T3 Code launches it as a `Local command` provider |
 | `tact-desktop` | `crates/desktop/` | Native GPUI desktop app; packaged for macOS, Windows, and Linux |
 
 `tact-ui` crate layout: `main.rs` (dispatch), `interactive.rs`, `headless.rs`, and
 the terminal-specific `headless_session.rs` test harness and `sessions.rs`
 printer. Shared session, driver, Goal, account, permission, and input logic
 lives in `crates/tact_host`.
+
+`tact-acp` is a third frontend over `tact_host`, not a mode of the TUI. Each
+ACP session owns one `HostSession`; a per-session actor turns `AgentUpdate`
+into `session/update` notifications, maps `session/prompt` to
+`UserCommand::SubmitTask`, and routes Tact's `RequestSelect` permission prompt
+through `session/request_permission`. ACP v2 is still a draft, so the adapter
+pins `agent-client-protocol`'s `unstable_protocol_v2` feature and advertises
+only the session baseline (text/resource-link prompts; no MCP injection,
+images, or config options yet).
 
 ---
 
