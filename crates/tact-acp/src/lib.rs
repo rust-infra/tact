@@ -12,7 +12,7 @@
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -31,8 +31,8 @@ use tact_host::{
     UserCommand,
 };
 use tact_protocol::{
-    AgentUpdate, StepResult, StepStatus, ThinkingChunk, ToolPresentationInfo, ToolVisualKind,
-    UiRequestPurpose, UiResponse,
+    AgentUpdate, PermissionMode, StepResult, StepStatus, TaskSnapshot, TaskStatusSnapshot,
+    ThinkingChunk, ToolPresentationInfo, ToolVisualKind, UiRequestPurpose, UiResponse,
 };
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
@@ -87,8 +87,19 @@ pub async fn run() -> anyhow::Result<()> {
                             schema::Implementation::new("tact-acp", env!("CARGO_PKG_VERSION")),
                         )
                         .capabilities(
-                            schema::AgentCapabilities::new()
-                                .session(schema::SessionCapabilities::new()),
+                            schema::AgentCapabilities::new().session(
+                                schema::SessionCapabilities::new()
+                                    .mcp(
+                                        schema::McpCapabilities::new()
+                                            .stdio(schema::McpStdioCapabilities::new())
+                                            .http(schema::McpHttpCapabilities::new()),
+                                    )
+                                    .delete(schema::SessionDeleteCapabilities::new())
+                                    .prompt(
+                                        schema::PromptCapabilities::new()
+                                            .image(schema::PromptImageCapabilities::new()),
+                                    ),
+                            ),
                         ),
                     )
                 }
@@ -101,19 +112,12 @@ pub async fn run() -> anyhow::Result<()> {
                 async move |request: schema::NewSessionRequest,
                             responder: Responder<schema::NewSessionResponse>,
                             connection: ConnectionTo<Client>| {
-                    // T3 always attaches its stdio bridge even when the agent
-                    // advertises no `session.mcp`, so rejecting this request
-                    // would make every thread fail to start. Tact has no
-                    // per-session MCP injection point; accepting and ignoring
-                    // the server is the deliberate compatibility exception.
-                    if !request.mcp_servers.is_empty() {
-                        debug!(
-                            count = request.mcp_servers.len(),
-                            "ignoring client MCP servers; Tact uses its own MCP configuration"
-                        );
-                    }
+                    let mcp_servers = match session_mcp_servers(&request.mcp_servers) {
+                        Ok(servers) => servers,
+                        Err(error) => return responder.respond_with_error(error),
+                    };
                     let cwd = request.cwd.0.clone();
-                    match manager.new_session(cwd, connection).await {
+                    match manager.new_session(cwd, connection, mcp_servers).await {
                         Ok(response) => responder.respond(response),
                         Err(error) => responder.respond_with_error(error),
                     }
@@ -149,6 +153,10 @@ pub async fn run() -> anyhow::Result<()> {
                 async move |request: schema::ResumeSessionRequest,
                             responder: Responder<schema::ResumeSessionResponse>,
                             connection: ConnectionTo<Client>| {
+                    let mcp_servers = match session_mcp_servers(&request.mcp_servers) {
+                        Ok(servers) => servers,
+                        Err(error) => return responder.respond_with_error(error),
+                    };
                     let cwd = request.cwd.0.clone();
                     let session_id = request.session_id.clone();
                     let replay_from = request.replay_from.clone();
@@ -160,7 +168,13 @@ pub async fn run() -> anyhow::Result<()> {
                     if connection
                         .spawn(async move {
                             match resume_manager
-                                .resume_session(cwd, session_id, replay_from, resume_connection)
+                                .resume_session(
+                                    cwd,
+                                    session_id,
+                                    replay_from,
+                                    resume_connection,
+                                    mcp_servers,
+                                )
                                 .await
                             {
                                 Ok(response) => drop(responder.respond(response)),
@@ -235,15 +249,33 @@ pub async fn run() -> anyhow::Result<()> {
         .on_receive_request(
             {
                 let manager = manager.clone();
+                async move |request: schema::DeleteSessionRequest,
+                            responder: Responder<schema::DeleteSessionResponse>,
+                            _connection: ConnectionTo<Client>| {
+                    match manager.delete_session(&request.session_id).await {
+                        Ok(()) => responder.respond(schema::DeleteSessionResponse::new()),
+                        Err(error) => responder.respond_with_error(error),
+                    }
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let manager = manager.clone();
                 async move |request: schema::PromptRequest,
                             responder: Responder<schema::PromptResponse>,
                             connection: ConnectionTo<Client>| {
-                    let text = match prompt_text(&request.prompt) {
+                    let message_id = manager.next_message_id("user");
+                    let session_id = request.session_id.clone();
+                    let cwd = match manager.handle(&session_id) {
+                        Ok(handle) => handle.cwd,
+                        Err(error) => return responder.respond_with_error(error),
+                    };
+                    let text = match prompt_text(&request.prompt, &cwd) {
                         Ok(text) => text,
                         Err(error) => return responder.respond_with_error(error),
                     };
-                    let message_id = manager.next_message_id("user");
-                    let session_id = request.session_id.clone();
                     if let Err(error) = manager.submit_prompt(&session_id, text) {
                         return responder.respond_with_error(error);
                     }
@@ -381,26 +413,25 @@ impl SessionManager {
             .cloned()
     }
 
-    /// Read the initial model state from global config. `HostSession::start`
+    /// Read the initial option state from global config. `HostSession::start`
     /// returns before bootstrap finishes, so setup responses must advertise
     /// from config rather than from the built agent.
     fn initial_state(&self) -> Result<SessionState, Error> {
         let settings = tact::config::try_settings()
             .ok_or_else(|| internal("Tact configuration is not installed"))?;
-        Ok(SessionState {
-            model: ModelSelection::from_settings(&settings),
-            phase: TurnPhase::Idle,
-        })
+        Ok(SessionState::from_settings(&settings))
     }
 
     async fn new_session(
         &self,
         cwd: PathBuf,
         connection: ConnectionTo<Client>,
+        mcp_servers: Vec<(String, tact::mcp::McpProjectConfig)>,
     ) -> Result<schema::NewSessionResponse, Error> {
         self.ensure_config()?;
         let state = self.initial_state()?;
-        let options = state.model.config_options();
+        let options = state.config_options();
+        let skill_cwd = cwd.clone();
         let session_id = self
             .start_host(
                 cwd,
@@ -408,11 +439,14 @@ impl SessionManager {
                 SessionSelection::New,
                 state,
                 self.elicitation(),
+                mcp_servers,
             )
             .await?;
         // A new ACP session starts idle. Sending an idle here would be a
         // second, spurious turn boundary for the client.
-        Ok(schema::NewSessionResponse::new(session_id).config_options(options))
+        Ok(schema::NewSessionResponse::new(session_id)
+            .config_options(options)
+            .available_commands(available_commands(&available_skills(&skill_cwd))))
     }
 
     async fn resume_session(
@@ -421,6 +455,7 @@ impl SessionManager {
         session_id: schema::SessionId,
         replay_from: Option<schema::ReplayFrom>,
         connection: ConnectionTo<Client>,
+        mcp_servers: Vec<(String, tact::mcp::McpProjectConfig)>,
     ) -> Result<schema::ResumeSessionResponse, Error> {
         self.ensure_config()?;
         let replay = match replay_from {
@@ -452,11 +487,14 @@ impl SessionManager {
                 )?;
             }
             send_update(&connection, &handle.id, idle(None))?;
-            return Ok(schema::ResumeSessionResponse::new().config_options(options));
+            return Ok(schema::ResumeSessionResponse::new()
+                .config_options(options)
+                .available_commands(available_commands(&available_skills(&handle.cwd))));
         }
 
         let state = self.initial_state()?;
-        let options = state.model.config_options();
+        let options = state.config_options();
+        let skill_cwd = cwd.clone();
         let actual = self
             .start_host(
                 cwd,
@@ -464,6 +502,7 @@ impl SessionManager {
                 SessionSelection::Resume(session_id.to_string()),
                 state,
                 self.elicitation(),
+                mcp_servers,
             )
             .await?;
         if actual != session_id {
@@ -481,7 +520,9 @@ impl SessionManager {
         // Resume keeps its idle: T3 races it against a two second replay gap
         // and uses the idle to learn that the session settled.
         send_update(&connection, &session_id, idle(None))?;
-        Ok(schema::ResumeSessionResponse::new().config_options(options))
+        Ok(schema::ResumeSessionResponse::new()
+            .config_options(options)
+            .available_commands(available_commands(&available_skills(&skill_cwd))))
     }
 
     /// The live-session options read. Only called from the spawned resume
@@ -507,6 +548,7 @@ impl SessionManager {
         selection: SessionSelection,
         state: SessionState,
         elicitation: ElicitationSupport,
+        mcp_servers: Vec<(String, tact::mcp::McpProjectConfig)>,
     ) -> Result<schema::SessionId, Error> {
         let tact_path = TactPath::new(cwd.clone());
         let store = open_sqlite_session_store(&tact_path.session_db_path())
@@ -523,6 +565,7 @@ impl SessionManager {
             lock_registry: self.inner.lock_registry.clone(),
             progress_capacity: PROGRESS_CAPACITY,
             account_polling: false,
+            extra_mcp_servers: mcp_servers,
         };
         let host = HostSession::start(config)
             .await
@@ -553,10 +596,12 @@ impl SessionManager {
         Ok(session_id)
     }
 
+    /// Hand a prompt to the actor. A slash command is a session action, not a
+    /// model turn, so the actor decides which it is; the manager only routes.
     fn submit_prompt(&self, session_id: &schema::SessionId, text: String) -> Result<(), Error> {
         self.handle(session_id)?
             .commands
-            .send(SessionCommand::User(UserCommand::SubmitTask(text)))
+            .send(SessionCommand::Prompt(text))
             .map_err(|_| internal("session driver is closed"))
     }
 
@@ -567,24 +612,29 @@ impl SessionManager {
         value: &schema::SessionConfigOptionValue,
     ) -> Result<oneshot::Receiver<Result<Vec<schema::SessionConfigOption>, SetConfigFailure>>, Error>
     {
-        if config_id.0.as_ref() != MODEL_CONFIG_ID {
+        let id = config_id.0.as_ref();
+        if !matches!(
+            id,
+            MODEL_CONFIG_ID | PERMISSION_CONFIG_ID | THOUGHT_LEVEL_CONFIG_ID
+        ) {
             return Err(invalid_params(format!(
                 "unknown config option `{config_id}`"
             )));
         }
-        let model = match value {
-            schema::SessionConfigOptionValue::Id { value } => value.0.to_string(),
-            _ => {
-                return Err(invalid_params(
-                    "model config option requires a string id value",
-                ));
-            }
+        let schema::SessionConfigOptionValue::Id { value } = value else {
+            return Err(invalid_params(format!(
+                "config option `{config_id}` requires a string id value"
+            )));
         };
         let handle = self.handle(session_id)?;
         let (reply, reply_rx) = oneshot::channel();
         handle
             .commands
-            .send(SessionCommand::SetConfig { model, reply })
+            .send(SessionCommand::SetConfig {
+                config_id: id.to_string(),
+                value: value.0.to_string(),
+                reply,
+            })
             .map_err(|_| internal("session driver is closed"))?;
         Ok(reply_rx)
     }
@@ -618,6 +668,32 @@ impl SessionManager {
                 Err(_) => warn!(%session_id, "session close timed out"),
             }
         }
+    }
+
+    /// Delete one stored session.
+    ///
+    /// A live session is closed first, and its cwd is read before that: the
+    /// workspace is what locates the store, and closing removes the handle that
+    /// carries it. Deleting the row under a running host would otherwise leave
+    /// its driver writing into a session the client can no longer see.
+    async fn delete_session(&self, session_id: &schema::SessionId) -> Result<(), Error> {
+        self.ensure_config()?;
+        let cwd = match self.live_handle(session_id) {
+            Some(handle) => {
+                self.close_session(session_id).await;
+                handle.cwd
+            }
+            None => std::env::current_dir()
+                .map_err(|error| internal(format!("failed to resolve cwd: {error}")))?,
+        };
+        let tact_path = TactPath::new(cwd);
+        let store = open_sqlite_session_store(&tact_path.session_db_path())
+            .await
+            .map_err(|error| internal(format!("failed to open session store: {error:#}")))?;
+        store
+            .delete_session(session_id.0.as_ref())
+            .await
+            .map_err(|error| internal(format!("failed to delete session: {error:#}")))
     }
 
     async fn list_sessions(&self, cwd: Option<PathBuf>) -> Result<Vec<schema::SessionInfo>, Error> {
@@ -671,62 +747,39 @@ impl SessionManager {
     }
 }
 
-/// The model state a session can render. One source of truth, with an explicit
-/// in-flight overlay instead of a second boolean.
+/// One select-valued session config option with an explicit in-flight overlay.
+///
+/// `applied` is what the runtime last reported, `requested` is what the client
+/// last asked for, and `sent` marks the value already handed to the host. Three
+/// states instead of a second boolean: "queued behind a turn", "sent, awaiting
+/// the runtime's report", and "settled" are each representable once, so a
+/// confirmation and an unrelated report cannot be confused.
 #[derive(Clone, Debug)]
-struct ModelSelection {
-    /// The last model the runtime confirmed via `AgentUpdate::ModelInfo`.
+struct SelectOption {
+    id: &'static str,
+    name: &'static str,
+    description: Option<&'static str>,
+    category: Option<schema::SessionConfigOptionCategory>,
     applied: String,
-    /// A value accepted from `session/set_config_option` that the runtime has
-    /// not confirmed yet. Set while the host applies it, or while a turn keeps
-    /// it queued.
     requested: Option<String>,
-    /// The requested value handed to the host. Distinguishes "queued, not sent"
-    /// from "sent, awaiting confirmation" so an unrelated error cannot cancel
-    /// a change that has not been attempted.
     sent: Option<String>,
-    /// Candidate list from global config. Never empty; `applied` and every
-    /// requested value are members by construction.
     candidates: Vec<String>,
 }
 
-impl ModelSelection {
-    /// Boundary parse: global config in, a valid selection out.
-    fn from_settings(settings: &tact::config::ResolvedConfig) -> Self {
-        let applied = if settings.agent.model.trim().is_empty() {
-            settings.llm.model.clone()
-        } else {
-            settings.agent.model.clone()
-        };
-        let mut candidates = settings.llm.models.clone();
-        // ACP requires the current value to be one of the option values.
-        if !candidates.iter().any(|candidate| candidate == &applied) {
-            candidates.insert(0, applied.clone());
-        }
-        Self {
-            applied,
-            requested: None,
-            sent: None,
-            candidates,
-        }
-    }
-
-    /// What the client should show. The pending value wins so a mid-turn
-    /// switch is visible in the `set_config_option` response.
+impl SelectOption {
     fn shown(&self) -> &str {
         self.requested.as_deref().unwrap_or(&self.applied)
     }
 
-    fn accepts(&self, model: &str) -> bool {
-        self.candidates.iter().any(|candidate| candidate == model)
+    fn accepts(&self, value: &str) -> bool {
+        self.candidates.iter().any(|candidate| candidate == value)
     }
 
-    /// The only place that builds ACP config options.
-    fn config_options(&self) -> Vec<schema::SessionConfigOption> {
+    fn to_acp(&self) -> schema::SessionConfigOption {
         let shown = self.shown();
         let mut values = Vec::with_capacity(self.candidates.len() + 1);
-        // Defensive: a future writer must not be able to produce an option
-        // whose current value is absent from its values.
+        // Defensive: ACP requires the current value to be one of the values, so
+        // a writer cannot produce an option the client would reject.
         if !self.candidates.iter().any(|candidate| candidate == shown) {
             values.push(schema::SessionConfigSelectOption::new(
                 shown.to_string(),
@@ -736,30 +789,31 @@ impl ModelSelection {
         values.extend(
             self.candidates
                 .iter()
-                .map(|model| schema::SessionConfigSelectOption::new(model.clone(), model.clone())),
+                .map(|value| schema::SessionConfigSelectOption::new(value.clone(), value.clone())),
         );
-        vec![
-            schema::SessionConfigOption::select(
-                MODEL_CONFIG_ID,
-                "Model",
-                shown.to_string(),
-                values,
-            )
-            .category(schema::SessionConfigOptionCategory::Model),
-        ]
+        let option =
+            schema::SessionConfigOption::select(self.id, self.name, shown.to_string(), values);
+        match (self.description, &self.category) {
+            (None, None) => option,
+            (None, Some(category)) => option.category(category.clone()),
+            (Some(description), None) => option.description(Some(description.to_string())),
+            (Some(description), Some(category)) => option
+                .description(Some(description.to_string()))
+                .category(category.clone()),
+        }
     }
 
-    fn begin_request(&mut self, model: String) -> bool {
-        let changed = model != self.shown();
-        self.requested = Some(model);
+    /// Returns whether the advertised value moved.
+    fn begin_request(&mut self, value: String) -> bool {
+        let changed = value != self.shown();
+        self.requested = Some(value);
         changed
     }
 
-    /// `AgentUpdate::ModelInfo` is the runtime truth. Returns true when the
-    /// client needs a `config_option_update`: either the advertised value
-    /// moved, or a change that was queued/sent was confirmed. The confirmation
-    /// case emits after the idle of the turn that queued it, which is the
-    /// notification T3 uses to settle a mid-turn switch.
+    /// The runtime's report. Returns true when the client needs a
+    /// `config_option_update`: the advertised value moved, or a queued change
+    /// was confirmed. Only a matching report clears the overlay, because the
+    /// runtime reports the same field for other reasons mid-turn.
     fn commit(&mut self, reported: String) -> bool {
         let advertised = self.shown().to_string();
         let applied_before = self.applied.clone();
@@ -773,10 +827,220 @@ impl ModelSelection {
     }
 }
 
+/// The permission-mode option. Tact's `PermissionMode` labels are its values,
+/// and the ids are the same three strings the config file uses.
+const PERMISSION_CONFIG_ID: &str = "permission_mode";
+/// The reasoning-effort option, shown by clients as a reasoning control.
+const THOUGHT_LEVEL_CONFIG_ID: &str = "thought_level";
+/// The single plan id this adapter uses, so each task-list update replaces the
+/// previous checklist rather than accumulating plans.
+const TACT_PLAN_ID: &str = "tasks";
+/// Workspace-relative directory prompt images are written to.
+const ACP_IMAGE_DIR: &str = ".tact-acp-images";
+/// Thinking-budget tiers offered when the model has no profile of its own.
+const DEFAULT_THINKING_BUDGETS: [u32; 5] = [0, 8_000, 32_000, 64_000, 128_000];
+
+/// How the active model expresses "think harder".
+///
+/// An effort model takes a named tier; a budget model takes a token count.
+/// Which one applies is the provider's rule (`tact_llm::model_uses_effort`),
+/// the same one the TUI's `/model` second step uses, so the two frontends
+/// cannot offer different tier sets for one model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ThoughtKind {
+    Effort,
+    Budget,
+}
+
+/// Every config option this adapter serves, in the order the client sees them.
 #[derive(Debug)]
 struct SessionState {
-    model: ModelSelection,
+    model: SelectOption,
+    permission: SelectOption,
+    thought: SelectOption,
+    thought_kind: ThoughtKind,
     phase: TurnPhase,
+}
+
+impl SessionState {
+    fn from_settings(settings: &tact::config::ResolvedConfig) -> Self {
+        let applied = if settings.agent.model.trim().is_empty() {
+            settings.llm.model.clone()
+        } else {
+            settings.agent.model.clone()
+        };
+        let mut models = settings.llm.models.clone();
+        if !models.iter().any(|candidate| candidate == &applied) {
+            models.insert(0, applied.clone());
+        }
+        let (thought, thought_kind) = thought_option(settings, &applied);
+        Self {
+            model: SelectOption {
+                id: MODEL_CONFIG_ID,
+                name: "Model",
+                description: None,
+                category: Some(schema::SessionConfigOptionCategory::Model),
+                applied,
+                requested: None,
+                sent: None,
+                candidates: models,
+            },
+            permission: SelectOption {
+                id: PERMISSION_CONFIG_ID,
+                name: "Permission mode",
+                description: Some("What Tact may do without asking"),
+                // T3 treats a `mode`-category select as its plan-mode toggle,
+                // and only a mode option makes that toggle settable on v2.
+                category: Some(schema::SessionConfigOptionCategory::Mode),
+                applied: settings.permission_mode.as_str().to_string(),
+                requested: None,
+                sent: None,
+                candidates: PermissionMode::ALL
+                    .iter()
+                    .map(|mode| mode.as_str().to_string())
+                    .collect(),
+            },
+            thought,
+            thought_kind,
+            phase: TurnPhase::Idle,
+        }
+    }
+
+    fn config_options(&self) -> Vec<schema::SessionConfigOption> {
+        vec![
+            self.model.to_acp(),
+            self.permission.to_acp(),
+            self.thought.to_acp(),
+        ]
+    }
+
+    fn option_mut(&mut self, config_id: &str) -> Option<&mut SelectOption> {
+        match config_id {
+            MODEL_CONFIG_ID => Some(&mut self.model),
+            PERMISSION_CONFIG_ID => Some(&mut self.permission),
+            THOUGHT_LEVEL_CONFIG_ID => Some(&mut self.thought),
+            _ => None,
+        }
+    }
+
+    /// Rebuild the thought-level option for the model that was just applied.
+    ///
+    /// A model switch can change the tier set (an effort model became a budget
+    /// model, or the profile changed), so the option cannot be built once at
+    /// setup. A pending request survives only if the new model still offers it.
+    fn rebuild_thought(&mut self, model: &str) {
+        let Some(settings) = tact::config::try_settings() else {
+            return;
+        };
+        let (mut thought, kind) = thought_option(&settings, model);
+        thought.applied = current_thought_value(&thought.candidates, kind, None);
+        if let Some(requested) = self.thought.requested.clone()
+            && thought.candidates.iter().any(|value| value == &requested)
+        {
+            thought.requested = Some(requested);
+        }
+        self.thought = thought;
+        self.thought_kind = kind;
+    }
+
+    /// Settle the thought option from the runtime's report.
+    ///
+    /// `ModelInfo` carries both possible shapes; only the one this model uses
+    /// is meaningful, and an absent value means the model runs with thinking
+    /// off.
+    fn commit_thought(&mut self, budget: Option<u32>, effort: Option<&str>) -> bool {
+        let reported = match self.thought_kind {
+            ThoughtKind::Effort => effort.unwrap_or("none").to_string(),
+            ThoughtKind::Budget => budget.unwrap_or(0).to_string(),
+        };
+        self.thought.commit(reported)
+    }
+}
+
+/// Build the thought-level option for `model`.
+fn thought_option(
+    settings: &tact::config::ResolvedConfig,
+    model: &str,
+) -> (SelectOption, ThoughtKind) {
+    let profile = settings.llm.model_profiles.get(model);
+    let provider = settings.llm.provider_info();
+    if tact_llm::model_uses_effort(model, &provider) {
+        let candidates = profile
+            .filter(|profile| !profile.reasoning_efforts.is_empty())
+            .map(|profile| profile.reasoning_efforts.clone())
+            .unwrap_or_else(|| tact_llm::default_effort_tiers(&provider))
+            .into_iter()
+            .map(|effort| effort.as_str().to_string())
+            .collect::<Vec<_>>();
+        let applied = settings
+            .agent
+            .reasoning_effort
+            .map(|effort| effort.as_str().to_string())
+            .unwrap_or_else(|| "none".to_string());
+        (
+            SelectOption {
+                id: THOUGHT_LEVEL_CONFIG_ID,
+                name: "Reasoning effort",
+                description: Some("How much the model thinks before answering"),
+                category: Some(schema::SessionConfigOptionCategory::ThoughtLevel),
+                applied,
+                requested: None,
+                sent: None,
+                candidates,
+            },
+            ThoughtKind::Effort,
+        )
+    } else {
+        let candidates = profile
+            .filter(|profile| !profile.thinking_budgets.is_empty())
+            .map(|profile| {
+                profile
+                    .thinking_budgets
+                    .iter()
+                    .map(|budget| budget.to_string())
+                    .collect()
+            })
+            .unwrap_or_else(|| {
+                DEFAULT_THINKING_BUDGETS
+                    .iter()
+                    .map(|budget| budget.to_string())
+                    .collect()
+            });
+        (
+            SelectOption {
+                id: THOUGHT_LEVEL_CONFIG_ID,
+                name: "Thinking budget",
+                description: Some("Tokens the model may spend thinking"),
+                category: Some(schema::SessionConfigOptionCategory::ThoughtLevel),
+                applied: settings.agent.thinking_budget.to_string(),
+                requested: None,
+                sent: None,
+                candidates,
+            },
+            ThoughtKind::Budget,
+        )
+    }
+}
+
+/// A current value that is guaranteed to be one of `candidates`.
+fn current_thought_value(
+    candidates: &[String],
+    kind: ThoughtKind,
+    reported: Option<&str>,
+) -> String {
+    let fallback = match kind {
+        ThoughtKind::Effort => "none",
+        ThoughtKind::Budget => "0",
+    };
+    let value = reported.unwrap_or(fallback);
+    if candidates.iter().any(|candidate| candidate == value) {
+        value.to_string()
+    } else {
+        candidates
+            .first()
+            .cloned()
+            .unwrap_or_else(|| value.to_string())
+    }
 }
 
 /// The wire-facing foreground state. Replaces a bare bool so "running because
@@ -795,12 +1059,16 @@ impl TurnPhase {
 }
 
 enum SessionCommand {
+    /// A prompt or slash command from `session/prompt`. The actor decides
+    /// whether it becomes a model turn or a session action.
+    Prompt(String),
     /// Forward a host command (`SubmitTask`, `UiResponse`, `Cancel`, ...).
     User(UserCommand),
-    /// Validate and queue a model change. The actor answers from its own state
-    /// and never awaits the host on this path.
+    /// Validate and queue a config change. The actor answers from its own
+    /// state and never awaits the host on this path.
     SetConfig {
-        model: String,
+        config_id: String,
+        value: String,
         reply: oneshot::Sender<Result<Vec<schema::SessionConfigOption>, SetConfigFailure>>,
     },
     /// Read the current option list. Pure state read, used by live resume.
@@ -820,13 +1088,13 @@ enum SessionCommand {
 /// Actor-side refusal, mapped to an ACP error at the handler boundary. Keeping
 /// ACP error construction out of the actor keeps protocol policy in one place.
 enum SetConfigFailure {
-    UnknownModel(String),
+    UnknownValue { config_id: String, value: String },
 }
 
 fn set_config_error(error: SetConfigFailure) -> Error {
     match error {
-        SetConfigFailure::UnknownModel(model) => invalid_params(format!(
-            "model `{model}` is not in this session's candidate list"
+        SetConfigFailure::UnknownValue { config_id, value } => invalid_params(format!(
+            "`{value}` is not a value of config option `{config_id}`"
         )),
     }
 }
@@ -857,6 +1125,8 @@ fn spawn_actor(
             thought: None,
             open_tools: HashSet::new(),
             turn_saw_text: false,
+            context_window: context_window(),
+            last_plan: Vec::new(),
         };
         actor.reconcile_pending_requests();
         loop {
@@ -879,11 +1149,14 @@ fn spawn_actor(
                 command = command_rx.recv() => {
                     match command {
                         Some(SessionCommand::User(command)) => actor.forward_user(command),
-                        Some(SessionCommand::SetConfig { model, reply }) => {
-                            actor.set_config(model, reply);
-                        }
+                        Some(SessionCommand::Prompt(text)) => actor.handle_prompt(text),
+                        Some(SessionCommand::SetConfig {
+                            config_id,
+                            value,
+                            reply,
+                        }) => actor.set_config(config_id, value, reply),
                         Some(SessionCommand::ConfigOptions { reply }) => {
-                            let _ = reply.send(actor.state.model.config_options());
+                            let _ = reply.send(actor.state.config_options());
                         }
                         Some(SessionCommand::Cancel) => actor.cancel_session(),
                         Some(SessionCommand::RequestSettled { request_id }) => {
@@ -966,6 +1239,11 @@ struct SessionActor {
     thought: Option<OpenMessage>,
     open_tools: HashSet<String>,
     turn_saw_text: bool,
+    /// The context window to report with usage. The window is configuration,
+    /// not an event, so it is read once at session start.
+    context_window: u64,
+    /// The last plan published, so an unchanged task list is not re-sent.
+    last_plan: Vec<(String, schema::PlanEntryStatus)>,
 }
 
 impl SessionActor {
@@ -1176,7 +1454,17 @@ impl SessionActor {
                 );
             }
             AgentUpdate::ModelInfo(params) => {
-                if self.state.model.commit(params.model) {
+                let model_changed = self.state.model.commit(params.model.clone());
+                if model_changed {
+                    self.state.rebuild_thought(&params.model);
+                }
+                let effort = params
+                    .reasoning_effort
+                    .map(|effort| effort.as_str().to_string());
+                let thought_changed = self
+                    .state
+                    .commit_thought(params.thinking_budget, effort.as_deref());
+                if model_changed || thought_changed {
                     self.send_options();
                 }
             }
@@ -1218,15 +1506,63 @@ impl SessionActor {
             AgentUpdate::Info(text) | AgentUpdate::MdInfo(text) => {
                 self.notice(schema::NoticeSeverity::Info, "Tact", Some(text));
             }
+            // Commands the host answers as a read-out rather than a turn:
+            // `/stats`, `/background`, `/mcp list`, and a Goal's own report.
+            // ACP has no modal, so the body becomes the notice description.
+            AgentUpdate::PopupMarkdown { title, source } => {
+                self.notice(schema::NoticeSeverity::Info, title, Some(source));
+            }
             AgentUpdate::UiResponseRejected { request_id } => {
                 debug!(%self.session_id, request_id, "UI response arrived after the request was answered");
             }
-            AgentUpdate::TokenUsage(_)
-            | AgentUpdate::TurnStats { .. }
+            AgentUpdate::TokenUsage(usage) => {
+                // `total` is what Tact counts as context occupancy: every token
+                // the model just saw plus what it wrote. That is the number the
+                // TUI's own context meter shows.
+                self.send(schema::SessionUpdate::UsageUpdate(
+                    schema::UsageUpdate::new(usage.total as u64, self.context_window),
+                ));
+            }
+            AgentUpdate::TasksChanged { tasks, .. } => self.publish_plan(&tasks),
+            AgentUpdate::TurnStats { .. }
             | AgentUpdate::RunFinished { .. }
             | AgentUpdate::StepAdded(_) => {}
             other => debug!(%self.session_id, ?other, "unmapped Tact update"),
         }
+    }
+
+    /// Publish Tact's persistent task list as an ACP plan.
+    ///
+    /// The task list is the only user-facing checklist Tact has, so it is what
+    /// a client's todo panel should show. One stable plan id means each update
+    /// replaces the previous list, which is the semantics ACP gives it.
+    fn publish_plan(&mut self, tasks: &[TaskSnapshot]) {
+        let entries = tasks
+            .iter()
+            .map(|task| {
+                (
+                    task.subject.clone(),
+                    match task.status {
+                        TaskStatusSnapshot::Pending => schema::PlanEntryStatus::Pending,
+                        TaskStatusSnapshot::InProgress => schema::PlanEntryStatus::InProgress,
+                        TaskStatusSnapshot::Completed => schema::PlanEntryStatus::Completed,
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        if entries == self.last_plan {
+            return;
+        }
+        self.last_plan = entries.clone();
+        let entries = entries
+            .into_iter()
+            .map(|(content, status)| {
+                schema::PlanEntry::new(content, schema::PlanEntryPriority::Medium, status)
+            })
+            .collect();
+        self.send(schema::SessionUpdate::PlanUpdate(schema::PlanUpdate::new(
+            schema::PlanUpdateContent::items(TACT_PLAN_ID, entries),
+        )));
     }
 
     /// Reconcile against the authoritative pending-request snapshot. Covers a
@@ -1431,38 +1767,110 @@ impl SessionActor {
 
     fn set_config(
         &mut self,
-        model: String,
+        config_id: String,
+        value: String,
         reply: oneshot::Sender<Result<Vec<schema::SessionConfigOption>, SetConfigFailure>>,
     ) {
-        if !self.state.model.accepts(&model) {
-            let _ = reply.send(Err(SetConfigFailure::UnknownModel(model)));
-            return;
-        }
-        let changed = self.state.model.begin_request(model);
-        if changed && !self.state.phase.is_running() {
-            self.apply_model_now();
-        }
-        let _ = reply.send(Ok(self.state.model.config_options()));
-    }
-
-    /// Hand a queued model change to the host. Safe only at an idle boundary:
-    /// the driver parks config commands behind the active turn, which would
-    /// also park the `UiResponse` and `Cancel` commands a blocked turn needs.
-    fn apply_model_now(&mut self) {
-        let Some(model) = self.state.model.requested.clone() else {
+        let Some(option) = self.state.option_mut(&config_id) else {
+            let _ = reply.send(Err(SetConfigFailure::UnknownValue { config_id, value }));
             return;
         };
-        if model == self.state.model.applied {
-            self.state.model.requested = None;
-            self.state.model.sent = None;
+        if !option.accepts(&value) {
+            let _ = reply.send(Err(SetConfigFailure::UnknownValue { config_id, value }));
             return;
         }
-        self.state.model.sent = Some(model.clone());
-        if let Err(error) = self.host.send(UserCommand::SetModel(model)) {
-            warn!(%self.session_id, %error, "failed to send model change");
-            self.state.model.requested = None;
-            self.state.model.sent = None;
-            self.send_options();
+        let changed = option.begin_request(value);
+        if changed && !self.state.phase.is_running() {
+            self.apply_config_now();
+        }
+        let _ = reply.send(Ok(self.state.config_options()));
+    }
+
+    /// Hand every queued config change to the host. Safe only at an idle
+    /// boundary: the driver parks config commands behind the active turn,
+    /// which would also park the `UiResponse` and `Cancel` commands a blocked
+    /// turn needs.
+    fn apply_config_now(&mut self) {
+        // The model must be applied first: a permission change is
+        // session-scoped and cheap, but the driver still processes commands in
+        // order, so the model switch this turn was waiting on should not sit
+        // behind it.
+        if let Some(model) = self.state.model.requested.clone() {
+            if model == self.state.model.applied {
+                self.state.model.requested = None;
+                self.state.model.sent = None;
+            } else {
+                self.state.model.sent = Some(model.clone());
+                if let Err(error) = self.host.send(UserCommand::SetModel(model)) {
+                    warn!(%self.session_id, %error, "failed to send model change");
+                    self.state.model.requested = None;
+                    self.state.model.sent = None;
+                    self.send_options();
+                }
+            }
+        }
+        if let Some(mode) = self.state.permission.requested.clone() {
+            if mode == self.state.permission.applied {
+                self.state.permission.requested = None;
+                self.state.permission.sent = None;
+            } else {
+                match mode.parse::<PermissionMode>() {
+                    Ok(mode) => {
+                        self.state.permission.sent = Some(mode.as_str().to_string());
+                        if let Err(error) = self.host.send(UserCommand::SetPermissionMode(mode)) {
+                            warn!(%self.session_id, %error, "failed to send permission mode");
+                            self.state.permission.requested = None;
+                            self.state.permission.sent = None;
+                            self.send_options();
+                        } else {
+                            // The mode is accepted by the host immediately; no
+                            // runtime report follows it, so settle here rather
+                            // than leaving the overlay waiting forever.
+                            self.state.permission.applied = mode.as_str().to_string();
+                            self.state.permission.requested = None;
+                            self.state.permission.sent = None;
+                            self.send_options();
+                        }
+                    }
+                    Err(error) => {
+                        warn!(%self.session_id, %error, "invalid permission mode");
+                        self.state.permission.requested = None;
+                        self.state.permission.sent = None;
+                        self.send_options();
+                    }
+                }
+            }
+        }
+        if let Some(value) = self.state.thought.requested.clone() {
+            if value == self.state.thought.applied {
+                self.state.thought.requested = None;
+                self.state.thought.sent = None;
+            } else {
+                self.state.thought.sent = Some(value.clone());
+                // Both commands clear the other's stale state in the agent
+                // (`SetThinkingBudget` clears effort, and vice versa), so the
+                // reported `ModelInfo` will settle the overlay.
+                let command = match self.state.thought_kind {
+                    ThoughtKind::Effort => value
+                        .parse::<tact_llm::OpenAiReasoningEffort>()
+                        .ok()
+                        .map(|effort| UserCommand::SetReasoningEffort(Some(effort.into()))),
+                    ThoughtKind::Budget => value
+                        .parse::<usize>()
+                        .ok()
+                        .map(UserCommand::SetThinkingBudget),
+                };
+                let sent = match command {
+                    Some(command) => self.host.send(command).map_err(|error| error.to_string()),
+                    None => Err(format!("`{value}` is not a valid thought level")),
+                };
+                if let Err(error) = sent {
+                    warn!(%self.session_id, %error, "failed to send thought level");
+                    self.state.thought.requested = None;
+                    self.state.thought.sent = None;
+                    self.send_options();
+                }
+            }
         }
     }
 
@@ -1502,6 +1910,87 @@ impl SessionActor {
         }
     }
 
+    /// Turn one `session/prompt` into either a model turn or a session action.
+    ///
+    /// A client cannot know which `/…` names the adapter handles, so an
+    /// unrecognized one is forwarded as ordinary text: losing a typo silently
+    /// would be worse than letting the model see it.
+    fn handle_prompt(&mut self, text: String) {
+        match slash_command(&text) {
+            SlashCommand::Forward(text) => {
+                self.forward_user(UserCommand::SubmitTask(text));
+            }
+            SlashCommand::Model(value) => self.apply_slash_config(MODEL_CONFIG_ID, value),
+            SlashCommand::Permission(value) => self.apply_slash_config(PERMISSION_CONFIG_ID, value),
+            SlashCommand::Thought(value) => self.apply_slash_config(THOUGHT_LEVEL_CONFIG_ID, value),
+            SlashCommand::Skill { name, args } => self.invoke_skill(&name, &args),
+            SlashCommand::Host(command) => self.forward_slash_command(command),
+        }
+    }
+
+    /// Run a skill by wrapping its body the way the TUI does.
+    ///
+    /// The client inserted `$name`; a skill is a prompt template, so the turn
+    /// the model sees must be the body, not the name. A name this session has
+    /// no skill for is reported rather than silently submitted as text.
+    fn invoke_skill(&mut self, name: &str, args: &str) {
+        let registry = self.host.skill_registry();
+        let registry = tact::skill::lock_skills(&registry);
+        let Some(skill) = registry.skills().get(name) else {
+            let available = registry.skills().keys().cloned().collect::<Vec<_>>();
+            let mut available = available;
+            available.sort();
+            self.notice(
+                schema::NoticeSeverity::Warning,
+                format!("Unknown skill `{name}`"),
+                Some(format!("Available: {}", available.join(", "))),
+            );
+            return;
+        };
+        let task = tact::skill::format_skill_agent_task(skill, args);
+        drop(registry);
+        self.forward_user(UserCommand::SubmitTask(task));
+    }
+
+    /// Apply a `/model`, `/permission`, or `/thought` argument against this
+    /// session's own options, so the entity validating is the one that renders.
+    fn apply_slash_config(&mut self, config_id: &'static str, value: String) {
+        let running = self.state.phase.is_running();
+        let Some(option) = self.state.option_mut(config_id) else {
+            return;
+        };
+        if !option.accepts(&value) {
+            let accepted = option.candidates.join(", ");
+            self.notice(
+                schema::NoticeSeverity::Warning,
+                format!("Unknown value for /{config_id}"),
+                Some(format!("`{value}` is not one of: {accepted}")),
+            );
+            return;
+        }
+        let changed = option.begin_request(value);
+        if changed && !running {
+            self.apply_config_now();
+        }
+        self.send_options();
+    }
+
+    /// Forward a command the host answers as updates.
+    ///
+    /// These are not turns: `/compact` and `/stats` produce their own updates
+    /// and never a `TaskComplete`, so no idle is owed. A client that shows them
+    /// as a normal prompt still gets the answer as a notice or markdown cell.
+    fn forward_slash_command(&mut self, command: UserCommand) {
+        if let Err(error) = self.host.send(command) {
+            warn!(%self.session_id, %error, "failed to send slash command");
+            self.notice(
+                schema::NoticeSeverity::Error,
+                "Command failed",
+                Some(error.to_string()),
+            );
+        }
+    }
+
     fn forward_user(&mut self, command: UserCommand) {
         let prompt = matches!(&command, UserCommand::SubmitTask(_));
         let ui_response = matches!(&command, UserCommand::UiResponse(_));
@@ -1533,7 +2022,7 @@ impl SessionActor {
 
     fn send_options(&self) {
         self.send(schema::SessionUpdate::ConfigOptionUpdate(
-            schema::ConfigOptionUpdate::new(self.state.model.config_options()),
+            schema::ConfigOptionUpdate::new(self.state.config_options()),
         ));
     }
 
@@ -1666,7 +2155,7 @@ impl SessionActor {
         if self.state.phase.is_running() {
             self.send(idle(Some(stop_reason)));
             self.state.phase = TurnPhase::Idle;
-            self.apply_model_now();
+            self.apply_config_now();
         }
     }
 
@@ -1786,12 +2275,19 @@ fn text_tool_content(text: impl Into<String>) -> schema::ToolCallContent {
     schema::ToolCallContent::Content(Box::new(schema::Content::new(text.into())))
 }
 
-fn prompt_text(blocks: &[schema::ContentBlock]) -> Result<String, Error> {
+/// Flatten prompt content into one task text, writing images into the
+/// workspace as files.
+///
+/// Tact takes a text task and de-inlines image references into paths the model
+/// reads with `read_image`, so an ACP image block becomes a saved file plus a
+/// markdown reference to it: no base64 crosses the protocol boundary twice,
+/// and a prompt image behaves exactly like one the user attached in the TUI.
+fn prompt_text(blocks: &[schema::ContentBlock], work_dir: &Path) -> Result<String, Error> {
     if blocks.is_empty() {
         return Err(invalid_params("prompt must not be empty"));
     }
     let mut parts = Vec::with_capacity(blocks.len());
-    for block in blocks {
+    for (index, block) in blocks.iter().enumerate() {
         match block {
             schema::ContentBlock::Text(text) => parts.push(text.text.clone()),
             schema::ContentBlock::ResourceLink(link) => parts.push(format!(
@@ -1799,14 +2295,87 @@ fn prompt_text(blocks: &[schema::ContentBlock]) -> Result<String, Error> {
                 link.title.as_deref().unwrap_or(&link.name),
                 link.uri
             )),
+            schema::ContentBlock::Image(image) => {
+                parts.push(write_prompt_image(image, index, work_dir)?);
+            }
+            schema::ContentBlock::Audio(_) => {
+                return Err(invalid_params(
+                    "this agent does not accept audio prompt content",
+                ));
+            }
             _ => {
                 return Err(invalid_params(
-                    "this agent only supports text and resource_link prompt content",
+                    "this agent only supports text, resource_link, and image prompt content",
                 ));
             }
         }
     }
     Ok(parts.join("\n\n"))
+}
+
+/// Write one prompt image under the workspace and return its markdown
+/// reference.
+///
+/// The file must live inside the workspace or `read_image` refuses it, so it
+/// goes in a per-session `acp-images` directory and the reference is relative.
+fn write_prompt_image(
+    image: &schema::ImageContent,
+    index: usize,
+    work_dir: &Path,
+) -> Result<String, Error> {
+    let extension = match image.mime_type.0.as_ref() {
+        "image/png" => "png",
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/webp" => "webp",
+        "image/gif" => "gif",
+        other => {
+            return Err(invalid_params(format!(
+                "unsupported image media type `{other}`"
+            )));
+        }
+    };
+    let bytes = base64_decode(&image.data)
+        .map_err(|error| invalid_params(format!("image data is not valid base64: {error}")))?;
+    let dir = work_dir.join(ACP_IMAGE_DIR);
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| internal(format!("failed to create image directory: {error}")))?;
+    let name = format!("prompt-{index}.{extension}");
+    std::fs::write(dir.join(&name), bytes)
+        .map_err(|error| internal(format!("failed to write prompt image: {error}")))?;
+    Ok(format!("![prompt image]({ACP_IMAGE_DIR}/{name})"))
+}
+
+/// Minimal standard-base64 decoder, so the adapter needs no new dependency.
+fn base64_decode(data: &str) -> std::result::Result<Vec<u8>, String> {
+    fn value(byte: u8) -> Option<u8> {
+        match byte {
+            b'A'..=b'Z' => Some(byte - b'A'),
+            b'a'..=b'z' => Some(byte - b'a' + 26),
+            b'0'..=b'9' => Some(byte - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let mut out = Vec::with_capacity(data.len() * 3 / 4);
+    let mut buffer = 0u32;
+    let mut bits = 0u8;
+    for byte in data.bytes() {
+        if byte == b'=' || byte.is_ascii_whitespace() {
+            continue;
+        }
+        let Some(value) = value(byte) else {
+            return Err(format!("invalid character `{}`", byte as char));
+        };
+        buffer = (buffer << 6) | u32::from(value);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buffer >> bits) as u8);
+            buffer &= (1 << bits) - 1;
+        }
+    }
+    Ok(out)
 }
 
 fn parse_json(value: &str) -> Option<serde_json::Value> {
@@ -1872,12 +2441,224 @@ fn session_not_found(session_id: &schema::SessionId) -> Error {
     schema::Error::session_not_found(session_id.clone()).into()
 }
 
+/// The configured context window, or 0 when unknown.
+///
+/// Tact reports usage as "tokens in context" and leaves the window to config,
+/// so a client's context meter needs both; an unknown window is reported as 0
+/// rather than guessed, which makes the client show the used count alone.
+fn context_window() -> u64 {
+    tact::config::try_settings()
+        .map(|settings| settings.agent.model_context_window as u64)
+        .unwrap_or(0)
+}
+
+/// The commands this adapter advertises to an ACP client.
+///
+/// T3 sends a chosen command back as verbatim `/name args` prompt text, so this
+/// list and [`slash_command`] must agree: a command named here with no handler
+/// would reach the model as literal text.
+fn available_commands(skills: &[(String, String)]) -> Vec<schema::AvailableCommand> {
+    let commands = [
+        ("compact", "Compact the conversation context", ""),
+        ("stats", "Show session token and turn statistics", ""),
+        ("mcp", "Inspect the connected MCP servers", "[list|prompts]"),
+        (
+            "background",
+            "List background tasks, or show one by id",
+            "[task-id]",
+        ),
+        // These two resolve to the same state the config options hold; the
+        // slash forms exist because a client that hides config options (or a
+        // keyboard user) still needs a way to switch them.
+        (
+            "model",
+            "Switch the model for the rest of the session",
+            "<model>",
+        ),
+        ("permission", "Set the permission mode", "default|plan|auto"),
+        (
+            "thought",
+            "Set the reasoning effort or thinking budget",
+            "<level>",
+        ),
+    ];
+    let mut available = commands
+        .into_iter()
+        .map(|(name, description, hint)| {
+            let mut command = schema::Command::new(name, description);
+            if !hint.is_empty() {
+                command = command.input(schema::AvailableCommandInput::Text(
+                    schema::TextCommandInput::new(hint),
+                ));
+            }
+            schema::AvailableCommand::Command(command)
+        })
+        .collect::<Vec<_>>();
+    // A `$name` entry is how a client tells a skill apart from a command; the
+    // client inserts it verbatim as `$name args`, which `slash_command` then
+    // resolves back to the skill body. A skill whose name begins with `$`
+    // would be ambiguous, so it is left out of the menu (it is still reachable
+    // as `/skill <name>` text the model can act on).
+    available.extend(
+        skills
+            .iter()
+            .filter(|(name, _)| !name.starts_with('$'))
+            .map(|(name, description)| {
+                schema::AvailableCommand::Command(
+                    schema::Command::new(format!("${name}"), description.clone()).input(
+                        schema::AvailableCommandInput::Text(schema::TextCommandInput::new(
+                            "[args]",
+                        )),
+                    ),
+                )
+            }),
+    );
+    available
+}
+
+/// The skills a `session/new` or `session/resume` should advertise.
+///
+/// Read once per session from the same registry the agent uses. A failure is
+/// not fatal: a session with no menu entries is worse than one with a menu,
+/// but far better than one that cannot start.
+fn available_skills(cwd: &std::path::Path) -> Vec<(String, String)> {
+    match tact::skill::get_skill_registry(cwd) {
+        Ok(registry) => {
+            let mut skills = registry
+                .skills()
+                .iter()
+                .filter(|(name, _)| !registry.is_disabled(name))
+                .map(|(name, doc)| (name.clone(), doc.manifest.description.clone()))
+                .collect::<Vec<_>>();
+            skills.sort_by(|a, b| a.0.cmp(&b.0));
+            skills
+        }
+        Err(error) => {
+            debug!(%error, "failed to read skills for advertisement");
+            Vec::new()
+        }
+    }
+}
+
+/// A slash command the adapter handles itself.
+enum SlashCommand {
+    Model(String),
+    Permission(String),
+    Thought(String),
+    /// `$name args`: the client's spelling for an advertised skill.
+    Skill {
+        name: String,
+        args: String,
+    },
+    /// A command the host answers as an update (`/compact`, `/stats`, ...).
+    Host(UserCommand),
+    /// Text that names no known command: it goes to the model verbatim, which
+    /// is how a client is expected to treat an unadvertised `/…`.
+    Forward(String),
+}
+
+/// Parse one `/name args` prompt. Case-insensitive, matching the client's own
+/// menu behavior.
+fn slash_command(text: &str) -> SlashCommand {
+    let trimmed = text.trim();
+    // A `$name` prompt is the client's way of invoking an advertised skill;
+    // it is not a slash command, but it needs the same "action, not a turn"
+    // routing, so one parser owns both spellings.
+    if let Some(rest) = trimmed.strip_prefix('$') {
+        let (name, args) = match rest.split_once(char::is_whitespace) {
+            Some((name, args)) => (name, args.trim()),
+            None => (rest, ""),
+        };
+        return SlashCommand::Skill {
+            name: name.to_string(),
+            args: args.to_string(),
+        };
+    }
+    let Some(rest) = trimmed.strip_prefix('/') else {
+        return SlashCommand::Forward(text.to_string());
+    };
+    let (name, args) = match rest.split_once(char::is_whitespace) {
+        Some((name, args)) => (name, args.trim()),
+        None => (rest, ""),
+    };
+    match name.to_ascii_lowercase().as_str() {
+        "compact" => SlashCommand::Host(UserCommand::Compact),
+        "stats" => SlashCommand::Host(UserCommand::QueryStats),
+        "mcp" => match args.split_whitespace().next() {
+            Some("prompts") => SlashCommand::Host(UserCommand::McpPrompts {
+                server: args.split_whitespace().nth(1).map(str::to_string),
+            }),
+            _ => SlashCommand::Host(UserCommand::McpList),
+        },
+        "background" => SlashCommand::Host(UserCommand::QueryBackground(
+            args.split_whitespace().next().map(str::to_string),
+        )),
+        "model" if !args.is_empty() => SlashCommand::Model(args.to_string()),
+        "permission" if !args.is_empty() => SlashCommand::Permission(args.to_string()),
+        "thought" if !args.is_empty() => SlashCommand::Thought(args.to_string()),
+        _ => SlashCommand::Forward(text.to_string()),
+    }
+}
+
+/// Translate the client's MCP servers into Tact's own project-config shape.
+///
+/// Tact connects these for this session only; they are never written to a
+/// config file. A transport this adapter cannot build is a `-32602` rather
+/// than a silent drop, because the client asked for tools the turn would then
+/// be missing.
+fn session_mcp_servers(
+    servers: &[schema::McpServer],
+) -> Result<Vec<(String, tact::mcp::McpProjectConfig)>, Error> {
+    use tact::mcp::McpProjectConfig;
+
+    servers
+        .iter()
+        .map(|server| match server {
+            schema::McpServer::Stdio(stdio) => Ok((
+                stdio.name.clone(),
+                McpProjectConfig {
+                    command: Some(stdio.command.0.display().to_string()),
+                    args: stdio.args.clone(),
+                    env: stdio
+                        .env
+                        .iter()
+                        .map(|variable| (variable.name.clone(), variable.value.clone()))
+                        .collect(),
+                    ..McpProjectConfig::default()
+                },
+            )),
+            schema::McpServer::Http(http) => Ok((
+                http.name.clone(),
+                McpProjectConfig {
+                    url: Some(http.url.clone()),
+                    headers: http
+                        .headers
+                        .iter()
+                        .map(|header| (header.name.clone(), header.value.clone()))
+                        .collect(),
+                    ..McpProjectConfig::default()
+                },
+            )),
+            other => {
+                debug!(?other, "unsupported client MCP transport");
+                Err(invalid_params(
+                    "this agent supports stdio and http MCP servers only",
+                ))
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn selection() -> ModelSelection {
-        ModelSelection {
+    fn selection() -> SelectOption {
+        SelectOption {
+            id: MODEL_CONFIG_ID,
+            name: "Model",
+            description: None,
+            category: Some(schema::SessionConfigOptionCategory::Model),
             applied: "fake-a".to_string(),
             requested: None,
             sent: None,
@@ -1917,8 +2698,7 @@ mod tests {
     fn model_options_always_contain_the_current_value() {
         let mut model = selection();
         model.begin_request("fake-b".to_string());
-        let options = model.config_options();
-        assert_eq!(options.len(), 1);
+        let options = [model.to_acp()];
         assert!(matches!(
             options[0].category,
             Some(schema::SessionConfigOptionCategory::Model)
@@ -2000,24 +2780,48 @@ mod tests {
 
     #[test]
     fn prompt_text_accepts_text_and_resource_links() {
+        let dir = tempfile::tempdir().expect("temp dir");
         let blocks = vec![
             schema::ContentBlock::Text(schema::TextContent::new("hello")),
             schema::ContentBlock::ResourceLink(schema::ResourceLink::new("file", "file:///tmp/a")),
         ];
         assert_eq!(
-            prompt_text(&blocks).expect("baseline blocks should be accepted"),
+            prompt_text(&blocks, dir.path()).expect("baseline blocks should be accepted"),
             "hello\n\n[file](file:///tmp/a)"
         );
     }
 
     #[test]
-    fn prompt_text_rejects_media_blocks() {
+    fn prompt_images_are_saved_inside_the_workspace() {
+        let dir = tempfile::tempdir().expect("temp dir");
         let blocks = vec![schema::ContentBlock::Image(schema::ImageContent::new(
-            "AAAA",
+            "aGVsbG8=",
             "image/png",
         ))];
-        let error = prompt_text(&blocks).expect_err("image blocks are not advertised");
+        let text = prompt_text(&blocks, dir.path()).expect("image blocks are accepted");
+        assert_eq!(text, "![prompt image](.tact-acp-images/prompt-0.png)");
+        let saved = std::fs::read(dir.path().join(ACP_IMAGE_DIR).join("prompt-0.png"))
+            .expect("the image is written into the workspace");
+        assert_eq!(saved, b"hello");
+    }
+
+    #[test]
+    fn prompt_text_rejects_audio() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let blocks = vec![schema::ContentBlock::Audio(schema::AudioContent::new(
+            "AAAA",
+            "audio/wav",
+        ))];
+        let error = prompt_text(&blocks, dir.path()).expect_err("audio is not advertised");
         assert_eq!(error.code, agent_client_protocol::ErrorCode::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn base64_decode_reads_all_padding_cases() {
+        assert_eq!(base64_decode("aGVsbG8=").expect("decode"), b"hello");
+        assert_eq!(base64_decode("aGk=").expect("decode"), b"hi");
+        assert_eq!(base64_decode("").expect("decode"), b"");
+        assert!(base64_decode("!!!!").is_err());
     }
 
     #[test]

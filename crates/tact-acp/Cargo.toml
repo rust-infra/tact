@@ -21,7 +21,9 @@ anyhow = { workspace = true }
 clap = { workspace = true }
 serde_json = { workspace = true }
 tact = { version = "2.0.0", path = "../tact" }
+tact_catalog = { version = "2.0.0", path = "../catalog" }
 tact_host = { version = "2.0.0", path = "../tact_host" }
+tact_llm = { version = "2.0.0", path = "../tact_llm", default-features = false, features = ["legacy-tact"] }
 tact_protocol = { version = "2.0.0", path = "../protocol" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time", "net", "io-util"] }
 tracing = { workspace = true }
