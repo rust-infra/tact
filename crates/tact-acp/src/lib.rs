@@ -837,6 +837,12 @@ const THOUGHT_LEVEL_CONFIG_ID: &str = "thought_level";
 const TACT_PLAN_ID: &str = "tasks";
 /// Workspace-relative directory prompt images are written to.
 const ACP_IMAGE_DIR: &str = ".tact-acp-images";
+/// How long a non-turn slash command may take to produce its answer.
+///
+/// These are answered from shared snapshots, so the wait is one channel hop;
+/// the bound exists only so a command that emits nothing cannot leave the
+/// client's prompt open forever.
+const COMMAND_SETTLE_TIMEOUT: Duration = Duration::from_millis(750);
 /// Thinking-budget tiers offered when the model has no profile of its own.
 const DEFAULT_THINKING_BUDGETS: [u32; 5] = [0, 8_000, 32_000, 64_000, 128_000];
 
@@ -1082,6 +1088,8 @@ enum SessionCommand {
     RequestSettled {
         request_id: u64,
     },
+    /// A command turn's answer window closed; emit its idle if still owed.
+    SettleCommand,
     Close(oneshot::Sender<Result<(), String>>),
 }
 
@@ -1127,6 +1135,7 @@ fn spawn_actor(
             turn_saw_text: false,
             context_window: context_window(),
             last_plan: Vec::new(),
+            command_turn: false,
         };
         actor.reconcile_pending_requests();
         loop {
@@ -1134,8 +1143,22 @@ fn spawn_actor(
                 event = actor.host.next_event() => {
                     match event {
                         Some(event) => {
+                            let answers_command = matches!(
+                                &event,
+                                HostEvent::Agent(update)
+                                    if matches!(
+                                        update.as_ref(),
+                                        AgentUpdate::Info(_)
+                                            | AgentUpdate::MdInfo(_)
+                                            | AgentUpdate::PopupMarkdown { .. }
+                                            | AgentUpdate::Error(_)
+                                    )
+                            );
                             actor.handle_event(event);
                             actor.reconcile_pending_requests();
+                            if answers_command {
+                                actor.settle_command_turn();
+                            }
                         }
                         None => {
                             actor.finish_turn(
@@ -1162,6 +1185,7 @@ fn spawn_actor(
                         Some(SessionCommand::RequestSettled { request_id }) => {
                             actor.request_settled(request_id);
                         }
+                        Some(SessionCommand::SettleCommand) => actor.settle_command_turn(),
                         Some(SessionCommand::Close(reply)) => {
                             let result = actor
                                 .host
@@ -1244,6 +1268,8 @@ struct SessionActor {
     context_window: u64,
     /// The last plan published, so an unchanged task list is not re-sent.
     last_plan: Vec<(String, schema::PlanEntryStatus)>,
+    /// Whether a non-turn slash command still owes its idle.
+    command_turn: bool,
 }
 
 impl SessionActor {
@@ -1916,7 +1942,13 @@ impl SessionActor {
     /// unrecognized one is forwarded as ordinary text: losing a typo silently
     /// would be worse than letting the model see it.
     fn handle_prompt(&mut self, text: String) {
-        match slash_command(&text) {
+        self.handle_prompt_command(slash_command(&text));
+    }
+
+    /// Run one parsed prompt. Split from [`Self::handle_prompt`] so a
+    /// command-plus-request prompt can run its command through the same arms.
+    fn handle_prompt_command(&mut self, command: SlashCommand) {
+        match command {
             SlashCommand::Forward(text) => {
                 self.forward_user(UserCommand::SubmitTask(text));
             }
@@ -1924,6 +1956,10 @@ impl SessionActor {
             SlashCommand::Permission(value) => self.apply_slash_config(PERMISSION_CONFIG_ID, value),
             SlashCommand::Thought(value) => self.apply_slash_config(THOUGHT_LEVEL_CONFIG_ID, value),
             SlashCommand::Skill { name, args } => self.invoke_skill(&name, &args),
+            SlashCommand::Then(command, rest) => {
+                self.handle_prompt_command(*command);
+                self.forward_user(UserCommand::SubmitTask(rest));
+            }
             SlashCommand::Host(command) => self.forward_slash_command(command),
         }
     }
@@ -1975,12 +2011,17 @@ impl SessionActor {
         self.send_options();
     }
 
-    /// Forward a command the host answers as updates.
+    /// Forward a command the host answers as updates rather than a turn.
     ///
-    /// These are not turns: `/compact` and `/stats` produce their own updates
-    /// and never a `TaskComplete`, so no idle is owed. A client that shows them
-    /// as a normal prompt still gets the answer as a notice or markdown cell.
+    /// The host never emits `TaskComplete` for these, but an ACP prompt still
+    /// has to settle: a client waits for an idle after every prompt, so this
+    /// owns the turn boundary itself. The answer arrives first as a notice,
+    /// then the idle. A queued command errors immediately and still settles.
     fn forward_slash_command(&mut self, command: UserCommand) {
+        if !self.state.phase.is_running() {
+            self.state.phase = TurnPhase::Running;
+            self.send(running());
+        }
         if let Err(error) = self.host.send(command) {
             warn!(%self.session_id, %error, "failed to send slash command");
             self.notice(
@@ -1988,6 +2029,33 @@ impl SessionActor {
                 "Command failed",
                 Some(error.to_string()),
             );
+            self.finish_turn(
+                schema::StopReason::Error(schema::ErrorStopReason::new()),
+                None,
+            );
+            return;
+        }
+        // The host answers through the same event channel this actor reads, so
+        // the idle cannot follow here: the answer is still queued. The turn
+        // settles when an answer-carrying update arrives, not merely when any
+        // event does — session bookkeeping events (a background-task snapshot)
+        // are delivered at arbitrary times and would otherwise close the turn
+        // before the answer reached the client. A command that produces no
+        // answer at all settles on the fallback below.
+        self.command_turn = true;
+        let commands = self.commands.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(COMMAND_SETTLE_TIMEOUT).await;
+            let _ = commands.send(SessionCommand::SettleCommand);
+        });
+    }
+
+    /// Close a command turn. Idempotent: `finish_turn` is gated on `Running`,
+    /// so an event that already settled is not settled twice.
+    fn settle_command_turn(&mut self) {
+        if self.command_turn {
+            self.command_turn = false;
+            self.finish_turn(schema::StopReason::EndTurn, None);
         }
     }
 
@@ -2550,6 +2618,8 @@ enum SlashCommand {
         name: String,
         args: String,
     },
+    /// A command followed by a request on later lines: run both.
+    Then(Box<SlashCommand>, String),
     /// A command the host answers as an update (`/compact`, `/stats`, ...).
     Host(UserCommand),
     /// Text that names no known command: it goes to the model verbatim, which
@@ -2577,11 +2647,19 @@ fn slash_command(text: &str) -> SlashCommand {
     let Some(rest) = trimmed.strip_prefix('/') else {
         return SlashCommand::Forward(text.to_string());
     };
-    let (name, args) = match rest.split_once(char::is_whitespace) {
-        Some((name, args)) => (name, args.trim()),
-        None => (rest, ""),
+    // A command is one line. A prompt that continues past it is a command
+    // followed by a request (`/permission auto` then a question), and
+    // swallowing the rest as arguments would both lose the request and make
+    // the value invalid. Only `$skill` takes free-form text.
+    let (line, rest_of_prompt) = match rest.split_once('\n') {
+        Some((line, remainder)) => (line.trim(), remainder.trim()),
+        None => (rest.trim(), ""),
     };
-    match name.to_ascii_lowercase().as_str() {
+    let (name, args) = match line.split_once(char::is_whitespace) {
+        Some((name, args)) => (name, args.trim()),
+        None => (line, ""),
+    };
+    let command = match name.to_ascii_lowercase().as_str() {
         "compact" => SlashCommand::Host(UserCommand::Compact),
         "stats" => SlashCommand::Host(UserCommand::QueryStats),
         "mcp" => match args.split_whitespace().next() {
@@ -2597,6 +2675,13 @@ fn slash_command(text: &str) -> SlashCommand {
         "permission" if !args.is_empty() => SlashCommand::Permission(args.to_string()),
         "thought" if !args.is_empty() => SlashCommand::Thought(args.to_string()),
         _ => SlashCommand::Forward(text.to_string()),
+    };
+    // A recognized command with a request after it runs the command and then
+    // submits the request as an ordinary turn, so neither half is dropped.
+    if rest_of_prompt.is_empty() || matches!(command, SlashCommand::Forward(_)) {
+        command
+    } else {
+        SlashCommand::Then(Box::new(command), rest_of_prompt.to_string())
     }
 }
 

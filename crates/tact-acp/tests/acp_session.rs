@@ -638,6 +638,15 @@ async fn run_scenario(
         requests_before,
         "/stats must not start a model turn"
     );
+    // The prompt must still settle: a client waits for an idle after every
+    // prompt, and a command that never sends one hangs the turn.
+    let (idle, _) = wait_for_idle(&mut updates, &session_id).await;
+    assert_eq!(
+        idle.stop_reason,
+        Some(schema::StopReason::EndTurn),
+        "a slash command must end its prompt with an idle"
+    );
+    assert_no_state_after_idle(&mut updates, &session_id).await;
 
     let switched = session.send_prompt("/model fake-b").block_task().await?;
     assert!(!switched.message_id.0.is_empty());
