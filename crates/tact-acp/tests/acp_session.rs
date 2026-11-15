@@ -375,6 +375,24 @@ async fn run_scenario(
         advertised.iter().any(|name| name == "$greet"),
         "a skill must be advertised with the client's `$name` spelling: {advertised:?}"
     );
+    // A client shows its `/` menu from the notification, not the setup
+    // response: T3 listens for this update and ignores the response.
+    let pushed = loop {
+        if let schema::SessionUpdate::AvailableCommandsUpdate(update) =
+            next_update(&mut updates, &session_id).await
+        {
+            break update;
+        }
+    };
+    let pushed_names = pushed
+        .available_commands
+        .iter()
+        .map(|command| command.name().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        pushed_names, advertised,
+        "session/new must push the same command list it returns"
+    );
 
     // 3. Idle model switch: the response is the source of truth and the
     //    runtime confirmation arrives as config_option_update.

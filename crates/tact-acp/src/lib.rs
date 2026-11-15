@@ -435,18 +435,31 @@ impl SessionManager {
         let session_id = self
             .start_host(
                 cwd,
-                connection,
+                connection.clone(),
                 SessionSelection::New,
                 state,
                 self.elicitation(),
                 mcp_servers,
             )
             .await?;
+        let commands = available_commands(&available_skills(&skill_cwd));
+        // A client that shows a `/` menu learns about commands from the
+        // notification, not the setup response: T3 reads the response only when
+        // probing a provider and listens for this update on a real session. The
+        // response still carries the list, because that is the protocol's
+        // stated place for it.
+        send_update(
+            &connection,
+            &session_id,
+            schema::SessionUpdate::AvailableCommandsUpdate(schema::AvailableCommandsUpdate::new(
+                commands.clone(),
+            )),
+        )?;
         // A new ACP session starts idle. Sending an idle here would be a
         // second, spurious turn boundary for the client.
         Ok(schema::NewSessionResponse::new(session_id)
             .config_options(options)
-            .available_commands(available_commands(&available_skills(&skill_cwd))))
+            .available_commands(commands))
     }
 
     async fn resume_session(
@@ -486,10 +499,18 @@ impl SessionManager {
                     schema::SessionUpdate::ReplayComplete(schema::ReplayComplete::new()),
                 )?;
             }
+            let commands = available_commands(&available_skills(&handle.cwd));
+            send_update(
+                &connection,
+                &handle.id,
+                schema::SessionUpdate::AvailableCommandsUpdate(
+                    schema::AvailableCommandsUpdate::new(commands.clone()),
+                ),
+            )?;
             send_update(&connection, &handle.id, idle(None))?;
             return Ok(schema::ResumeSessionResponse::new()
                 .config_options(options)
-                .available_commands(available_commands(&available_skills(&handle.cwd))));
+                .available_commands(commands));
         }
 
         let state = self.initial_state()?;
@@ -519,10 +540,18 @@ impl SessionManager {
         }
         // Resume keeps its idle: T3 races it against a two second replay gap
         // and uses the idle to learn that the session settled.
+        let commands = available_commands(&available_skills(&skill_cwd));
+        send_update(
+            &connection,
+            &session_id,
+            schema::SessionUpdate::AvailableCommandsUpdate(schema::AvailableCommandsUpdate::new(
+                commands.clone(),
+            )),
+        )?;
         send_update(&connection, &session_id, idle(None))?;
         Ok(schema::ResumeSessionResponse::new()
             .config_options(options)
-            .available_commands(available_commands(&available_skills(&skill_cwd))))
+            .available_commands(commands))
     }
 
     /// The live-session options read. Only called from the spawned resume

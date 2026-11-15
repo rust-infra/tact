@@ -58,7 +58,10 @@ small wrapper script. Without `--config`, the normal config search paths apply.
   `read_image` only when it needs them.
 - Agent text, thinking, tool calls, tool output, notices, and idle/running/
   requires-action state.
-- `available_commands` at session setup lists the commands this adapter acts on
+- `available_commands` is both returned by `session/new` / `session/resume` and
+  pushed as an `available_commands_update` notification. The notification is
+  what a client's `/` menu listens for; T3 reads the setup response only when
+  probing a provider. The list holds the commands this adapter acts on
   (`compact`, `stats`, `mcp`, `background`, `model`, `permission`, `thought`)
   plus every enabled skill as a `$name` entry. A client sends the chosen name
   back as `/name args` or `$name args`; the adapter routes those as session
