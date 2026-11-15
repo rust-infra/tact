@@ -33,7 +33,10 @@ async fn acp_session_end_to_end() {
     let fake = FakeModel::start().await;
     let home = tempfile::tempdir().expect("temp home");
     let session_cwd = tempfile::tempdir().expect("temp session cwd");
-    let config = write_config(home.path(), &fake.base_url);
+    let skill_dir = home.path().join("skills");
+    write_skill(&skill_dir);
+    let config = write_config(home.path(), &fake.base_url, &skill_dir);
+    let mcp = StdioMcpServer::install(session_cwd.path());
 
     let agent = AcpAgent::new(
         AcpAgentConfig::new(env!("CARGO_BIN_EXE_tact-acp"))
@@ -48,7 +51,7 @@ async fn acp_session_end_to_end() {
 
     let result = tokio::time::timeout(
         SCENARIO_TIMEOUT,
-        run_client(agent, fake, session_cwd.path().to_path_buf()),
+        run_client(agent, fake, session_cwd.path().to_path_buf(), mcp),
     )
     .await;
 
@@ -59,7 +62,61 @@ async fn acp_session_end_to_end() {
     }
 }
 
-fn write_config(home: &Path, base_url: &str) -> PathBuf {
+/// A minimal MCP stdio server, written as a shell script so the test needs no
+/// Python toolchain. It answers `initialize` and `tools/list` with one tool and
+/// echoes a fixed string for any `tools/call`.
+struct StdioMcpServer {
+    path: PathBuf,
+}
+
+impl StdioMcpServer {
+    fn install(dir: &Path) -> Self {
+        let path = dir.join("fake-mcp-server.py");
+        std::fs::write(
+            &path,
+            r#"#!/usr/bin/env python3
+import json, sys
+
+def reply(message_id, result):
+    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": message_id, "result": result}) + "\n")
+    sys.stdout.flush()
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    message = json.loads(line)
+    method = message.get("method")
+    if method == "initialize":
+        reply(message["id"], {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "fake-mcp", "version": "1.0.0"},
+        })
+    elif method == "tools/list":
+        reply(message["id"], {"tools": [{
+            "name": "bridge_ping",
+            "description": "Returns the bridge marker",
+            "inputSchema": {"type": "object", "properties": {}},
+        }]})
+    elif method == "tools/call":
+        reply(message["id"], {"content": [{"type": "text", "text": "bridge-tool-ran"}]})
+    elif "id" in message:
+        reply(message["id"], {})
+"#,
+        )
+        .expect("write fake MCP server");
+        let mut permissions = std::fs::metadata(&path)
+            .expect("fake MCP server metadata")
+            .permissions();
+        use std::os::unix::fs::PermissionsExt;
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&path, permissions).expect("make fake MCP server executable");
+        Self { path }
+    }
+}
+
+fn write_config(home: &Path, base_url: &str, skill_dir: &Path) -> PathBuf {
     let dir = home.join(".tact");
     std::fs::create_dir_all(&dir).expect("create temp config dir");
     let config = dir.join("config.toml");
@@ -79,14 +136,34 @@ protocol = "chat_completions"
 
 [permission]
 mode = "default"
-"#
+
+[agent]
+skill_dirs = ["{}"]
+"#,
+            skill_dir.display()
         ),
     )
     .expect("write temp config");
     config
 }
 
-async fn run_client(agent: AcpAgent, fake: FakeModel, cwd: PathBuf) -> Result<(), Error> {
+/// One skill on disk, so the adapter has something to advertise and run.
+fn write_skill(skill_dir: &Path) {
+    let dir = skill_dir.join("greet");
+    std::fs::create_dir_all(&dir).expect("create temp skill dir");
+    std::fs::write(
+        dir.join("SKILL.md"),
+        "---\nname: greet\ndescription: Greet the reader\n---\nSay hello to $ARGUMENTS.\n",
+    )
+    .expect("write temp skill");
+}
+
+async fn run_client(
+    agent: AcpAgent,
+    fake: FakeModel,
+    cwd: PathBuf,
+    mcp: StdioMcpServer,
+) -> Result<(), Error> {
     let client_state = Arc::new(ClientState::default());
     let (update_tx, update_rx) = mpsc::unbounded_channel();
     let notification_state = client_state.clone();
@@ -179,7 +256,7 @@ async fn run_client(agent: AcpAgent, fake: FakeModel, cwd: PathBuf) -> Result<()
             agent_client_protocol::on_receive_request!(),
         )
         .connect_with(agent, async move |connection| {
-            run_scenario(connection, update_rx, client_state, fake, cwd).await
+            run_scenario(connection, update_rx, client_state, fake, cwd, mcp).await
         })
         .await
 }
@@ -192,12 +269,14 @@ fn accept_response(value: schema::ElicitationContentValue) -> schema::CreateElic
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_scenario(
     connection: ConnectionTo<Agent>,
     mut updates: UnboundedReceiver<schema::UpdateSessionNotification>,
     client_state: Arc<ClientState>,
     fake: FakeModel,
     cwd: PathBuf,
+    mcp: StdioMcpServer,
 ) -> Result<(), Error> {
     // 1. initialize: v2 session capability, and form elicitation available.
     let initialize = connection
@@ -216,19 +295,36 @@ async fn run_scenario(
         .block_task()
         .await?;
     assert_eq!(initialize.info.name, "tact-acp");
+    let session_capabilities = initialize
+        .capabilities
+        .session
+        .as_ref()
+        .expect("initialize must advertise capabilities.session");
+    let advertised_mcp = session_capabilities
+        .mcp
+        .as_ref()
+        .expect("an accepted client MCP server must be advertised");
     assert!(
-        initialize.capabilities.session.is_some(),
-        "initialize must advertise capabilities.session"
+        advertised_mcp.stdio.is_some() && advertised_mcp.http.is_some(),
+        "both MCP transports this adapter accepts must be advertised"
+    );
+    assert!(
+        session_capabilities
+            .prompt
+            .as_ref()
+            .is_some_and(|prompt| prompt.image.is_some()),
+        "image prompts are accepted by writing them into the workspace"
+    );
+    assert!(
+        session_capabilities.delete.is_some(),
+        "session/delete is implemented and must be advertised"
     );
 
-    // 2. session/new with T3's stdio bridge must succeed and advertise the
-    //    model option from global config.
+    // 2. session/new with a stdio MCP server must succeed, advertise the model
+    //    option, and actually connect the server.
     let request =
         schema::NewSessionRequest::new(cwd.clone()).mcp_servers(vec![schema::McpServer::Stdio(
-            schema::McpServerStdio::new(
-                "t3-code",
-                schema::AbsolutePath::new("/definitely/not/a/real/mcp-server"),
-            ),
+            schema::McpServerStdio::new("t3-code", schema::AbsolutePath::new(mcp.path.clone())),
         )]);
     let setup = connection
         .build_session_from(request)
@@ -241,14 +337,44 @@ async fn run_scenario(
         !session_id.0.is_empty(),
         "session/new must return a session id"
     );
-    assert_eq!(
-        setup.response.config_options.len(),
-        1,
-        "session/new must advertise exactly the model option"
-    );
     let model = model_option(&setup.response.config_options);
     assert_eq!(model_current(model), "fake-a");
     assert_eq!(model_values(model), vec!["fake-a", "fake-b"]);
+    let permission = config_option(&setup.response.config_options, "permission_mode");
+    assert_eq!(
+        permission.category,
+        Some(schema::SessionConfigOptionCategory::Mode),
+        "T3 only makes its plan toggle settable through a mode-category select"
+    );
+    assert_eq!(model_current(permission), "default");
+    assert_eq!(
+        model_values(permission),
+        vec!["default", "plan", "auto"],
+        "every permission mode must be offered"
+    );
+    let thought = config_option(&setup.response.config_options, "thought_level");
+    assert_eq!(
+        thought.category,
+        Some(schema::SessionConfigOptionCategory::ThoughtLevel)
+    );
+    assert!(
+        !model_values(thought).is_empty(),
+        "a thought-level selector needs at least one tier"
+    );
+    let advertised = setup
+        .response
+        .available_commands
+        .iter()
+        .map(|command| command.name().to_string())
+        .collect::<Vec<_>>();
+    assert!(
+        advertised.iter().any(|name| name == "compact"),
+        "the commands this adapter handles must be advertised: {advertised:?}"
+    );
+    assert!(
+        advertised.iter().any(|name| name == "$greet"),
+        "a skill must be advertised with the client's `$name` spelling: {advertised:?}"
+    );
 
     // 3. Idle model switch: the response is the source of truth and the
     //    runtime confirmation arrives as config_option_update.
@@ -347,6 +473,28 @@ async fn run_scenario(
     );
     assert_no_state_after_idle(&mut updates, &session_id).await;
 
+    // 5b. The client's MCP server is connected for this session: its tool is
+    //     offered to the model and a call round-trips through the real stdio
+    //     fixture.
+    drain(&mut updates);
+    client_state.take_updates();
+    session
+        .send_prompt("please ACP_TEST_MCP")
+        .block_task()
+        .await?;
+    let (idle, _) = wait_for_idle(&mut updates, &session_id).await;
+    assert_eq!(idle.stop_reason, Some(schema::StopReason::EndTurn));
+    let last = fake.last_request();
+    assert!(
+        last["tools"].to_string().contains("bridge_ping"),
+        "the client MCP server's tool must be offered to the model: {last}"
+    );
+    assert!(
+        tool_results(&last).contains("bridge-tool-ran"),
+        "the MCP tool result must reach the next model call: {last}"
+    );
+    assert_no_state_after_idle(&mut updates, &session_id).await;
+
     // 6. Multi-select question: a form elicitation carries the option values,
     //    two indices are accepted, and the tool result names those options.
     drain(&mut updates);
@@ -403,6 +551,182 @@ async fn run_scenario(
     );
     assert_no_state_after_idle(&mut updates, &session_id).await;
 
+    // 5b2. An image prompt is accepted: it becomes a workspace file the model
+    //      reads by path, so no binary ever crosses the model protocol.
+    drain(&mut updates);
+    client_state.take_updates();
+    session
+        .send_prompt_blocks(vec![
+            schema::ContentBlock::Text(schema::TextContent::new("what is in this image?")),
+            schema::ContentBlock::Image(schema::ImageContent::new("aGVsbG8=", "image/png")),
+        ])
+        .block_task()
+        .await?;
+    let (idle, _) = wait_for_idle(&mut updates, &session_id).await;
+    assert_eq!(idle.stop_reason, Some(schema::StopReason::EndTurn));
+    let last = fake.last_request();
+    let prompt = last.to_string();
+    assert!(
+        prompt.contains(".tact-acp-images/prompt-1.png"),
+        "the image must reach the model as a workspace path: {last}"
+    );
+    assert!(
+        cwd.join(".tact-acp-images/prompt-1.png").exists(),
+        "the prompt image must be written into the session cwd"
+    );
+    assert_no_state_after_idle(&mut updates, &session_id).await;
+
+    // 5c. Live state: token usage feeds the client's context meter, and
+    //     Tact's persistent task list is published as an ACP plan.
+    drain(&mut updates);
+    client_state.take_updates();
+    session
+        .send_prompt("please ACP_TEST_TASK")
+        .block_task()
+        .await?;
+    let mut saw_plan = false;
+    loop {
+        match next_update(&mut updates, &session_id).await {
+            schema::SessionUpdate::PlanUpdate(plan) => {
+                let schema::PlanUpdateContent::Items(items) = &plan.plan else {
+                    panic!("the task list must publish as plan items");
+                };
+                assert!(
+                    items
+                        .entries
+                        .iter()
+                        .any(|entry| entry.content == "write the ACP test"),
+                    "the created task must appear in the plan: {items:?}"
+                );
+                saw_plan = true;
+            }
+            schema::SessionUpdate::StateUpdate(schema::StateUpdate::Idle(_)) => break,
+            _ => {}
+        }
+    }
+    assert!(saw_plan, "creating a task must publish an ACP plan");
+    let observed = client_state.take_updates();
+    let usage = observed
+        .iter()
+        .find_map(|update| match update {
+            schema::SessionUpdate::UsageUpdate(usage) => Some(usage),
+            _ => None,
+        })
+        .expect("a model call must report token usage");
+    assert!(usage.used > 0, "usage must carry the tokens in context");
+    assert_no_state_after_idle(&mut updates, &session_id).await;
+
+    // 6a. Slash commands: `/stats` is answered by the host as a read-out (not a
+    //     model turn), and `/model <id>` is the same option the config surface
+    //     exposes. An unknown `/name` is forwarded verbatim.
+    drain(&mut updates);
+    client_state.take_updates();
+    let requests_before = fake.request_count();
+    session.send_prompt("/stats").block_task().await?;
+    let notice = loop {
+        if let schema::SessionUpdate::Notice(notice) = next_update(&mut updates, &session_id).await
+        {
+            break notice;
+        }
+    };
+    assert!(
+        notice.title.contains("Statistics") || notice.title.contains("Tact"),
+        "the host's /stats answer must arrive as a notice: {notice:?}"
+    );
+    assert_eq!(
+        fake.request_count(),
+        requests_before,
+        "/stats must not start a model turn"
+    );
+
+    let switched = session.send_prompt("/model fake-b").block_task().await?;
+    assert!(!switched.message_id.0.is_empty());
+    let switched_update = wait_for_model_update(&mut updates, &session_id, "fake-b").await;
+    assert_eq!(
+        model_current(model_option(&switched_update.config_options)),
+        "fake-b"
+    );
+    assert_eq!(
+        fake.request_count(),
+        requests_before,
+        "/model must apply the option without a model turn"
+    );
+    let back = session.send_prompt("/model fake-a").block_task().await?;
+    assert!(!back.message_id.0.is_empty());
+    wait_for_model_update(&mut updates, &session_id, "fake-a").await;
+    assert_no_state_after_idle(&mut updates, &session_id).await;
+
+    // 6a2. A `$name` prompt runs the skill body as the turn, and the model sees
+    //      the wrapped body rather than the name.
+    drain(&mut updates);
+    client_state.take_updates();
+    let requests_before = fake.request_count();
+    session
+        .send_prompt("$greet the reader")
+        .block_task()
+        .await?;
+    let (idle, _) = wait_for_idle(&mut updates, &session_id).await;
+    assert_eq!(idle.stop_reason, Some(schema::StopReason::EndTurn));
+    assert!(
+        fake.request_count() > requests_before,
+        "a skill invocation must reach the model"
+    );
+    let last = fake.last_request();
+    let prompt = last.to_string();
+    assert!(
+        prompt.contains("Say hello to the reader."),
+        "the skill body and its arguments must be the user turn: {last}"
+    );
+    assert_no_state_after_idle(&mut updates, &session_id).await;
+
+    // 6b. Permission mode and thought level are real options, not decoration:
+    //     both round-trip through the host and are reflected in the next
+    //     request's policy and thinking parameters.
+    drain(&mut updates);
+    client_state.take_updates();
+    let permission = session
+        .set_config_option("permission_mode", session_value("plan"))
+        .block_task()
+        .await?;
+    assert_eq!(
+        model_current(config_option(&permission.config_options, "permission_mode")),
+        "plan"
+    );
+    let thought_before = model_values(config_option(&permission.config_options, "thought_level"))
+        .last()
+        .cloned()
+        .expect("a thought tier to select");
+    let thought = session
+        .set_config_option("thought_level", session_value(&thought_before))
+        .block_task()
+        .await?;
+    assert_eq!(
+        model_current(config_option(&thought.config_options, "thought_level")),
+        thought_before
+    );
+    session
+        .send_prompt("plain text after config")
+        .block_task()
+        .await?;
+    let (idle, _) = wait_for_idle(&mut updates, &session_id).await;
+    assert_eq!(idle.stop_reason, Some(schema::StopReason::EndTurn));
+    let last = fake.last_request();
+    assert_eq!(
+        last["reasoning_effort"].as_str(),
+        Some(thought_before.as_str()),
+        "the selected thought level must reach the request body: {last}"
+    );
+    // Restore the mode so the permission step below still asks.
+    let restored = session
+        .set_config_option("permission_mode", session_value("default"))
+        .block_task()
+        .await?;
+    assert_eq!(
+        model_current(config_option(&restored.config_options, "permission_mode")),
+        "default"
+    );
+    assert_no_state_after_idle(&mut updates, &session_id).await;
+
     // 7. Idle-gated mid-turn switch: the response shows the requested model,
     //    no update arrives before idle, and the queued value is applied after.
     drain(&mut updates);
@@ -413,12 +737,12 @@ async fn run_scenario(
         .await?;
     wait_for_running(&mut updates, &session_id).await;
     let mid_turn = session
-        .set_config_option("model", session_value("fake-a"))
+        .set_config_option("model", session_value("fake-b"))
         .block_task()
         .await?;
     assert_eq!(
         model_current(model_option(&mid_turn.config_options)),
-        "fake-a"
+        "fake-b"
     );
     // The turn cannot finish until this release, so the switch is guaranteed
     // to be observed while Running rather than racing a short fake response.
@@ -429,10 +753,10 @@ async fn run_scenario(
         config_updates.is_empty(),
         "a queued switch must not be announced before the turn's idle"
     );
-    let confirmation = wait_for_model_update(&mut updates, &session_id, "fake-a").await;
+    let confirmation = wait_for_model_update(&mut updates, &session_id, "fake-b").await;
     assert_eq!(
         model_current(model_option(&confirmation.config_options)),
-        "fake-a"
+        "fake-b"
     );
     assert_no_state_after_idle(&mut updates, &session_id).await;
     let requests_before = fake.request_count();
@@ -442,7 +766,7 @@ async fn run_scenario(
     for index in requests_before..fake.request_count() {
         assert_eq!(
             fake.model_at(index).as_deref(),
-            Some("fake-a"),
+            Some("fake-b"),
             "request {index} must carry the model applied at idle"
         );
     }
@@ -459,9 +783,10 @@ async fn run_scenario(
         .start_session()
         .block_task()
         .await?;
-    assert_eq!(live.response.config_options.len(), 1);
     let model = model_option(&live.response.config_options);
     assert!(model_values(model).contains(&model_current(model)));
+    config_option(&live.response.config_options, "permission_mode");
+    config_option(&live.response.config_options, "thought_level");
     let (replay_complete, idle) = wait_for_resume_settled(&mut updates, &session_id).await;
     assert!(replay_complete, "a replay resume must send replay_complete");
     assert_eq!(idle.stop_reason, None);
@@ -537,7 +862,6 @@ async fn run_scenario(
         .start_session()
         .block_task()
         .await?;
-    assert_eq!(resumed.response.config_options.len(), 1);
     let model = model_option(&resumed.response.config_options);
     assert!(model_values(model).contains(&model_current(model)));
     let (replay_complete, idle) = wait_for_resume_settled(&mut updates, &session_id).await;
@@ -747,11 +1071,18 @@ async fn wait_until(mut condition: impl FnMut() -> bool, what: &str) {
 
 // ── Model option helpers ───────────────────────────────────────────────
 
-fn model_option(options: &[schema::SessionConfigOption]) -> &schema::SessionConfigOption {
-    let option = options
+fn config_option<'a>(
+    options: &'a [schema::SessionConfigOption],
+    config_id: &str,
+) -> &'a schema::SessionConfigOption {
+    options
         .iter()
-        .find(|option| option.config_id.0.as_ref() == "model")
-        .expect("session must advertise the model config option");
+        .find(|option| option.config_id.0.as_ref() == config_id)
+        .unwrap_or_else(|| panic!("session must advertise the `{config_id}` option"))
+}
+
+fn model_option(options: &[schema::SessionConfigOption]) -> &schema::SessionConfigOption {
+    let option = config_option(options, "model");
     assert_eq!(
         option.category,
         Some(schema::SessionConfigOptionCategory::Model)
@@ -946,7 +1277,11 @@ fn script_for(request: &Value) -> Script {
         .map(|message| message.to_string())
         .unwrap_or_default();
 
-    if user.contains("ACP_TEST_WRITE") {
+    if user.contains("ACP_TEST_TASK") {
+        tool_script("task_create", json!({"subject": "write the ACP test"}))
+    } else if user.contains("ACP_TEST_MCP") {
+        tool_script("mcp__t3-code__bridge_ping", json!({}))
+    } else if user.contains("ACP_TEST_WRITE") {
         tool_script(
             "write_file",
             json!({"path": "created-by-acp.txt", "content": "written by the ACP test\n"}),
@@ -999,7 +1334,14 @@ fn text_sse(text: &str) -> String {
     format!(
         "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
         json!({"choices": [{"delta": {"content": text}}]}),
-        json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+        json!({
+            "choices": [{"delta": {}, "finish_reason": "stop"}],
+            "usage": {
+                "prompt_tokens": 1200,
+                "completion_tokens": 40,
+                "total_tokens": 1240
+            }
+        })
     )
 }
 
@@ -1017,7 +1359,12 @@ fn tool_script(name: &str, arguments: Value) -> Script {
                     }
                 }]},
                 "finish_reason": "tool_calls"
-            }]})
+            }],
+            "usage": {
+                "prompt_tokens": 900,
+                "completion_tokens": 25,
+                "total_tokens": 925
+            }})
         ),
         gated: false,
     }
