@@ -16,7 +16,7 @@ use super::{
     event_adapter::TactEventBridge,
     facade_state::FacadeReceiptTracker,
     gate_adapter::TactToolGate,
-    model_adapter::{ActiveModelSnapshot, TactModelPort},
+    model_adapter::{ActiveModelSnapshot, StatsModelPort, TactModelPort},
     noop_transcript::NoopTranscriptStore,
     prompt_adapter::{PromptCaches, SystemPromptAssembler},
     services::TactSharedServices,
@@ -67,8 +67,10 @@ pub(crate) struct TactKernelComposition {
 impl TactKernelComposition {
     pub(crate) fn new(config: TactKernelConfig) -> Self {
         let goal_active = config.tool_context.active_goal_id.is_some();
-        let events: Arc<dyn EventPort> = Arc::new(TactEventBridge::new(config.updates.clone()));
-        let model: Arc<dyn ModelPort> = config
+        let events: Arc<dyn EventPort> = Arc::new(
+            TactEventBridge::new(config.updates.clone()).with_stats(config.services.stats.clone()),
+        );
+        let base_model: Arc<dyn ModelPort> = config
             .model_snapshot
             .map(|snapshot| snapshot.model)
             .unwrap_or_else(|| {
@@ -77,6 +79,13 @@ impl TactKernelComposition {
                     config.capabilities,
                 ))
             });
+        // Every model call — main loop and compaction alike — goes through one
+        // wrapper, so `/stats` counts each call exactly once and sees the
+        // request and response bodies the kernel events do not carry.
+        let model: Arc<dyn ModelPort> = Arc::new(StatsModelPort::new(
+            base_model,
+            config.services.stats.clone(),
+        ));
         let tools: Arc<dyn ToolPort> = Arc::new(TactToolPort::new(
             config.tools,
             config.mcp,

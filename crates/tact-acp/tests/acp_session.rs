@@ -319,6 +319,20 @@ async fn run_scenario(
         session_capabilities.delete.is_some(),
         "session/delete is implemented and must be advertised"
     );
+    // v2 has no `list`/`resume`/`close` fields: a non-null `capabilities.session`
+    // is what advertises them, and T3 reads it exactly that way
+    // (`normalizeInitializeResponse` fills `list`/`resume`/`close` with `{}`).
+    // Losing it would silently turn off resume-after-restart and the native
+    // session list in T3, so pin the shape rather than only the fields.
+    let advertised_session = serde_json::to_value(&initialize.capabilities)
+        .expect("capabilities must serialize")
+        .get("session")
+        .cloned()
+        .expect("capabilities.session must survive serialization");
+    assert!(
+        advertised_session.is_object(),
+        "a serialized capabilities.session must stay an object, got {advertised_session}"
+    );
 
     // 2. session/new with a stdio MCP server must succeed, advertise the model
     //    option, and actually connect the server.
@@ -678,9 +692,70 @@ async fn run_scenario(
         requests_before,
         "/model must apply the option without a model turn"
     );
+    // A prompt the adapter answers itself still owes the client an idle.
+    let (idle, _) = wait_for_idle(&mut updates, &session_id).await;
+    assert_eq!(
+        idle.stop_reason,
+        Some(schema::StopReason::EndTurn),
+        "a locally applied /model must settle its prompt"
+    );
+    assert_no_state_after_idle(&mut updates, &session_id).await;
+
     let back = session.send_prompt("/model fake-a").block_task().await?;
     assert!(!back.message_id.0.is_empty());
     wait_for_model_update(&mut updates, &session_id, "fake-a").await;
+    let (idle, _) = wait_for_idle(&mut updates, &session_id).await;
+    assert_eq!(idle.stop_reason, Some(schema::StopReason::EndTurn));
+    assert_no_state_after_idle(&mut updates, &session_id).await;
+
+    // 6a1. A value the option does not accept, and a skill name this session
+    //      has none for, are both answered locally. They still settle: T3
+    //      leaves a thread "Working" forever when a prompt has no idle.
+    drain(&mut updates);
+    client_state.take_updates();
+    session
+        .send_prompt("/model not-a-model")
+        .block_task()
+        .await?;
+    let rejected = loop {
+        if let schema::SessionUpdate::Notice(notice) = next_update(&mut updates, &session_id).await
+        {
+            break notice;
+        }
+    };
+    assert!(
+        rejected.title.contains("Unknown value"),
+        "a rejected /model value must be reported: {rejected:?}"
+    );
+    let (idle, _) = wait_for_idle(&mut updates, &session_id).await;
+    assert_eq!(idle.stop_reason, Some(schema::StopReason::EndTurn));
+    assert_no_state_after_idle(&mut updates, &session_id).await;
+
+    session
+        .send_prompt("$no-such-skill please")
+        .block_task()
+        .await?;
+    let unknown = loop {
+        if let schema::SessionUpdate::Notice(notice) = next_update(&mut updates, &session_id).await
+        {
+            break notice;
+        }
+    };
+    assert!(
+        unknown.title.contains("Unknown skill"),
+        "an unknown $skill must be reported: {unknown:?}"
+    );
+    assert_eq!(
+        fake.request_count(),
+        requests_before,
+        "an unknown skill must not start a model turn"
+    );
+    let (idle, _) = wait_for_idle(&mut updates, &session_id).await;
+    assert_eq!(
+        idle.stop_reason,
+        Some(schema::StopReason::EndTurn),
+        "an unknown skill must still settle its prompt"
+    );
     assert_no_state_after_idle(&mut updates, &session_id).await;
 
     // 6a2. A `$name` prompt runs the skill body as the turn, and the model sees

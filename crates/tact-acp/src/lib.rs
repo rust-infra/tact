@@ -87,6 +87,13 @@ pub async fn run() -> anyhow::Result<()> {
                             schema::Implementation::new("tact-acp", env!("CARGO_PKG_VERSION")),
                         )
                         .capabilities(
+                            // v2 treats `session/list`, `session/resume` and
+                            // `session/close` as baseline: a non-null
+                            // `capabilities.session` advertises them, so only
+                            // the optional ones are named here. T3 derives
+                            // `canList`/`canResume`/`canResumeAfterRestart`
+                            // from exactly that reading (`normalizeInitializeResponse`),
+                            // which is what turns on resume after a restart.
                             schema::AgentCapabilities::new().session(
                                 schema::SessionCapabilities::new()
                                     .mcp(
@@ -1971,26 +1978,81 @@ impl SessionActor {
     /// unrecognized one is forwarded as ordinary text: losing a typo silently
     /// would be worse than letting the model see it.
     fn handle_prompt(&mut self, text: String) {
-        self.handle_prompt_command(slash_command(&text));
+        let command = match wrapped_user_request(&text) {
+            // T3 only skips its instruction wrapper for prompts starting with
+            // `/`, so a `$skill` as a thread's first turn arrives wrapped. Only
+            // a command the adapter answers itself is lifted out of the
+            // wrapper; everything else reaches the model with the instructions
+            // intact.
+            Some(body) => match slash_command(body) {
+                SlashCommand::Forward(_) => SlashCommand::Forward(text.clone()),
+                command => command,
+            },
+            None => slash_command(&text),
+        };
+        let forwarded = self.handle_prompt_command(command);
+        if !forwarded {
+            // Everything the adapter answers itself — an unknown skill, a
+            // rejected `/model` value — still owes the client an idle: a prompt
+            // response only means "inserted", so a command with no idle leaves
+            // the client showing a turn that never ends.
+            self.settle_local_prompt();
+        }
     }
 
     /// Run one parsed prompt. Split from [`Self::handle_prompt`] so a
     /// command-plus-request prompt can run its command through the same arms.
-    fn handle_prompt_command(&mut self, command: SlashCommand) {
+    ///
+    /// Returns whether the prompt was handed to the host. A host turn and a
+    /// host command both settle themselves; only a local answer needs the
+    /// caller to close the turn.
+    fn handle_prompt_command(&mut self, command: SlashCommand) -> bool {
         match command {
             SlashCommand::Forward(text) => {
                 self.forward_user(UserCommand::SubmitTask(text));
+                true
             }
-            SlashCommand::Model(value) => self.apply_slash_config(MODEL_CONFIG_ID, value),
-            SlashCommand::Permission(value) => self.apply_slash_config(PERMISSION_CONFIG_ID, value),
-            SlashCommand::Thought(value) => self.apply_slash_config(THOUGHT_LEVEL_CONFIG_ID, value),
+            SlashCommand::Model(value) => {
+                self.apply_slash_config(MODEL_CONFIG_ID, value);
+                false
+            }
+            SlashCommand::Permission(value) => {
+                self.apply_slash_config(PERMISSION_CONFIG_ID, value);
+                false
+            }
+            SlashCommand::Thought(value) => {
+                self.apply_slash_config(THOUGHT_LEVEL_CONFIG_ID, value);
+                false
+            }
             SlashCommand::Skill { name, args } => self.invoke_skill(&name, &args),
             SlashCommand::Then(command, rest) => {
+                // The command half may answer locally; the request half is a
+                // real turn, so it owns the boundary even when the first half
+                // sent a notice. A host command half would otherwise claim the
+                // first answer-carrying update (`/stats`'s read-out) as its
+                // own and settle the turn the request is still running.
                 self.handle_prompt_command(*command);
+                self.command_turn = false;
                 self.forward_user(UserCommand::SubmitTask(rest));
+                true
             }
-            SlashCommand::Host(command) => self.forward_slash_command(command),
+            SlashCommand::Host(command) => {
+                self.forward_slash_command(command);
+                true
+            }
         }
+    }
+
+    /// Close a prompt the adapter answered itself.
+    ///
+    /// A live turn's own idle settles the prompt, so this only fires when no
+    /// turn is running: sending an idle mid-turn would end the turn the model
+    /// is still working on.
+    fn settle_local_prompt(&mut self) {
+        if self.state.phase.is_running() {
+            return;
+        }
+        self.send(idle(Some(schema::StopReason::EndTurn)));
     }
 
     /// Run a skill by wrapping its body the way the TUI does.
@@ -1998,7 +2060,9 @@ impl SessionActor {
     /// The client inserted `$name`; a skill is a prompt template, so the turn
     /// the model sees must be the body, not the name. A name this session has
     /// no skill for is reported rather than silently submitted as text.
-    fn invoke_skill(&mut self, name: &str, args: &str) {
+    ///
+    /// Returns whether the skill was dispatched as a turn.
+    fn invoke_skill(&mut self, name: &str, args: &str) -> bool {
         let registry = self.host.skill_registry();
         let registry = tact::skill::lock_skills(&registry);
         let Some(skill) = registry.skills().get(name) else {
@@ -2010,11 +2074,12 @@ impl SessionActor {
                 format!("Unknown skill `{name}`"),
                 Some(format!("Available: {}", available.join(", "))),
             );
-            return;
+            return false;
         };
         let task = tact::skill::format_skill_agent_task(skill, args);
         drop(registry);
         self.forward_user(UserCommand::SubmitTask(task));
+        true
     }
 
     /// Apply a `/model`, `/permission`, or `/thought` argument against this
@@ -2656,6 +2721,24 @@ enum SlashCommand {
     Forward(String),
 }
 
+/// The request body of T3's instruction wrapper, when the prompt has one.
+///
+/// T3 prepends `<t3_code_instructions>…<user_request>…</user_request>` on the
+/// first turn of a thread and again whenever the interaction mode changes. It
+/// skips the wrapper only when the prompt starts with `/`, so `$skill` and a
+/// `/command` that arrives with mode context both come wrapped. The wrapper is
+/// T3's, not ACP's: a client that sends the body bare must work exactly the
+/// same, which is what makes this a probe rather than a protocol rule.
+fn wrapped_user_request(text: &str) -> Option<&str> {
+    let text = text.trim_start();
+    if !text.starts_with("<t3_code_instructions>") {
+        return None;
+    }
+    let body = text.split_once("<user_request>")?.1;
+    let body = body.split_once("</user_request>")?.0;
+    Some(body.trim())
+}
+
 /// Parse one `/name args` prompt. Case-insensitive, matching the client's own
 /// menu behavior.
 fn slash_command(text: &str) -> SlashCommand {
@@ -2980,5 +3063,41 @@ mod tests {
         assert!(parse_json("  ").is_none());
         assert!(parse_json("not json").is_none());
         assert_eq!(parse_json(r#"{"a":1}"#).unwrap()["a"], 1);
+    }
+
+    #[test]
+    fn wrapped_user_request_reads_only_t3_wrappers() {
+        let wrapped = "<t3_code_instructions>\n## mode\n</t3_code_instructions>\n\n<user_request>\n$greet hi\n</user_request>";
+        assert_eq!(wrapped_user_request(wrapped), Some("$greet hi"));
+        assert_eq!(wrapped_user_request("plain prompt"), None);
+        // A half wrapper must not eat the prompt: only a complete one counts.
+        assert_eq!(
+            wrapped_user_request("<t3_code_instructions>\n<user_request>x"),
+            None
+        );
+        assert_eq!(
+            wrapped_user_request("<t3_code_instructions>\nx</t3_code_instructions>"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_wrapped_skill_is_still_a_skill() {
+        let wrapped = "<t3_code_instructions>\n## mode\n</t3_code_instructions>\n\n<user_request>\n$greet the reader\n</user_request>";
+        let body = wrapped_user_request(wrapped).expect("wrapper body");
+        match slash_command(body) {
+            SlashCommand::Skill { name, args } => {
+                assert_eq!(name, "greet");
+                assert_eq!(args, "the reader");
+            }
+            SlashCommand::Forward(text) => panic!("expected a skill, got text {text:?}"),
+            _ => panic!("expected a skill, got a different command"),
+        }
+        // Ordinary text stays text, and the caller then forwards the whole
+        // wrapper so the model still sees the instructions.
+        assert!(matches!(
+            slash_command(wrapped),
+            SlashCommand::Forward(text) if text == wrapped
+        ));
     }
 }

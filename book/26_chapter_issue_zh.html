@@ -789,6 +789,8 @@
 <li class="toc-l2"><a href="#37-2026-11-11--dev-%E7%BC%96%E8%AF%91%E6%97%B6%E9%97%B4%E4%B8%8E%E4%BB%93%E5%BA%93%E7%BB%93%E6%9E%84%E5%99%AA%E9%9F%B3" title="37. 2026-11-11 — 开发编译时间与「仓库太大」的上下文噪音"><span class="toc-label">37. 2026-11-11 — 开发编译时间与「仓库太大」的上下文噪音</span></a></li>
 <li class="toc-l2"><a href="#39-2026-11-13--desktop-%E5%90%AF%E5%8A%A8%E6%97%B6-mcp-%E8%BF%9E%E6%8E%A5%E6%9C%9F%E9%97%B4%E5%88%87%E4%B8%8D%E4%BA%86-session" title="39. 2026-11-13 — Desktop 启动时，MCP 连接期间切不了 session"><span class="toc-label">39. 2026-11-13 — Desktop 启动时，MCP 连接期间切不了 session</span></a></li>
 <li class="toc-l2"><a href="#38-2026-11-13--macos-%E7%AD%BE%E5%90%8D%E7%BC%BA%E5%A4%B1%E6%8B%A6%E4%BD%8F%E6%95%B4%E4%B8%AA%E5%8F%91%E5%B8%83" title="38. 2026-11-13 — macOS 签名缺失拦住整个发布"><span class="toc-label">38. 2026-11-13 — macOS 签名缺失拦住整个发布</span></a></li>
+<li class="toc-l2"><a href="#67-2026-11-15--acp-%E6%9C%AC%E5%9C%B0%E4%BD%9C%E7%AD%94%E7%9A%84-prompt-%E4%B8%8D-settle%E7%BA%BF%E7%A8%8B%E6%B0%B8%E8%BF%9C-working" title="67. 2026-11-15 — ACP：本地作答的 prompt 不 settle，T3 线程永远显示 Working"><span class="toc-label">67. 2026-11-15 — ACP：本地作答的 prompt 不 settle，T3 线程永远显示 Working</span></a></li>
+<li class="toc-l2"><a href="#68-2026-11-15--stats-%E5%9C%A8%E5%86%85%E6%A0%B8%E9%87%8D%E6%9E%84%E5%90%8E%E5%BD%92%E9%9B%B6%E6%89%80%E6%9C%89%E8%AE%A1%E6%95%B0%E6%90%AC%E5%9B%9E%E7%AB%AF%E5%8F%A3" title="68. 2026-11-15 — /stats 在 kernel 重构后归零：所有计数搬回端口"><span class="toc-label">68. 2026-11-15 — /stats 在 kernel 重构后归零：所有计数搬回端口</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -23635,6 +23637,96 @@ Linux 与 Windows 的桌面包也成功，但两个 macOS 桌面任务失败（�
 <a href="../README.md">README.md</a> 的 Tact Desktop 段、
 <a href="../docs/design/tact-desktop/visual-verification.md">visual-verification.md</a> §4。
 配好六个 secret 后无需改动代码，同一个 tag 重跑即回到签名路径。</p>
+<hr />
+<h2 id="67-2026-11-15--acp-本地作答的-prompt-不-settle线程永远-working">67. 2026-11-15 — ACP：本地作答的 prompt 不 settle，T3 线程永远显示 Working</h2>
+<p><strong>现象：</strong>在 T3 里输入一个不存在的 <code>$skill</code>
+（例如 <code>$no-such-skill</code>），Tact 立刻回了一条「Unknown skill …
+Available: …」提示，但线程停在 <code>Working</code>，一分钟、两分钟都不结束；
+再发消息被 T3 当作 steer 塞进同一个回合，按 Esc 也只会多出几行
+<code>Tact Cancelling...</code>。同一个线程里先跑过 <code>/stats</code> 又切换过模型，
+只有这一条卡住。</p>
+<p><strong>根因：</strong>ACP 的 <code>session/prompt</code> 响应只表示
+「已插入」，回合结束要看随后的 idle <code>state_update</code>。适配器里
+<code>/model</code>/<code>/permission</code>/<code>/thought</code> 的本地应用
+（<code>apply_slash_config</code>）和未知技能（<code>invoke_skill</code> 的
+<code>Notice</code> 分支）都在适配器内直接作答，既不经过 host 的
+<code>forward_slash_command</code>（那里有 <code>command_turn</code> 与 750ms
+兜底 settle），也不启动模型回合，于是没有任何路径发出 idle。客户端于是认为
+回合仍在进行。第二条消息之所以变成 steer，正是 T3 还在等第一条的 idle。</p>
+<p><strong>决策：</strong>把「谁来 settle」变成显式返回值，而不是靠记忆维护。
+<code>handle_prompt_command</code> 返回该 prompt 是否交给了 host：交给 host 的
+（<code>Forward</code>、<code>Host</code>、<code>Then</code> 的后半）由
+host 自己的回合边界收尾；适配器自己作答的（<code>Model</code>/<code>Permission</code>/
+<code>Thought</code>、未知技能）返回 <code>false</code>，
+<code>handle_prompt</code> 随即在<b>没有运行中回合</b>时补一个
+<code>EndTurn</code> idle（<code>settle_local_prompt</code>）。带运行中回合时
+不发，否则会把模型正在跑的回合提前关掉。<code>Then</code> 分支额外清掉
+<code>command_turn</code>：否则 <code>/stats</code> 的读数会被当成前半段命令的
+答案，抢先 settle 掉后半段请求的回合。</p>
+<p>同一轮真机验证还暴露了第二个入口问题：T3 只在 prompt 以 <code>/</code> 开头时
+跳过它的指令包裹，所以线程的第一条 <code>$skill</code> 会以
+<code>&lt;t3_code_instructions&gt;…&lt;user_request&gt;$name …&lt;/user_request&gt;</code>
+的形式到达，之前的解析器看到的是 <code>&lt;</code>，于是把
+<code>$name</code> 原样丢给模型。<code>wrapped_user_request</code> 现在只识别
+完整的 T3 包裹并取出请求正文参与命令解析；解析结果若仍是普通文本，则整段（含指令）
+照旧转给模型，模型侧的包装行为不变。裸客户端（无包裹）走原路径。</p>
+<p><strong>验证：</strong>真机 T3（本地 <code>acpRegistry</code> provider，DeepSeek
+后端）逐条点过：未知技能发出提示后线程转入 Done；新建线程的首条
+<code>$unslop …</code> 正确执行技能（此前被当作纯文本，模型答的是「看不到技能」）；
+<code>/stats</code> 读数与 idle 正常；权限卡 Approve 后命令落盘并回 <code>DONE</code>；
+运行中切模型由 T3 发 <code>session/set_config_option</code> 并生效。回归测试在
+<code>crates/tact-acp/tests/acp_session.rs</code>：未知技能与非法
+<code>/model</code> 值都必须收到 Notice 且随后收到 <code>EndTurn</code> idle；
+<code>/model</code> 的两个分支同样断言 idle；
+<code>crates/tact-acp/src/lib.rs</code> 的单元测试覆盖包裹识别
+（完整/半截/非 T3 包裹）与包裹内的 <code>$skill</code> 解析。</p>
+<p><strong>Pointers：</strong> <code>crates/tact-acp/src/lib.rs</code>
+（<code>handle_prompt</code>、<code>handle_prompt_command</code>、
+<code>settle_local_prompt</code>、<code>wrapped_user_request</code>）、
+<code>crates/tact-acp/README.md</code> 的 protocol scope 段。</p>
+<hr />
+<h2 id="68-2026-11-15--stats-在内核重构后归零所有计数搬回端口">68. 2026-11-15 — /stats 在 kernel 重构后归零：所有计数搬回端口</h2>
+<p><strong>现象：</strong>TUI 与 T3 的 <code>/stats</code> 都显示
+<code>LLM API calls 0</code>、<code>Prompt tokens 0</code>、没有任何工具行，
+只有 <code>Elapsed</code> 在走——即使同一个 session 的 <code>token_usages</code>
+表里已有 4 条完整记录、模型确实回了话。诊断来自 ACP 真机验证：跑完两轮
+bash 工具调用后 <code>/stats</code> 仍是空的。</p>
+<p><strong>根因：</strong><code>SessionStats</code> 的写入点在 #99 的 kernel
+重构里全部失效：旧的 <code>agent/mod.rs</code> 里有五处
+<code>stats.write().record_token_usage(..)</code>、<code>prompt_count += 1</code>、
+<code>record_tool_stats(..)</code>，重构后这些行随旧循环一起删掉，但
+<code>SessionStats</code> 的结构、<code>summary()</code> 渲染和
+<code>/stats</code> 命令都保留了下来。于是共享的 <code>Arc&lt;RwLock&lt;SessionStats&gt;&gt;</code>
+还在被创建、被读取、被 <code>record_rtk</code> 与 compaction 的
+<code>compactions</code> 计数器写入，唯独没有任何代码再写主计数。
+更微妙的是 kernel 的 <code>AgentEvent::Usage</code> 只带 token 数，不带请求与
+响应正文，所以即使想从事件侧补，也补不出 prompt/response chars 与 thinking 统计。</p>
+<p><strong>决策：</strong>计数回到它唯一能看清的地方——端口，而不是循环。
+LLM 侧新增 <code>StatsModelPort</code>（<code>runtime/model_adapter.rs</code>），
+把模型端口整体包一层：<code>stream</code>/<code>complete</code>/<code>compact</code>
+进入时计 <code>prompt_count</code> 与序列化请求的字符数，拿到响应时计
+响应字符、thinking 块与字符、单次耗时，并把 provider 上报的 usage
+折进 token 累计。流式调用在 <code>Finished</code> 事件里记账，因此错误流与
+中途丢弃的流只计请求、不计耗时，与重构前的语义一致。
+工具侧由 <code>TactEventBridge::record_tool</code> 在
+<code>AgentEvent::ToolFinished</code> 处记账——bridge 是唯一能看到每次调用
+终局的地方，被 gate 拒绝的调用也会以失败结束，同样要计数。
+compaction 里那份手写的 <code>prompt_count</code>/<code>llm_call_durations</code>
+自增随之删除，因为它统计的那次调用已经由 <code>StatsModelPort::compact</code>
+计过一次，留着就会重复。</p>
+<p><strong>验证：</strong>真机 T3 新线程跑一轮 bash 工具调用后 <code>/stats</code>
+输出 <code>LLM API calls 2</code>、<code>Prompt tokens 54374</code>、
+<code>Thinking blocks 1</code>、工具表 <code>bash 1 (1/0) 5ms</code>，
+与 DB 中的用量行一致。单测：
+<code>runtime::model_adapter::tests::a_completed_call_records_stats_once</code>
+断言一次调用把 call 数、两边字符数、thinking 计数与 token 各加一次；
+<code>runtime::event_adapter::tests::a_finished_call_is_counted_in_the_session_stats</code>
+断言成功/失败各一次 bash 调用只计一次、时长累加正确。</p>
+<p><strong>Pointers：</strong><code>crates/tact/src/runtime/model_adapter.rs</code>
+（<code>StatsModelPort</code>）、<code>runtime/event_adapter.rs</code>
+（<code>with_stats</code>、<code>record_tool</code>）、
+<code>runtime/composition.rs</code>（两处接线）、<code>stats.rs</code>（未改动的
+结构）。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>

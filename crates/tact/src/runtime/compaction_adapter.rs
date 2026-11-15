@@ -11,7 +11,6 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::Instant,
 };
 
 use async_trait::async_trait;
@@ -511,7 +510,6 @@ impl TactCompactor {
             .unwrap_or(u32::MAX)
         };
 
-        let compact_start = Instant::now();
         let mut continuation_attempt = 0u32;
         let mut attempt_max_tokens = summary_max_tokens;
         let mut attempt_reserve = reasoning_reserve;
@@ -692,16 +690,6 @@ impl TactCompactor {
             }
         }
 
-        let elapsed = compact_start.elapsed();
-        {
-            let mut stats = self
-                .services
-                .stats
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            stats.prompt_count = stats.prompt_count.saturating_add(1);
-            stats.llm_call_durations.push(elapsed);
-        }
         Ok((rebuilt.iter().map(agent_message).collect(), summary))
     }
 

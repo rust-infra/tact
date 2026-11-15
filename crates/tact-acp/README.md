@@ -30,12 +30,26 @@ To pass an explicit config file, set `commandArgs` to
 `["--config", "/home/you/.tact/t3-config.toml"]` in those settings, or use a
 small wrapper script. Without `--config`, the normal config search paths apply.
 
+**Settings → Providers → <instance> → Native sessions** lists the Tact
+sessions of that workspace. Import resumes one as a T3 thread and Delete
+removes it. A session's lock is what keeps two hosts from writing it at once,
+so importing a session a live host still holds (a running T3 thread, `tact-ui`,
+`--session`) fails `session/resume`; T3 then falls back to a fresh
+`session/new`, and the imported thread starts with no history.
+
 ## Protocol scope
 
 - `initialize` negotiates ACP protocol v2, advertises the baseline session
   capability, and records whether the client supports form elicitation.
+  Advertising `capabilities.session` at all is what turns on `session/list`,
+  `session/resume`, and `session/close`: v2 has no separate flags for them,
+  and T3 expands the non-null object into `list`/`resume`/`close` itself. In
+  T3 that object is also `canResumeAfterRestart`, so dropping it would stop a
+  thread from resuming its Tact session after the provider restarts.
 - `session/new`, `session/list`, `session/resume`, `session/close`,
   `session/delete`, `session/prompt`, `session/cancel`, and `session/update`.
+  T3 surfaces `session/list` as Settings → Providers → Native sessions, with
+  Import (`session/resume`) and Delete (`session/delete`) per row.
 - Three session config options (`type: "select"`) are returned by `session/new`
   and `session/resume`, and updated through `session/set_config_option`:
   - `model` (`category: "model"`) — values from the configured
@@ -68,7 +82,17 @@ small wrapper script. Without `--config`, the normal config search paths apply.
   actions, and an unrecognized name goes to the model as ordinary text. A
   command is one line: text after it in the same prompt runs the command and is
   then submitted as an ordinary turn. A command turn settles with its own idle,
-  because a client waits for one after every prompt.
+  because a client waits for one after every prompt — including one the adapter
+  answers on its own (a `/model` it applies locally, an unknown `$skill`): a
+  notice or a config update is not a turn boundary, so the adapter emits the
+  idle itself. It stays silent when a turn is already running, since that
+  turn's own idle is the boundary.
+- T3 prepends `<t3_code_instructions>…<user_request>…</user_request>` on a
+  thread's first turn and whenever the interaction mode changes, and it skips
+  that wrapper only for prompts starting with `/`. So a `$skill` first turn
+  arrives wrapped: the adapter reads the `<user_request>` body to route it, and
+  forwards the whole wrapper unchanged when the body is ordinary text. Nothing
+  about this is required by ACP; a bare client works identically.
 - Live state: `usage_update` from the reported token total and the configured
   context window, and `plan_update` from Tact's persistent task list. A client's
   context meter and todo panel therefore track the same numbers the TUI shows.

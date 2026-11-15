@@ -115,7 +115,11 @@ into the session's own `.mcp.json` resolution, so a client that supplies a
 stdio bridge gets its tools without any config write. ACP v2 is still a draft,
 so the adapter pins `agent-client-protocol`'s `unstable_protocol_v2` feature and
 advertises the session baseline plus commands, skills, image prompts, MCP
-transports, and session deletion (`session/resume` replays no transcript).
+transports, and session deletion (`session/resume` replays no transcript). The
+baseline `capabilities.session` object is load-bearing rather than decorative:
+v2 has no per-method flags for `session/list`/`resume`/`close`, so a client
+only has them when that object is non-null. T3 reads it that way and gates both
+its native-session list and resume-after-restart on it.
 
 ---
 
@@ -837,6 +841,12 @@ If you are reading older branches or notes, the following major evolutions have 
 
 - The plan-then-execute model (`generate_plan()` → sequential `execute_step()`) was first replaced by a streaming facade loop, then by the bounded `tact_agent_core::AgentKernel`; `tact::Agent` remains the compatibility facade.
 - Neutral contracts live in `tact_agent_api`; provider adapters implement `ModelPort`; product adapters in `crates/tact/src/runtime/` implement tool, gate, context, transcript, usage, and event ports.
+- **`/stats` accounting sits at the ports, not in the loop.** The kernel
+  reports `AgentEvent::Usage` (tokens only) and `ToolFinished`; request and
+  response bodies, thinking blocks, and per-call wall time exist only where the
+  bodies meet. `runtime::model_adapter::StatsModelPort` wraps the model port for
+  the LLM half and `TactEventBridge::record_tool` counts the tool half, so every
+  call is counted exactly once regardless of which kernel path ran it.
 - The activation selector, `agent/tool_dispatch.rs`, legacy stream/compaction helpers, and `LegacyModelBridge` were deleted after parity. `tool_schedule.rs` retains only the product `ToolResources` contract and `LoopState` is a read-only activation view.
 - Business tools live in `crates/tact/src/tool/`; the legacy `crates/tools` Sandbox crate was removed.
 - The runtime gained native support for MCP, hooks, permissions, context compaction, recovery, sub-agents, teammates, worktrees, memory, and skills.
