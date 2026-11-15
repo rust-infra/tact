@@ -3,9 +3,10 @@
 use std::sync::Arc;
 
 use tact_host::{
-    AgentUpdate, CliArgs, DynSessionStore, Frontend, Notices, Result, SessionLockRegistry,
-    TactPath, UiResponder, UiWiring, UserCommand, bootstrap_session, command_channel, init_config,
-    open_session, run_command_loop_with_account, shared_skill_registry, update_channel,
+    AgentUpdate, CliArgs, DynSessionStore, Frontend, Notices, Result, SessionBuild,
+    SessionLockRegistry, TactPath, UiResponder, UiWiring, UserCommand, bootstrap_session,
+    command_channel, init_config, open_session, run_command_loop_with_account,
+    shared_skill_registry, update_channel,
 };
 
 async fn run_frontend(
@@ -22,13 +23,16 @@ async fn run_frontend(
         &tact_path,
         tact_path.workdir().to_path_buf(),
         shared_skill_registry(tact_path.workdir())?,
-        session_id,
         store,
-        Frontend::Interactive(UiWiring {
-            tx: updates.clone(),
-            responder: UiResponder::new(),
-        }),
-        Notices::Ui(updates),
+        SessionBuild {
+            session_id,
+            frontend: Frontend::Interactive(UiWiring {
+                tx: updates.clone(),
+                responder: UiResponder::new(),
+            }),
+            notices: Notices::Ui(updates),
+            extra_mcp_servers: Vec::new(),
+        },
     )
     .await?;
 

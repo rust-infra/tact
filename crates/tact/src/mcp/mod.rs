@@ -3308,10 +3308,39 @@ pub fn load_mcp_router_with_report() -> BoxFuture<'static, Result<(MCPToolRouter
     load_mcp_router_with_report_inner().boxed()
 }
 
+/// Loads every configured MCP server plus caller-supplied extras and reports
+/// what happened.
+///
+/// The extras come from a frontend that owns servers the workspace config
+/// cannot name — an ACP client hands its agent a stdio bridge that exists only
+/// for that session. They are resolved as if they were declared last in the
+/// project file, so an extra wins a name collision with the config the same
+/// way a later declaration always does.
+pub fn load_mcp_router_with_report_for(
+    cwd: &Path,
+    extras: Vec<(String, McpProjectConfig)>,
+) -> BoxFuture<'static, Result<(MCPToolRouter, McpLoadReport)>> {
+    let cwd = cwd.to_path_buf();
+    async move {
+        let mut sourced = collect_sourced_servers(&cwd)?;
+        for (name, config) in extras {
+            sourced.push(SourcedServer {
+                name,
+                source: "session".to_string(),
+                config,
+            });
+        }
+        connect_resolved(resolve_servers(sourced)).await
+    }
+    .boxed()
+}
+
 async fn load_mcp_router_with_report_inner() -> Result<(MCPToolRouter, McpLoadReport)> {
     let cwd = std::env::current_dir()?;
-    let resolved = resolve_servers(collect_sourced_servers(&cwd)?);
+    connect_resolved(resolve_servers(collect_sourced_servers(&cwd)?)).await
+}
 
+async fn connect_resolved(resolved: ResolvedServers) -> Result<(MCPToolRouter, McpLoadReport)> {
     let mut report = McpLoadReport {
         configured: resolved.configured(),
         shadowed: resolved.shadowed,

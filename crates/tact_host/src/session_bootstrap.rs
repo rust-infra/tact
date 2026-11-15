@@ -23,7 +23,7 @@ use tact::{
     config::CliArgs,
     consts::TactPath,
     goal::{GoalManager, SharedGoalManager},
-    mcp::load_mcp_router_with_report,
+    mcp::load_mcp_router_with_report_for,
     memory::memory_manager,
     permission::{PermissionManager, PermissionMode, settings::PermissionSettings},
     skill::SharedSkillRegistry,
@@ -110,6 +110,22 @@ fn stderr_line(tag: &str, message: &str) -> String {
 pub struct UiWiring {
     pub tx: UpdateSender,
     pub responder: UiResponder,
+}
+
+/// MCP servers a frontend supplies for one session only.
+///
+/// A named type rather than a bare `Vec` because the session bootstrap already
+/// takes seven arguments, and a reader at a call site should be able to tell
+/// this one from the workspace configuration it is merged into.
+pub type ExtraMcpServers = Vec<(String, tact::mcp::McpProjectConfig)>;
+
+/// The per-session inputs a bootstrap cannot infer: which session, who draws
+/// it, and which MCP servers that frontend brought.
+pub struct SessionBuild {
+    pub session_id: String,
+    pub frontend: Frontend,
+    pub notices: Notices,
+    pub extra_mcp_servers: ExtraMcpServers,
 }
 
 /// What a frontend can do with the events a session emits.
@@ -251,11 +267,15 @@ pub async fn bootstrap_session(
     tact_path: &TactPath,
     work_dir: PathBuf,
     skill_registry: SharedSkillRegistry,
-    session_id: String,
     session_store: DynSessionStore,
-    frontend: Frontend,
-    notices: Notices,
+    build: SessionBuild,
 ) -> anyhow::Result<Agent> {
+    let SessionBuild {
+        session_id,
+        frontend,
+        notices,
+        extra_mcp_servers,
+    } = build;
     let client = get_llm_client().await?;
     let mode = permission_mode_from_config();
     let settings = PermissionSettings::load(tact_path);
@@ -295,7 +315,11 @@ pub async fn bootstrap_session(
         }
     }
     let memory_manager = Arc::new(std::sync::Mutex::new(memory_manager(memory_dir)?));
-    let (mcp_router, mcp_report) = load_mcp_router_with_report().await?;
+    // Load MCP against the session's own work_dir rather than the process
+    // directory: a frontend may host several sessions in different workspaces,
+    // and each must see the `.mcp.json` of the project it was opened on.
+    let (mcp_router, mcp_report) =
+        load_mcp_router_with_report_for(&work_dir, extra_mcp_servers).await?;
     // MCP problems are collected, never fatal (one broken server must not stop
     // startup), so they have to be surfaced here — otherwise a typo'd command
     // or an ignored override would be silent. A clean load emits nothing.

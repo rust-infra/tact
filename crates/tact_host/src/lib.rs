@@ -35,8 +35,8 @@ pub use host_session::{
     HostSession, HostSessionConfig, HostStartError, TryHostEvent,
 };
 pub use session_bootstrap::{
-    Frontend, Notices, SessionSelection, UiWiring, bootstrap_session, open_session,
-    open_session_selected,
+    ExtraMcpServers, Frontend, Notices, SessionBuild, SessionSelection, UiWiring,
+    bootstrap_session, open_session, open_session_selected,
 };
 pub use session_lock::{SessionLockGuard, SessionLockRegistry};
 pub use tact::{
