@@ -76,8 +76,8 @@ so importing a session a live host still holds (a running T3 thread, `tact-ui`,
   pushed as an `available_commands_update` notification. The notification is
   what a client's `/` menu listens for; T3 reads the setup response only when
   probing a provider. The list holds the commands this adapter acts on
-  (`compact`, `stats`, `mcp`, `background`, `model`, `permission`, `thought`)
-  plus every enabled skill as a `$name` entry. A client sends the chosen name
+  (`compact-context`, `stats`, `mcp`, `background`, `goal`, `model-select`,
+  `permission-mode`, `thought`) plus every enabled skill as a `$name` entry. A client sends the chosen name
   back as `/name args` or `$name args`; the adapter routes those as session
   actions, and an unrecognized name goes to the model as ordinary text. A
   command is one line: text after it in the same prompt runs the command and is
@@ -87,6 +87,24 @@ so importing a session a live host still holds (a running T3 thread, `tact-ui`,
   notice or a config update is not a turn boundary, so the adapter emits the
   idle itself. It stays silent when a turn is already running, since that
   turn's own idle is the boundary.
+- T3 reserves the exact `/compact` prompt for its own compaction driver and
+  rejects it before the provider starts. The adapter therefore advertises the
+  same operation as `/compact-context`; a `/compact` that arrives from another
+  ACP client is still routed to Tact. Compaction progress is bracketed
+  (`[compacting]`, `[compact summary 1/6]`, …), and the command turn stays open
+  until `Compaction complete` or an error, so a client does not finalize the
+  turn while the summary is still being generated.
+- T3 also owns the bare `/model` and `/permission` composer commands. The
+  adapter therefore advertises `/model-select` and `/permission-mode` (while
+  still accepting the bare spellings from other clients); the T3 model picker
+  and `permission_mode` config option remain the primary UI.
+- A `/goal` command is answered through the same host commands the TUI uses:
+  `create` (or a bare objective), `list`, `show`, `steer`, `pause`, `resume`,
+  `cancel`, `accept`, `archive`, and `unarchive`. ACP has no Goal panel, so a
+  Goal snapshot change becomes a deduplicated `notice` (`Goals`) with status,
+  task counts, and wait reason; `/goal list` answers from the snapshot even
+  when a periodic reconcile arrives first. Creating or resuming a Goal owns the
+  turn until the runner's `TaskIdle`.
 - T3 prepends `<t3_code_instructions>…<user_request>…</user_request>` on a
   thread's first turn and whenever the interaction mode changes, and it skips
   that wrapper only for prompts starting with `/`. So a `$skill` first turn
@@ -103,6 +121,19 @@ so importing a session a live host still holds (a running T3 thread, `tact-ui`,
 - Tact's single-select permission prompt maps to
   `session/request_permission`; `Allow once` / `Always allow …` / `Deny` map to
   ACP `allow_once` / `allow_always` / `reject_once`.
+- `requires_action` is announced only when a permission or elicitation is
+  still pending after a short grace period. Clients that auto-approve answer
+  immediately, so their timeline does not keep a stale "Action required" row.
+- Tool completions repeat the call's name, title, and kind, and retain text the
+  call streamed before finishing. Generic tools also send their text as
+  `rawOutput`, which T3 renders directly instead of showing the ACP content
+  envelope as JSON.
+- `spawn_subagent` is announced as a standard ACP v2 child session through
+  `subagent_update`, and the parent tool call carries a `Session` content
+  reference. Child transcript entries are routed under the child session ID,
+  and the final summary is a `session_message` back to the parent. The ordinary
+  tool card remains as a fallback for clients that do not render child sessions
+  yet (including T3 builds that only consume this in their Claude flavor).
 - Single- and multi-select `ask_user` questions map to ACP form elicitation
   (`elicitation/create`) when the client advertised
   `capabilities.elicitation.form`. Option values are the Tact option indices,
@@ -125,6 +156,9 @@ so importing a session a live host still holds (a running T3 thread, `tact-ui`,
 - `compaction_update` / `compaction_summary_chunk`. Compaction progress arrives
   as an ordinary notice; a typed protocol event would need a new `AgentUpdate`
   variant and a match arm in every frontend for a cosmetic card.
+- A typed Goal surface. ACP has no Goal update, so Goals are notices; T3's
+  native Goal commands are gated to its own drivers and never reach this
+  adapter.
 - URL-based elicitation.
 - Audio and embedded-resource prompts (the agent does not advertise those
   capabilities).

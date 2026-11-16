@@ -382,8 +382,17 @@ async fn run_scenario(
         .map(|command| command.name().to_string())
         .collect::<Vec<_>>();
     assert!(
-        advertised.iter().any(|name| name == "compact"),
+        advertised.iter().any(|name| name == "compact-context"),
         "the commands this adapter handles must be advertised: {advertised:?}"
+    );
+    assert!(
+        advertised.iter().any(|name| name == "goal"),
+        "Goal control must be advertised: {advertised:?}"
+    );
+    assert!(
+        advertised.iter().any(|name| name == "model-select")
+            && advertised.iter().any(|name| name == "permission-mode"),
+        "T3-shadowed config commands need non-colliding names: {advertised:?}"
     );
     assert!(
         advertised.iter().any(|name| name == "$greet"),

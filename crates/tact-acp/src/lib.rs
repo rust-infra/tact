@@ -31,8 +31,9 @@ use tact_host::{
     UserCommand,
 };
 use tact_protocol::{
-    AgentUpdate, PermissionMode, StepResult, StepStatus, TaskSnapshot, TaskStatusSnapshot,
-    ThinkingChunk, ToolPresentationInfo, ToolVisualKind, UiRequestPurpose, UiResponse,
+    AgentUpdate, GoalSnapshot, GoalStatusSnapshot, PermissionMode, StepResult, StepStatus,
+    TaskSnapshot, TaskStatusSnapshot, ThinkingChunk, ToolPresentationInfo, ToolVisualKind,
+    UiRequestPurpose, UiResponse,
 };
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
@@ -293,6 +294,19 @@ pub async fn run() -> anyhow::Result<()> {
                         &session_id,
                         schema::SessionUpdate::UserMessage(
                             schema::UserMessage::new(message_id).content(request.prompt.clone()),
+                        ),
+                    );
+                    // A client subscribes to session updates while handling the
+                    // session/new response, so the command list sent before that
+                    // response can be missed and its `/` menu stays empty. Send
+                    // it again once a prompt proves the subscription is live.
+                    let _ = send_update(
+                        &connection,
+                        &session_id,
+                        schema::SessionUpdate::AvailableCommandsUpdate(
+                            schema::AvailableCommandsUpdate::new(available_commands(
+                                &available_skills(&cwd),
+                            )),
                         ),
                     );
                     Ok(())
@@ -879,6 +893,9 @@ const ACP_IMAGE_DIR: &str = ".tact-acp-images";
 /// the bound exists only so a command that emits nothing cannot leave the
 /// client's prompt open forever.
 const COMMAND_SETTLE_TIMEOUT: Duration = Duration::from_millis(750);
+/// Give the client a moment to auto-answer a permission before announcing
+/// `requires_action`; otherwise every auto-approved tool leaves a stale row.
+const REQUIRES_ACTION_DELAY: Duration = Duration::from_millis(300);
 /// Thinking-budget tiers offered when the model has no profile of its own.
 const DEFAULT_THINKING_BUDGETS: [u32; 5] = [0, 8_000, 32_000, 64_000, 128_000];
 
@@ -1126,6 +1143,11 @@ enum SessionCommand {
     },
     /// A command turn's answer window closed; emit its idle if still owed.
     SettleCommand,
+    /// A permission or elicitation stayed pending long enough to surface the
+    /// client's action-required state. Auto-approved requests never reach it.
+    RequiresActionIfPending {
+        request_id: u64,
+    },
     Close(oneshot::Sender<Result<(), String>>),
 }
 
@@ -1167,10 +1189,15 @@ fn spawn_actor(
             published_requests: HashSet::new(),
             agent_message: None,
             thought: None,
-            open_tools: HashSet::new(),
+            open_tools: HashMap::new(),
+            open_tool_output: HashMap::new(),
+            subagent_sessions: HashMap::new(),
             turn_saw_text: false,
             context_window: context_window(),
             last_plan: Vec::new(),
+            last_goals: Vec::new(),
+            awaiting_goal_list: false,
+            compacting: false,
             command_turn: false,
         };
         actor.reconcile_pending_requests();
@@ -1179,17 +1206,24 @@ fn spawn_actor(
                 event = actor.host.next_event() => {
                     match event {
                         Some(event) => {
-                            let answers_command = matches!(
-                                &event,
-                                HostEvent::Agent(update)
-                                    if matches!(
-                                        update.as_ref(),
-                                        AgentUpdate::Info(_)
-                                            | AgentUpdate::MdInfo(_)
-                                            | AgentUpdate::PopupMarkdown { .. }
-                                            | AgentUpdate::Error(_)
-                                    )
-                            );
+                            let answers_command = match &event {
+                                HostEvent::Agent(update) => match update.as_ref() {
+                                    // Compaction announces itself, saves the
+                                    // transcript, and logs every summary stage
+                                    // before it finishes; all of those
+                                    // bracketed progress lines must not close
+                                    // the turn early.
+                                    AgentUpdate::Info(text) => {
+                                        !(actor.compacting
+                                            && text.trim_start().starts_with('['))
+                                    }
+                                    AgentUpdate::MdInfo(_)
+                                    | AgentUpdate::PopupMarkdown { .. }
+                                    | AgentUpdate::Error(_) => true,
+                                    _ => false,
+                                },
+                                _ => false,
+                            };
                             actor.handle_event(event);
                             actor.reconcile_pending_requests();
                             if answers_command {
@@ -1220,6 +1254,9 @@ fn spawn_actor(
                         Some(SessionCommand::Cancel) => actor.cancel_session(),
                         Some(SessionCommand::RequestSettled { request_id }) => {
                             actor.request_settled(request_id);
+                        }
+                        Some(SessionCommand::RequiresActionIfPending { request_id }) => {
+                            actor.requires_action_if_pending(request_id);
                         }
                         Some(SessionCommand::SettleCommand) => actor.settle_command_turn(),
                         Some(SessionCommand::Close(reply)) => {
@@ -1297,15 +1334,40 @@ struct SessionActor {
     published_requests: HashSet<u64>,
     agent_message: Option<OpenMessage>,
     thought: Option<OpenMessage>,
-    open_tools: HashSet<String>,
+    /// Tool calls waiting for a terminal update, with the identity fields from
+    /// their last running update. A terminal update repeats them because a
+    /// client that only sees the completion would otherwise have no title or
+    /// kind to render.
+    open_tools: HashMap<String, schema::ToolCallUpdate>,
+    /// Text streamed for an open tool. A terminal update replaces the client's
+    /// content, so accumulated progress has to ride along or the card loses
+    /// everything the tool (or a subagent's transcript) streamed first.
+    open_tool_output: HashMap<String, String>,
+    /// ACP v2 child sessions announced for `spawn_subagent` tools, keyed by
+    /// the parent tool id. The tool card remains for clients that do not render
+    /// child sessions yet; standards-aware clients get the same conversation
+    /// through these child session updates.
+    subagent_sessions: HashMap<String, SubagentSession>,
     turn_saw_text: bool,
     /// The context window to report with usage. The window is configuration,
     /// not an event, so it is read once at session start.
     context_window: u64,
     /// The last plan published, so an unchanged task list is not re-sent.
     last_plan: Vec<(String, schema::PlanEntryStatus)>,
+    /// The last Goal snapshot announced, so a reconcile tick is not a notice.
+    last_goals: Vec<GoalSnapshot>,
+    /// `/goal list` is waiting for the snapshot that answers it.
+    awaiting_goal_list: bool,
+    /// A `/compact` turn is still summarizing; its start notice is not its end.
+    compacting: bool,
     /// Whether a non-turn slash command still owes its idle.
     command_turn: bool,
+}
+
+struct SubagentSession {
+    id: schema::SessionId,
+    assistant_message: schema::MessageId,
+    thought_message: schema::MessageId,
 }
 
 impl SessionActor {
@@ -1386,18 +1448,25 @@ impl SessionActor {
                 presentation,
                 ..
             } => {
-                self.open_tools.insert(tool_id.clone());
-                self.send(schema::SessionUpdate::ToolCallUpdate(
-                    self.tool_call_update(
-                        &tool_id,
-                        &tool_name,
-                        &arg_summary,
-                        &arg_full,
-                        &presentation,
-                        schema::ToolCallStatus::Pending,
-                        None,
-                    ),
-                ));
+                let child =
+                    self.announce_subagent(&tool_id, &arg_summary, &arg_full, &presentation);
+                let mut update = self.tool_call_update(
+                    &tool_id,
+                    &tool_name,
+                    &arg_summary,
+                    &arg_full,
+                    &presentation,
+                    schema::ToolCallStatus::Pending,
+                    None,
+                );
+                if let Some(child) = child {
+                    update = update.content(vec![schema::ToolCallContent::Session(
+                        schema::SessionReference::new(child),
+                    )]);
+                }
+                self.open_tools.insert(tool_id.clone(), update.clone());
+                self.open_tool_output.insert(tool_id.clone(), String::new());
+                self.send(schema::SessionUpdate::ToolCallUpdate(update));
             }
             AgentUpdate::StepStarted {
                 tool_id,
@@ -1407,32 +1476,46 @@ impl SessionActor {
                 presentation,
                 ..
             } => {
-                self.open_tools.insert(tool_id.clone());
-                self.send(schema::SessionUpdate::ToolCallUpdate(
-                    self.tool_call_update(
-                        &tool_id,
-                        &tool_name,
-                        &arg_summary,
-                        &arg_full,
-                        &presentation,
-                        schema::ToolCallStatus::InProgress,
-                        None,
-                    ),
-                ));
+                let child =
+                    self.announce_subagent(&tool_id, &arg_summary, &arg_full, &presentation);
+                let mut update = self.tool_call_update(
+                    &tool_id,
+                    &tool_name,
+                    &arg_summary,
+                    &arg_full,
+                    &presentation,
+                    schema::ToolCallStatus::InProgress,
+                    None,
+                );
+                if let Some(child) = child {
+                    update = update.content(vec![schema::ToolCallContent::Session(
+                        schema::SessionReference::new(child),
+                    )]);
+                }
+                self.open_tools.insert(tool_id.clone(), update.clone());
+                self.open_tool_output.insert(tool_id.clone(), String::new());
+                self.send(schema::SessionUpdate::ToolCallUpdate(update));
             }
             AgentUpdate::StepFinished {
                 tool_id, result, ..
             } => {
-                self.open_tools.remove(&tool_id);
                 self.send_finished_step(&tool_id, &result);
             }
             AgentUpdate::StepFailed { tool_id, error, .. } => {
-                self.open_tools.remove(&tool_id);
-                self.send(schema::SessionUpdate::ToolCallUpdate(
-                    schema::ToolCallUpdate::new(tool_id)
-                        .status(schema::ToolCallStatus::Failed)
-                        .content(vec![text_tool_content(error)]),
-                ));
+                let progress = self.open_tool_output.remove(&tool_id).unwrap_or_default();
+                if self.subagent_sessions.contains_key(&tool_id) {
+                    self.finish_subagent(&tool_id, false, &error);
+                }
+                let update = self
+                    .open_tools
+                    .remove(&tool_id)
+                    .unwrap_or_else(|| schema::ToolCallUpdate::new(tool_id));
+                let text = combined_tool_text(&progress, &error);
+                self.send(schema::SessionUpdate::ToolCallUpdate(finish_tool_update(
+                    update,
+                    schema::ToolCallStatus::Failed,
+                    &text,
+                )));
             }
             AgentUpdate::ToolProgress {
                 tool_id, chunks, ..
@@ -1443,10 +1526,19 @@ impl SessionActor {
                     .collect::<Vec<_>>()
                     .join("");
                 if !text.is_empty() {
+                    if let Some(progress) = self.open_tool_output.get_mut(&tool_id) {
+                        push_tool_output(progress, &text);
+                    }
                     self.send(schema::SessionUpdate::ToolCallContentChunk(
                         schema::ToolCallContentChunk::new(tool_id, text_tool_content(text)),
                     ));
                 }
+            }
+            AgentUpdate::ToolTranscript { tool_id, entry } => {
+                self.forward_subagent_entry(&tool_id, entry);
+            }
+            AgentUpdate::ToolTranscriptStream { tool_id, text } => {
+                self.forward_subagent_stream(&tool_id, &text);
             }
             AgentUpdate::BackgroundTaskFinished {
                 tool_id,
@@ -1455,21 +1547,26 @@ impl SessionActor {
                 output,
                 ..
             } => {
-                self.open_tools.remove(&tool_id);
+                let progress = self.open_tool_output.remove(&tool_id).unwrap_or_default();
+                let update = self
+                    .open_tools
+                    .remove(&tool_id)
+                    .unwrap_or_else(|| schema::ToolCallUpdate::new(tool_id));
                 let text = if output.trim().is_empty() {
                     message
                 } else {
                     output
                 };
-                self.send(schema::SessionUpdate::ToolCallUpdate(
-                    schema::ToolCallUpdate::new(tool_id)
-                        .status(if success {
-                            schema::ToolCallStatus::Completed
-                        } else {
-                            schema::ToolCallStatus::Failed
-                        })
-                        .content(vec![text_tool_content(text)]),
-                ));
+                let text = combined_tool_text(&progress, &text);
+                self.send(schema::SessionUpdate::ToolCallUpdate(finish_tool_update(
+                    update,
+                    if success {
+                        schema::ToolCallStatus::Completed
+                    } else {
+                        schema::ToolCallStatus::Failed
+                    },
+                    &text,
+                )));
             }
             AgentUpdate::SubagentFinished {
                 tool_id,
@@ -1477,16 +1574,22 @@ impl SessionActor {
                 summary,
                 ..
             } => {
-                self.open_tools.remove(&tool_id);
-                self.send(schema::SessionUpdate::ToolCallUpdate(
-                    schema::ToolCallUpdate::new(tool_id)
-                        .status(if success {
-                            schema::ToolCallStatus::Completed
-                        } else {
-                            schema::ToolCallStatus::Failed
-                        })
-                        .content(vec![text_tool_content(summary)]),
-                ));
+                self.finish_subagent(&tool_id, success, &summary);
+                let progress = self.open_tool_output.remove(&tool_id).unwrap_or_default();
+                let update = self
+                    .open_tools
+                    .remove(&tool_id)
+                    .unwrap_or_else(|| schema::ToolCallUpdate::new(tool_id));
+                let text = combined_tool_text(&progress, &summary);
+                self.send(schema::SessionUpdate::ToolCallUpdate(finish_tool_update(
+                    update,
+                    if success {
+                        schema::ToolCallStatus::Completed
+                    } else {
+                        schema::ToolCallStatus::Failed
+                    },
+                    &text,
+                )));
             }
             AgentUpdate::TaskComplete(summary) => {
                 self.finish_turn(schema::StopReason::EndTurn, Some(summary));
@@ -1586,6 +1689,7 @@ impl SessionActor {
                 ));
             }
             AgentUpdate::TasksChanged { tasks, .. } => self.publish_plan(&tasks),
+            AgentUpdate::GoalsChanged { goals } => self.announce_goals(goals),
             AgentUpdate::TurnStats { .. }
             | AgentUpdate::RunFinished { .. }
             | AgentUpdate::StepAdded(_) => {}
@@ -1627,6 +1731,60 @@ impl SessionActor {
         )));
     }
 
+    /// Announce a Goal snapshot change.
+    ///
+    /// ACP has no Goal surface, so the snapshot becomes one notice. The host
+    /// emits `GoalsChanged` on every reconcile tick; comparing against the last
+    /// snapshot keeps that from turning into a stream of identical notices.
+    /// An empty snapshot is silent: `/goal list` already answers "(no goals)".
+    fn announce_goals(&mut self, goals: Vec<GoalSnapshot>) {
+        // `/goal list` has no other answer when the workspace is non-empty, and
+        // a periodic reconcile can deliver this snapshot before the command's
+        // own read-out. Answering from the snapshot here keeps the notice ahead
+        // of the idle instead of losing it to turn finalization.
+        let answers_list = self.awaiting_goal_list && self.command_turn;
+        if answers_list {
+            self.awaiting_goal_list = false;
+        }
+        if goals == self.last_goals && !answers_list {
+            return;
+        }
+        self.last_goals = goals.clone();
+        if goals.is_empty() {
+            if answers_list {
+                self.notice(
+                    schema::NoticeSeverity::Info,
+                    "Goals",
+                    Some("(no goals)".to_string()),
+                );
+                self.settle_command_turn();
+            }
+            return;
+        }
+        let body = goals
+            .iter()
+            .map(|goal| {
+                let mut line = format!(
+                    "{} {} — {} · tasks {}/{}",
+                    goal.status.marker(),
+                    goal.title,
+                    goal_status_label(goal.status),
+                    goal.task_completed,
+                    goal.task_total,
+                );
+                if let Some(reason) = &goal.wait_reason {
+                    line.push_str(&format!(" · waiting: {reason}"));
+                }
+                line
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        self.notice(schema::NoticeSeverity::Info, "Goals", Some(body));
+        if answers_list {
+            self.settle_command_turn();
+        }
+    }
+
     /// Reconcile against the authoritative pending-request snapshot. Covers a
     /// lost `AgentUpdate` hint without making the hint a second registry.
     fn reconcile_pending_requests(&mut self) {
@@ -1658,9 +1816,7 @@ impl SessionActor {
                 self.respond_ui(declined(request.request_id, false));
                 return;
             }
-            if self.state.phase.is_running() {
-                self.send(requires_action());
-            }
+            self.schedule_requires_action(request.request_id);
             self.spawn_permission(request);
             return;
         }
@@ -1670,9 +1826,7 @@ impl SessionActor {
             UiRequestPurpose::Question | UiRequestPurpose::Other
         );
         if question && self.elicitation.form && !request.options.is_empty() {
-            if self.state.phase.is_running() {
-                self.send(requires_action());
-            }
+            self.schedule_requires_action(request.request_id);
             self.spawn_elicitation(request);
             return;
         }
@@ -2025,6 +2179,14 @@ impl SessionActor {
                 false
             }
             SlashCommand::Skill { name, args } => self.invoke_skill(&name, &args),
+            SlashCommand::Invalid(message) => {
+                self.notice(
+                    schema::NoticeSeverity::Warning,
+                    "Command not run",
+                    Some(message),
+                );
+                false
+            }
             SlashCommand::Then(command, rest) => {
                 // The command half may answer locally; the request half is a
                 // real turn, so it owns the boundary even when the first half
@@ -2037,7 +2199,23 @@ impl SessionActor {
                 true
             }
             SlashCommand::Host(command) => {
-                self.forward_slash_command(command);
+                // Creating or resuming a Goal starts an out-of-band activation.
+                // Its own `TaskIdle` owns the turn boundary; settling the prompt
+                // on the creation notice would hide the work that follows.
+                if matches!(
+                    command,
+                    UserCommand::CreateGoal { .. } | UserCommand::ResumeGoal { .. }
+                ) {
+                    self.forward_goal_start(command);
+                } else if matches!(command, UserCommand::Compact) {
+                    self.compacting = true;
+                    self.forward_long_command(command);
+                } else {
+                    if matches!(command, UserCommand::ListGoals { .. }) {
+                        self.awaiting_goal_list = true;
+                    }
+                    self.forward_slash_command(command);
+                }
                 true
             }
         }
@@ -2112,6 +2290,19 @@ impl SessionActor {
     /// owns the turn boundary itself. The answer arrives first as a notice,
     /// then the idle. A queued command errors immediately and still settles.
     fn forward_slash_command(&mut self, command: UserCommand) {
+        self.forward_command(command, true);
+    }
+
+    /// Forward a command that owns its turn until it reports its own result.
+    ///
+    /// Compaction can take minutes; the short command timer would send idle
+    /// while the summary is still being generated, and the completion notice
+    /// would then arrive after the client closed the turn.
+    fn forward_long_command(&mut self, command: UserCommand) {
+        self.forward_command(command, false);
+    }
+
+    fn forward_command(&mut self, command: UserCommand, arm_settle_timer: bool) {
         if !self.state.phase.is_running() {
             self.state.phase = TurnPhase::Running;
             self.send(running());
@@ -2137,6 +2328,9 @@ impl SessionActor {
         // before the answer reached the client. A command that produces no
         // answer at all settles on the fallback below.
         self.command_turn = true;
+        if !arm_settle_timer {
+            return;
+        }
         let commands = self.commands.clone();
         tokio::spawn(async move {
             tokio::time::sleep(COMMAND_SETTLE_TIMEOUT).await;
@@ -2144,11 +2338,36 @@ impl SessionActor {
         });
     }
 
+    /// Start a Goal activation as the prompt's turn.
+    ///
+    /// Unlike a read-out command, the Goal runner keeps producing updates and
+    /// closes the turn with `TaskIdle`, so no command-settle timer is armed.
+    fn forward_goal_start(&mut self, command: UserCommand) {
+        if !self.state.phase.is_running() {
+            self.state.phase = TurnPhase::Running;
+            self.send(running());
+        }
+        if let Err(error) = self.host.send(command) {
+            warn!(%self.session_id, %error, "failed to start goal");
+            self.notice(
+                schema::NoticeSeverity::Error,
+                "Goal failed to start",
+                Some(error.to_string()),
+            );
+            self.finish_turn(
+                schema::StopReason::Error(schema::ErrorStopReason::new()),
+                None,
+            );
+        }
+    }
+
     /// Close a command turn. Idempotent: `finish_turn` is gated on `Running`,
     /// so an event that already settled is not settled twice.
     fn settle_command_turn(&mut self) {
         if self.command_turn {
             self.command_turn = false;
+            self.awaiting_goal_list = false;
+            self.compacting = false;
             self.finish_turn(schema::StopReason::EndTurn, None);
         }
     }
@@ -2182,34 +2401,223 @@ impl SessionActor {
             .send(SessionCommand::User(UserCommand::UiResponse(response)));
     }
 
+    /// Announce `requires_action` only if the request is still unanswered after
+    /// a short grace period. Clients that auto-approve answer immediately, so
+    /// their timeline gets no "Action required" card.
+    fn schedule_requires_action(&self, request_id: u64) {
+        let commands = self.commands.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(REQUIRES_ACTION_DELAY).await;
+            let _ = commands.send(SessionCommand::RequiresActionIfPending { request_id });
+        });
+    }
+
+    fn requires_action_if_pending(&mut self, request_id: u64) {
+        if !self.state.phase.is_running() {
+            return;
+        }
+        if self
+            .host
+            .pending_requests()
+            .iter()
+            .any(|request| request.request_id == request_id)
+        {
+            self.send(requires_action());
+        }
+    }
+
     fn send_options(&self) {
         self.send(schema::SessionUpdate::ConfigOptionUpdate(
             schema::ConfigOptionUpdate::new(self.state.config_options()),
         ));
     }
 
+    fn send_on(&self, session_id: &schema::SessionId, update: schema::SessionUpdate) {
+        if let Err(error) = send_update(&self.connection, session_id, update) {
+            debug!(%self.session_id, %session_id, %error, "failed to send child session update");
+        }
+    }
+
+    /// Announce an ACP v2 child session for a `spawn_subagent` call. The parent
+    /// tool call also gets a display-only session reference; clients that do
+    /// not render child sessions keep the existing tool card.
+    fn announce_subagent(
+        &mut self,
+        tool_id: &str,
+        arg_summary: &str,
+        arg_full: &str,
+        presentation: &ToolPresentationInfo,
+    ) -> Option<schema::SessionId> {
+        if presentation.visual_kind != ToolVisualKind::Subagent {
+            return None;
+        }
+        if let Some(session) = self.subagent_sessions.get(tool_id) {
+            return Some(session.id.clone());
+        }
+        let id = schema::SessionId::new(format!("{}:subagent:{tool_id}", self.session_id.0));
+        let title = first_line(
+            if arg_summary.trim().is_empty() {
+                arg_full
+            } else {
+                arg_summary
+            },
+            120,
+        );
+        self.send(schema::SessionUpdate::SubagentUpdate(
+            schema::SubagentUpdate::new(id.clone())
+                .title(title)
+                .description(arg_full.to_string())
+                .state(schema::StateUpdate::Running(
+                    schema::RunningStateUpdate::new(),
+                )),
+        ));
+        let message_id = schema::MessageId::new(format!("{}:user", id.0));
+        self.send_on(
+            &id,
+            schema::SessionUpdate::UserMessage(
+                schema::UserMessage::new(message_id).content(vec![arg_full.to_string().into()]),
+            ),
+        );
+        self.subagent_sessions.insert(
+            tool_id.to_string(),
+            SubagentSession {
+                id: id.clone(),
+                assistant_message: schema::MessageId::new(format!("{}:assistant", id.0)),
+                thought_message: schema::MessageId::new(format!("{}:thought", id.0)),
+            },
+        );
+        Some(id)
+    }
+
+    fn forward_subagent_stream(&self, tool_id: &str, text: &str) {
+        let Some(session) = self.subagent_sessions.get(tool_id) else {
+            return;
+        };
+        self.send_on(
+            &session.id,
+            schema::SessionUpdate::AgentMessage(
+                schema::AgentMessage::new(session.assistant_message.clone())
+                    .content(vec![text.to_string().into()]),
+            ),
+        );
+    }
+
+    fn forward_subagent_entry(&self, tool_id: &str, entry: tact_protocol::SubagentTranscriptEntry) {
+        let Some(session) = self.subagent_sessions.get(tool_id) else {
+            return;
+        };
+        let child = session.id.clone();
+        match entry {
+            tact_protocol::SubagentTranscriptEntry::Assistant(text) => self.send_on(
+                &child,
+                schema::SessionUpdate::AgentMessage(
+                    schema::AgentMessage::new(session.assistant_message.clone())
+                        .content(vec![text.into()]),
+                ),
+            ),
+            tact_protocol::SubagentTranscriptEntry::Thinking { text, .. } => self.send_on(
+                &child,
+                schema::SessionUpdate::AgentThought(
+                    schema::AgentThought::new(session.thought_message.clone())
+                        .content(vec![text.into()]),
+                ),
+            ),
+            tact_protocol::SubagentTranscriptEntry::Step(step) => {
+                let status = match step.status {
+                    tact_protocol::SubagentStepStatus::Running => {
+                        schema::ToolCallStatus::InProgress
+                    }
+                    tact_protocol::SubagentStepStatus::Success => schema::ToolCallStatus::Completed,
+                    tact_protocol::SubagentStepStatus::Failed => schema::ToolCallStatus::Failed,
+                    tact_protocol::SubagentStepStatus::Cancelled => {
+                        schema::ToolCallStatus::Cancelled
+                    }
+                };
+                let is_running = matches!(status, schema::ToolCallStatus::InProgress);
+                let mut update = self.tool_call_update(
+                    &step.tool_id,
+                    &step.tool_name,
+                    &step.arg_summary,
+                    &step.arg_full,
+                    &step.presentation,
+                    status.clone(),
+                    None,
+                );
+                if is_running {
+                    if !step.message.is_empty() {
+                        update = update.content(vec![text_tool_content(step.message)]);
+                    }
+                } else {
+                    let text = step.detail.as_deref().unwrap_or(&step.message);
+                    update = finish_tool_update(update, status, text);
+                }
+                self.send_on(&child, schema::SessionUpdate::ToolCallUpdate(update));
+            }
+            tact_protocol::SubagentTranscriptEntry::Info(text) => self.send_on(
+                &child,
+                schema::SessionUpdate::AgentMessage(
+                    schema::AgentMessage::new(self.next_id("child-info"))
+                        .content(vec![text.into()]),
+                ),
+            ),
+            tact_protocol::SubagentTranscriptEntry::Error(text) => self.send_on(
+                &child,
+                schema::SessionUpdate::Notice(
+                    schema::Notice::new(schema::NoticeSeverity::Error, "Subagent error")
+                        .description(Some(text)),
+                ),
+            ),
+        }
+    }
+
+    fn finish_subagent(&mut self, tool_id: &str, success: bool, summary: &str) {
+        let Some(session) = self.subagent_sessions.remove(tool_id) else {
+            return;
+        };
+        let stop = if success {
+            schema::StopReason::EndTurn
+        } else {
+            schema::StopReason::Error(schema::ErrorStopReason::new())
+        };
+        self.send(schema::SessionUpdate::SubagentUpdate(
+            schema::SubagentUpdate::new(session.id.clone()).state(schema::StateUpdate::Idle(
+                schema::IdleStateUpdate::new().stop_reason(Some(stop)),
+            )),
+        ));
+        let message_id = schema::MessageId::new(format!("{}:summary", session.id.0));
+        let message = schema::SessionMessage::new(message_id)
+            .sender_session_id(session.id.clone())
+            .recipient_session_id(self.session_id.clone())
+            .content(vec![summary.to_string().into()]);
+        self.send_on(&session.id, schema::SessionUpdate::SessionMessage(message));
+    }
+
     fn send_finished_step(&mut self, tool_id: &str, result: &StepResult) {
+        let update = self
+            .open_tools
+            .remove(tool_id)
+            .unwrap_or_else(|| schema::ToolCallUpdate::new(tool_id.to_string()));
+        let progress = self.open_tool_output.remove(tool_id).unwrap_or_default();
         let status = match result.status {
             StepStatus::Success => schema::ToolCallStatus::Completed,
             StepStatus::Failed => schema::ToolCallStatus::Failed,
             StepStatus::Cancelled => schema::ToolCallStatus::Cancelled,
         };
-        let text = result
+        let final_text = result
             .detail
             .as_deref()
             .filter(|detail| !detail.trim().is_empty())
             .unwrap_or(&result.message)
             .to_string();
-        let content = if text.trim().is_empty() {
-            Vec::new()
-        } else {
-            vec![text_tool_content(text)]
-        };
-        self.send(schema::SessionUpdate::ToolCallUpdate(
-            schema::ToolCallUpdate::new(tool_id.to_string())
-                .status(status)
-                .content(content),
-        ));
+        if !final_text.trim_start().starts_with("async_launched")
+            && self.subagent_sessions.contains_key(tool_id)
+        {
+            self.finish_subagent(tool_id, result.status == StepStatus::Success, &final_text);
+        }
+        let text = combined_tool_text(&progress, &final_text);
+        self.send(schema::SessionUpdate::ToolCallUpdate(finish_tool_update(
+            update, status, &text,
+        )));
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2223,7 +2631,7 @@ impl SessionActor {
         status: schema::ToolCallStatus,
         content: Option<String>,
     ) -> schema::ToolCallUpdate {
-        let title = if arg_summary.trim().is_empty() {
+        let title = if !has_meaningful_args(arg_summary) {
             if presentation.display_name.trim().is_empty() {
                 tool_name.to_string()
             } else {
@@ -2232,13 +2640,26 @@ impl SessionActor {
         } else {
             arg_summary.to_string()
         };
+        let kind = tool_kind(tool_name, presentation);
         let mut update = schema::ToolCallUpdate::new(tool_id.to_string())
             .name(tool_name.to_string())
             .title(title)
-            .kind(tool_kind(tool_name, presentation))
+            .kind(kind.clone())
             .status(status);
         if let Some(raw) = parse_json(arg_full) {
             update = update.raw_input(raw);
+        } else if matches!(kind, schema::ToolKind::Execute) && !arg_full.trim().is_empty() {
+            // A command tool's full argument is the command line itself. Clients
+            // read `rawInput.command` to show what actually ran; without it the
+            // card can only repeat its own summary.
+            update = update.raw_input(serde_json::json!({ "command": arg_full }));
+        } else if matches!(presentation.visual_kind, ToolVisualKind::Subagent)
+            && !arg_full.trim().is_empty()
+        {
+            // A subagent's full argument is its prompt. The card title is the
+            // same text truncated, so clients that expand only when `rawInput`
+            // is present had nothing to open.
+            update = update.raw_input(serde_json::json!({ "prompt": arg_full }));
         }
         if let Some(content) = content {
             update = update.content(vec![text_tool_content(content)]);
@@ -2307,12 +2728,26 @@ impl SessionActor {
                 schema::AgentMessage::new(id).content(vec![text.into()]),
             ));
         }
-        let open: Vec<String> = self.open_tools.drain().collect();
-        for tool_id in open {
+        let open: Vec<schema::ToolCallUpdate> =
+            self.open_tools.drain().map(|(_, update)| update).collect();
+        for update in open {
             self.send(schema::SessionUpdate::ToolCallUpdate(
-                schema::ToolCallUpdate::new(tool_id).status(schema::ToolCallStatus::Cancelled),
+                update.status(schema::ToolCallStatus::Cancelled),
             ));
         }
+        let children: Vec<SubagentSession> = self
+            .subagent_sessions
+            .drain()
+            .map(|(_, session)| session)
+            .collect();
+        for child in children {
+            self.send(schema::SessionUpdate::SubagentUpdate(
+                schema::SubagentUpdate::new(child.id).state(schema::StateUpdate::Idle(
+                    schema::IdleStateUpdate::new().stop_reason(Some(schema::StopReason::Cancelled)),
+                )),
+            ));
+        }
+        self.open_tool_output.clear();
         self.turn_saw_text = false;
         if self.state.phase.is_running() {
             self.send(idle(Some(stop_reason)));
@@ -2435,6 +2870,53 @@ fn idle(stop_reason: Option<schema::StopReason>) -> schema::SessionUpdate {
 
 fn text_tool_content(text: impl Into<String>) -> schema::ToolCallContent {
     schema::ToolCallContent::Content(Box::new(schema::Content::new(text.into())))
+}
+
+/// Cap retained tool progress so a chatty subagent cannot grow one session's
+/// adapter memory without bound. The client already saw the full live stream.
+const TOOL_TEXT_CAP: usize = 64 * 1024;
+
+fn push_tool_output(store: &mut String, text: &str) {
+    let remaining = TOOL_TEXT_CAP.saturating_sub(store.len());
+    if remaining == 0 {
+        return;
+    }
+    let mut end = text.len().min(remaining);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    store.push_str(&text[..end]);
+}
+
+fn combined_tool_text(progress: &str, final_text: &str) -> String {
+    let progress = progress.trim_end();
+    let final_text = final_text.trim_end();
+    if progress.is_empty() {
+        final_text.to_string()
+    } else if final_text.is_empty() || progress.contains(final_text) {
+        progress.to_string()
+    } else {
+        format!("{progress}\n\n{final_text}")
+    }
+}
+
+/// Apply a terminal status and text. Generic tools also carry the text as
+/// `rawOutput` because T3 renders that field directly; without it the expanded
+/// card shows the ACP content envelope as JSON instead of the result.
+fn finish_tool_update(
+    update: schema::ToolCallUpdate,
+    status: schema::ToolCallStatus,
+    text: &str,
+) -> schema::ToolCallUpdate {
+    let mut update = update.status(status);
+    if text.trim().is_empty() {
+        return update;
+    }
+    update = update.content(vec![text_tool_content(text)]);
+    if matches!(update.kind.value(), Some(schema::ToolKind::Other)) {
+        update = update.raw_output(serde_json::Value::String(text.to_string()));
+    }
+    update
 }
 
 /// Flatten prompt content into one task text, writing images into the
@@ -2567,6 +3049,13 @@ fn tool_kind(tool_name: &str, presentation: &ToolPresentationInfo) -> schema::To
     }
 }
 
+/// A no-argument tool serializes as `{}` (or another empty JSON container).
+/// That is not a title; fall back to the tool's display name instead.
+fn has_meaningful_args(summary: &str) -> bool {
+    let summary = summary.trim();
+    !summary.is_empty() && summary != "{}" && summary != "[]" && summary != "null"
+}
+
 fn permission_kind(label: &str) -> schema::PermissionOptionKind {
     let lower = label.to_ascii_lowercase();
     if lower.contains("always") && (lower.contains("allow") || !lower.contains("deny")) {
@@ -2621,7 +3110,11 @@ fn context_window() -> u64 {
 /// would reach the model as literal text.
 fn available_commands(skills: &[(String, String)]) -> Vec<schema::AvailableCommand> {
     let commands = [
-        ("compact", "Compact the conversation context", ""),
+        (
+            "compact-context",
+            "Compact the conversation context (T3 reserves `/compact`)",
+            "",
+        ),
         ("stats", "Show session token and turn statistics", ""),
         ("mcp", "Inspect the connected MCP servers", "[list|prompts]"),
         (
@@ -2629,15 +3122,26 @@ fn available_commands(skills: &[(String, String)]) -> Vec<schema::AvailableComma
             "List background tasks, or show one by id",
             "[task-id]",
         ),
+        (
+            "goal",
+            "Create a Goal or control one that is already running",
+            "create <objective> [-- <criterion>; ...] | list [--all] | show <id> | steer <text> | pause <id> | resume <id> | cancel <id> | accept <id> <text> | archive <id> | unarchive <id>",
+        ),
         // These two resolve to the same state the config options hold; the
         // slash forms exist because a client that hides config options (or a
-        // keyboard user) still needs a way to switch them.
+        // keyboard user) still needs a way to switch them. T3 owns the bare
+        // `/model` and `/permission` spellings, so advertise names its composer
+        // will actually forward.
         (
-            "model",
-            "Switch the model for the rest of the session",
+            "model-select",
+            "Switch the Tact model for the rest of the session",
             "<model>",
         ),
-        ("permission", "Set the permission mode", "default|plan|auto"),
+        (
+            "permission-mode",
+            "Set the Tact permission mode",
+            "default|plan|auto",
+        ),
         (
             "thought",
             "Set the reasoning effort or thinking budget",
@@ -2707,6 +3211,8 @@ enum SlashCommand {
     Model(String),
     Permission(String),
     Thought(String),
+    /// A `/goal` spelling that names no valid verb or lacks its argument.
+    Invalid(String),
     /// `$name args`: the client's spelling for an advertised skill.
     Skill {
         name: String,
@@ -2737,6 +3243,128 @@ fn wrapped_user_request(text: &str) -> Option<&str> {
     let body = text.split_once("<user_request>")?.1;
     let body = body.split_once("</user_request>")?.0;
     Some(body.trim())
+}
+
+fn goal_usage() -> String {
+    "Usage: `/goal create <objective> [-- <criterion>; ...]`, `/goal list [--all]`, \
+     `/goal show|pause|resume|cancel|archive|unarchive <id>`, `/goal steer <text>`, \
+     or `/goal accept <id> <text>`."
+        .to_string()
+}
+
+/// Translate the `/goal` surface into one host command.
+///
+/// The TUI owns the richer id-completion grammar; ACP only has the text the
+/// user typed, so an id-taking verb requires one token. A one-word prompt that
+/// is not a verb is treated as an objective, which keeps the shorthand in the
+/// usage text working.
+fn goal_command(args: &str) -> Result<UserCommand, String> {
+    let args = args.trim();
+    if args.is_empty() {
+        return Err(goal_usage());
+    }
+    let (verb, rest) = match args.split_once(char::is_whitespace) {
+        Some((verb, rest)) => (verb.to_ascii_lowercase(), rest.trim()),
+        None => (args.to_ascii_lowercase(), ""),
+    };
+    let command = match verb.as_str() {
+        "create" => {
+            if rest.is_empty() {
+                return Err(goal_usage());
+            }
+            create_goal_command(rest)
+        }
+        "list" => match rest {
+            "" => UserCommand::ListGoals {
+                include_archived: false,
+            },
+            "--all" => UserCommand::ListGoals {
+                include_archived: true,
+            },
+            _ => return Err("`/goal list` takes only `--all`.".to_string()),
+        },
+        "show" | "pause" | "resume" | "cancel" | "archive" | "unarchive" => {
+            let id = match rest.split_whitespace().collect::<Vec<_>>().as_slice() {
+                [id] => (*id).to_string(),
+                [] => return Err(format!("`/goal {verb}` needs a Goal id.")),
+                _ => return Err(format!("`/goal {verb}` takes one Goal id.")),
+            };
+            match verb.as_str() {
+                "show" => UserCommand::ShowGoal { goal_id: id },
+                "pause" => UserCommand::PauseGoal { goal_id: id },
+                "resume" => UserCommand::ResumeGoal { goal_id: id },
+                "cancel" => UserCommand::CancelGoal { goal_id: id },
+                "archive" => UserCommand::SetGoalArchived {
+                    goal_id: id,
+                    archived: true,
+                },
+                _ => UserCommand::SetGoalArchived {
+                    goal_id: id,
+                    archived: false,
+                },
+            }
+        }
+        "steer" => {
+            if rest.is_empty() {
+                return Err("`/goal steer` needs text.".to_string());
+            }
+            UserCommand::SteerGoal {
+                goal_id: None,
+                text: rest.to_string(),
+            }
+        }
+        "accept" => {
+            let mut parts = rest.splitn(2, char::is_whitespace);
+            let goal_id = parts.next().unwrap_or_default().trim();
+            let text = parts.next().unwrap_or_default().trim();
+            if goal_id.is_empty() || text.is_empty() {
+                return Err("`/goal accept` needs a Goal id and acceptance text.".to_string());
+            }
+            UserCommand::AcceptGoal {
+                goal_id: goal_id.to_string(),
+                text: text.to_string(),
+            }
+        }
+        // `/goal <objective>`: an unknown verb is the start of the objective,
+        // not a typo the user can correct from a usage line alone.
+        _ => create_goal_command(args),
+    };
+    Ok(command)
+}
+
+fn create_goal_command(args: &str) -> UserCommand {
+    let (objective, criteria) = match args.split_once(" -- ") {
+        Some((objective, criteria)) => (
+            objective.trim(),
+            criteria
+                .split(';')
+                .map(str::trim)
+                .filter(|criterion| !criterion.is_empty())
+                .map(str::to_string)
+                .collect(),
+        ),
+        None => (args.trim(), Vec::new()),
+    };
+    UserCommand::CreateGoal {
+        title: objective.chars().take(80).collect(),
+        objective: objective.to_string(),
+        criteria,
+    }
+}
+
+fn goal_status_label(status: GoalStatusSnapshot) -> &'static str {
+    match status {
+        GoalStatusSnapshot::Draft => "draft",
+        GoalStatusSnapshot::Queued => "queued",
+        GoalStatusSnapshot::Running => "running",
+        GoalStatusSnapshot::WaitingUser => "waiting for user",
+        GoalStatusSnapshot::WaitingPermission => "waiting for permission",
+        GoalStatusSnapshot::Paused => "paused",
+        GoalStatusSnapshot::Verifying => "verifying",
+        GoalStatusSnapshot::Succeeded => "succeeded",
+        GoalStatusSnapshot::Failed => "failed",
+        GoalStatusSnapshot::Cancelled => "cancelled",
+    }
 }
 
 /// Parse one `/name args` prompt. Case-insensitive, matching the client's own
@@ -2772,7 +3400,7 @@ fn slash_command(text: &str) -> SlashCommand {
         None => (line, ""),
     };
     let command = match name.to_ascii_lowercase().as_str() {
-        "compact" => SlashCommand::Host(UserCommand::Compact),
+        "compact" | "compact-context" => SlashCommand::Host(UserCommand::Compact),
         "stats" => SlashCommand::Host(UserCommand::QueryStats),
         "mcp" => match args.split_whitespace().next() {
             Some("prompts") => SlashCommand::Host(UserCommand::McpPrompts {
@@ -2783,13 +3411,24 @@ fn slash_command(text: &str) -> SlashCommand {
         "background" => SlashCommand::Host(UserCommand::QueryBackground(
             args.split_whitespace().next().map(str::to_string),
         )),
-        "model" if !args.is_empty() => SlashCommand::Model(args.to_string()),
-        "permission" if !args.is_empty() => SlashCommand::Permission(args.to_string()),
+        "goal" => match goal_command(args) {
+            Ok(command) => SlashCommand::Host(command),
+            Err(message) => SlashCommand::Invalid(message),
+        },
+        "model" | "model-select" if !args.is_empty() => SlashCommand::Model(args.to_string()),
+        "permission" | "permission-mode" if !args.is_empty() => {
+            SlashCommand::Permission(args.to_string())
+        }
         "thought" if !args.is_empty() => SlashCommand::Thought(args.to_string()),
         _ => SlashCommand::Forward(text.to_string()),
     };
     // A recognized command with a request after it runs the command and then
     // submits the request as an ordinary turn, so neither half is dropped.
+    // Compaction is the exception: T3 can append its own context after the
+    // command line, and that context is not a request the model should answer.
+    if matches!(command, SlashCommand::Host(UserCommand::Compact)) {
+        return command;
+    }
     if rest_of_prompt.is_empty() || matches!(command, SlashCommand::Forward(_)) {
         command
     } else {
@@ -3099,5 +3738,119 @@ mod tests {
             slash_command(wrapped),
             SlashCommand::Forward(text) if text == wrapped
         ));
+    }
+
+    #[test]
+    fn goal_create_keeps_the_objective_and_criteria() {
+        match slash_command("/goal create Ship desktop -- Windows; Linux and macOS") {
+            SlashCommand::Host(UserCommand::CreateGoal {
+                title,
+                objective,
+                criteria,
+            }) => {
+                assert_eq!(title, "Ship desktop");
+                assert_eq!(objective, "Ship desktop");
+                assert_eq!(criteria, vec!["Windows", "Linux and macOS"]);
+            }
+            _ => panic!("expected CreateGoal"),
+        }
+    }
+
+    #[test]
+    fn goal_shorthand_is_a_create() {
+        assert!(matches!(
+            slash_command("/goal refactor the parser"),
+            SlashCommand::Host(UserCommand::CreateGoal { objective, .. })
+                if objective == "refactor the parser"
+        ));
+    }
+
+    #[test]
+    fn goal_list_and_control_route_to_the_host() {
+        assert!(matches!(
+            slash_command("/goal list --all"),
+            SlashCommand::Host(UserCommand::ListGoals {
+                include_archived: true
+            })
+        ));
+        assert!(matches!(
+            slash_command("/goal pause goal-1"),
+            SlashCommand::Host(UserCommand::PauseGoal { goal_id }) if goal_id == "goal-1"
+        ));
+        assert!(matches!(
+            slash_command("/goal accept goal-1 looks right"),
+            SlashCommand::Host(UserCommand::AcceptGoal { goal_id, text })
+                if goal_id == "goal-1" && text == "looks right"
+        ));
+    }
+
+    #[test]
+    fn goal_control_without_an_id_reports_usage() {
+        assert!(matches!(
+            slash_command("/goal pause"),
+            SlashCommand::Invalid(message) if message.contains("needs a Goal id")
+        ));
+    }
+
+    #[test]
+    fn compaction_ignores_the_context_t3_appends() {
+        assert!(matches!(
+            slash_command("/compact-context\nThe user's context says the previous turn failed."),
+            SlashCommand::Host(UserCommand::Compact)
+        ));
+    }
+
+    #[test]
+    fn t3_safe_config_command_names_parse() {
+        assert!(matches!(
+            slash_command("/model-select fake-b"),
+            SlashCommand::Model(value) if value == "fake-b"
+        ));
+        assert!(matches!(
+            slash_command("/permission-mode plan"),
+            SlashCommand::Permission(value) if value == "plan"
+        ));
+        // The bare names still work for clients that do not shadow them.
+        assert!(matches!(
+            slash_command("/model fake-a"),
+            SlashCommand::Model(value) if value == "fake-a"
+        ));
+    }
+
+    #[test]
+    fn empty_json_arguments_are_not_a_tool_title() {
+        assert!(!has_meaningful_args(""));
+        assert!(!has_meaningful_args("  {} "));
+        assert!(!has_meaningful_args("[]"));
+        assert!(!has_meaningful_args("null"));
+        assert!(has_meaningful_args("{\"command\":\"printf ok\"}"));
+    }
+
+    #[test]
+    fn generic_tool_output_is_plain_text() {
+        let update = schema::ToolCallUpdate::new("call").kind(schema::ToolKind::Other);
+        let update = finish_tool_update(update, schema::ToolCallStatus::Completed, "No teammates.");
+        assert_eq!(
+            update.raw_output.value(),
+            Some(&serde_json::Value::String("No teammates.".into()))
+        );
+
+        let execute = schema::ToolCallUpdate::new("call").kind(schema::ToolKind::Execute);
+        let execute =
+            finish_tool_update(execute, schema::ToolCallStatus::Completed, "tool-card-ok");
+        assert!(execute.raw_output.is_undefined());
+    }
+
+    #[test]
+    fn terminal_text_does_not_drop_streamed_progress() {
+        assert_eq!(
+            combined_tool_text("child line\n", "summary"),
+            "child line\n\nsummary"
+        );
+        assert_eq!(
+            combined_tool_text("child summary", "summary"),
+            "child summary"
+        );
+        assert_eq!(combined_tool_text("", "summary"), "summary");
     }
 }

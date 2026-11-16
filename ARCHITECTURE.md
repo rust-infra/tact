@@ -121,6 +121,14 @@ v2 has no per-method flags for `session/list`/`resume`/`close`, so a client
 only has them when that object is non-null. T3 reads it that way and gates both
 its native-session list and resume-after-restart on it.
 
+The command surface includes Goal control (`/goal create|list|show|steer|pause|resume|cancel|accept|archive|unarchive`).
+ACP has no Goal update, so Goal snapshots are projected as deduplicated notices
+and a Goal activation owns the turn until the runner emits `TaskIdle`.
+Compaction is advertised as `/compact-context` because T3 reserves the exact
+`/compact` prompt; the adapter keeps that turn open across the bracketed
+summarizer progress lines until Tact reports completion, and clamps the summary
+request to the model's output cap.
+
 ---
 
 ## 1. Module Architecture
