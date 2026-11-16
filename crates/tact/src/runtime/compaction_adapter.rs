@@ -346,7 +346,9 @@ impl TactCompactor {
         let request = summary_request(
             self.model.name.clone(),
             state.transcript.iter().map(ModelMessage::from).collect(),
-            self.settings.max_tokens,
+            self.settings
+                .max_tokens
+                .min(model.capabilities().max_output_tokens),
             ModelCallOptions::default(),
         );
         let response = self
@@ -406,6 +408,7 @@ impl TactCompactor {
 
         let model_context_window = self.settings.model_context_window;
         let session_effort = self.settings.reasoning_effort;
+        let model_max_output = model.capabilities().max_output_tokens;
         let summary_text_max_tokens = if model_context_window == 0 {
             COMPACT_SUMMARY_MAX_TOKENS
         } else {
@@ -418,6 +421,9 @@ impl TactCompactor {
             )
             .map_err(compaction_error)?
         };
+        // A model whose output cap is below the computed text budget cannot
+        // serve the request; the cap is the hard ceiling, not the window.
+        let summary_text_max_tokens = summary_text_max_tokens.min(model_max_output);
         let effective_effort =
             session_effort.or_else(|| compact_summary_server_default_effort(&self.provider_kind));
         let reasoning_reserve = effective_effort
@@ -427,17 +433,20 @@ impl TactCompactor {
                     effort,
                 ))
             })
-            .unwrap_or(0);
+            .unwrap_or(0)
+            .min(model_max_output.saturating_sub(summary_text_max_tokens));
         let envelope_floor = if effective_effort.is_some() {
             self.settings
                 .max_tokens
                 .min(compact_summary_envelope_ceiling(model_context_window))
+                .min(model_max_output)
         } else {
             0
         };
         let summary_max_tokens = summary_text_max_tokens
             .saturating_add(reasoning_reserve)
-            .max(envelope_floor);
+            .max(envelope_floor)
+            .min(model_max_output);
         let summary_input_limit = if model_context_window == 0 {
             crate::compact::KEEP_USER_MESSAGE_TOKENS
         } else {
@@ -591,8 +600,11 @@ impl TactCompactor {
                         observed_think,
                     )
                     .min(max_reserve_for_window)
+                    .min(model_max_output.saturating_sub(summary_text_max_tokens))
                 };
-                attempt_max_tokens = summary_text_max_tokens.saturating_add(attempt_reserve);
+                attempt_max_tokens = summary_text_max_tokens
+                    .saturating_add(attempt_reserve)
+                    .min(model_max_output);
                 self.services.emit_update(AgentUpdate::Info(format!(
                     "[compact continue {continuation_attempt}/{MAX_COMPACT_SUMMARY_ATTEMPTS}] summary truncated ({}), next attempt max_tokens={attempt_max_tokens}",
                     compact_truncation_note(
