@@ -791,6 +791,7 @@
 <li class="toc-l2"><a href="#38-2026-11-13--macos-%E7%AD%BE%E5%90%8D%E7%BC%BA%E5%A4%B1%E6%8B%A6%E4%BD%8F%E6%95%B4%E4%B8%AA%E5%8F%91%E5%B8%83" title="38. 2026-11-13 — macOS 签名缺失拦住整个发布"><span class="toc-label">38. 2026-11-13 — macOS 签名缺失拦住整个发布</span></a></li>
 <li class="toc-l2"><a href="#67-2026-11-15--acp-%E6%9C%AC%E5%9C%B0%E4%BD%9C%E7%AD%94%E7%9A%84-prompt-%E4%B8%8D-settle%E7%BA%BF%E7%A8%8B%E6%B0%B8%E8%BF%9C-working" title="67. 2026-11-15 — ACP：本地作答的 prompt 不 settle，T3 线程永远显示 Working"><span class="toc-label">67. 2026-11-15 — ACP：本地作答的 prompt 不 settle，T3 线程永远显示 Working</span></a></li>
 <li class="toc-l2"><a href="#68-2026-11-15--stats-%E5%9C%A8%E5%86%85%E6%A0%B8%E9%87%8D%E6%9E%84%E5%90%8E%E5%BD%92%E9%9B%B6%E6%89%80%E6%9C%89%E8%AE%A1%E6%95%B0%E6%90%AC%E5%9B%9E%E7%AB%AF%E5%8F%A3" title="68. 2026-11-15 — /stats 在 kernel 重构后归零：所有计数搬回端口"><span class="toc-label">68. 2026-11-15 — /stats 在 kernel 重构后归零：所有计数搬回端口</span></a></li>
+<li class="toc-l2"><a href="#69-2026-11-16--acp-%E5%9B%9E%E5%90%88%E8%BE%B9%E7%95%8C%E5%9B%9E%E6%94%BE%E4%B8%8E%E5%90%8E%E5%8F%B0%E5%AD%90%E4%BB%A3%E7%90%86%E7%9A%84%E5%8D%81%E4%B8%AA%E4%BF%AE%E5%A4%8D" title="69. 2026-11-16 — ACP：回合边界、回放与后台子代理的十个修复"><span class="toc-label">69. 2026-11-16 — ACP：回合边界、回放与后台子代理的十个修复</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -23727,6 +23728,52 @@ compaction 里那份手写的 <code>prompt_count</code>/<code>llm_call_durations
 （<code>with_stats</code>、<code>record_tool</code>）、
 <code>runtime/composition.rs</code>（两处接线）、<code>stats.rs</code>（未改动的
 结构）。</p>
+<hr />
+<h2 id="69-2026-11-16--acp-回合边界回放与后台子代理的十个修复">69. 2026-11-16 — ACP：回合边界、回放与后台子代理的十个修复</h2>
+<p><strong>现象：</strong>ACP 前端一次性补齐 fork、diff、background、
+compaction、session info 与回放后，代码审查发现十处会让 T3 看到错误状态或
+错误内容的问题：运行中再发 <code>/stats</code> 会立刻结束模型回合；后台子代理
+在父回合结束的瞬间被标成 cancelled 并失去后续输出；恢复会话时压缩摘要和
+hook/goal 上下文会变成用户气泡；文件工具的 diff 会声称文件只剩被编辑的片段；
+两张图片会互相覆盖；<code>/compact</code> 失败后客户端一直转圈；删除非活动
+会话会落到进程 cwd 的库。</p>
+<p><strong>根因：</strong>回合边界有两个所有者却没有区分：
+<code>forward_command</code> 对任何命令都置 <code>command_turn</code>，
+即使模型回合已经在跑，于是命令的读数或 750ms 兜底定时器会把
+<code>finish_turn</code> 提前叫到；而 <code>finish_turn</code> 又无条件
+drain 所有 <code>subagent_sessions</code>，把 <code>async_launched</code>
+子代理同样按 cancelled 收尾。回放侧只看 <code>message.role</code>，
+丢掉了 <code>MessageOrigin</code>，所以为模型保存的注入行全被当成用户输入；
+标题推导也直接取第一段文本，于是 T3 的 <code>&lt;t3_code_instructions&gt;</code>
+包裹成为 Native sessions 的标题。其余问题同源：展示层用参数伪造事实
+（diff、图片名），而不是读取真实文件或给它唯一身份。</p>
+<p><strong>决策：</strong>边界与事实都只留一个来源。命令只有在自己开启回合时
+才持有 <code>command_turn</code>；<code>finish_turn</code> 只取消非
+<code>detached</code> 的子会话，后台子代理留给 <code>SubagentFinished</code>。
+回放按 <code>origin.is_user_turn()</code>/<code>ToolResult</code> 过滤，
+用户文本先经共享的 <code>t3_user_request</code> 取出
+<code>&lt;user_request&gt;</code> 正文；会话标题复用同一解析。
+文件 diff 读取编辑前的工作区文件（<code>edit_file</code> 应用
+<code>old_text</code>/<code>new_text</code>，<code>write_file</code> 读取旧内容），
+再用前后缀上下文生成真实 unified patch；超过 2 MiB 或非 UTF-8 时宁可不画。
+图片名带 session 与 message id，不再用块序号。压缩失败在
+<code>AgentUpdate::Error</code> 与回合结束时补发 <code>failed</code>；
+空的后台快照不再发布状态；删除会话按 new/list/resume 记录的工作区定位。</p>
+<p><strong>验证：</strong><code>cargo test -p tact-acp</code> 31 个单元测试
+加 1 个端到端测试通过，新增
+<code>edit_diff_reads_the_file_instead_of_inventing_one</code>、
+<code>write_diff_shows_the_replaced_file_content</code>、
+<code>write_diff_marks_a_new_file_as_added</code> 与图片命名断言；
+<code>crates/tact/src/store/session_store/sqlite.rs</code> 新增
+<code>t3_instruction_wrapper_derives_the_user_request_as_title</code>。
+<code>scripts/check-rust.sh</code> 全量通过（含 book 检查）。</p>
+<p><strong>Pointers：</strong><code>crates/tact-acp/src/lib.rs</code>
+（<code>forward_command</code>、<code>finish_turn</code>、
+<code>replay_history</code>、<code>tool_diff</code>、<code>prompt_text</code>）、
+<code>crates/tact/src/store/session_store</code>
+（<code>t3_user_request</code>、标题推导）、
+<code>crates/tact-acp/README.md</code> 与
+<a href="../ARCHITECTURE.md">ARCHITECTURE.md</a> 的 ACP 段。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>

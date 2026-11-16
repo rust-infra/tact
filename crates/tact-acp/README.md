@@ -128,6 +128,21 @@ so importing a session a live host still holds (a running T3 thread, `tact-ui`,
   call streamed before finishing. Generic tools also send their text as
   `rawOutput`, which T3 renders directly instead of showing the ACP content
   envelope as JSON.
+- File tools report `ToolCallLocation`s, and `edit_file` / `write_file` attach a
+  `ToolCallContent::Diff` with renderable git-patch text.
+- Background tasks are reported as ACP terminals (`terminal_update` plus
+  `BackgroundWork`) and appear in every `state_update.background` snapshot;
+  detached subagents are listed there too.
+- The first prompt publishes a `session_info_update` title, and later turns
+  refresh its `updatedAt`. Usage updates carry the context window; cost is
+  omitted because Tact has no per-session cost source.
+- Compaction progress is sent as `compaction_update` (in-progress/completed/
+  failed) in addition to the existing notice text.
+- `session/fork` copies the durable transcript into a new session and resumes
+  it. `session/resume` with `replayFrom: start` reconstructs user/assistant
+  messages, thoughts, and tool calls/results before `replay_complete`.
+- Embedded text resources are accepted in prompts. Audio and binary embedded
+  resources remain unsupported.
 - `spawn_subagent` is announced as a standard ACP v2 child session through
   `subagent_update`, and the parent tool call carries a `Session` content
   reference. Child transcript entries are routed under the child session ID,
@@ -150,18 +165,14 @@ so importing a session a live host still holds (a running T3 thread, `tact-ui`,
 
 ## Not implemented yet
 
-- History replay on `session/resume`. The marker is emitted and the Tact
-  session context is resumed, but no transcript is reconstructed. T3 renders
-  reopened threads from its own projection and drops replay updates anyway.
-- `compaction_update` / `compaction_summary_chunk`. Compaction progress arrives
-  as an ordinary notice; a typed protocol event would need a new `AgentUpdate`
-  variant and a match arm in every frontend for a cosmetic card.
+- `compaction_summary_chunk` streaming. The complete summary stays in the
+  transcript; the lifecycle is reported through `compaction_update`.
 - A typed Goal surface. ACP has no Goal update, so Goals are notices; T3's
   native Goal commands are gated to its own drivers and never reach this
   adapter.
 - URL-based elicitation.
-- Audio and embedded-resource prompts (the agent does not advertise those
-  capabilities).
+- Audio and binary embedded-resource prompts.
+- Prompt suggestions and usage cost, which have no Tact data source.
 
 ## Design notes
 

@@ -9282,9 +9282,12 @@ version = "2.0.6"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
+ "base64 0.22.1",
+ "chrono",
  "clap",
  "serde_json",
  "tact",
+ "tact_agent_api",
  "tact_catalog",
  "tact_host",
  "tact_llm",
@@ -9293,6 +9296,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

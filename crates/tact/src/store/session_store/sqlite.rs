@@ -487,6 +487,7 @@ fn agent_message_text(message: &AgentMessage) -> String {
 }
 
 fn derive_session_title(text: &str) -> Option<String> {
+    let text = super::t3_user_request(text).unwrap_or(text);
     let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if normalized.is_empty() {
         return None;
@@ -2074,6 +2075,28 @@ mod tests {
             .await
             .unwrap();
         assert!(store.list_sessions(None).await.unwrap()[0].title.is_none());
+    }
+
+    #[tokio::test]
+    async fn t3_instruction_wrapper_derives_the_user_request_as_title() {
+        let (_tmp, store) = new_store_with_session("session").await;
+        let prompt = "<t3_code_instructions>\n## T3 Code interaction mode: Default\n\
+                      Make reasonable assumptions.\n</t3_code_instructions>\n\n\
+                      <user_request>\nFix the parser\n</user_request>\n\n\
+                      <runtime_info>You are running in T3 Code.</runtime_info>";
+        store
+            .append_agent_message(
+                "session",
+                &AgentMessage::text(AgentRole::User, MessageOrigin::User, prompt),
+                1,
+            )
+            .await
+            .unwrap();
+        let title = store.list_sessions(None).await.unwrap()[0]
+            .title
+            .clone()
+            .unwrap();
+        assert_eq!(title, "Fix the parser");
     }
 
     #[tokio::test]

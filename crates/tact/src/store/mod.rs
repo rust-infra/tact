@@ -33,7 +33,7 @@ mod test_support;
 pub mod worktree_store;
 pub use session_store::{
     ArchiveFilter, DynSessionStore, SessionListQuery, SessionLock, SessionStore, SessionSummary,
-    open_sqlite_session_store,
+    open_sqlite_session_store, t3_user_request,
 };
 
 /// Outcome of a successful write.

@@ -16,11 +16,14 @@ name = "tact_acp"
 path = "src/lib.rs"
 
 [dependencies]
-agent-client-protocol = { version = "5.3", default-features = false, features = ["stdio", "unstable_protocol_v2"] }
+agent-client-protocol = { version = "5.3", default-features = false, features = ["stdio", "unstable_protocol_v2", "unstable_session_fork"] }
 anyhow = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
 clap = { workspace = true }
 serde_json = { workspace = true }
 tact = { version = "2.0.0", path = "../tact" }
+tact_agent_api = { version = "2.0.6", path = "../agent_api" }
 tact_catalog = { version = "2.0.0", path = "../catalog" }
 tact_host = { version = "2.0.0", path = "../tact_host" }
 tact_llm = { version = "2.0.0", path = "../tact_llm", default-features = false, features = ["legacy-tact"] }
@@ -28,6 +31,7 @@ tact_protocol = { version = "2.0.0", path = "../protocol" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time", "net", "io-util"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 agent-client-protocol = { version = "5.3", default-features = false, features = ["stdio", "process", "unstable_protocol_v2"] }

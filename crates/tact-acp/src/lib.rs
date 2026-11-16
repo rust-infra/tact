@@ -22,18 +22,20 @@ use std::{
 
 use agent_client_protocol::v2::{ConnectionTo, Responder, schema};
 use agent_client_protocol::{Agent, Client, Error, Result as AcpResult, Stdio};
+use base64::Engine as _;
 use clap::Parser;
 use tact::config::CliArgs;
-use tact::store::{ArchiveFilter, SessionListQuery, open_sqlite_session_store};
+use tact::store::{ArchiveFilter, SessionListQuery, open_sqlite_session_store, t3_user_request};
 use tact::ui_responder::PendingUiRequestKind;
+use tact_agent_api::{AgentContentBlock, AgentRole, MessageOrigin, ToolResultStatus};
 use tact_host::{
     HostEvent, HostSession, HostSessionConfig, SessionLockRegistry, SessionSelection, TactPath,
     UserCommand,
 };
 use tact_protocol::{
-    AgentUpdate, GoalSnapshot, GoalStatusSnapshot, PermissionMode, StepResult, StepStatus,
-    TaskSnapshot, TaskStatusSnapshot, ThinkingChunk, ToolPresentationInfo, ToolVisualKind,
-    UiRequestPurpose, UiResponse,
+    AgentUpdate, BackgroundTaskSnapshot, BackgroundTaskStatusSnapshot, GoalSnapshot,
+    GoalStatusSnapshot, PermissionMode, StepResult, StepStatus, TaskSnapshot, TaskStatusSnapshot,
+    ThinkingChunk, ToolPresentationInfo, ToolVisualKind, UiRequestPurpose, UiResponse,
 };
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
@@ -103,13 +105,51 @@ pub async fn run() -> anyhow::Result<()> {
                                             .http(schema::McpHttpCapabilities::new()),
                                     )
                                     .delete(schema::SessionDeleteCapabilities::new())
+                                    .fork(schema::SessionForkCapabilities::new())
                                     .prompt(
                                         schema::PromptCapabilities::new()
-                                            .image(schema::PromptImageCapabilities::new()),
+                                            .image(schema::PromptImageCapabilities::new())
+                                            .embedded_context(
+                                                schema::PromptEmbeddedContextCapabilities::new(),
+                                            ),
                                     ),
                             ),
                         ),
                     )
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let manager = manager.clone();
+                async move |request: schema::ForkSessionRequest,
+                            responder: Responder<schema::ForkSessionResponse>,
+                            connection: ConnectionTo<Client>| {
+                    let mcp_servers = match session_mcp_servers(&request.mcp_servers) {
+                        Ok(servers) => servers,
+                        Err(error) => return responder.respond_with_error(error),
+                    };
+                    let fork_manager = manager.clone();
+                    let fork_connection = connection.clone();
+                    let cwd = request.cwd.0.clone();
+                    let session_id = request.session_id.clone();
+                    if connection
+                        .spawn(async move {
+                            match fork_manager
+                                .fork_session(cwd, session_id, fork_connection, mcp_servers)
+                                .await
+                            {
+                                Ok(response) => drop(responder.respond(response)),
+                                Err(error) => drop(responder.respond_with_error(error)),
+                            }
+                            Ok(())
+                        })
+                        .is_err()
+                    {
+                        debug!("failed to spawn session/fork task");
+                    }
+                    Ok(())
                 }
             },
             agent_client_protocol::on_receive_request!(),
@@ -280,7 +320,8 @@ pub async fn run() -> anyhow::Result<()> {
                         Ok(handle) => handle.cwd,
                         Err(error) => return responder.respond_with_error(error),
                     };
-                    let text = match prompt_text(&request.prompt, &cwd) {
+                    let image_stem = format!("{}-{}", session_id.0, message_id.0);
+                    let text = match prompt_text(&request.prompt, &cwd, &image_stem) {
                         Ok(text) => text,
                         Err(error) => return responder.respond_with_error(error),
                     };
@@ -349,6 +390,11 @@ struct SessionManager {
 
 struct ManagerInner {
     sessions: Mutex<HashMap<schema::SessionId, SessionHandle>>,
+    /// Workspace each session id was opened in. `session/delete` carries no
+    /// cwd, and a session that is no longer live has no handle to read one
+    /// from; this is the lookup that keeps the delete on the session's own
+    /// store instead of the process directory.
+    known_roots: Mutex<HashMap<schema::SessionId, PathBuf>>,
     lock_registry: Arc<SessionLockRegistry>,
     next_message: Arc<AtomicU64>,
     config_error: Option<String>,
@@ -388,6 +434,7 @@ impl SessionManager {
         Self {
             inner: Arc::new(ManagerInner {
                 sessions: Mutex::new(HashMap::new()),
+                known_roots: Mutex::new(HashMap::new()),
                 lock_registry,
                 next_message: Arc::new(AtomicU64::new(1)),
                 config_error,
@@ -514,6 +561,7 @@ impl SessionManager {
             }
             let options = self.config_options_of(&handle).await?;
             if replay {
+                replay_history(&connection, &handle.id, &handle.cwd).await?;
                 send_update(
                     &connection,
                     &handle.id,
@@ -553,6 +601,7 @@ impl SessionManager {
             )));
         }
         if replay {
+            replay_history(&connection, &session_id, &skill_cwd).await?;
             send_update(
                 &connection,
                 &session_id,
@@ -571,6 +620,57 @@ impl SessionManager {
         )?;
         send_update(&connection, &session_id, idle(None))?;
         Ok(schema::ResumeSessionResponse::new()
+            .config_options(options)
+            .available_commands(commands))
+    }
+
+    async fn fork_session(
+        &self,
+        cwd: PathBuf,
+        source_id: schema::SessionId,
+        connection: ConnectionTo<Client>,
+        mcp_servers: Vec<(String, tact::mcp::McpProjectConfig)>,
+    ) -> Result<schema::ForkSessionResponse, Error> {
+        self.ensure_config()?;
+        let tact_path = TactPath::new(cwd.clone());
+        let store = open_sqlite_session_store(&tact_path.session_db_path())
+            .await
+            .map_err(|error| internal(format!("failed to open session store: {error:#}")))?;
+        let messages = store
+            .load_agent_session(source_id.0.as_ref())
+            .await
+            .map_err(|error| internal(format!("failed to load source session: {error:#}")))?;
+        if messages.is_empty() {
+            return Err(invalid_params("session to fork has no stored transcript"));
+        }
+        let new_id = uuid::Uuid::new_v4().to_string();
+        store
+            .create_session(&new_id, &cwd.to_string_lossy(), source_id.0.as_ref())
+            .await
+            .map_err(|error| internal(format!("failed to create forked session: {error:#}")))?;
+        for (ordinal, message) in messages.iter().enumerate() {
+            store
+                .append_agent_message(&new_id, message, ordinal as i64)
+                .await
+                .map_err(|error| {
+                    internal(format!("failed to copy forked session message: {error:#}"))
+                })?;
+        }
+        let state = self.initial_state()?;
+        let options = state.config_options();
+        let skill_cwd = cwd.clone();
+        let actual = self
+            .start_host(
+                cwd,
+                connection,
+                SessionSelection::Resume(new_id.clone()),
+                state,
+                self.elicitation(),
+                mcp_servers,
+            )
+            .await?;
+        let commands = available_commands(&available_skills(&skill_cwd));
+        Ok(schema::ForkSessionResponse::new(actual)
             .config_options(options)
             .available_commands(commands))
     }
@@ -624,7 +724,7 @@ impl SessionManager {
         let (commands, command_rx) = mpsc::unbounded_channel();
         let handle = SessionHandle {
             id: session_id.clone(),
-            cwd,
+            cwd: cwd.clone(),
             commands: commands.clone(),
         };
         self.inner
@@ -632,9 +732,15 @@ impl SessionManager {
             .lock()
             .expect("session map poisoned")
             .insert(session_id.clone(), handle);
+        self.inner
+            .known_roots
+            .lock()
+            .expect("session roots poisoned")
+            .insert(session_id.clone(), cwd.clone());
         spawn_actor(
             host,
             session_id.clone(),
+            cwd.clone(),
             connection,
             commands,
             command_rx,
@@ -733,8 +839,18 @@ impl SessionManager {
                 self.close_session(session_id).await;
                 handle.cwd
             }
-            None => std::env::current_dir()
-                .map_err(|error| internal(format!("failed to resolve cwd: {error}")))?,
+            None => match self
+                .inner
+                .known_roots
+                .lock()
+                .expect("session roots poisoned")
+                .get(session_id)
+                .cloned()
+            {
+                Some(cwd) => cwd,
+                None => std::env::current_dir()
+                    .map_err(|error| internal(format!("failed to resolve cwd: {error}")))?,
+            },
         };
         let tact_path = TactPath::new(cwd);
         let store = open_sqlite_session_store(&tact_path.session_db_path())
@@ -743,7 +859,13 @@ impl SessionManager {
         store
             .delete_session(session_id.0.as_ref())
             .await
-            .map_err(|error| internal(format!("failed to delete session: {error:#}")))
+            .map_err(|error| internal(format!("failed to delete session: {error:#}")))?;
+        self.inner
+            .known_roots
+            .lock()
+            .expect("session roots poisoned")
+            .remove(session_id);
+        Ok(())
     }
 
     async fn list_sessions(&self, cwd: Option<PathBuf>) -> Result<Vec<schema::SessionInfo>, Error> {
@@ -765,6 +887,18 @@ impl SessionManager {
             })
             .await
             .map_err(|error| internal(format!("failed to list sessions: {error:#}")))?;
+        {
+            let mut roots = self
+                .inner
+                .known_roots
+                .lock()
+                .expect("session roots poisoned");
+            for summary in &summaries {
+                roots
+                    .entry(schema::SessionId::new(summary.id.clone()))
+                    .or_insert_with(|| cwd.clone());
+            }
+        }
         Ok(summaries
             .into_iter()
             .map(|summary| {
@@ -1169,6 +1303,7 @@ fn set_config_error(error: SetConfigFailure) -> Error {
 fn spawn_actor(
     host: HostSession,
     session_id: schema::SessionId,
+    cwd: PathBuf,
     connection: ConnectionTo<Client>,
     commands: mpsc::UnboundedSender<SessionCommand>,
     mut command_rx: mpsc::UnboundedReceiver<SessionCommand>,
@@ -1180,6 +1315,7 @@ fn spawn_actor(
         let mut actor = SessionActor {
             host,
             session_id,
+            cwd,
             connection,
             commands,
             next_message,
@@ -1192,6 +1328,10 @@ fn spawn_actor(
             open_tools: HashMap::new(),
             open_tool_output: HashMap::new(),
             subagent_sessions: HashMap::new(),
+            title_sent: false,
+            background_work: Vec::new(),
+            background_reported: false,
+            compaction_id: None,
             turn_saw_text: false,
             context_window: context_window(),
             last_plan: Vec::new(),
@@ -1320,6 +1460,7 @@ impl UiRequest {
 struct SessionActor {
     host: HostSession,
     session_id: schema::SessionId,
+    cwd: PathBuf,
     connection: ConnectionTo<Client>,
     commands: mpsc::UnboundedSender<SessionCommand>,
     next_message: Arc<AtomicU64>,
@@ -1348,6 +1489,10 @@ struct SessionActor {
     /// child sessions yet; standards-aware clients get the same conversation
     /// through these child session updates.
     subagent_sessions: HashMap<String, SubagentSession>,
+    title_sent: bool,
+    background_work: Vec<schema::BackgroundWork>,
+    background_reported: bool,
+    compaction_id: Option<schema::CompactionId>,
     turn_saw_text: bool,
     /// The context window to report with usage. The window is configuration,
     /// not an event, so it is read once at session start.
@@ -1368,6 +1513,7 @@ struct SubagentSession {
     id: schema::SessionId,
     assistant_message: schema::MessageId,
     thought_message: schema::MessageId,
+    detached: bool,
 }
 
 impl SessionActor {
@@ -1591,6 +1737,9 @@ impl SessionActor {
                     &text,
                 )));
             }
+            AgentUpdate::BackgroundTasksChanged { tasks } => {
+                self.publish_background_tasks(&tasks);
+            }
             AgentUpdate::TaskComplete(summary) => {
                 self.finish_turn(schema::StopReason::EndTurn, Some(summary));
             }
@@ -1601,10 +1750,15 @@ impl SessionActor {
                 self.finish_turn(schema::StopReason::EndTurn, None);
             }
             AgentUpdate::Error(kind) => {
+                // The driver reports a failed `/compact` as an error, not as
+                // an info line, so the typed compaction state has to inspect
+                // this text too or it would stay `in_progress` for the client.
+                let text = kind.to_string();
+                self.handle_compaction_progress(&text);
                 self.notice(
                     schema::NoticeSeverity::Error,
                     "Tact turn failed",
-                    Some(kind.to_string()),
+                    Some(text),
                 );
                 if self.state.model.sent.is_some() {
                     // The runtime rejected the model handed to it. Withdraw the
@@ -1669,6 +1823,7 @@ impl SessionActor {
                 kind: UiRequestKind::Multi,
             }),
             AgentUpdate::Info(text) | AgentUpdate::MdInfo(text) => {
+                self.handle_compaction_progress(&text);
                 self.notice(schema::NoticeSeverity::Info, "Tact", Some(text));
             }
             // Commands the host answers as a read-out rather than a turn:
@@ -2132,6 +2287,7 @@ impl SessionActor {
     /// unrecognized one is forwarded as ordinary text: losing a typo silently
     /// would be worse than letting the model see it.
     fn handle_prompt(&mut self, text: String) {
+        self.maybe_send_session_info(&text);
         let command = match wrapped_user_request(&text) {
             // T3 only skips its instruction wrapper for prompts starting with
             // `/`, so a `$skill` as a thread's first turn arrives wrapped. Only
@@ -2303,7 +2459,12 @@ impl SessionActor {
     }
 
     fn forward_command(&mut self, command: UserCommand, arm_settle_timer: bool) {
-        if !self.state.phase.is_running() {
+        // A command is a turn only when it is the prompt that started one. A
+        // slash command sent while a model turn runs is a side read-out: it
+        // must not claim that turn's boundary, or its answer (or the timer
+        // below) would send an idle while the model is still working.
+        let owns_turn = !self.state.phase.is_running();
+        if owns_turn {
             self.state.phase = TurnPhase::Running;
             self.send(running());
         }
@@ -2327,8 +2488,13 @@ impl SessionActor {
         // are delivered at arbitrary times and would otherwise close the turn
         // before the answer reached the client. A command that produces no
         // answer at all settles on the fallback below.
-        self.command_turn = true;
-        if !arm_settle_timer {
+        // Leave an existing command turn's ownership untouched: a second
+        // slash command issued while `/compact` is still running must not
+        // clear the flag that will close the compaction turn.
+        if owns_turn {
+            self.command_turn = true;
+        }
+        if !arm_settle_timer || !owns_turn {
             return;
         }
         let commands = self.commands.clone();
@@ -2432,6 +2598,146 @@ impl SessionActor {
         ));
     }
 
+    fn publish_background_tasks(&mut self, tasks: &[BackgroundTaskSnapshot]) {
+        for task in tasks {
+            let terminal_id = schema::TerminalId::new(format!("tact-bg-{}", task.id));
+            let mut update = schema::TerminalUpdate::new(terminal_id.clone())
+                .command(task.command.clone())
+                .cwd(self.cwd.clone())
+                .output(schema::TerminalOutput::new(
+                    base64::engine::general_purpose::STANDARD.encode(task.output_tail.as_bytes()),
+                ));
+            match task.status {
+                BackgroundTaskStatusSnapshot::Running => {}
+                BackgroundTaskStatusSnapshot::Completed => {
+                    update =
+                        update.exit_status(schema::TerminalExitStatus::new().exit_code(Some(0)));
+                }
+                BackgroundTaskStatusSnapshot::Error => {
+                    update =
+                        update.exit_status(schema::TerminalExitStatus::new().exit_code(Some(1)));
+                }
+            }
+            self.send(schema::SessionUpdate::TerminalUpdate(update));
+        }
+        let work = background_work_for(tasks);
+        let changed = work != self.background_work;
+        self.background_work = work;
+        self.background_reported = true;
+        // The host emits an empty snapshot at startup. Publishing it would
+        // send `idle` before any turn ran, which the client reads as a second
+        // turn boundary; only an actual list change (or a live turn) needs a
+        // state update.
+        if changed || self.state.phase.is_running() {
+            self.publish_current_state();
+        }
+    }
+
+    fn background_snapshot(&self) -> Vec<schema::BackgroundWork> {
+        let mut work = self.background_work.clone();
+        for session in self
+            .subagent_sessions
+            .values()
+            .filter(|session| session.detached)
+        {
+            work.push(schema::BackgroundWork::Subagent(
+                schema::BackgroundSubagent::new(session.id.clone()),
+            ));
+        }
+        work
+    }
+
+    fn publish_current_state(&self) {
+        if !self.background_reported {
+            return;
+        }
+        if self.state.phase.is_running() {
+            self.send(running());
+        } else {
+            self.send(idle(None));
+        }
+    }
+
+    fn handle_compaction_progress(&mut self, text: &str) {
+        let lower = text.to_ascii_lowercase();
+        let started = text.contains("[compacting]")
+            || text.starts_with("[compact")
+            || lower.contains("compaction started");
+        let completed = lower.contains("compaction complete");
+        let failed = lower.contains("compaction failed") || lower.contains("compact failed");
+        if !started && !completed && !failed {
+            return;
+        }
+        let id = self
+            .compaction_id
+            .clone()
+            .unwrap_or_else(|| schema::CompactionId::new(self.next_id("compaction").0.to_string()));
+        self.compaction_id = Some(id.clone());
+        let status = if completed {
+            schema::CompactionStatus::Completed
+        } else if failed {
+            schema::CompactionStatus::Failed
+        } else {
+            schema::CompactionStatus::InProgress
+        };
+        let mut update = schema::CompactionUpdate::new(id, status);
+        if failed {
+            update = update.error(text.to_string());
+        }
+        self.send(schema::SessionUpdate::CompactionUpdate(update));
+        if completed || failed {
+            self.compaction_id = None;
+            self.compacting = false;
+        }
+    }
+
+    fn with_background(&self, update: schema::SessionUpdate) -> schema::SessionUpdate {
+        if !self.background_reported {
+            return update;
+        }
+        let work = self.background_snapshot();
+        match update {
+            schema::SessionUpdate::StateUpdate(schema::StateUpdate::Running(state)) => {
+                schema::SessionUpdate::StateUpdate(schema::StateUpdate::Running(
+                    state.background(work),
+                ))
+            }
+            schema::SessionUpdate::StateUpdate(schema::StateUpdate::Idle(state)) => {
+                schema::SessionUpdate::StateUpdate(schema::StateUpdate::Idle(
+                    state.background(work),
+                ))
+            }
+            schema::SessionUpdate::StateUpdate(schema::StateUpdate::RequiresAction(state)) => {
+                schema::SessionUpdate::StateUpdate(schema::StateUpdate::RequiresAction(
+                    state.background(work),
+                ))
+            }
+            schema::SessionUpdate::StateUpdate(schema::StateUpdate::Unknown(state)) => {
+                schema::SessionUpdate::StateUpdate(schema::StateUpdate::Unknown(
+                    state.background(work),
+                ))
+            }
+            other => other,
+        }
+    }
+
+    fn maybe_send_session_info(&mut self, text: &str) {
+        if self.title_sent {
+            return;
+        }
+        let body = wrapped_user_request(text).unwrap_or(text);
+        let title = first_line(body, 80);
+        if title.trim().is_empty() {
+            return;
+        }
+        self.title_sent = true;
+        self.send(schema::SessionUpdate::SessionInfoUpdate(
+            schema::SessionInfoUpdate::new()
+                .title(title)
+                .updated_at(now_rfc3339()),
+        ));
+    }
+
     fn send_on(&self, session_id: &schema::SessionId, update: schema::SessionUpdate) {
         if let Err(error) = send_update(&self.connection, session_id, update) {
             debug!(%self.session_id, %session_id, %error, "failed to send child session update");
@@ -2484,6 +2790,7 @@ impl SessionActor {
                 id: id.clone(),
                 assistant_message: schema::MessageId::new(format!("{}:assistant", id.0)),
                 thought_message: schema::MessageId::new(format!("{}:thought", id.0)),
+                detached: false,
             },
         );
         Some(id)
@@ -2502,26 +2809,51 @@ impl SessionActor {
         );
     }
 
-    fn forward_subagent_entry(&self, tool_id: &str, entry: tact_protocol::SubagentTranscriptEntry) {
-        let Some(session) = self.subagent_sessions.get(tool_id) else {
+    fn forward_subagent_entry(
+        &mut self,
+        tool_id: &str,
+        entry: tact_protocol::SubagentTranscriptEntry,
+    ) {
+        let Some((child, assistant_message, thought_message)) =
+            self.subagent_sessions.get(tool_id).map(|session| {
+                (
+                    session.id.clone(),
+                    session.assistant_message.clone(),
+                    session.thought_message.clone(),
+                )
+            })
+        else {
             return;
         };
-        let child = session.id.clone();
         match entry {
-            tact_protocol::SubagentTranscriptEntry::Assistant(text) => self.send_on(
-                &child,
-                schema::SessionUpdate::AgentMessage(
-                    schema::AgentMessage::new(session.assistant_message.clone())
-                        .content(vec![text.into()]),
-                ),
-            ),
-            tact_protocol::SubagentTranscriptEntry::Thinking { text, .. } => self.send_on(
-                &child,
-                schema::SessionUpdate::AgentThought(
-                    schema::AgentThought::new(session.thought_message.clone())
-                        .content(vec![text.into()]),
-                ),
-            ),
+            tact_protocol::SubagentTranscriptEntry::Assistant(text) => {
+                self.send_on(
+                    &child,
+                    schema::SessionUpdate::AgentMessage(
+                        schema::AgentMessage::new(assistant_message).content(vec![text.into()]),
+                    ),
+                );
+                // `agent_message` replaces content by id. A child that runs
+                // more than one model turn (any tool use) would otherwise
+                // overwrite its earlier answer, so the next turn gets a fresh
+                // id while this one keeps the streamed snapshot's id.
+                let next = self.next_id("child-assistant");
+                if let Some(session) = self.subagent_sessions.get_mut(tool_id) {
+                    session.assistant_message = next;
+                }
+            }
+            tact_protocol::SubagentTranscriptEntry::Thinking { text, .. } => {
+                self.send_on(
+                    &child,
+                    schema::SessionUpdate::AgentThought(
+                        schema::AgentThought::new(thought_message).content(vec![text.into()]),
+                    ),
+                );
+                let next = self.next_id("child-thought");
+                if let Some(session) = self.subagent_sessions.get_mut(tool_id) {
+                    session.thought_message = next;
+                }
+            }
             tact_protocol::SubagentTranscriptEntry::Step(step) => {
                 let status = match step.status {
                     tact_protocol::SubagentStepStatus::Running => {
@@ -2609,10 +2941,15 @@ impl SessionActor {
             .filter(|detail| !detail.trim().is_empty())
             .unwrap_or(&result.message)
             .to_string();
-        if !final_text.trim_start().starts_with("async_launched")
-            && self.subagent_sessions.contains_key(tool_id)
-        {
+        let detached = final_text.trim_start().starts_with("async_launched");
+        if detached && let Some(session) = self.subagent_sessions.get_mut(tool_id) {
+            session.detached = true;
+        }
+        if !detached && self.subagent_sessions.contains_key(tool_id) {
             self.finish_subagent(tool_id, result.status == StepStatus::Success, &final_text);
+        }
+        if detached {
+            self.publish_current_state();
         }
         let text = combined_tool_text(&progress, &final_text);
         self.send(schema::SessionUpdate::ToolCallUpdate(finish_tool_update(
@@ -2641,6 +2978,14 @@ impl SessionActor {
             arg_summary.to_string()
         };
         let kind = tool_kind(tool_name, presentation);
+        // Only the pre-execution updates see the file as it was before the
+        // tool ran. Recomputing a diff on a terminal update of a child step
+        // would diff the already-edited file against the same arguments and
+        // describe an edit that is not going to happen.
+        let show_diff = matches!(
+            &status,
+            schema::ToolCallStatus::Pending | schema::ToolCallStatus::InProgress
+        );
         let mut update = schema::ToolCallUpdate::new(tool_id.to_string())
             .name(tool_name.to_string())
             .title(title)
@@ -2660,6 +3005,12 @@ impl SessionActor {
             // same text truncated, so clients that expand only when `rawInput`
             // is present had nothing to open.
             update = update.raw_input(serde_json::json!({ "prompt": arg_full }));
+        }
+        if let Some(path) = tool_path(tool_name, arg_full, presentation, &self.cwd) {
+            update = update.locations(vec![schema::ToolCallLocation::new(path.clone())]);
+            if show_diff && let Some(diff) = tool_diff(&path, tool_name, arg_full) {
+                update = update.content(vec![schema::ToolCallContent::Diff(diff)]);
+            }
         }
         if let Some(content) = content {
             update = update.content(vec![text_tool_content(content)]);
@@ -2718,6 +3069,15 @@ impl SessionActor {
     /// The only emitter of idle. Gated on `Running`, so a late completion or a
     /// cancel on an idle session cannot produce a second turn boundary.
     fn finish_turn(&mut self, stop_reason: schema::StopReason, fallback_text: Option<String>) {
+        // A turn that ends while its summary is still open must not leave the
+        // client's compaction card spinning forever.
+        if let Some(id) = self.compaction_id.take() {
+            self.compacting = false;
+            self.send(schema::SessionUpdate::CompactionUpdate(
+                schema::CompactionUpdate::new(id, schema::CompactionStatus::Failed)
+                    .error("compaction did not finish before the turn ended"),
+            ));
+        }
         self.finalize_agent_message();
         self.finalize_thought();
         if !self.turn_saw_text
@@ -2735,12 +3095,21 @@ impl SessionActor {
                 update.status(schema::ToolCallStatus::Cancelled),
             ));
         }
-        let children: Vec<SubagentSession> = self
+        // A detached child outlives the turn that launched it (`async_launched`
+        // is precisely "the parent may stop waiting now"). Cancelling it here
+        // would report a still-running background subagent as cancelled and
+        // drop every transcript update that follows; only synchronous children
+        // are closed with their turn.
+        let finished: Vec<String> = self
             .subagent_sessions
-            .drain()
-            .map(|(_, session)| session)
+            .iter()
+            .filter(|(_, session)| !session.detached)
+            .map(|(tool_id, _)| tool_id.clone())
             .collect();
-        for child in children {
+        for tool_id in finished {
+            let Some(child) = self.subagent_sessions.remove(&tool_id) else {
+                continue;
+            };
             self.send(schema::SessionUpdate::SubagentUpdate(
                 schema::SubagentUpdate::new(child.id).state(schema::StateUpdate::Idle(
                     schema::IdleStateUpdate::new().stop_reason(Some(schema::StopReason::Cancelled)),
@@ -2749,6 +3118,11 @@ impl SessionActor {
         }
         self.open_tool_output.clear();
         self.turn_saw_text = false;
+        if self.title_sent {
+            self.send(schema::SessionUpdate::SessionInfoUpdate(
+                schema::SessionInfoUpdate::new().updated_at(now_rfc3339()),
+            ));
+        }
         if self.state.phase.is_running() {
             self.send(idle(Some(stop_reason)));
             self.state.phase = TurnPhase::Idle;
@@ -2762,6 +3136,7 @@ impl SessionActor {
     }
 
     fn send(&self, update: schema::SessionUpdate) {
+        let update = self.with_background(update);
         if let Err(error) = send_update(&self.connection, &self.session_id, update) {
             debug!(%self.session_id, %error, "failed to send ACP update");
         }
@@ -2872,6 +3247,21 @@ fn text_tool_content(text: impl Into<String>) -> schema::ToolCallContent {
     schema::ToolCallContent::Content(Box::new(schema::Content::new(text.into())))
 }
 
+fn now_rfc3339() -> String {
+    chrono::Utc::now().to_rfc3339()
+}
+
+fn background_work_for(tasks: &[BackgroundTaskSnapshot]) -> Vec<schema::BackgroundWork> {
+    tasks
+        .iter()
+        .map(|task| {
+            schema::BackgroundWork::Terminal(schema::BackgroundTerminal::new(
+                schema::TerminalId::new(format!("tact-bg-{}", task.id)),
+            ))
+        })
+        .collect()
+}
+
 /// Cap retained tool progress so a chatty subagent cannot grow one session's
 /// adapter memory without bound. The client already saw the full live stream.
 const TOOL_TEXT_CAP: usize = 64 * 1024;
@@ -2912,7 +3302,9 @@ fn finish_tool_update(
     if text.trim().is_empty() {
         return update;
     }
-    update = update.content(vec![text_tool_content(text)]);
+    let mut content = update.content.value().cloned().unwrap_or_default();
+    content.push(text_tool_content(text));
+    update = update.content(content);
     if matches!(update.kind.value(), Some(schema::ToolKind::Other)) {
         update = update.raw_output(serde_json::Value::String(text.to_string()));
     }
@@ -2926,7 +3318,11 @@ fn finish_tool_update(
 /// reads with `read_image`, so an ACP image block becomes a saved file plus a
 /// markdown reference to it: no base64 crosses the protocol boundary twice,
 /// and a prompt image behaves exactly like one the user attached in the TUI.
-fn prompt_text(blocks: &[schema::ContentBlock], work_dir: &Path) -> Result<String, Error> {
+fn prompt_text(
+    blocks: &[schema::ContentBlock],
+    work_dir: &Path,
+    image_stem: &str,
+) -> Result<String, Error> {
     if blocks.is_empty() {
         return Err(invalid_params("prompt must not be empty"));
     }
@@ -2940,8 +3336,21 @@ fn prompt_text(blocks: &[schema::ContentBlock], work_dir: &Path) -> Result<Strin
                 link.uri
             )),
             schema::ContentBlock::Image(image) => {
-                parts.push(write_prompt_image(image, index, work_dir)?);
+                parts.push(write_prompt_image(image, index, work_dir, image_stem)?);
             }
+            schema::ContentBlock::Resource(resource) => match &resource.resource {
+                schema::EmbeddedResourceResource::TextResourceContents(text) => {
+                    parts.push(text.text.clone());
+                }
+                schema::EmbeddedResourceResource::BlobResourceContents(_) => {
+                    return Err(invalid_params(
+                        "embedded binary resources are not supported; send text or an image",
+                    ));
+                }
+                _ => {
+                    return Err(invalid_params("unsupported embedded resource payload"));
+                }
+            },
             schema::ContentBlock::Audio(_) => {
                 return Err(invalid_params(
                     "this agent does not accept audio prompt content",
@@ -2949,7 +3358,7 @@ fn prompt_text(blocks: &[schema::ContentBlock], work_dir: &Path) -> Result<Strin
             }
             _ => {
                 return Err(invalid_params(
-                    "this agent only supports text, resource_link, and image prompt content",
+                    "this agent only supports text, resource_link, embedded text, and image prompt content",
                 ));
             }
         }
@@ -2966,6 +3375,7 @@ fn write_prompt_image(
     image: &schema::ImageContent,
     index: usize,
     work_dir: &Path,
+    image_stem: &str,
 ) -> Result<String, Error> {
     let extension = match image.mime_type.0.as_ref() {
         "image/png" => "png",
@@ -2983,7 +3393,26 @@ fn write_prompt_image(
     let dir = work_dir.join(ACP_IMAGE_DIR);
     std::fs::create_dir_all(&dir)
         .map_err(|error| internal(format!("failed to create image directory: {error}")))?;
-    let name = format!("prompt-{index}.{extension}");
+    // Per prompt, not per block index: the directory is shared by every turn
+    // and every session in the workspace, so `prompt-0.png` would be
+    // overwritten by the next image and a transcript reference would silently
+    // change meaning.
+    let stem = image_stem
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let stem = if stem.is_empty() {
+        "prompt".to_string()
+    } else {
+        stem
+    };
+    let name = format!("{stem}-{index}.{extension}");
     std::fs::write(dir.join(&name), bytes)
         .map_err(|error| internal(format!("failed to write prompt image: {error}")))?;
     Ok(format!("![prompt image]({ACP_IMAGE_DIR}/{name})"))
@@ -3047,6 +3476,152 @@ fn tool_kind(tool_name: &str, presentation: &ToolPresentationInfo) -> schema::To
             }
         }
     }
+}
+
+fn tool_path(
+    tool_name: &str,
+    arg_full: &str,
+    presentation: &ToolPresentationInfo,
+    cwd: &Path,
+) -> Option<PathBuf> {
+    let file_tool = matches!(
+        presentation.visual_kind,
+        ToolVisualKind::FileRead | ToolVisualKind::FileWrite | ToolVisualKind::FileEdit
+    ) || matches!(
+        tool_name,
+        "read_file" | "read_image" | "write_file" | "edit_file" | "grep" | "glob"
+    );
+    if !file_tool {
+        return None;
+    }
+    let raw = parse_json(arg_full)?;
+    let path = raw
+        .get("path")
+        .or_else(|| raw.get("file_path"))
+        .or_else(|| raw.get("file"))?
+        .as_str()?;
+    let path = Path::new(path);
+    Some(if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    })
+}
+
+fn tool_diff(path: &Path, tool_name: &str, arg_full: &str) -> Option<schema::Diff> {
+    let raw = parse_json(arg_full)?;
+    let (old, new) = match tool_name {
+        "edit_file" => {
+            // The file is still pre-edit when this runs (queued/started), so
+            // the real content is the old side. Building a patch from
+            // `old_text` alone would claim the rest of the file was deleted.
+            let original = std::fs::read_to_string(path).ok()?;
+            let old_text = raw.get("old_text")?.as_str()?;
+            let new_text = raw.get("new_text")?.as_str()?;
+            if old_text.is_empty() || !original.contains(old_text) {
+                return None;
+            }
+            let replace_all = raw
+                .get("replace_all")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let updated = if replace_all {
+                original.replace(old_text, new_text)
+            } else {
+                original.replacen(old_text, new_text, 1)
+            };
+            (original, updated)
+        }
+        "write_file" => {
+            let new = raw.get("content")?.as_str()?.to_string();
+            let old = match std::fs::read(path) {
+                Ok(bytes) => String::from_utf8(bytes).ok()?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+                Err(_) => return None,
+            };
+            (old, new)
+        }
+        _ => return None,
+    };
+    if old == new {
+        return None;
+    }
+    // A diff is a preview, not the edit. Spending megabytes of memory on a
+    // pathological file to render it is worse than omitting the preview.
+    const MAX_DIFF_BYTES: usize = 2 * 1024 * 1024;
+    if old.len() > MAX_DIFF_BYTES || new.len() > MAX_DIFF_BYTES {
+        return None;
+    }
+    let patch = unified_patch(path, &old, &new);
+    let change = if old.is_empty() {
+        schema::DiffChange::add(schema::AbsolutePath::new(path.to_path_buf()))
+    } else {
+        schema::DiffChange::modify(schema::AbsolutePath::new(path.to_path_buf()))
+    };
+    Some(schema::Diff::patch(patch, vec![change]))
+}
+
+/// A unified patch between two complete file contents.
+///
+/// One hunk spans the changed middle: leading and trailing lines that match
+/// are used as context, and any unchanged lines between two changes are shown
+/// as removed and re-added. That is valid, if not minimal, and never claims
+/// lines outside the file exist.
+fn unified_patch(path: &Path, old: &str, new: &str) -> String {
+    let display = path.to_string_lossy();
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+    let mut patch = format!("diff --git a/{display} b/{display}\n");
+    if old.is_empty() {
+        patch.push_str(&format!(
+            "--- /dev/null\n+++ b/{display}\n@@ -0,0 +1,{} @@\n",
+            new_lines.len()
+        ));
+        for line in &new_lines {
+            patch.push('+');
+            patch.push_str(line);
+            patch.push('\n');
+        }
+        return patch;
+    }
+
+    let prefix = old_lines
+        .iter()
+        .zip(&new_lines)
+        .take_while(|(old, new)| old == new)
+        .count();
+    let common = old_lines.len().min(new_lines.len());
+    let max_suffix = common.saturating_sub(prefix);
+    let mut suffix = 0;
+    while suffix < max_suffix
+        && old_lines[old_lines.len() - 1 - suffix] == new_lines[new_lines.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+
+    const CONTEXT: usize = 3;
+    let start = prefix.saturating_sub(CONTEXT);
+    let tail = CONTEXT.min(suffix);
+    let old_end = old_lines.len() - suffix + tail;
+    let new_end = new_lines.len() - suffix + tail;
+    let old_count = old_end - start;
+    let new_count = new_end - start;
+    patch.push_str(&format!(
+        "--- a/{display}\n+++ b/{display}\n@@ -{},{old_count} +{},{new_count} @@\n",
+        start + 1,
+        start + 1
+    ));
+    for line in &old_lines[start..old_end] {
+        patch.push('-');
+        patch.push_str(line);
+        patch.push('\n');
+    }
+    for line in &new_lines[start..new_end] {
+        patch.push('+');
+        patch.push_str(line);
+        patch.push('\n');
+    }
+    patch
 }
 
 /// A no-argument tool serializes as `{}` (or another empty JSON container).
@@ -3236,13 +3811,7 @@ enum SlashCommand {
 /// T3's, not ACP's: a client that sends the body bare must work exactly the
 /// same, which is what makes this a probe rather than a protocol rule.
 fn wrapped_user_request(text: &str) -> Option<&str> {
-    let text = text.trim_start();
-    if !text.starts_with("<t3_code_instructions>") {
-        return None;
-    }
-    let body = text.split_once("<user_request>")?.1;
-    let body = body.split_once("</user_request>")?.0;
-    Some(body.trim())
+    t3_user_request(text)
 }
 
 fn goal_usage() -> String {
@@ -3485,6 +4054,132 @@ fn session_mcp_servers(
         .collect()
 }
 
+async fn replay_history(
+    connection: &ConnectionTo<Client>,
+    session_id: &schema::SessionId,
+    cwd: &Path,
+) -> Result<(), Error> {
+    let tact_path = TactPath::new(cwd.to_path_buf());
+    let store = open_sqlite_session_store(&tact_path.session_db_path())
+        .await
+        .map_err(|error| internal(format!("failed to open session store: {error:#}")))?;
+    let messages = store
+        .load_agent_session(session_id.0.as_ref())
+        .await
+        .map_err(|error| internal(format!("failed to load replay history: {error:#}")))?;
+    for (index, message) in messages.iter().enumerate() {
+        // Only the two turns a person sees are replayed. Compaction summaries,
+        // hook/goal context, continuations and subagent results are stored as
+        // `User` rows so the model sees them in order, but they are not
+        // user-typed turns; replaying them would put fake bubbles in the
+        // client's transcript. Tool results still flow through the block loop
+        // because they complete the tool calls replayed just before them.
+        let replayable = match message.role {
+            AgentRole::User => {
+                message.origin.is_user_turn() || message.origin == MessageOrigin::ToolResult
+            }
+            AgentRole::Assistant => true,
+        };
+        if !replayable {
+            continue;
+        }
+        // T3 wraps the first prompt in instruction/runtime blocks. Replay
+        // shows what the user typed, not the envelope the model needed.
+        let unwrapped = if message.origin.is_user_turn() {
+            message
+                .content
+                .iter()
+                .find_map(|block| match block {
+                    AgentContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .and_then(t3_user_request)
+                .map(str::to_string)
+        } else {
+            None
+        };
+        let mut used_unwrapped = false;
+        let mut content = Vec::new();
+        for (block_index, block) in message.content.iter().enumerate() {
+            match block {
+                AgentContentBlock::Text { text } => {
+                    if let Some(body) = &unwrapped {
+                        if !used_unwrapped {
+                            content.push(body.clone().into());
+                            used_unwrapped = true;
+                        }
+                    } else {
+                        content.push(text.clone().into());
+                    }
+                }
+                AgentContentBlock::Image { source } => content.push(schema::ContentBlock::Image(
+                    schema::ImageContent::new(source.data.clone(), source.media_type.clone()),
+                )),
+                AgentContentBlock::Thinking { thinking, .. } => {
+                    let id =
+                        schema::MessageId::new(format!("replay-{index}-thought-{block_index}"));
+                    send_update(
+                        connection,
+                        session_id,
+                        schema::SessionUpdate::AgentThought(
+                            schema::AgentThought::new(id).content(vec![thinking.clone().into()]),
+                        ),
+                    )?;
+                }
+                AgentContentBlock::ToolUse { id, name, input } => {
+                    let update = schema::ToolCallUpdate::new(id.clone())
+                        .name(name.clone())
+                        .title(first_line(&input.to_string(), 120))
+                        .kind(schema::ToolKind::Other)
+                        .status(schema::ToolCallStatus::Pending)
+                        .raw_input(input.clone());
+                    send_update(
+                        connection,
+                        session_id,
+                        schema::SessionUpdate::ToolCallUpdate(update),
+                    )?;
+                }
+                AgentContentBlock::ToolResult {
+                    tool_use_id,
+                    content: result,
+                    status,
+                } => {
+                    let status = match status {
+                        ToolResultStatus::Success => schema::ToolCallStatus::Completed,
+                        ToolResultStatus::Failed => schema::ToolCallStatus::Failed,
+                        ToolResultStatus::Cancelled => schema::ToolCallStatus::Cancelled,
+                        ToolResultStatus::Unknown => schema::ToolCallStatus::Completed,
+                    };
+                    send_update(
+                        connection,
+                        session_id,
+                        schema::SessionUpdate::ToolCallUpdate(finish_tool_update(
+                            schema::ToolCallUpdate::new(tool_use_id.clone()),
+                            status,
+                            result,
+                        )),
+                    )?;
+                }
+                AgentContentBlock::RedactedThinking { .. } => {}
+            }
+        }
+        if content.is_empty() {
+            continue;
+        }
+        let id = schema::MessageId::new(format!("replay-{index}-message"));
+        let update = match message.role {
+            AgentRole::User => {
+                schema::SessionUpdate::UserMessage(schema::UserMessage::new(id).content(content))
+            }
+            AgentRole::Assistant => {
+                schema::SessionUpdate::AgentMessage(schema::AgentMessage::new(id).content(content))
+            }
+        };
+        send_update(connection, session_id, update)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3622,7 +4317,7 @@ mod tests {
             schema::ContentBlock::ResourceLink(schema::ResourceLink::new("file", "file:///tmp/a")),
         ];
         assert_eq!(
-            prompt_text(&blocks, dir.path()).expect("baseline blocks should be accepted"),
+            prompt_text(&blocks, dir.path(), "test").expect("baseline blocks should be accepted"),
             "hello\n\n[file](file:///tmp/a)"
         );
     }
@@ -3634,9 +4329,13 @@ mod tests {
             "aGVsbG8=",
             "image/png",
         ))];
-        let text = prompt_text(&blocks, dir.path()).expect("image blocks are accepted");
-        assert_eq!(text, "![prompt image](.tact-acp-images/prompt-0.png)");
-        let saved = std::fs::read(dir.path().join(ACP_IMAGE_DIR).join("prompt-0.png"))
+        let text =
+            prompt_text(&blocks, dir.path(), "session-user-1").expect("image blocks are accepted");
+        assert_eq!(
+            text,
+            "![prompt image](.tact-acp-images/session-user-1-0.png)"
+        );
+        let saved = std::fs::read(dir.path().join(ACP_IMAGE_DIR).join("session-user-1-0.png"))
             .expect("the image is written into the workspace");
         assert_eq!(saved, b"hello");
     }
@@ -3648,7 +4347,7 @@ mod tests {
             "AAAA",
             "audio/wav",
         ))];
-        let error = prompt_text(&blocks, dir.path()).expect_err("audio is not advertised");
+        let error = prompt_text(&blocks, dir.path(), "test").expect_err("audio is not advertised");
         assert_eq!(error.code, agent_client_protocol::ErrorCode::INVALID_PARAMS);
     }
 
@@ -3658,6 +4357,79 @@ mod tests {
         assert_eq!(base64_decode("aGk=").expect("decode"), b"hi");
         assert_eq!(base64_decode("").expect("decode"), b"");
         assert!(base64_decode("!!!!").is_err());
+    }
+
+    #[test]
+    fn edit_diff_reads_the_file_instead_of_inventing_one() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("notes.txt");
+        std::fs::write(&path, "one\ntwo\nthree\nfour\nfive\n").expect("seed file");
+        let args = serde_json::json!({
+            "path": "notes.txt",
+            "old_text": "two",
+            "new_text": "TWO",
+        })
+        .to_string();
+
+        let diff = tool_diff(&path, "edit_file", &args).expect("an existing edit has a diff");
+        assert!(matches!(
+            diff.changes[0].operation,
+            schema::DiffChangeOperation::Modify(_)
+        ));
+        let patch = diff.patch.expect("patch text").text;
+        assert!(patch.contains("@@ -1,5 +1,5 @@"), "{patch}");
+        assert!(
+            patch.contains("-one\n"),
+            "the first line is context: {patch}"
+        );
+        assert!(patch.contains("-two\n"), "{patch}");
+        assert!(patch.contains("+TWO\n"), "{patch}");
+        assert!(
+            patch.contains("+five\n"),
+            "the last line is context: {patch}"
+        );
+    }
+
+    #[test]
+    fn write_diff_shows_the_replaced_file_content() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("notes.txt");
+        std::fs::write(&path, "old\n").expect("seed file");
+        let args = serde_json::json!({
+            "path": "notes.txt",
+            "content": "new\n",
+        })
+        .to_string();
+
+        let diff = tool_diff(&path, "write_file", &args).expect("an overwrite has a diff");
+        assert!(matches!(
+            diff.changes[0].operation,
+            schema::DiffChangeOperation::Modify(_)
+        ));
+        let patch = diff.patch.expect("patch text").text;
+        assert!(patch.contains("-old\n"), "{patch}");
+        assert!(patch.contains("+new\n"), "{patch}");
+        assert!(!patch.contains("/dev/null"), "{patch}");
+    }
+
+    #[test]
+    fn write_diff_marks_a_new_file_as_added() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("new.txt");
+        let args = serde_json::json!({
+            "path": "new.txt",
+            "content": "hello\n",
+        })
+        .to_string();
+
+        let diff = tool_diff(&path, "write_file", &args).expect("a new file has a diff");
+        assert!(matches!(
+            diff.changes[0].operation,
+            schema::DiffChangeOperation::Add(_)
+        ));
+        let patch = diff.patch.expect("patch text").text;
+        assert!(patch.contains("--- /dev/null"), "{patch}");
+        assert!(patch.contains("+hello\n"), "{patch}");
     }
 
     #[test]
@@ -3852,5 +4624,54 @@ mod tests {
             "child summary"
         );
         assert_eq!(combined_tool_text("", "summary"), "summary");
+    }
+
+    #[test]
+    fn edit_tools_expose_a_location_and_patch() {
+        let cwd = Path::new("/workspace");
+        let args = r#"{"path":"src/lib.rs","old_text":"old","new_text":"new"}"#;
+        let presentation = ToolPresentationInfo::generic("edit_file");
+        assert_eq!(
+            tool_path("edit_file", args, &presentation, cwd),
+            Some(PathBuf::from("/workspace/src/lib.rs"))
+        );
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("lib.rs");
+        std::fs::write(&path, "old\n").expect("seed file");
+        let diff = tool_diff(&path, "edit_file", args).expect("edit_file has a diff");
+        let patch = diff.patch.expect("patch text").text;
+        assert!(patch.contains("-old"), "{patch}");
+        assert!(patch.contains("+new"), "{patch}");
+        assert!(!diff.changes.is_empty());
+    }
+
+    #[test]
+    fn write_tools_render_an_add_patch() {
+        let args = r#"{"path":"new.txt","content":"hello\nworld"}"#;
+        let diff = tool_diff(Path::new("/workspace/new.txt"), "write_file", args)
+            .expect("write_file has a diff");
+        let patch = diff.patch.expect("patch text").text;
+        assert!(patch.contains("--- /dev/null"), "{patch}");
+        assert!(patch.contains("+hello"), "{patch}");
+        assert!(patch.contains("+world"), "{patch}");
+    }
+
+    #[test]
+    fn background_tasks_become_acp_terminals() {
+        let tasks = vec![BackgroundTaskSnapshot {
+            id: "abc".into(),
+            command: "sleep 1".into(),
+            status: BackgroundTaskStatusSnapshot::Running,
+            started_at: 0,
+            finished_at: None,
+            output_tail: "partial".into(),
+            output_path: None,
+        }];
+        let work = background_work_for(&tasks);
+        assert!(matches!(
+            work.as_slice(),
+            [schema::BackgroundWork::Terminal(terminal)]
+                if terminal.terminal_id.0.as_ref() == "tact-bg-abc"
+        ));
     }
 }

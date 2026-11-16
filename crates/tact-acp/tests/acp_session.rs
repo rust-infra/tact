@@ -607,12 +607,22 @@ async fn run_scenario(
     assert_eq!(idle.stop_reason, Some(schema::StopReason::EndTurn));
     let last = fake.last_request();
     let prompt = last.to_string();
+    let marker = ".tact-acp-images/";
+    let image_start = prompt
+        .find(marker)
+        .map(|start| start + marker.len())
+        .expect("the image must reach the model as a workspace path");
+    let image_name = &prompt[image_start
+        ..prompt[image_start..]
+            .find(')')
+            .expect("the markdown image reference must close")
+            + image_start];
     assert!(
-        prompt.contains(".tact-acp-images/prompt-1.png"),
-        "the image must reach the model as a workspace path: {last}"
+        image_name.ends_with("-1.png"),
+        "the file name must carry the prompt identity and block index: {image_name}"
     );
     assert!(
-        cwd.join(".tact-acp-images/prompt-1.png").exists(),
+        cwd.join(".tact-acp-images").join(image_name).exists(),
         "the prompt image must be written into the session cwd"
     );
     assert_no_state_after_idle(&mut updates, &session_id).await;

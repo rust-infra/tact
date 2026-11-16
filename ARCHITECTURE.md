@@ -115,7 +115,7 @@ into the session's own `.mcp.json` resolution, so a client that supplies a
 stdio bridge gets its tools without any config write. ACP v2 is still a draft,
 so the adapter pins `agent-client-protocol`'s `unstable_protocol_v2` feature and
 advertises the session baseline plus commands, skills, image prompts, MCP
-transports, and session deletion (`session/resume` replays no transcript). The
+transports, and session deletion. The
 baseline `capabilities.session` object is load-bearing rather than decorative:
 v2 has no per-method flags for `session/list`/`resume`/`close`, so a client
 only has them when that object is non-null. T3 reads it that way and gates both
@@ -128,6 +128,13 @@ Compaction is advertised as `/compact-context` because T3 reserves the exact
 `/compact` prompt; the adapter keeps that turn open across the bracketed
 summarizer progress lines until Tact reports completion, and clamps the summary
 request to the model's output cap.
+
+The adapter also uses ACP's native file and work surfaces: file tools report
+`locations` and edit/write calls carry a renderable `Diff`; background tasks
+become terminals plus `state_update.background` entries; detached subagents are
+listed there too; compaction progress is a typed `compaction_update`; and
+`session/resume` replays the durable transcript while `session/fork` copies it
+into a new session.
 
 ---
 
