@@ -2330,6 +2330,37 @@ fn closing_the_view_clears_its_hit_rects_and_active_id() {
     assert!(app.subagent_popup().is_none(), "closed means closed");
 }
 
+/// Opening the view on a child that has started answering but committed no
+/// entry yet must show that text, not a blank page.
+///
+/// That is the whole first turn: `ToolTranscript` is what creates the
+/// transcript entry, so until the child's first tool call or completed turn the
+/// map holds nothing for it — and both the prepare and the draw path used to
+/// treat "no transcript" as "nothing to draw". The result was the state a
+/// reader meets most often (they click the card to see what the child is
+/// doing), rendering empty while the text was already there.
+#[test]
+fn a_child_thats_streaming_before_its_first_committed_entry_draws_its_text() {
+    let mut app = make_app();
+    seed_subagent_popup(&mut app);
+    // A fresh child: the map entry exists only because the fixture pushed
+    // transcript entries, so drop it and keep the stream.
+    app.tools_mut().transcripts.clear();
+    app.handle_agent_update(AgentUpdate::ToolTranscriptStream {
+        tool_id: "sa-1".into(),
+        text: "the child is answering".into(),
+    });
+    app.open_subagent_popup_by_id("sa-1");
+    assert!(app.has_subagent_popup(), "the view opens");
+
+    let terminal = render_subagent_view_terminal(&mut app, 100, 40);
+    let text = buffer_text(terminal.backend().buffer());
+    assert!(
+        text.contains("the child is answering"),
+        "the streaming text must be on screen:\n{text}"
+    );
+}
+
 fn render_subagent_view_terminal(app: &mut App, width: u16, height: u16) -> Terminal<TestBackend> {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("terminal");
