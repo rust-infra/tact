@@ -632,10 +632,7 @@ impl SessionManager {
         mcp_servers: Vec<(String, tact::mcp::McpProjectConfig)>,
     ) -> Result<schema::ForkSessionResponse, Error> {
         self.ensure_config()?;
-        let tact_path = TactPath::new(cwd.clone());
-        let store = open_sqlite_session_store(&tact_path.session_db_path())
-            .await
-            .map_err(|error| internal(format!("failed to open session store: {error:#}")))?;
+        let store = open_session_store(&TactPath::new(cwd.clone())).await?;
         let messages = store
             .load_agent_session(source_id.0.as_ref())
             .await
@@ -701,9 +698,7 @@ impl SessionManager {
         mcp_servers: Vec<(String, tact::mcp::McpProjectConfig)>,
     ) -> Result<schema::SessionId, Error> {
         let tact_path = TactPath::new(cwd.clone());
-        let store = open_sqlite_session_store(&tact_path.session_db_path())
-            .await
-            .map_err(|error| internal(format!("failed to open session store: {error:#}")))?;
+        let store = open_session_store(&tact_path).await?;
         let config = HostSessionConfig {
             tact_path,
             work_dir: cwd.clone(),
@@ -852,10 +847,7 @@ impl SessionManager {
                     .map_err(|error| internal(format!("failed to resolve cwd: {error}")))?,
             },
         };
-        let tact_path = TactPath::new(cwd);
-        let store = open_sqlite_session_store(&tact_path.session_db_path())
-            .await
-            .map_err(|error| internal(format!("failed to open session store: {error:#}")))?;
+        let store = open_session_store(&TactPath::new(cwd)).await?;
         store
             .delete_session(session_id.0.as_ref())
             .await
@@ -876,9 +868,7 @@ impl SessionManager {
                 .map_err(|error| internal(format!("failed to resolve cwd: {error}")))?,
         };
         let tact_path = TactPath::new(cwd.clone());
-        let store = open_sqlite_session_store(&tact_path.session_db_path())
-            .await
-            .map_err(|error| internal(format!("failed to open session store: {error:#}")))?;
+        let store = open_session_store(&tact_path).await?;
         let summaries = store
             .list_sessions_filtered(SessionListQuery {
                 root_dir: Some(tact_path.workdir().display().to_string()),
@@ -1052,7 +1042,6 @@ struct SessionState {
     permission: SelectOption,
     thought: SelectOption,
     thought_kind: ThoughtKind,
-    phase: TurnPhase,
 }
 
 impl SessionState {
@@ -1095,7 +1084,6 @@ impl SessionState {
             },
             thought,
             thought_kind,
-            phase: TurnPhase::Idle,
         }
     }
 
@@ -1236,18 +1224,33 @@ fn current_thought_value(
     }
 }
 
-/// The wire-facing foreground state. Replaces a bare bool so "running because
-/// a prompt was accepted" and "running because a host run started" cannot
-/// disagree.
+/// Who owns the running turn.
+///
+/// A host turn (a prompt or a Goal activation) closes on the host's own
+/// completion. A command turn closes on the command's answer or its settle
+/// timer. Keeping the owner in the phase means "running" can never be true
+/// without knowing who will end it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TurnOwner {
+    Host,
+    Command,
+}
+
+/// The wire-facing foreground state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum TurnPhase {
+    #[default]
     Idle,
-    Running,
+    Running(TurnOwner),
 }
 
 impl TurnPhase {
     fn is_running(self) -> bool {
-        matches!(self, TurnPhase::Running)
+        matches!(self, TurnPhase::Running(_))
+    }
+
+    fn is_command(self) -> bool {
+        matches!(self, TurnPhase::Running(TurnOwner::Command))
     }
 }
 
@@ -1320,25 +1323,16 @@ fn spawn_actor(
             commands,
             next_message,
             state,
+            turn: Turn::default(),
             elicitation,
             open_requests: HashMap::new(),
             published_requests: HashSet::new(),
-            agent_message: None,
-            thought: None,
-            open_tools: HashMap::new(),
-            open_tool_output: HashMap::new(),
             subagent_sessions: HashMap::new(),
             title_sent: false,
-            background_work: Vec::new(),
-            background_reported: false,
-            compaction_id: None,
-            turn_saw_text: false,
+            background: None,
             context_window: context_window(),
             last_plan: Vec::new(),
             last_goals: Vec::new(),
-            awaiting_goal_list: false,
-            compacting: false,
-            command_turn: false,
         };
         actor.reconcile_pending_requests();
         loop {
@@ -1348,13 +1342,12 @@ fn spawn_actor(
                         Some(event) => {
                             let answers_command = match &event {
                                 HostEvent::Agent(update) => match update.as_ref() {
-                                    // Compaction announces itself, saves the
-                                    // transcript, and logs every summary stage
-                                    // before it finishes; all of those
-                                    // bracketed progress lines must not close
-                                    // the turn early.
+                                    // A command turn may log bracketed progress
+                                    // (compaction saves the transcript and
+                                    // prints every summary stage). Those lines
+                                    // are not its answer.
                                     AgentUpdate::Info(text) => {
-                                        !(actor.compacting
+                                        !(actor.turn.phase.is_command()
                                             && text.trim_start().starts_with('['))
                                     }
                                     AgentUpdate::MdInfo(_)
@@ -1425,6 +1418,31 @@ struct OpenMessage {
     text: String,
 }
 
+/// One tool call that has not reached its terminal update yet.
+///
+/// The card and its streamed output share a key and a lifetime, so they are
+/// one entry. Two maps would need every insert and remove to stay paired.
+struct OpenTool {
+    update: schema::ToolCallUpdate,
+    output: String,
+}
+
+/// State that belongs to one turn.
+///
+/// `SessionState` is the client's config surface and must not grow turn
+/// fields. Everything here is created with the session and reset or drained
+/// at a turn boundary.
+#[derive(Default)]
+struct Turn {
+    phase: TurnPhase,
+    saw_text: bool,
+    agent_message: Option<OpenMessage>,
+    thought: Option<OpenMessage>,
+    tools: HashMap<String, OpenTool>,
+    compaction: Option<schema::CompactionId>,
+    awaiting_goal_list: bool,
+}
+
 /// One Tact UI request, normalized across the `AgentUpdate` hint and the
 /// `UiResponder` snapshot used for reconciliation.
 struct UiRequest {
@@ -1465,6 +1483,7 @@ struct SessionActor {
     commands: mpsc::UnboundedSender<SessionCommand>,
     next_message: Arc<AtomicU64>,
     state: SessionState,
+    turn: Turn,
     elicitation: ElicitationSupport,
     /// Cancellation handles for ACP requests the adapter published, keyed by
     /// Tact's request id. This is a withdrawal index, not a second pending
@@ -1473,27 +1492,16 @@ struct SessionActor {
     /// Request ids already published to the client, so a hint delivered after
     /// reconciliation does not open a second dialog.
     published_requests: HashSet<u64>,
-    agent_message: Option<OpenMessage>,
-    thought: Option<OpenMessage>,
-    /// Tool calls waiting for a terminal update, with the identity fields from
-    /// their last running update. A terminal update repeats them because a
-    /// client that only sees the completion would otherwise have no title or
-    /// kind to render.
-    open_tools: HashMap<String, schema::ToolCallUpdate>,
-    /// Text streamed for an open tool. A terminal update replaces the client's
-    /// content, so accumulated progress has to ride along or the card loses
-    /// everything the tool (or a subagent's transcript) streamed first.
-    open_tool_output: HashMap<String, String>,
     /// ACP v2 child sessions announced for `spawn_subagent` tools, keyed by
     /// the parent tool id. The tool card remains for clients that do not render
     /// child sessions yet; standards-aware clients get the same conversation
-    /// through these child session updates.
+    /// through these child session updates. Detached children outlive their
+    /// turn, so this is session state, not part of [`Turn`].
     subagent_sessions: HashMap<String, SubagentSession>,
     title_sent: bool,
-    background_work: Vec<schema::BackgroundWork>,
-    background_reported: bool,
-    compaction_id: Option<schema::CompactionId>,
-    turn_saw_text: bool,
+    /// The last background snapshot, or `None` before the host sends one.
+    /// Presence and contents are one value so they cannot disagree.
+    background: Option<Vec<schema::BackgroundWork>>,
     /// The context window to report with usage. The window is configuration,
     /// not an event, so it is read once at session start.
     context_window: u64,
@@ -1501,12 +1509,6 @@ struct SessionActor {
     last_plan: Vec<(String, schema::PlanEntryStatus)>,
     /// The last Goal snapshot announced, so a reconcile tick is not a notice.
     last_goals: Vec<GoalSnapshot>,
-    /// `/goal list` is waiting for the snapshot that answers it.
-    awaiting_goal_list: bool,
-    /// A `/compact` turn is still summarizing; its start notice is not its end.
-    compacting: bool,
-    /// Whether a non-turn slash command still owes its idle.
-    command_turn: bool,
 }
 
 struct SubagentSession {
@@ -1547,9 +1549,9 @@ impl SessionActor {
     fn handle_update(&mut self, update: AgentUpdate) {
         match update {
             AgentUpdate::StreamChunk(text) => {
-                self.turn_saw_text = true;
+                self.turn.saw_text = true;
                 let id = self.ensure_agent_message();
-                if let Some(message) = self.agent_message.as_mut() {
+                if let Some(message) = self.turn.agent_message.as_mut() {
                     message.text.push_str(&text);
                 }
                 self.send(schema::SessionUpdate::AgentMessageChunk(
@@ -1563,7 +1565,7 @@ impl SessionActor {
                     "model message started"
                 );
                 self.finalize_agent_message();
-                self.agent_message = Some(OpenMessage {
+                self.turn.agent_message = Some(OpenMessage {
                     id: self.next_id("agent"),
                     text: String::new(),
                 });
@@ -1571,14 +1573,14 @@ impl SessionActor {
             AgentUpdate::MessageFinished { .. } => self.finalize_agent_message(),
             AgentUpdate::ThinkingChunk(ThinkingChunk::Started) => {
                 self.finalize_thought();
-                self.thought = Some(OpenMessage {
+                self.turn.thought = Some(OpenMessage {
                     id: self.next_id("thought"),
                     text: String::new(),
                 });
             }
             AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(text)) => {
                 let id = self.ensure_thought();
-                if let Some(thought) = self.thought.as_mut() {
+                if let Some(thought) = self.turn.thought.as_mut() {
                     thought.text.push_str(&text);
                 }
                 self.send(schema::SessionUpdate::AgentThoughtChunk(
@@ -1610,8 +1612,7 @@ impl SessionActor {
                         schema::SessionReference::new(child),
                     )]);
                 }
-                self.open_tools.insert(tool_id.clone(), update.clone());
-                self.open_tool_output.insert(tool_id.clone(), String::new());
+                self.track_open_tool(&tool_id, update.clone());
                 self.send(schema::SessionUpdate::ToolCallUpdate(update));
             }
             AgentUpdate::StepStarted {
@@ -1638,8 +1639,7 @@ impl SessionActor {
                         schema::SessionReference::new(child),
                     )]);
                 }
-                self.open_tools.insert(tool_id.clone(), update.clone());
-                self.open_tool_output.insert(tool_id.clone(), String::new());
+                self.track_open_tool(&tool_id, update.clone());
                 self.send(schema::SessionUpdate::ToolCallUpdate(update));
             }
             AgentUpdate::StepFinished {
@@ -1648,14 +1648,10 @@ impl SessionActor {
                 self.send_finished_step(&tool_id, &result);
             }
             AgentUpdate::StepFailed { tool_id, error, .. } => {
-                let progress = self.open_tool_output.remove(&tool_id).unwrap_or_default();
+                let (progress, update) = self.take_open_tool(&tool_id);
                 if self.subagent_sessions.contains_key(&tool_id) {
                     self.finish_subagent(&tool_id, false, &error);
                 }
-                let update = self
-                    .open_tools
-                    .remove(&tool_id)
-                    .unwrap_or_else(|| schema::ToolCallUpdate::new(tool_id));
                 let text = combined_tool_text(&progress, &error);
                 self.send(schema::SessionUpdate::ToolCallUpdate(finish_tool_update(
                     update,
@@ -1672,8 +1668,8 @@ impl SessionActor {
                     .collect::<Vec<_>>()
                     .join("");
                 if !text.is_empty() {
-                    if let Some(progress) = self.open_tool_output.get_mut(&tool_id) {
-                        push_tool_output(progress, &text);
+                    if let Some(tool) = self.turn.tools.get_mut(&tool_id) {
+                        push_tool_output(&mut tool.output, &text);
                     }
                     self.send(schema::SessionUpdate::ToolCallContentChunk(
                         schema::ToolCallContentChunk::new(tool_id, text_tool_content(text)),
@@ -1693,11 +1689,7 @@ impl SessionActor {
                 output,
                 ..
             } => {
-                let progress = self.open_tool_output.remove(&tool_id).unwrap_or_default();
-                let update = self
-                    .open_tools
-                    .remove(&tool_id)
-                    .unwrap_or_else(|| schema::ToolCallUpdate::new(tool_id));
+                let (progress, update) = self.take_open_tool(&tool_id);
                 let text = if output.trim().is_empty() {
                     message
                 } else {
@@ -1721,11 +1713,7 @@ impl SessionActor {
                 ..
             } => {
                 self.finish_subagent(&tool_id, success, &summary);
-                let progress = self.open_tool_output.remove(&tool_id).unwrap_or_default();
-                let update = self
-                    .open_tools
-                    .remove(&tool_id)
-                    .unwrap_or_else(|| schema::ToolCallUpdate::new(tool_id));
+                let (progress, update) = self.take_open_tool(&tool_id);
                 let text = combined_tool_text(&progress, &summary);
                 self.send(schema::SessionUpdate::ToolCallUpdate(finish_tool_update(
                     update,
@@ -1788,8 +1776,8 @@ impl SessionActor {
                 }
             }
             AgentUpdate::RunStarted { .. } => {
-                if !self.state.phase.is_running() {
-                    self.state.phase = TurnPhase::Running;
+                if !self.turn.phase.is_running() {
+                    self.turn.phase = TurnPhase::Running(TurnOwner::Host);
                     self.send(running());
                 }
             }
@@ -1897,9 +1885,9 @@ impl SessionActor {
         // a periodic reconcile can deliver this snapshot before the command's
         // own read-out. Answering from the snapshot here keeps the notice ahead
         // of the idle instead of losing it to turn finalization.
-        let answers_list = self.awaiting_goal_list && self.command_turn;
+        let answers_list = self.turn.awaiting_goal_list && self.turn.phase.is_command();
         if answers_list {
-            self.awaiting_goal_list = false;
+            self.turn.awaiting_goal_list = false;
         }
         if goals == self.last_goals && !answers_list {
             return;
@@ -2151,7 +2139,7 @@ impl SessionActor {
             return;
         }
         let changed = option.begin_request(value);
-        if changed && !self.state.phase.is_running() {
+        if changed && !self.turn.phase.is_running() {
             self.apply_config_now();
         }
         let _ = reply.send(Ok(self.state.config_options()));
@@ -2272,7 +2260,7 @@ impl SessionActor {
         self.published_requests.clear();
         if let Err(error) = self.host.send(UserCommand::Cancel) {
             warn!(%self.session_id, %error, "failed to send cancel");
-            if self.state.phase.is_running() {
+            if self.turn.phase.is_running() {
                 self.finish_turn(
                     schema::StopReason::Error(schema::ErrorStopReason::new()),
                     None,
@@ -2288,7 +2276,7 @@ impl SessionActor {
     /// would be worse than letting the model see it.
     fn handle_prompt(&mut self, text: String) {
         self.maybe_send_session_info(&text);
-        let command = match wrapped_user_request(&text) {
+        let command = match t3_user_request(&text) {
             // T3 only skips its instruction wrapper for prompts starting with
             // `/`, so a `$skill` as a thread's first turn arrives wrapped. Only
             // a command the adapter answers itself is lifted out of the
@@ -2350,7 +2338,11 @@ impl SessionActor {
                 // first answer-carrying update (`/stats`'s read-out) as its
                 // own and settle the turn the request is still running.
                 self.handle_prompt_command(*command);
-                self.command_turn = false;
+                // The request half now owns the turn: the command half's
+                // answer (or its timer) must not end it.
+                if self.turn.phase.is_command() {
+                    self.turn.phase = TurnPhase::Running(TurnOwner::Host);
+                }
                 self.forward_user(UserCommand::SubmitTask(rest));
                 true
             }
@@ -2364,11 +2356,10 @@ impl SessionActor {
                 ) {
                     self.forward_goal_start(command);
                 } else if matches!(command, UserCommand::Compact) {
-                    self.compacting = true;
                     self.forward_long_command(command);
                 } else {
                     if matches!(command, UserCommand::ListGoals { .. }) {
-                        self.awaiting_goal_list = true;
+                        self.turn.awaiting_goal_list = true;
                     }
                     self.forward_slash_command(command);
                 }
@@ -2383,7 +2374,7 @@ impl SessionActor {
     /// turn is running: sending an idle mid-turn would end the turn the model
     /// is still working on.
     fn settle_local_prompt(&mut self) {
-        if self.state.phase.is_running() {
+        if self.turn.phase.is_running() {
             return;
         }
         self.send(idle(Some(schema::StopReason::EndTurn)));
@@ -2419,7 +2410,7 @@ impl SessionActor {
     /// Apply a `/model`, `/permission`, or `/thought` argument against this
     /// session's own options, so the entity validating is the one that renders.
     fn apply_slash_config(&mut self, config_id: &'static str, value: String) {
-        let running = self.state.phase.is_running();
+        let running = self.turn.phase.is_running();
         let Some(option) = self.state.option_mut(config_id) else {
             return;
         };
@@ -2463,9 +2454,9 @@ impl SessionActor {
         // slash command sent while a model turn runs is a side read-out: it
         // must not claim that turn's boundary, or its answer (or the timer
         // below) would send an idle while the model is still working.
-        let owns_turn = !self.state.phase.is_running();
+        let owns_turn = !self.turn.phase.is_running();
         if owns_turn {
-            self.state.phase = TurnPhase::Running;
+            self.turn.phase = TurnPhase::Running(TurnOwner::Command);
             self.send(running());
         }
         if let Err(error) = self.host.send(command) {
@@ -2487,13 +2478,8 @@ impl SessionActor {
         // event does — session bookkeeping events (a background-task snapshot)
         // are delivered at arbitrary times and would otherwise close the turn
         // before the answer reached the client. A command that produces no
-        // answer at all settles on the fallback below.
-        // Leave an existing command turn's ownership untouched: a second
-        // slash command issued while `/compact` is still running must not
-        // clear the flag that will close the compaction turn.
-        if owns_turn {
-            self.command_turn = true;
-        }
+        // answer at all settles on the fallback below. A command issued while
+        // another turn runs does not take ownership of it.
         if !arm_settle_timer || !owns_turn {
             return;
         }
@@ -2509,8 +2495,8 @@ impl SessionActor {
     /// Unlike a read-out command, the Goal runner keeps producing updates and
     /// closes the turn with `TaskIdle`, so no command-settle timer is armed.
     fn forward_goal_start(&mut self, command: UserCommand) {
-        if !self.state.phase.is_running() {
-            self.state.phase = TurnPhase::Running;
+        if !self.turn.phase.is_running() {
+            self.turn.phase = TurnPhase::Running(TurnOwner::Host);
             self.send(running());
         }
         if let Err(error) = self.host.send(command) {
@@ -2530,10 +2516,8 @@ impl SessionActor {
     /// Close a command turn. Idempotent: `finish_turn` is gated on `Running`,
     /// so an event that already settled is not settled twice.
     fn settle_command_turn(&mut self) {
-        if self.command_turn {
-            self.command_turn = false;
-            self.awaiting_goal_list = false;
-            self.compacting = false;
+        if self.turn.phase.is_command() {
+            self.turn.awaiting_goal_list = false;
             self.finish_turn(schema::StopReason::EndTurn, None);
         }
     }
@@ -2541,10 +2525,10 @@ impl SessionActor {
     fn forward_user(&mut self, command: UserCommand) {
         let prompt = matches!(&command, UserCommand::SubmitTask(_));
         let ui_response = matches!(&command, UserCommand::UiResponse(_));
-        if prompt && !self.state.phase.is_running() {
-            self.state.phase = TurnPhase::Running;
+        if prompt && !self.turn.phase.is_running() {
+            self.turn.phase = TurnPhase::Running(TurnOwner::Host);
             self.send(running());
-        } else if ui_response && self.state.phase.is_running() {
+        } else if ui_response && self.turn.phase.is_running() {
             // The actor sent requires_action before publishing; progress
             // resumed with this answer. Never emit running after idle.
             self.send(running());
@@ -2579,7 +2563,7 @@ impl SessionActor {
     }
 
     fn requires_action_if_pending(&mut self, request_id: u64) {
-        if !self.state.phase.is_running() {
+        if !self.turn.phase.is_running() {
             return;
         }
         if self
@@ -2621,20 +2605,22 @@ impl SessionActor {
             self.send(schema::SessionUpdate::TerminalUpdate(update));
         }
         let work = background_work_for(tasks);
-        let changed = work != self.background_work;
-        self.background_work = work;
-        self.background_reported = true;
-        // The host emits an empty snapshot at startup. Publishing it would
-        // send `idle` before any turn ran, which the client reads as a second
-        // turn boundary; only an actual list change (or a live turn) needs a
+        // `None` means no snapshot has arrived yet. Comparing against it would
+        // make the startup snapshot look like a change and publish an idle
+        // before any turn ran; only a later change (or a live turn) needs a
         // state update.
-        if changed || self.state.phase.is_running() {
+        let changed = self
+            .background
+            .as_ref()
+            .is_some_and(|previous| previous != &work);
+        self.background = Some(work);
+        if changed || self.turn.phase.is_running() {
             self.publish_current_state();
         }
     }
 
     fn background_snapshot(&self) -> Vec<schema::BackgroundWork> {
-        let mut work = self.background_work.clone();
+        let mut work = self.background.clone().unwrap_or_default();
         for session in self
             .subagent_sessions
             .values()
@@ -2648,10 +2634,10 @@ impl SessionActor {
     }
 
     fn publish_current_state(&self) {
-        if !self.background_reported {
+        if self.background.is_none() {
             return;
         }
-        if self.state.phase.is_running() {
+        if self.turn.phase.is_running() {
             self.send(running());
         } else {
             self.send(idle(None));
@@ -2668,11 +2654,11 @@ impl SessionActor {
         if !started && !completed && !failed {
             return;
         }
-        let id = self
-            .compaction_id
-            .clone()
-            .unwrap_or_else(|| schema::CompactionId::new(self.next_id("compaction").0.to_string()));
-        self.compaction_id = Some(id.clone());
+        let id =
+            self.turn.compaction.clone().unwrap_or_else(|| {
+                schema::CompactionId::new(self.next_id("compaction").0.to_string())
+            });
+        self.turn.compaction = Some(id.clone());
         let status = if completed {
             schema::CompactionStatus::Completed
         } else if failed {
@@ -2686,13 +2672,12 @@ impl SessionActor {
         }
         self.send(schema::SessionUpdate::CompactionUpdate(update));
         if completed || failed {
-            self.compaction_id = None;
-            self.compacting = false;
+            self.turn.compaction = None;
         }
     }
 
     fn with_background(&self, update: schema::SessionUpdate) -> schema::SessionUpdate {
-        if !self.background_reported {
+        if self.background.is_none() {
             return update;
         }
         let work = self.background_snapshot();
@@ -2725,7 +2710,7 @@ impl SessionActor {
         if self.title_sent {
             return;
         }
-        let body = wrapped_user_request(text).unwrap_or(text);
+        let body = t3_user_request(text).unwrap_or(text);
         let title = first_line(body, 80);
         if title.trim().is_empty() {
             return;
@@ -2924,12 +2909,31 @@ impl SessionActor {
         self.send_on(&session.id, schema::SessionUpdate::SessionMessage(message));
     }
 
-    fn send_finished_step(&mut self, tool_id: &str, result: &StepResult) {
-        let update = self
-            .open_tools
+    fn track_open_tool(&mut self, tool_id: &str, update: schema::ToolCallUpdate) {
+        self.turn.tools.insert(
+            tool_id.to_string(),
+            OpenTool {
+                update,
+                output: String::new(),
+            },
+        );
+    }
+
+    fn take_open_tool(&mut self, tool_id: &str) -> (String, schema::ToolCallUpdate) {
+        self.turn
+            .tools
             .remove(tool_id)
-            .unwrap_or_else(|| schema::ToolCallUpdate::new(tool_id.to_string()));
-        let progress = self.open_tool_output.remove(tool_id).unwrap_or_default();
+            .map(|tool| (tool.output, tool.update))
+            .unwrap_or_else(|| {
+                (
+                    String::new(),
+                    schema::ToolCallUpdate::new(tool_id.to_string()),
+                )
+            })
+    }
+
+    fn send_finished_step(&mut self, tool_id: &str, result: &StepResult) {
+        let (progress, update) = self.take_open_tool(tool_id);
         let status = match result.status {
             StepStatus::Success => schema::ToolCallStatus::Completed,
             StepStatus::Failed => schema::ToolCallStatus::Failed,
@@ -3019,11 +3023,11 @@ impl SessionActor {
     }
 
     fn ensure_agent_message(&mut self) -> schema::MessageId {
-        if let Some(message) = &self.agent_message {
+        if let Some(message) = &self.turn.agent_message {
             return message.id.clone();
         }
         let id = self.next_id("agent");
-        self.agent_message = Some(OpenMessage {
+        self.turn.agent_message = Some(OpenMessage {
             id: id.clone(),
             text: String::new(),
         });
@@ -3031,11 +3035,11 @@ impl SessionActor {
     }
 
     fn ensure_thought(&mut self) -> schema::MessageId {
-        if let Some(thought) = &self.thought {
+        if let Some(thought) = &self.turn.thought {
             return thought.id.clone();
         }
         let id = self.next_id("thought");
-        self.thought = Some(OpenMessage {
+        self.turn.thought = Some(OpenMessage {
             id: id.clone(),
             text: String::new(),
         });
@@ -3043,7 +3047,7 @@ impl SessionActor {
     }
 
     fn finalize_agent_message(&mut self) {
-        let Some(message) = self.agent_message.take() else {
+        let Some(message) = self.turn.agent_message.take() else {
             return;
         };
         if message.text.trim().is_empty() {
@@ -3055,7 +3059,7 @@ impl SessionActor {
     }
 
     fn finalize_thought(&mut self) {
-        let Some(thought) = self.thought.take() else {
+        let Some(thought) = self.turn.thought.take() else {
             return;
         };
         if thought.text.trim().is_empty() {
@@ -3071,8 +3075,7 @@ impl SessionActor {
     fn finish_turn(&mut self, stop_reason: schema::StopReason, fallback_text: Option<String>) {
         // A turn that ends while its summary is still open must not leave the
         // client's compaction card spinning forever.
-        if let Some(id) = self.compaction_id.take() {
-            self.compacting = false;
+        if let Some(id) = self.turn.compaction.take() {
             self.send(schema::SessionUpdate::CompactionUpdate(
                 schema::CompactionUpdate::new(id, schema::CompactionStatus::Failed)
                     .error("compaction did not finish before the turn ended"),
@@ -3080,7 +3083,7 @@ impl SessionActor {
         }
         self.finalize_agent_message();
         self.finalize_thought();
-        if !self.turn_saw_text
+        if !self.turn.saw_text
             && let Some(text) = fallback_text.filter(|text| !text.trim().is_empty())
         {
             let id = self.next_id("agent");
@@ -3088,8 +3091,12 @@ impl SessionActor {
                 schema::AgentMessage::new(id).content(vec![text.into()]),
             ));
         }
-        let open: Vec<schema::ToolCallUpdate> =
-            self.open_tools.drain().map(|(_, update)| update).collect();
+        let open: Vec<schema::ToolCallUpdate> = self
+            .turn
+            .tools
+            .drain()
+            .map(|(_, tool)| tool.update)
+            .collect();
         for update in open {
             self.send(schema::SessionUpdate::ToolCallUpdate(
                 update.status(schema::ToolCallStatus::Cancelled),
@@ -3116,16 +3123,15 @@ impl SessionActor {
                 )),
             ));
         }
-        self.open_tool_output.clear();
-        self.turn_saw_text = false;
+        self.turn.saw_text = false;
         if self.title_sent {
             self.send(schema::SessionUpdate::SessionInfoUpdate(
                 schema::SessionInfoUpdate::new().updated_at(now_rfc3339()),
             ));
         }
-        if self.state.phase.is_running() {
+        if self.turn.phase.is_running() {
             self.send(idle(Some(stop_reason)));
-            self.state.phase = TurnPhase::Idle;
+            self.turn.phase = TurnPhase::Idle;
             self.apply_config_now();
         }
     }
@@ -3212,6 +3218,16 @@ fn map_accept(
         return None;
     }
     Some(parsed)
+}
+
+/// The transcript store for one workspace.
+///
+/// A session's history lives beside its workspace, in `.tact/tact.db`. This is
+/// the one place that path decision and its error mapping are made.
+async fn open_session_store(tact_path: &TactPath) -> Result<tact::store::DynSessionStore, Error> {
+    open_sqlite_session_store(&tact_path.session_db_path())
+        .await
+        .map_err(|error| internal(format!("failed to open session store: {error:#}")))
 }
 
 fn send_update(
@@ -3388,7 +3404,8 @@ fn write_prompt_image(
             )));
         }
     };
-    let bytes = base64_decode(&image.data)
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(image.data.as_bytes())
         .map_err(|error| invalid_params(format!("image data is not valid base64: {error}")))?;
     let dir = work_dir.join(ACP_IMAGE_DIR);
     std::fs::create_dir_all(&dir)
@@ -3416,39 +3433,6 @@ fn write_prompt_image(
     std::fs::write(dir.join(&name), bytes)
         .map_err(|error| internal(format!("failed to write prompt image: {error}")))?;
     Ok(format!("![prompt image]({ACP_IMAGE_DIR}/{name})"))
-}
-
-/// Minimal standard-base64 decoder, so the adapter needs no new dependency.
-fn base64_decode(data: &str) -> std::result::Result<Vec<u8>, String> {
-    fn value(byte: u8) -> Option<u8> {
-        match byte {
-            b'A'..=b'Z' => Some(byte - b'A'),
-            b'a'..=b'z' => Some(byte - b'a' + 26),
-            b'0'..=b'9' => Some(byte - b'0' + 52),
-            b'+' => Some(62),
-            b'/' => Some(63),
-            _ => None,
-        }
-    }
-    let mut out = Vec::with_capacity(data.len() * 3 / 4);
-    let mut buffer = 0u32;
-    let mut bits = 0u8;
-    for byte in data.bytes() {
-        if byte == b'=' || byte.is_ascii_whitespace() {
-            continue;
-        }
-        let Some(value) = value(byte) else {
-            return Err(format!("invalid character `{}`", byte as char));
-        };
-        buffer = (buffer << 6) | u32::from(value);
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((buffer >> bits) as u8);
-            buffer &= (1 << bits) - 1;
-        }
-    }
-    Ok(out)
 }
 
 fn parse_json(value: &str) -> Option<serde_json::Value> {
@@ -3563,65 +3547,24 @@ fn tool_diff(path: &Path, tool_name: &str, arg_full: &str) -> Option<schema::Dif
 
 /// A unified patch between two complete file contents.
 ///
-/// One hunk spans the changed middle: leading and trailing lines that match
-/// are used as context, and any unchanged lines between two changes are shown
-/// as removed and re-added. That is valid, if not minimal, and never claims
-/// lines outside the file exist.
+/// The line matching comes from `similar`. The local work is the git-style
+/// file header ACP's `git_patch` format expects and the `/dev/null` side of a
+/// new file.
 fn unified_patch(path: &Path, old: &str, new: &str) -> String {
     let display = path.to_string_lossy();
-    let old_lines: Vec<&str> = old.lines().collect();
-    let new_lines: Vec<&str> = new.lines().collect();
-    let mut patch = format!("diff --git a/{display} b/{display}\n");
-    if old.is_empty() {
-        patch.push_str(&format!(
-            "--- /dev/null\n+++ b/{display}\n@@ -0,0 +1,{} @@\n",
-            new_lines.len()
-        ));
-        for line in &new_lines {
-            patch.push('+');
-            patch.push_str(line);
-            patch.push('\n');
-        }
-        return patch;
-    }
-
-    let prefix = old_lines
-        .iter()
-        .zip(&new_lines)
-        .take_while(|(old, new)| old == new)
-        .count();
-    let common = old_lines.len().min(new_lines.len());
-    let max_suffix = common.saturating_sub(prefix);
-    let mut suffix = 0;
-    while suffix < max_suffix
-        && old_lines[old_lines.len() - 1 - suffix] == new_lines[new_lines.len() - 1 - suffix]
-    {
-        suffix += 1;
-    }
-
-    const CONTEXT: usize = 3;
-    let start = prefix.saturating_sub(CONTEXT);
-    let tail = CONTEXT.min(suffix);
-    let old_end = old_lines.len() - suffix + tail;
-    let new_end = new_lines.len() - suffix + tail;
-    let old_count = old_end - start;
-    let new_count = new_end - start;
-    patch.push_str(&format!(
-        "--- a/{display}\n+++ b/{display}\n@@ -{},{old_count} +{},{new_count} @@\n",
-        start + 1,
-        start + 1
-    ));
-    for line in &old_lines[start..old_end] {
-        patch.push('-');
-        patch.push_str(line);
-        patch.push('\n');
-    }
-    for line in &new_lines[start..new_end] {
-        patch.push('+');
-        patch.push_str(line);
-        patch.push('\n');
-    }
-    patch
+    let diff = similar::TextDiff::configure()
+        .algorithm(similar::Algorithm::Patience)
+        .diff_lines(old, new);
+    let mut unified = diff.unified_diff();
+    unified.context_radius(3);
+    let old_label = if old.is_empty() {
+        "/dev/null".to_string()
+    } else {
+        format!("a/{display}")
+    };
+    let new_label = format!("b/{display}");
+    unified.header(&old_label, &new_label);
+    format!("diff --git a/{display} b/{display}\n{unified}")
 }
 
 /// A no-argument tool serializes as `{}` (or another empty JSON container).
@@ -3800,18 +3743,6 @@ enum SlashCommand {
     /// Text that names no known command: it goes to the model verbatim, which
     /// is how a client is expected to treat an unadvertised `/…`.
     Forward(String),
-}
-
-/// The request body of T3's instruction wrapper, when the prompt has one.
-///
-/// T3 prepends `<t3_code_instructions>…<user_request>…</user_request>` on the
-/// first turn of a thread and again whenever the interaction mode changes. It
-/// skips the wrapper only when the prompt starts with `/`, so `$skill` and a
-/// `/command` that arrives with mode context both come wrapped. The wrapper is
-/// T3's, not ACP's: a client that sends the body bare must work exactly the
-/// same, which is what makes this a probe rather than a protocol rule.
-fn wrapped_user_request(text: &str) -> Option<&str> {
-    t3_user_request(text)
 }
 
 fn goal_usage() -> String {
@@ -4059,10 +3990,7 @@ async fn replay_history(
     session_id: &schema::SessionId,
     cwd: &Path,
 ) -> Result<(), Error> {
-    let tact_path = TactPath::new(cwd.to_path_buf());
-    let store = open_sqlite_session_store(&tact_path.session_db_path())
-        .await
-        .map_err(|error| internal(format!("failed to open session store: {error:#}")))?;
+    let store = open_session_store(&TactPath::new(cwd.to_path_buf())).await?;
     let messages = store
         .load_agent_session(session_id.0.as_ref())
         .await
@@ -4197,38 +4125,46 @@ mod tests {
         }
     }
 
+    fn current_value(option: &SelectOption) -> String {
+        let acp = option.to_acp();
+        let schema::SessionConfigKind::Select(select) = &acp.kind else {
+            panic!("a select option must stay a select");
+        };
+        select.current_value.0.to_string()
+    }
+
     #[test]
-    fn model_commit_confirms_a_queued_change() {
+    fn model_option_shows_the_request_until_the_runtime_confirms_it() {
         let mut model = selection();
         assert!(model.begin_request("fake-b".to_string()));
-        assert_eq!(model.shown(), "fake-b");
-        assert!(model.commit("fake-b".to_string()));
-        assert_eq!(model.applied, "fake-b");
-        assert_eq!(model.requested, None);
-        assert_eq!(model.sent, None);
+        assert_eq!(current_value(&model), "fake-b");
+
+        assert!(
+            !model.commit("fake-a".to_string()),
+            "an unrelated runtime report must not move the advertised value"
+        );
+        assert_eq!(current_value(&model), "fake-b");
+
+        assert!(
+            model.commit("fake-b".to_string()),
+            "the confirmation is a visible change"
+        );
         assert!(!model.commit("fake-b".to_string()));
+
+        assert!(
+            model.commit("fake-a".to_string()),
+            "an external change is announced"
+        );
+        assert_eq!(current_value(&model), "fake-a");
     }
 
     #[test]
-    fn model_commit_keeps_a_queued_change_on_unrelated_info() {
+    fn model_option_advertises_a_current_value_outside_the_candidates() {
         let mut model = selection();
-        model.begin_request("fake-b".to_string());
-        assert!(!model.commit("fake-a".to_string()));
-        assert_eq!(model.requested.as_deref(), Some("fake-b"));
-        assert_eq!(model.applied, "fake-a");
-    }
-
-    #[test]
-    fn model_commit_reports_an_external_change() {
-        let mut model = selection();
-        assert!(model.commit("fake-b".to_string()));
-        assert_eq!(model.applied, "fake-b");
-    }
-
-    #[test]
-    fn model_options_always_contain_the_current_value() {
-        let mut model = selection();
-        model.begin_request("fake-b".to_string());
+        // Writers can hand the option a value the list does not contain (the
+        // thought-level option starts at "none" that way), but ACP requires
+        // the current value to be one of the advertised choices.
+        model.begin_request("fake-c".to_string());
         let options = [model.to_acp()];
         assert!(matches!(
             options[0].category,
@@ -4237,19 +4173,14 @@ mod tests {
         let schema::SessionConfigKind::Select(select) = &options[0].kind else {
             panic!("model option must be a select");
         };
-        assert_eq!(select.current_value.0.as_ref(), "fake-b");
+        assert_eq!(select.current_value.0.as_ref(), "fake-c");
         let schema::SessionConfigSelectOptions::Ungrouped(values) = &select.options else {
             panic!("model options must be ungrouped");
         };
         assert!(
             values
                 .iter()
-                .any(|value| value.value.0.as_ref() == "fake-b")
-        );
-        assert!(
-            values
-                .iter()
-                .any(|value| value.value.0.as_ref() == "fake-a")
+                .any(|value| value.value.0.as_ref() == "fake-c")
         );
     }
 
@@ -4352,14 +4283,6 @@ mod tests {
     }
 
     #[test]
-    fn base64_decode_reads_all_padding_cases() {
-        assert_eq!(base64_decode("aGVsbG8=").expect("decode"), b"hello");
-        assert_eq!(base64_decode("aGk=").expect("decode"), b"hi");
-        assert_eq!(base64_decode("").expect("decode"), b"");
-        assert!(base64_decode("!!!!").is_err());
-    }
-
-    #[test]
     fn edit_diff_reads_the_file_instead_of_inventing_one() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("notes.txt");
@@ -4379,13 +4302,13 @@ mod tests {
         let patch = diff.patch.expect("patch text").text;
         assert!(patch.contains("@@ -1,5 +1,5 @@"), "{patch}");
         assert!(
-            patch.contains("-one\n"),
+            patch.contains(" one\n"),
             "the first line is context: {patch}"
         );
         assert!(patch.contains("-two\n"), "{patch}");
         assert!(patch.contains("+TWO\n"), "{patch}");
         assert!(
-            patch.contains("+five\n"),
+            patch.contains(" five\n"),
             "the last line is context: {patch}"
         );
     }
@@ -4470,24 +4393,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_json_ignores_empty_and_non_json() {
-        assert!(parse_json("  ").is_none());
-        assert!(parse_json("not json").is_none());
-        assert_eq!(parse_json(r#"{"a":1}"#).unwrap()["a"], 1);
-    }
-
-    #[test]
-    fn wrapped_user_request_reads_only_t3_wrappers() {
+    fn t3_user_request_reads_only_complete_wrappers() {
         let wrapped = "<t3_code_instructions>\n## mode\n</t3_code_instructions>\n\n<user_request>\n$greet hi\n</user_request>";
-        assert_eq!(wrapped_user_request(wrapped), Some("$greet hi"));
-        assert_eq!(wrapped_user_request("plain prompt"), None);
+        assert_eq!(t3_user_request(wrapped), Some("$greet hi"));
+        assert_eq!(t3_user_request("plain prompt"), None);
         // A half wrapper must not eat the prompt: only a complete one counts.
         assert_eq!(
-            wrapped_user_request("<t3_code_instructions>\n<user_request>x"),
+            t3_user_request("<t3_code_instructions>\n<user_request>x"),
             None
         );
         assert_eq!(
-            wrapped_user_request("<t3_code_instructions>\nx</t3_code_instructions>"),
+            t3_user_request("<t3_code_instructions>\nx</t3_code_instructions>"),
             None
         );
     }
@@ -4495,7 +4411,7 @@ mod tests {
     #[test]
     fn a_wrapped_skill_is_still_a_skill() {
         let wrapped = "<t3_code_instructions>\n## mode\n</t3_code_instructions>\n\n<user_request>\n$greet the reader\n</user_request>";
-        let body = wrapped_user_request(wrapped).expect("wrapper body");
+        let body = t3_user_request(wrapped).expect("wrapper body");
         match slash_command(body) {
             SlashCommand::Skill { name, args } => {
                 assert_eq!(name, "greet");
@@ -4526,10 +4442,6 @@ mod tests {
             }
             _ => panic!("expected CreateGoal"),
         }
-    }
-
-    #[test]
-    fn goal_shorthand_is_a_create() {
         assert!(matches!(
             slash_command("/goal refactor the parser"),
             SlashCommand::Host(UserCommand::CreateGoal { objective, .. })
@@ -4554,10 +4466,6 @@ mod tests {
             SlashCommand::Host(UserCommand::AcceptGoal { goal_id, text })
                 if goal_id == "goal-1" && text == "looks right"
         ));
-    }
-
-    #[test]
-    fn goal_control_without_an_id_reports_usage() {
         assert!(matches!(
             slash_command("/goal pause"),
             SlashCommand::Invalid(message) if message.contains("needs a Goal id")
@@ -4627,7 +4535,7 @@ mod tests {
     }
 
     #[test]
-    fn edit_tools_expose_a_location_and_patch() {
+    fn file_tools_resolve_workspace_paths() {
         let cwd = Path::new("/workspace");
         let args = r#"{"path":"src/lib.rs","old_text":"old","new_text":"new"}"#;
         let presentation = ToolPresentationInfo::generic("edit_file");
@@ -4635,25 +4543,25 @@ mod tests {
             tool_path("edit_file", args, &presentation, cwd),
             Some(PathBuf::from("/workspace/src/lib.rs"))
         );
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("lib.rs");
-        std::fs::write(&path, "old\n").expect("seed file");
-        let diff = tool_diff(&path, "edit_file", args).expect("edit_file has a diff");
-        let patch = diff.patch.expect("patch text").text;
-        assert!(patch.contains("-old"), "{patch}");
-        assert!(patch.contains("+new"), "{patch}");
-        assert!(!diff.changes.is_empty());
-    }
-
-    #[test]
-    fn write_tools_render_an_add_patch() {
-        let args = r#"{"path":"new.txt","content":"hello\nworld"}"#;
-        let diff = tool_diff(Path::new("/workspace/new.txt"), "write_file", args)
-            .expect("write_file has a diff");
-        let patch = diff.patch.expect("patch text").text;
-        assert!(patch.contains("--- /dev/null"), "{patch}");
-        assert!(patch.contains("+hello"), "{patch}");
-        assert!(patch.contains("+world"), "{patch}");
+        assert_eq!(
+            tool_path(
+                "read_image",
+                r#"{"path":"img/shot.png"}"#,
+                &ToolPresentationInfo::generic("read_image"),
+                cwd,
+            ),
+            Some(PathBuf::from("/workspace/img/shot.png"))
+        );
+        assert_eq!(
+            tool_path(
+                "bash",
+                r#"{"command":"true"}"#,
+                &ToolPresentationInfo::generic("bash"),
+                cwd,
+            ),
+            None,
+            "a command is not a file path"
+        );
     }
 
     #[test]

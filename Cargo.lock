@@ -8196,7 +8196,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8050abb251097357e24aff63ba2c52a6309ecb7d23a5474023df960a02694d8"
 dependencies = [
  "annotate-snippets",
- "base64 0.22.1",
+ "base64 0.23.1",
  "encoding_rs_io",
  "granit-parser",
  "nohash-hasher",
@@ -8514,6 +8514,12 @@ name = "simdutf8"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
+
+[[package]]
+name = "similar"
+version = "2.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
 
 [[package]]
 name = "simplecss"
@@ -9250,7 +9256,6 @@ dependencies = [
  "reqwest 0.13.4",
  "rmcp",
  "schemars 1.2.1",
- "secrecy 0.8.0",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -9286,9 +9291,9 @@ dependencies = [
  "chrono",
  "clap",
  "serde_json",
+ "similar",
  "tact",
  "tact_agent_api",
- "tact_catalog",
  "tact_host",
  "tact_llm",
  "tact_protocol",
@@ -9309,7 +9314,6 @@ dependencies = [
  "embed-resource",
  "gpui-base",
  "gpui-component",
- "gpui-component-macros",
  "gpui-kit-assets",
  "gpui-pre",
  "gpui-pre-platform",
@@ -9330,9 +9334,7 @@ name = "tact-ui"
 version = "2.0.6"
 dependencies = [
  "anyhow",
- "async-trait",
  "chrono",
- "clap",
  "console-subscriber",
  "rmcp",
  "serde_json",
@@ -9365,7 +9367,6 @@ version = "2.0.6"
 dependencies = [
  "async-trait",
  "futures-util",
- "serde",
  "serde_json",
  "tact_agent_api",
  "thiserror 2.0.19",
@@ -9392,8 +9393,6 @@ dependencies = [
 name = "tact_catalog"
 version = "2.0.6"
 dependencies = [
- "serde",
- "serde_json",
  "strum 0.27.2",
 ]
 
@@ -9431,7 +9430,6 @@ dependencies = [
  "chrono",
  "clap",
  "regex",
- "rmcp",
  "serde_json",
  "tact",
  "tact_llm",
@@ -9439,7 +9437,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "uuid",
- "wiremock",
 ]
 
 [[package]]
@@ -10213,14 +10210,11 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "crossterm 0.28.1",
- "pulldown-cmark",
  "ratatui",
- "ratatui-markdown",
  "regex",
  "serde",
  "serde_json",
  "strum 0.27.2",
- "syntect",
  "tact",
  "tact_catalog",
  "tact_llm",
@@ -10229,7 +10223,6 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tracing",
- "unicode-segmentation",
  "unicode-width",
 ]
 

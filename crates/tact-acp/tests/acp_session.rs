@@ -416,6 +416,21 @@ async fn run_scenario(
         pushed_names, advertised,
         "session/new must push the same command list it returns"
     );
+    // The host emits a background snapshot at startup even when it is empty.
+    // That is bookkeeping, not a turn boundary; a new session must stay silent
+    // until the first prompt.
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let mut early = Vec::new();
+    while let Ok(notification) = updates.try_recv() {
+        early.push(notification.update);
+    }
+    assert!(
+        !early.iter().any(|update| matches!(
+            update,
+            schema::SessionUpdate::StateUpdate(schema::StateUpdate::Idle(_))
+        )),
+        "session/new must not publish an idle before a prompt: {early:?}"
+    );
 
     // 3. Idle model switch: the response is the source of truth and the
     //    runtime confirmation arrives as config_option_update.
@@ -864,6 +879,35 @@ async fn run_scenario(
     assert_eq!(
         model_current(model_option(&mid_turn.config_options)),
         "fake-b"
+    );
+    // A read-out command issued while the model turn runs answers the prompt
+    // without owning the turn: its notice arrives, but no idle may follow
+    // until the model itself finishes.
+    session.send_prompt("/stats").block_task().await?;
+    let mut stats_notice = false;
+    while !stats_notice {
+        match next_update(&mut updates, &session_id).await {
+            schema::SessionUpdate::Notice(notice) if notice.title.contains("Statistics") => {
+                stats_notice = true;
+            }
+            schema::SessionUpdate::StateUpdate(schema::StateUpdate::Idle(_)) => {
+                panic!("a mid-turn /stats must not end the running turn");
+            }
+            _ => {}
+        }
+    }
+    let early = tokio::time::timeout(
+        Duration::from_millis(250),
+        next_update(&mut updates, &session_id),
+    )
+    .await;
+    assert!(
+        early.is_err()
+            || !matches!(
+                early.unwrap(),
+                schema::SessionUpdate::StateUpdate(schema::StateUpdate::Idle(_))
+            ),
+        "a mid-turn /stats must not publish an idle before the model finishes"
     );
     // The turn cannot finish until this release, so the switch is guaranteed
     // to be observed while Running rather than racing a short fake response.

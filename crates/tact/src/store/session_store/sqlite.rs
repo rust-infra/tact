@@ -268,7 +268,7 @@ impl SqliteSessionStore {
                 if !message.origin.is_user_turn() {
                     continue;
                 }
-                title = derive_session_title(&agent_message_text(&message));
+                title = derive_session_title(&message.text_content());
                 if title.is_some() {
                     break;
                 }
@@ -472,18 +472,6 @@ fn tool_result_statuses(message: &AgentMessage) -> Vec<tact_agent_api::ToolResul
             _ => None,
         })
         .collect()
-}
-
-fn agent_message_text(message: &AgentMessage) -> String {
-    message
-        .content
-        .iter()
-        .filter_map(|block| match block {
-            AgentContentBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn derive_session_title(text: &str) -> Option<String> {
@@ -772,7 +760,7 @@ impl super::SessionStore for SqliteSessionStore {
         let derived_title = message
             .origin
             .is_user_turn()
-            .then(|| agent_message_text(message))
+            .then(|| message.text_content())
             .and_then(|text| derive_session_title(&text));
         let now = Self::now();
         let mut tx = self

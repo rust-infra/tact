@@ -1259,7 +1259,7 @@ impl TranscriptReducer {
             }
             match &message.origin {
                 MessageOrigin::User => {
-                    let text = message_text(message);
+                    let text = message.text_content();
                     let row = self.push_row_at(
                         None,
                         RowBody::User(UserRow {
@@ -1275,7 +1275,7 @@ impl TranscriptReducer {
                     // marks it as data rather than user speech; the card shows
                     // the body, and repeats of the same briefing collapse into
                     // the one already on screen.
-                    let text = message_text(message);
+                    let text = message.text_content();
                     let body = tact::hook::hook_context_body(&text);
                     if let Some(row) = self.push_hook_context(
                         Some(Arc::from(source.clone())),
@@ -1328,7 +1328,7 @@ impl TranscriptReducer {
                             delta.changed(row);
                         }
                     }
-                    let text = message_text(message);
+                    let text = message.text_content();
                     if !text.trim().is_empty() {
                         let row = self.push_row_at(
                             None,
@@ -1374,7 +1374,7 @@ impl TranscriptReducer {
                 | MessageOrigin::SubagentResult
                 | MessageOrigin::Continuation
                 | MessageOrigin::CompactionSummary => {
-                    let text = message_text(message);
+                    let text = message.text_content();
                     if !text.trim().is_empty() {
                         self.active_group = None;
                         let row = self.push_row(
@@ -2395,18 +2395,6 @@ fn tool_label(name: &str, arg_summary: &str) -> String {
 
 fn now_label() -> Arc<str> {
     Arc::from(chrono::Local::now().format("%H:%M").to_string())
-}
-
-fn message_text(message: &AgentMessage) -> String {
-    message
-        .content
-        .iter()
-        .filter_map(|block| match block {
-            AgentContentBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn chunks_text(chunks: &[ToolOutputChunk]) -> String {

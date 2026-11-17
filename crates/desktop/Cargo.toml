@@ -49,7 +49,6 @@ gpui = { workspace = true }
 gpui_base = { workspace = true }
 gpui_component = { workspace = true }
 gpui_component_assets = { workspace = true }
-gpui-component-macros = { workspace = true }
 gpui_platform = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]

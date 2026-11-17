@@ -159,6 +159,18 @@ impl AgentMessage {
         })
     }
 
+    /// The message's text blocks joined by a newline.
+    pub fn text_content(&self) -> String {
+        self.content
+            .iter()
+            .filter_map(|block| match block {
+                AgentContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     pub fn tool_result_ids(&self) -> impl Iterator<Item = &str> {
         self.content.iter().filter_map(|block| match block {
             AgentContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
@@ -177,16 +189,6 @@ impl AgentMessage {
             _ => false,
         });
         grouped && has_result
-    }
-
-    pub fn text_content(&self) -> String {
-        self.content
-            .iter()
-            .filter_map(|block| match block {
-                AgentContentBlock::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect()
     }
 
     /// The model returned a turn with nothing a reader can act on.
