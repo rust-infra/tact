@@ -1231,27 +1231,51 @@ impl AgentKernel {
         let result = self
             .compact_state_body(state, session, request, cancel, model)
             .await;
-        match &result {
-            Ok(CompactionOutcome::Replaced(replacement)) => {
-                self.events
-                    .emit(AgentEvent::Compaction(CompactionEvent::completed(
+        // The terminal state describes the *replacement*, not whether every
+        // step after it succeeded. Once the transcript was replaced, the
+        // compaction happened; a post-commit step that then failed cannot
+        // change that fact, and reporting it as this card's failure would
+        // contradict the store.
+        match result {
+            Ok(CompactionCommitted { outcome, error }) => {
+                match &outcome {
+                    CompactionOutcome::Replaced(replacement) => {
+                        self.events
+                            .emit(AgentEvent::Compaction(CompactionEvent::completed(
+                                kind,
+                                replacement.summary.clone(),
+                            )));
+                    }
+                    CompactionOutcome::Skipped { reason } => {
+                        self.events
+                            .emit(AgentEvent::Compaction(CompactionEvent::cancelled(
+                                kind,
+                                reason.clone(),
+                            )));
+                    }
+                }
+                // A post-commit failure travels as its own event, not as this
+                // card's terminal state. Silence would be wrong too: a hook or
+                // a policy's bookkeeping did not finish, and the user should
+                // hear it.
+                if let Some(error) = error {
+                    self.events.emit(AgentEvent::CompactionFinishedWithError {
                         kind,
-                        replacement.summary.clone(),
-                    )));
-            }
-            Ok(CompactionOutcome::Skipped { reason }) => {
-                self.events
-                    .emit(AgentEvent::Compaction(CompactionEvent::cancelled(
-                        kind,
-                        reason.clone(),
-                    )));
+                        error: error.to_string(),
+                    });
+                }
+                // `Ok` keeps meaning "the context was replaced", because that
+                // is what every caller branches on: the driver prints
+                // `Compaction failed` only for `Err`, and the recovery loop
+                // retries only then.
+                Ok(outcome)
             }
             Err(failure) => {
                 self.events
                     .emit(AgentEvent::Compaction(failure.compaction_event(kind)));
+                Err(failure.into_kernel_error())
             }
         }
-        result.map_err(CompactionFailure::into_kernel_error)
     }
 
     async fn compact_state_body(
@@ -1261,7 +1285,7 @@ impl AgentKernel {
         request: CompactionRequest,
         cancel: CancelToken,
         model: &ObservedModelPort,
-    ) -> Result<CompactionOutcome, CompactionFailure> {
+    ) -> Result<CompactionCommitted, CompactionFailure> {
         let committed_request = request.clone();
         model.set_call_kind(ModelCallKind::LocalCompact);
         let capabilities = self.deps.model.capabilities();
@@ -1290,6 +1314,7 @@ impl AgentKernel {
             self.record_usage(call, None, &cancel).await?;
         }
 
+        let mut post_commit_error = None;
         if let CompactionOutcome::Replaced(ContextReplacement {
             transcript, cursor, ..
         }) = &outcome
@@ -1318,12 +1343,22 @@ impl AgentKernel {
                 capabilities: &capabilities,
                 remaining_turns: None,
             };
-            self.deps
+            // Past this point the replacement is durable, so a failure here
+            // can no longer change what happened — only report that a
+            // post-commit step did not finish. Returning it as a compaction
+            // failure would tell the user their context was not compacted
+            // while the store already holds the replacement.
+            post_commit_error = self
+                .deps
                 .context
                 .compaction_committed(&view, &committed_request)
-                .await?;
+                .await
+                .err();
         }
-        Ok(outcome)
+        Ok(CompactionCommitted {
+            outcome,
+            error: post_commit_error,
+        })
     }
 
     async fn reconcile_interrupted_tools(
@@ -1807,6 +1842,25 @@ enum CompactionFailure {
     Context(String),
     /// Anything else the compaction body hit (transcript commit, usage flush).
     Other(KernelError),
+}
+
+/// A compaction that replaced the context, then failed a post-commit step.
+///
+/// The replacement is durable before `compaction_committed` runs: the kernel
+/// has already called `TranscriptStore::replace` and updated the caller's
+/// transcript and cursor. A policy's post-commit step (a hook, an external
+/// `ContextPolicy`'s bookkeeping) therefore cannot retroactively make the
+/// compaction a failure — it broke *after* the thing it observes succeeded.
+///
+/// Carrying this separately from [`CompactionFailure`] is what keeps the card
+/// and the transcript from disagreeing: the card has already been closed
+/// `Completed` from the replacement, and the caller still learns, as an error,
+/// that a post-commit step was incomplete.
+#[derive(Debug)]
+struct CompactionCommitted {
+    outcome: CompactionOutcome,
+    /// The post-commit step's error, `None` when it succeeded.
+    error: Option<ContextError>,
 }
 
 impl From<ContextError> for CompactionFailure {

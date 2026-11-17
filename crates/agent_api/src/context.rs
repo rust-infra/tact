@@ -122,10 +122,18 @@ pub struct ContextReplacement {
     ///
     /// For local summarization this is the prose summary. Native provider
     /// compaction replaces history inside the provider and yields no local
-    /// text, so there it is the provider's read-out instead (the retained item
+    /// text, so there it is the provider's read-out instead (the baseline item
     /// count and the bounded compaction id, or a plain sentence when the
     /// cursor carries no product state) — a host that draws a compaction card
-    /// needs a body, and an empty one reads as "nothing happened".
+    /// can then show what replaced the history rather than an empty body.
+    ///
+    /// `None` is legitimate and means "there is nothing to say": micro
+    /// compaction stubs old tool results in place, which is not a
+    /// summarization, and inventing prose for it would misdescribe it. A host
+    /// must render `None` as a card with no body rather than as a failure, and
+    /// must treat a blank string the same way as `None` — the field has no
+    /// non-blank contract, because `ContextPolicy` is a published trait and a
+    /// third-party policy never had to honour one.
     ///
     /// It travels on the replacement because that value is the only channel the
     /// kernel has: the text is produced inside the context policy

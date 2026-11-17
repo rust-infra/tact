@@ -574,23 +574,62 @@ fn compact_truncation_note_labels_both_units() {
     );
 }
 
-/// The native path's log row is for the TUI; the card needs the same fact as
-/// prose, with the id still bounded to the prefix the log line shows.
+/// The log row and the card body come from one typed value, in two registers.
+///
+/// They used to be one string: the card re-parsed the log row. That parse had
+/// no validation, so `items=abc` and `items=-5` were asserted as fact, and the
+/// prose claimed those items were "kept" when the number is the baseline item
+/// count — which includes the compaction marker itself.
 #[test]
-fn native_readout_turns_the_log_row_into_card_prose() {
+fn native_readout_writes_the_log_row_and_the_card_from_one_value() {
+    let readout = NativeReadout {
+        baseline_items: 2,
+        compact_id: "cmp_native_0".into(),
+    };
+    // The log row keeps its shape and its raw baseline count: tests and
+    // `book/23` pin it, and it says `items`, not `kept`.
     assert_eq!(
-        native_compaction_readout("[responses compacted: items=2, id=cmp_native_0]"),
-        "Native Responses compaction kept 2 items (provider id cmp_native_0)."
+        readout.log_line(),
+        "[responses compacted: items=2, id=cmp_native_0]"
     );
+    // The card says what the number means.
     assert_eq!(
-        native_compaction_readout("[responses compacted: items=7, id=]"),
-        "Native Responses compaction kept 7 items."
+        readout.card_text(),
+        "Native Responses compaction replaced the conversation with a 2 item baseline \
+         (provider id cmp_native_0)."
     );
-    // Unparseable notices still produce a sentence: the caller only reaches
-    // this on a real replacement, so `None` would leave an empty card.
+
+    // No provider id: the sentence still reads, without an empty "id ()".
+    let anonymous = NativeReadout {
+        baseline_items: 7,
+        compact_id: String::new(),
+    };
     assert_eq!(
-        native_compaction_readout("[responses compacted]"),
-        NATIVE_COMPACTION_FALLBACK_SUMMARY
+        anonymous.card_text(),
+        "Native Responses compaction replaced the conversation with a 7 item baseline."
+    );
+    assert_eq!(anonymous.log_line(), "[responses compacted: items=7, id=]");
+}
+
+/// The minimal legal compact resource retains nothing and must not claim it did.
+///
+/// The baseline holds the compaction item itself, so `items=1` means "one
+/// marker and no retained messages". Reporting "kept 1 items" was the lie;
+/// "a 1 item baseline" is checkable.
+#[test]
+fn a_compaction_item_alone_is_not_reported_as_kept_material() {
+    let readout = NativeReadout {
+        baseline_items: 1,
+        compact_id: "cmp_min_item".into(),
+    };
+    assert_eq!(
+        readout.card_text(),
+        "Native Responses compaction replaced the conversation with a 1 item baseline \
+         (provider id cmp_min_item)."
+    );
+    assert!(
+        !readout.card_text().contains("kept"),
+        "the baseline count is not a retained-material count"
     );
 }
 

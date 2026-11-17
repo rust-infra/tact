@@ -203,10 +203,16 @@ lines are worded differently.
 - `completed` carries Tact's summary as `summary: [text]`, so a client can show
   what replaced the history it never sees. Native Responses compaction replaces
   history provider-side and produces no prose, so there the body is its
-  read-out instead — the provider's retained item count and the bounded
-  compaction id (`Native Responses compaction kept 2 items (provider id
-  cmp_sanitize).`), or a plain sentence when the cursor carries no Tact
-  provider state. A card with an empty body reads as "nothing happened".
+  read-out instead — the provider's **baseline** item count and the bounded
+  compaction id (`Native Responses compaction replaced the conversation with a
+  2 item baseline (provider id cmp_sanitize).`), or a plain sentence when the
+  cursor carries no Tact provider state. The number is a baseline, not a count
+  of retained material: it includes the compaction marker itself.
+- A `None` or blank summary means "nothing to say", not a failure — micro
+  compaction is the `None` case, since stubbing old tool results is not a
+  summarization. Both map to a card with no body, which is why a blank string
+  is filtered rather than forwarded: `ContextPolicy` is a published trait, so a
+  third-party policy can send one.
 - `failed` carries the error text. `cancelled` covers a `PreCompact` hook veto
   and a user cancellation, and sets `error` to the reason — ACP has no
   separate field, and a cancelled compaction is not a failure.

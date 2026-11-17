@@ -692,6 +692,16 @@ effort，再按实测 reasoning 调整预留）</td>
 <td><code>UserCommand::Compact</code> 真正替换了上下文</td>
 </tr>
 <tr>
+<td><code>Compaction cancelled.</code></td>
+<td><code>UserCommand::Compact</code> 被用户取消；内核已把卡片关成
+<code>Cancelled</code>，所以这里不是失败行</td>
+</tr>
+<tr>
+<td><code>[compact post-commit step failed] &lt;kind&gt;: &lt;错误&gt;</code></td>
+<td>替换已持久化之后，<code>PostCompact</code> hook 或策略的收尾步骤失败；
+压缩本身成功，卡片仍为 <code>Completed</code></td>
+</tr>
+<tr>
 <td><code>Nothing to compact: &lt;原因&gt;</code></td>
 <td><code>UserCommand::Compact</code> 没有压缩：<code>PreCompact</code>
 hook 否决、或本来没有可压缩内容（<code>compact_history</code> 返回

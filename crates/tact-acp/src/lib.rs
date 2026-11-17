@@ -1676,8 +1676,14 @@ impl CompactionCard {
                 let id = self.open.take().unwrap_or_else(mint);
                 let mut update =
                     schema::CompactionUpdate::new(id, schema::CompactionStatus::Completed);
-                if let Some(summary) = summary {
-                    update = update.summary(vec![summary.clone().into()]);
+                // A blank body is absent, not present: this mapping is the last
+                // place that can tell, and `Some("")` would render an empty
+                // card the user reads as "nothing happened". The product
+                // compactor never sends one — it rejects an empty summary — but
+                // `ContextPolicy` is a published trait and the summary has no
+                // non-blank contract.
+                if let Some(summary) = summary.as_deref().filter(|text| !text.trim().is_empty()) {
+                    update = update.summary(vec![summary.to_string().into()]);
                 }
                 updates.push(update);
             }
@@ -5239,6 +5245,89 @@ mod tests {
             Some(CommandAnswer::Settled),
             "a plain read-out is the answer"
         );
+    }
+
+    /// Micro compaction's `None` summary is a card with no body, not a failure.
+    ///
+    /// Stubbing old tool results in place is not a summarization, so there is
+    /// no prose to invent. The card still opens and closes, because the client
+    /// should learn that the context changed.
+    #[test]
+    fn a_micro_compaction_completes_without_a_body() {
+        use tact_agent_api::{CompactionEvent, CompactionKind, CompactionState as S};
+
+        let mut card = CompactionCard::default();
+        let started = card.apply(
+            &CompactionEvent {
+                kind: CompactionKind::Micro,
+                state: S::Started,
+            },
+            || schema::CompactionId::new("cmp-micro"),
+        );
+        let completed = card.apply(
+            &CompactionEvent {
+                kind: CompactionKind::Micro,
+                state: S::Completed { summary: None },
+            },
+            || schema::CompactionId::new("unused"),
+        );
+        assert_eq!(completed[0].compaction_id, started[0].compaction_id);
+        assert_eq!(completed[0].status, schema::CompactionStatus::Completed);
+        assert!(matches!(
+            &completed[0].summary,
+            agent_client_protocol::schema::MaybeUndefined::Undefined
+                | agent_client_protocol::schema::MaybeUndefined::Null
+        ));
+    }
+
+    /// A blank summary is absent, not a present empty body.
+    ///
+    /// `Some("")` would give the card an empty body the user reads as "nothing
+    /// happened". The product compactor rejects an empty summary, so this is
+    /// the third-party `ContextPolicy` case — which is exactly why the guard
+    /// lives at the boundary rather than in the producer.
+    #[test]
+    fn a_blank_summary_does_not_put_an_empty_body_on_the_card() {
+        use tact_agent_api::{CompactionEvent, CompactionKind};
+
+        for blank in ["", "   ", "\n\t "] {
+            let mut card = CompactionCard::default();
+            let updates = card.apply(
+                &CompactionEvent {
+                    kind: CompactionKind::Command,
+                    state: tact_agent_api::CompactionState::Completed {
+                        summary: Some(blank.to_string()),
+                    },
+                },
+                || schema::CompactionId::new("cmp-blank"),
+            );
+            assert_eq!(updates.len(), 1);
+            assert_eq!(updates[0].status, schema::CompactionStatus::Completed);
+            assert!(
+                matches!(
+                    &updates[0].summary,
+                    agent_client_protocol::schema::MaybeUndefined::Undefined
+                        | agent_client_protocol::schema::MaybeUndefined::Null
+                ),
+                "a blank summary must not become a body: {blank:?}"
+            );
+        }
+
+        // The counterpart: real prose still reaches the client.
+        let mut card = CompactionCard::default();
+        let updates = card.apply(
+            &CompactionEvent {
+                kind: CompactionKind::Command,
+                state: tact_agent_api::CompactionState::Completed {
+                    summary: Some("what changed".into()),
+                },
+            },
+            || schema::CompactionId::new("cmp-real"),
+        );
+        assert!(matches!(
+            &updates[0].summary,
+            agent_client_protocol::schema::MaybeUndefined::Value(blocks) if blocks.len() == 1
+        ));
     }
 
     /// The other three terminal states are clean stops.

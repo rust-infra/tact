@@ -2563,6 +2563,29 @@ mod tests {
         ));
     }
 
+    /// A post-commit failure does not print "Compaction failed".
+    ///
+    /// `compact_line` only sees `Err` when nothing was replaced, because the
+    /// kernel keeps those two apart. This pins the reason that split exists: the
+    /// driver's error line is a claim about the transcript, and the transcript
+    /// *was* compacted.
+    #[test]
+    fn a_committed_compaction_never_prints_a_failure_line() {
+        use tact::compact::{CompactionOutcome, ContextReplacement};
+
+        // The replacement is what the kernel hands back; the post-commit
+        // failure travels on its own event.
+        let committed = Ok(CompactionOutcome::Replaced(ContextReplacement {
+            transcript: None,
+            cursor: tact::compact::CursorUpdate::Unchanged,
+            summary: Some("what changed".into()),
+        }));
+        assert!(matches!(
+            compact_line(committed, false),
+            AgentUpdate::Info(text) if text == "Compaction complete."
+        ));
+    }
+
     /// The three successful shapes keep their own lines.
     ///
     /// `Skipped` is the one that used to read "complete": a vetoed compaction

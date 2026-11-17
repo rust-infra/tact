@@ -116,6 +116,17 @@ impl TelemetryEventObserver {
                     );
                 }
             },
+            AgentEvent::CompactionFinishedWithError { kind, error } => {
+                // Not a compaction failure: the context was replaced. This is
+                // the step after it that did not finish, and it is still worth
+                // a warning because someone's hook or bookkeeping did not run.
+                warn!(
+                    target: "tact_agent_sdk",
+                    kind = ?kind,
+                    error,
+                    "agent compaction committed with an errored post-commit step"
+                );
+            }
             AgentEvent::Notice { notice } => match notice {
                 AgentNotice::RecoveryBackoff {
                     attempt,

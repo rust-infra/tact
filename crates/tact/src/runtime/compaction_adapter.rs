@@ -73,11 +73,69 @@ pub(crate) const COMPACTED_TOOL_RESULT: &str =
     "[Earlier tool result compacted. Re-run the tool (e.g., read_file) for full content.]";
 /// The read-out a native compaction's card shows in place of a prose summary.
 ///
-/// The native path replaces history provider-side, so there is no local text;
-/// what it does report is this count. Kept next to the `[responses compacted:
-/// items=…]` log line that carries the same numbers so the two cannot drift.
+/// The native path replaces history provider-side, so there is no local text.
 pub(crate) const NATIVE_COMPACTION_FALLBACK_SUMMARY: &str =
     "Native Responses compaction replaced the conversation provider-side.";
+
+/// What a native Responses compaction actually did, as data.
+///
+/// Two consumers need these numbers and they must not disagree: the TUI-style
+/// log row (`[responses compacted: items=N, id=…]`) and the compaction card's
+/// body. Passing one formatted string between them and re-parsing it was how
+/// the card ended up printing "kept N items" for a count that means something
+/// else — `items` is the **baseline** item count, and the baseline includes
+/// the compaction item itself, so the minimal legal resource reported "kept 1
+/// items" with nothing retained.
+///
+/// Built once per native compaction, from the provider state rather than from
+/// text, so there is no parse step to get wrong and nothing to validate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeReadout {
+    /// The baseline item count the endpoint's compact resource returned.
+    baseline_items: usize,
+    /// The bounded compaction id prefix, or empty when the provider sent none.
+    compact_id: String,
+}
+
+impl NativeReadout {
+    fn from_state(state: &tact_llm::ResponsesConversationState) -> Self {
+        Self {
+            baseline_items: state.input_items.len(),
+            compact_id: compact_id_display(state.compaction_id.as_deref().unwrap_or_default()),
+        }
+    }
+
+    /// The log row the TUI and the desktop render.
+    ///
+    /// Wording and shape are pinned by tests and by `book/23`, so this keeps
+    /// reporting the raw baseline count and says `items` rather than `kept`.
+    fn log_line(&self) -> String {
+        format!(
+            "[responses compacted: items={}, id={}]",
+            self.baseline_items, self.compact_id
+        )
+    }
+
+    /// The card's body: what replaced the history, in prose.
+    ///
+    /// Says "baseline" because that is what the number is. Claiming those
+    /// items were "kept" would assert retention the count does not measure —
+    /// the baseline also holds the compaction marker itself.
+    fn card_text(&self) -> String {
+        if self.compact_id.is_empty() {
+            format!(
+                "Native Responses compaction replaced the conversation with a {} item baseline.",
+                self.baseline_items
+            )
+        } else {
+            format!(
+                "Native Responses compaction replaced the conversation with a {} item baseline \
+                 (provider id {}).",
+                self.baseline_items, self.compact_id
+            )
+        }
+    }
+}
 /// The stub has to be shorter than the results it replaces, or micro compaction
 /// grows the context it was meant to shrink.
 const _: () = assert!(COMPACTED_TOOL_RESULT.len() < MICRO_COMPACT_STUB_CHARS);
@@ -203,20 +261,25 @@ impl TactCompactor {
             });
         }
 
-        let mut native_readout = None;
+        let mut native_card = None;
         let (transcript, summary, cursor, success_notice) = if self.native_compaction {
-            let (cursor, success_notice) = self.compact_native(state, model, &cancel).await?;
+            let (cursor, readout) = self.compact_native(state, model, &cancel).await?;
             // Native compaction always replaces something, so the host always
             // gets a read-out: the provider's own numbers when its cursor is
             // readable, a plain sentence when it is not (an external or fake
             // `ModelPort` may hand back an opaque cursor that carries no Tact
             // provider state).
-            native_readout = Some(
-                success_notice
-                    .as_deref()
-                    .map(native_compaction_readout)
+            //
+            // The card text is derived from the same typed value that writes
+            // the log row, so the two describe one fact in two registers
+            // instead of one string being re-parsed into the other.
+            native_card = Some(
+                readout
+                    .as_ref()
+                    .map(NativeReadout::card_text)
                     .unwrap_or_else(|| NATIVE_COMPACTION_FALLBACK_SUMMARY.to_string()),
             );
+            let success_notice = readout.as_ref().map(NativeReadout::log_line);
             (None, None, cursor, success_notice)
         } else {
             let (transcript, summary) = self
@@ -240,9 +303,9 @@ impl TactCompactor {
         // out of `summary`/`pending_commit` on purpose: the facade treats that
         // field as local summarization text (`last_summary`), and a count is not
         // prose.
-        let summary_for_host = match (summary.clone(), native_readout) {
+        let summary_for_host = match (summary.clone(), native_card) {
             (Some(summary), _) => Some(summary),
-            (None, Some(readout)) => Some(readout),
+            (None, Some(card)) => Some(card),
             (None, None) => None,
         };
         *self
@@ -396,7 +459,7 @@ impl TactCompactor {
         state: &ContextView<'_>,
         model: &dyn ModelPort,
         cancel: &CancelToken,
-    ) -> Result<(CursorUpdate, Option<String>), ContextError> {
+    ) -> Result<(CursorUpdate, Option<NativeReadout>), ContextError> {
         self.services
             .emit_update(AgentUpdate::Info("[native compact]".into()));
         let request = summary_request(
@@ -417,21 +480,16 @@ impl TactCompactor {
                 // The product adapter can only describe a Tact-owned cursor.
                 // Fake/external ModelPorts may return an opaque cursor; that
                 // must still satisfy the replacement contract, just without a
-                // product-specific success notice.
-                let notice =
+                // product-specific read-out.
+                let readout =
                     tact_llm::neutral::provider_state(cursor)
                         .ok()
                         .map(|state| match state {
                             tact_llm::ProviderConversationState::OpenAiResponses(state) => {
-                                let item_count = state.input_items.len();
-                                let compaction_id = state.compaction_id.unwrap_or_default();
-                                format!(
-                                    "[responses compacted: items={item_count}, id={}]",
-                                    compact_id_display(&compaction_id)
-                                )
+                                NativeReadout::from_state(&state)
                             }
                         });
-                Ok((response.cursor, notice))
+                Ok((response.cursor, readout))
             }
             CursorUpdate::Replace { cursor: None } => Err(ContextError::Compaction(
                 "native Responses compaction returned no replacement cursor".into(),
@@ -973,32 +1031,6 @@ fn summary_failure(error: &tact_agent_api::ModelError, failure: FailureKind) -> 
         FailureKind::PromptTooLong | FailureKind::Transient | FailureKind::Permanent => {
             ContextError::Compaction(error.to_string())
         }
-    }
-}
-
-/// Turn the native path's diagnostic line into text a compaction card can show.
-///
-/// The line is `[responses compacted: items=N, id=X]`: a log row, brackets and
-/// field names included, meant for the TUI. A host that draws a compaction
-/// card needs the same fact as prose, and it must keep the bounded id prefix
-/// that [`compact_id_display`] produced — the provider's full identifier never
-/// leaves the protocol baseline.
-///
-/// A notice this function cannot read still produces a sentence rather than
-/// `None`: the caller only reaches it when the compaction replaced something,
-/// and dropping the text there would put an empty card in front of the user.
-fn native_compaction_readout(notice: &str) -> String {
-    let field = |name: &str| -> Option<&str> {
-        let rest = notice.split_once(name)?.1;
-        let value = rest.split([',', ']']).next()?.trim();
-        (!value.is_empty()).then_some(value)
-    };
-    match (field("items="), field("id=")) {
-        (Some(items), Some(id)) => {
-            format!("Native Responses compaction kept {items} items (provider id {id}).")
-        }
-        (Some(items), None) => format!("Native Responses compaction kept {items} items."),
-        _ => NATIVE_COMPACTION_FALLBACK_SUMMARY.to_string(),
     }
 }
 

@@ -465,6 +465,16 @@ impl TactEventBridge {
                     )));
                 }
             }
+            AgentEvent::CompactionFinishedWithError { kind, error } => {
+                // The card already closed `Completed` above: the replacement is
+                // durable. This warns instead, because the failed step (a
+                // PostCompact hook, a policy's own bookkeeping) still left work
+                // undone and the user should know without being told the
+                // compaction failed.
+                self.events.send(AgentUpdate::Info(format!(
+                    "[compact post-commit step failed] {kind:?}: {error}"
+                )));
+            }
             AgentEvent::Notice { notice } => self.emit_notice(notice),
         }
     }

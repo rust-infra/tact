@@ -168,13 +168,27 @@ Two notes for anyone adding a consumer:
   set by the context policy and copied into the `Completed` event. For local
   summarization that is the prose summary. Native Responses compaction has no
   prose — history is replaced provider-side — so its read-out stands in: the
-  retained item count and the bounded compaction id, or a plain sentence when
-  the cursor carries no Tact provider state. Reading
+  **baseline** item count and the bounded compaction id, or a plain sentence
+  when the cursor carries no Tact provider state. The count is a baseline and
+  not a count of retained material (it includes the compaction marker), which
+  is why the card says "a N item baseline" rather than "kept N items". Both
+  the card text and the `[responses compacted: items=…]` log row are built from
+  one typed `NativeReadout`, so neither can drift from the other. Reading
   `compact_state.last_summary` instead would not work: the kernel emits the
   event, that field is facade state written by `compaction_committed`, and the
   policy's return value is the only place both halves of a compaction agree.
   The read-out stays out of `last_summary` on purpose — that field means local
   summarization text, and a count is not prose.
+- **`Ok` means the context was replaced.** `compact()` returns `Err` only when
+  nothing was persisted. A step that fails *after* the replacement — a
+  `PostCompact` hook, a policy's bookkeeping in `compaction_committed` —
+  cannot unmake it, so the card already closed `Completed` and the failure
+  travels as `AgentEvent::CompactionFinishedWithError`. Returning `Err` there
+  used to print "Compaction failed" over a transcript the store had compacted.
+- **A `None` or blank summary is not a failure.** Micro compaction stubs tool
+  results in place and has no prose to show, so `summary: None` is correct; a
+  blank string is treated as absent at the ACP boundary, because
+  `ContextPolicy` is a published trait and a third-party policy may send one.
 - **The `Info` lines stay.** `[auto compact]`, `[compact summary 1/6]`, and
   `Compaction complete (Auto).` are what the TUI and the desktop render. The
   typed event is a second view of the same fact, not a replacement — dropping

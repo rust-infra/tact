@@ -571,9 +571,16 @@ async fn responses_compact_history_dispatches_to_native_endpoint() {
         })
         .expect("native compaction must report a completed state");
     let completed = completed.as_deref().expect("the card needs a body");
+    // The number is the baseline item count, and the prose says so. It must
+    // not claim those items were "kept": the baseline includes the compaction
+    // marker, so "kept" would assert retention the count does not measure.
     assert!(
-        completed.contains("2 items") && completed.contains("cmp_sanitize"),
+        completed.contains("2 item baseline") && completed.contains("cmp_sanitize"),
         "native read-out must carry the provider's count and bounded id, got: {completed}"
+    );
+    assert!(
+        !completed.contains("kept"),
+        "the baseline count is not a retained-material count, got: {completed}"
     );
     // Bounded, not truncated by accident: the read-out must not be longer than
     // the log row that carries the same numbers (`compact_id_display` caps the

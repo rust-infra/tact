@@ -1176,6 +1176,138 @@ async fn a_failed_compaction_reports_a_terminal_state_before_the_error() {
     ));
 }
 
+/// A step that fails *after* the replacement was persisted is not a failed
+/// compaction.
+///
+/// `compaction_committed` runs once the kernel has already called
+/// `TranscriptStore::replace` and updated the caller's transcript and cursor.
+/// A `?` there used to turn a durable replacement into a `Failed` card and a
+/// "Compaction failed" line, while the store held the compacted context — the
+/// two halves of the same fact disagreeing.
+///
+/// The card now closes `Completed` from the replacement, and the post-commit
+/// failure travels as its own event. `Err` keeps meaning "nothing was
+/// replaced", which is what every caller branch on.
+#[tokio::test]
+async fn a_failed_post_commit_step_does_not_unmake_the_replacement() {
+    let model = ScriptedModel::new(Vec::new());
+    let context = ScriptedContext::new();
+    context.push_compaction(CompactionOutcome::Replaced(ContextReplacement {
+        transcript: Some(vec![tact_agent_api::AgentMessage::text(
+            tact_agent_api::AgentRole::User,
+            tact_agent_api::MessageOrigin::User,
+            "compacted",
+        )]),
+        cursor: tact_agent_api::CursorUpdate::Replace { cursor: None },
+        summary: Some("what changed".into()),
+    }));
+    // A PostCompact hook, or a third-party ContextPolicy's own bookkeeping.
+    context.fail_next_compaction_commit(tact_agent_api::ContextError::Compaction(
+        "hook exploded".into(),
+    ));
+    let h = harness(
+        model,
+        ScriptedTools::new(Vec::new()),
+        ScriptedGate::new(),
+        context,
+    );
+    let mut state = state();
+
+    // Ok, not Err: the compaction happened.
+    let outcome = h
+        .kernel
+        .compact(
+            &mut state,
+            &session(),
+            RunId::new("compact-1"),
+            CompactionRequest::Command { focus: None },
+            CancelToken::new(),
+        )
+        .await
+        .expect("a durable replacement is not a failed compaction");
+    assert!(matches!(outcome, CompactionOutcome::Replaced(_)));
+
+    let events = h.events.events();
+    let cards: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::Compaction(event) => Some(event),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(cards.len(), 2, "start and one terminal state: {cards:?}");
+    // The card says what happened, and carries the summary that replaced the
+    // history.
+    assert!(matches!(
+        &cards[1].state,
+        tact_agent_api::CompactionState::Completed { summary: Some(summary) }
+            if summary == "what changed"
+    ));
+
+    // The failure is still reported, as its own fact.
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::CompactionFinishedWithError { error, .. } if error.contains("hook exploded")
+        )),
+        "a failed post-commit step must not be silent: {events:?}"
+    );
+}
+
+/// The other half of the invariant: `Err` still means nothing was replaced.
+///
+/// The test above would also pass if the kernel had simply stopped reporting
+/// failures. This pins the boundary from the other side — a policy failure
+/// before the replacement is still an `Err` and still closes the card `Failed`.
+#[tokio::test]
+async fn a_policy_failure_before_the_replacement_is_still_an_error() {
+    let model = ScriptedModel::new(Vec::new());
+    let context = ScriptedContext::new();
+    context.push_compaction_error(tact_agent_api::ContextError::Compaction(
+        "summarizer exploded".into(),
+    ));
+    let h = harness(
+        model,
+        ScriptedTools::new(Vec::new()),
+        ScriptedGate::new(),
+        context,
+    );
+    let mut state = state();
+
+    let error = h
+        .kernel
+        .compact(
+            &mut state,
+            &session(),
+            RunId::new("compact-1"),
+            CompactionRequest::Command { focus: None },
+            CancelToken::new(),
+        )
+        .await
+        .expect_err("nothing was replaced, so this is a failure");
+    assert!(
+        matches!(error, crate::deps::KernelError::Context(_)),
+        "{error:?}"
+    );
+    assert!(
+        h.events.events().iter().any(|event| matches!(
+            event,
+            AgentEvent::Compaction(tact_agent_api::CompactionEvent {
+                state: tact_agent_api::CompactionState::Failed { .. },
+                ..
+            })
+        )),
+        "the card must close Failed when nothing was replaced"
+    );
+    assert!(
+        !h.events
+            .events()
+            .iter()
+            .any(|event| matches!(event, AgentEvent::CompactionFinishedWithError { .. })),
+        "no replacement means no post-commit fact to report"
+    );
+}
+
 #[tokio::test]
 async fn a_cancelled_compaction_is_cancelled_not_failed() {
     let model = ScriptedModel::new(Vec::new());
