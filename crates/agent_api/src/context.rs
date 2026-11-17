@@ -118,17 +118,22 @@ pub struct ContextReplacement {
     /// `None` retains the transcript; `Some(vec![])` explicitly clears it.
     pub transcript: Option<Vec<AgentMessage>>,
     pub cursor: CursorUpdate,
-    /// User-displayable summary of what replaced the transcript, when the
-    /// compactor produced one.
+    /// User-displayable summary of what replaced the transcript.
     ///
-    /// Native provider compaction replaces history inside the provider and
-    /// yields no local text, so this is `None` there. It travels on the
-    /// replacement because that value is the only channel the kernel has: the
-    /// summary text is produced inside the context policy (`TactCompactor`
-    /// stores it again in its own `last_summary` during `compaction_committed`),
-    /// and the kernel holds the policy as `dyn ContextPolicy` and cannot read
-    /// back through it. Putting the text on the replacement keeps the summary
-    /// and the transcript it summarises in one value that cannot disagree.
+    /// For local summarization this is the prose summary. Native provider
+    /// compaction replaces history inside the provider and yields no local
+    /// text, so there it is the provider's read-out instead (the retained item
+    /// count and the bounded compaction id, or a plain sentence when the
+    /// cursor carries no product state) — a host that draws a compaction card
+    /// needs a body, and an empty one reads as "nothing happened".
+    ///
+    /// It travels on the replacement because that value is the only channel the
+    /// kernel has: the text is produced inside the context policy
+    /// (`TactCompactor` keeps the local summary again in its own `last_summary`
+    /// during `compaction_committed`), and the kernel holds the policy as
+    /// `dyn ContextPolicy` and cannot read back through it. Putting it on the
+    /// replacement keeps the text and the transcript it describes in one value
+    /// that cannot disagree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
 }

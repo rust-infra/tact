@@ -356,8 +356,11 @@ async fn native_compaction_returns_only_a_replacement_cursor() {
             cursor: Some(replacement)
         }
     );
-    // Native compaction keeps its summary provider-side; nothing local to show.
-    assert_eq!(summary, None);
+    // Native compaction keeps its summary provider-side, so there is no prose
+    // to show. This model reports an opaque cursor that carries no Tact
+    // provider state, so there is no item count either — the read-out still
+    // says what happened rather than leaving the card empty.
+    assert_eq!(summary.as_deref(), Some(NATIVE_COMPACTION_FALLBACK_SUMMARY));
     assert!(!compactor.compact_state().has_compacted);
 }
 
@@ -568,5 +571,25 @@ fn compact_truncation_note_labels_both_units() {
     assert_eq!(
         compact_truncation_note(None, 15_314),
         "thinking block 15314 bytes"
+    );
+}
+
+/// The native path's log row is for the TUI; the card needs the same fact as
+/// prose, with the id still bounded to the prefix the log line shows.
+#[test]
+fn native_readout_turns_the_log_row_into_card_prose() {
+    assert_eq!(
+        native_compaction_readout("[responses compacted: items=2, id=cmp_native_0]"),
+        "Native Responses compaction kept 2 items (provider id cmp_native_0)."
+    );
+    assert_eq!(
+        native_compaction_readout("[responses compacted: items=7, id=]"),
+        "Native Responses compaction kept 7 items."
+    );
+    // Unparseable notices still produce a sentence: the caller only reaches
+    // this on a real replacement, so `None` would leave an empty card.
+    assert_eq!(
+        native_compaction_readout("[responses compacted]"),
+        NATIVE_COMPACTION_FALLBACK_SUMMARY
     );
 }

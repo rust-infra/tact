@@ -550,6 +550,42 @@ async fn responses_compact_history_dispatches_to_native_endpoint() {
         2,
         "native compaction keeps the logical context unchanged"
     );
+    // The card gets the numbers too, not just the TUI log row: the native path
+    // replaces history provider-side, so this read-out is the only body a host
+    // can show. It must be prose, and it must not leak the full provider id.
+    let completed = updates
+        .iter()
+        .find_map(|update| match update {
+            tact_protocol::AgentUpdate::Compaction(event)
+                if matches!(
+                    &event.state,
+                    tact_agent_api::CompactionState::Completed { .. }
+                ) =>
+            {
+                match &event.state {
+                    tact_agent_api::CompactionState::Completed { summary } => Some(summary),
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+        .expect("native compaction must report a completed state");
+    let completed = completed.as_deref().expect("the card needs a body");
+    assert!(
+        completed.contains("2 items") && completed.contains("cmp_sanitize"),
+        "native read-out must carry the provider's count and bounded id, got: {completed}"
+    );
+    // Bounded, not truncated by accident: the read-out must not be longer than
+    // the log row that carries the same numbers (`compact_id_display` caps the
+    // id at 12 chars), and it must never carry the provider's opaque blob.
+    assert!(
+        completed.len() < 160,
+        "the card shows a read-out, not a dumped payload, got: {completed}"
+    );
+    assert!(
+        !completed.contains(encrypted),
+        "the card must not leak encrypted content, got: {completed}"
+    );
 }
 
 #[tokio::test]

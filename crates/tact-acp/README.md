@@ -201,9 +201,12 @@ lines are worded differently.
   status would draw a second card. `CompactionCard` in `lib.rs` is the whole
   state machine, and it is unit-tested without a connection.
 - `completed` carries Tact's summary as `summary: [text]`, so a client can show
-  what replaced the history it never sees. Native provider compaction replaces
-  history provider-side and has no local text; there `summary` is omitted
-  rather than faked.
+  what replaced the history it never sees. Native Responses compaction replaces
+  history provider-side and produces no prose, so there the body is its
+  read-out instead — the provider's retained item count and the bounded
+  compaction id (`Native Responses compaction kept 2 items (provider id
+  cmp_sanitize).`), or a plain sentence when the cursor carries no Tact
+  provider state. A card with an empty body reads as "nothing happened".
 - `failed` carries the error text. `cancelled` covers a `PreCompact` hook veto
   and a user cancellation, and sets `error` to the reason — ACP has no
   separate field, and a cancelled compaction is not a failure.

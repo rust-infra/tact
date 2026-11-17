@@ -71,6 +71,13 @@ pub(crate) const KEEP_RECENT_TOOL_RESULTS: usize = 12;
 pub(crate) const MICRO_COMPACT_STUB_CHARS: usize = 120;
 pub(crate) const COMPACTED_TOOL_RESULT: &str =
     "[Earlier tool result compacted. Re-run the tool (e.g., read_file) for full content.]";
+/// The read-out a native compaction's card shows in place of a prose summary.
+///
+/// The native path replaces history provider-side, so there is no local text;
+/// what it does report is this count. Kept next to the `[responses compacted:
+/// items=…]` log line that carries the same numbers so the two cannot drift.
+pub(crate) const NATIVE_COMPACTION_FALLBACK_SUMMARY: &str =
+    "Native Responses compaction replaced the conversation provider-side.";
 /// The stub has to be shorter than the results it replaces, or micro compaction
 /// grows the context it was meant to shrink.
 const _: () = assert!(COMPACTED_TOOL_RESULT.len() < MICRO_COMPACT_STUB_CHARS);
@@ -196,8 +203,20 @@ impl TactCompactor {
             });
         }
 
+        let mut native_readout = None;
         let (transcript, summary, cursor, success_notice) = if self.native_compaction {
             let (cursor, success_notice) = self.compact_native(state, model, &cancel).await?;
+            // Native compaction always replaces something, so the host always
+            // gets a read-out: the provider's own numbers when its cursor is
+            // readable, a plain sentence when it is not (an external or fake
+            // `ModelPort` may hand back an opaque cursor that carries no Tact
+            // provider state).
+            native_readout = Some(
+                success_notice
+                    .as_deref()
+                    .map(native_compaction_readout)
+                    .unwrap_or_else(|| NATIVE_COMPACTION_FALLBACK_SUMMARY.to_string()),
+            );
             (None, None, cursor, success_notice)
         } else {
             let (transcript, summary) = self
@@ -211,12 +230,21 @@ impl TactCompactor {
             )
         };
 
-        // The same text goes two ways: the facade keeps it for `/compact`'s
-        // own read-out, and the replacement carries it so a host that renders
-        // the compaction (ACP's card) can show what replaced the history.
-        // Native provider compaction has no local text at all, which is what
-        // `None` here means — not "the summary was lost".
-        let summary_for_host = summary.clone();
+        // The summary goes two ways: the facade keeps it for `/compact`'s own
+        // read-out, and the replacement carries it so a host that renders the
+        // compaction (ACP's card) can show what replaced the history.
+        //
+        // Native compaction has no prose summary — history is replaced
+        // provider-side — so its read-out stands in: a card with an empty body
+        // reads as "nothing happened", while "items=2" is checkable. It stays
+        // out of `summary`/`pending_commit` on purpose: the facade treats that
+        // field as local summarization text (`last_summary`), and a count is not
+        // prose.
+        let summary_for_host = match (summary.clone(), native_readout) {
+            (Some(summary), _) => Some(summary),
+            (None, Some(readout)) => Some(readout),
+            (None, None) => None,
+        };
         *self
             .pending_commit
             .lock()
@@ -927,6 +955,32 @@ fn summary_request(
 
 fn compaction_error(error: impl std::fmt::Display) -> ContextError {
     ContextError::Compaction(error.to_string())
+}
+
+/// Turn the native path's diagnostic line into text a compaction card can show.
+///
+/// The line is `[responses compacted: items=N, id=X]`: a log row, brackets and
+/// field names included, meant for the TUI. A host that draws a compaction
+/// card needs the same fact as prose, and it must keep the bounded id prefix
+/// that [`compact_id_display`] produced — the provider's full identifier never
+/// leaves the protocol baseline.
+///
+/// A notice this function cannot read still produces a sentence rather than
+/// `None`: the caller only reaches it when the compaction replaced something,
+/// and dropping the text there would put an empty card in front of the user.
+fn native_compaction_readout(notice: &str) -> String {
+    let field = |name: &str| -> Option<&str> {
+        let rest = notice.split_once(name)?.1;
+        let value = rest.split([',', ']']).next()?.trim();
+        (!value.is_empty()).then_some(value)
+    };
+    match (field("items="), field("id=")) {
+        (Some(items), Some(id)) => {
+            format!("Native Responses compaction kept {items} items (provider id {id}).")
+        }
+        (Some(items), None) => format!("Native Responses compaction kept {items} items."),
+        _ => NATIVE_COMPACTION_FALLBACK_SUMMARY.to_string(),
+    }
 }
 
 fn compact_id_display(id: &str) -> String {

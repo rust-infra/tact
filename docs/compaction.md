@@ -144,11 +144,16 @@ new state cannot be added without every consumer deciding what to draw.
 Two notes for anyone adding a consumer:
 
 - **The summary travels on the replacement.** `ContextReplacement.summary` is
-  set by the context policy (`None` for native Responses compaction, which keeps
-  its summary provider-side) and copied into the `Completed` event. Reading
+  set by the context policy and copied into the `Completed` event. For local
+  summarization that is the prose summary. Native Responses compaction has no
+  prose — history is replaced provider-side — so its read-out stands in: the
+  retained item count and the bounded compaction id, or a plain sentence when
+  the cursor carries no Tact provider state. Reading
   `compact_state.last_summary` instead would not work: the kernel emits the
   event, that field is facade state written by `compaction_committed`, and the
   policy's return value is the only place both halves of a compaction agree.
+  The read-out stays out of `last_summary` on purpose — that field means local
+  summarization text, and a count is not prose.
 - **The `Info` lines stay.** `[auto compact]`, `[compact summary 1/6]`, and
   `Compaction complete (Auto).` are what the TUI and the desktop render. The
   typed event is a second view of the same fact, not a replacement — dropping
