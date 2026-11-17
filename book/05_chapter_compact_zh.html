@@ -581,8 +581,10 @@ context）。上限：<code>MAX_COMPACT_ATTEMPTS</code>（3，<code>crates/tact/
 </ol>
 <hr />
 <h2 id="3-微压缩micro-compaction">3. 微压缩（Micro-Compaction）</h2>
-<p><code>micro_compact(messages, enabled)</code>
-在每次模型请求前运行，但 <strong><code>enabled</code> 默认是
+<p><code>runtime/compaction_adapter.rs</code> 的
+<code>compact_micro</code>（经 <code>ContextPolicy::compact(CompactionRequest::Micro)</code>
+调用）在每次模型请求前运行，但
+<strong><code>micro_compact_enabled</code> 默认是
 <code>false</code></strong>：自 2026-07-24（<code>5cb59451</code>）起
 micro-compact
 改为<strong>按需开启</strong>——<code>[agent].micro_compact_enabled = true</code>
@@ -592,9 +594,14 @@ micro-compact
 <code>ContentBlock::ToolResult</code> 的 <strong>user
 角色</strong>消息。完整自动压缩也会在此时执行（<code>incoming = 0</code>）；入口路径会在
 push 前单独预留 incoming user turn。</p>
-<pre class="rust"><code>const KEEP_RECENT_TOOL_RESULTS: usize = 12;
-const COMPACTED_TOOL_RESULT: &amp;str =
-    &quot;[Earlier tool result compacted. Re-run the tool (e.g., read_file) for full content.]&quot;;</code></pre>
+<pre class="rust"><code>pub(crate) const KEEP_RECENT_TOOL_RESULTS: usize = 12;
+pub(crate) const MICRO_COMPACT_STUB_CHARS: usize = 120;
+pub(crate) const COMPACTED_TOOL_RESULT: &amp;str =
+    &quot;[Earlier tool result compacted. Re-run the tool (e.g., read_file) for full content.]&quot;;
+const _: () = assert!(COMPACTED_TOOL_RESULT.len() &lt; MICRO_COMPACT_STUB_CHARS);</code></pre>
+<p>前两个常量由执行侧（<code>runtime/compaction_adapter.rs</code>）与
+<code>micro_compact_due</code> 判断侧（<code>runtime/context_adapter.rs</code>）共用同一份定义，
+避免「判定该压」和「实际压什么」的阈值漂移。</p>
 <h3 id="算法">算法</h3>
 <pre class="mermaid">flowchart TD
     A[扫描 messages] --&gt; B[按时间顺序收集 ToolResult 位置]
@@ -1526,7 +1533,7 @@ provider 仍保持经典 <code>min(窗口 × 20%, 2,000)</code> 文本上限</td
 <tbody>
 <tr>
 <td><code>crates/tact/src/compact/mod.rs</code></td>
-<td><code>micro_compact</code>、<code>should_auto_compact</code>、<code>estimate_context_tokens</code>、<code>collect_user_messages</code>、<code>build_compacted_history</code>、<code>write_transcript</code>、<code>persist_large_output</code>、<code>compacted_context</code>、<code>CompactState</code></td>
+<td><code>should_auto_compact</code>、<code>AUTO_COMPACT_THRESHOLD_PERCENT</code>、<code>estimate_context_tokens</code>、<code>collect_user_messages</code>、<code>build_compacted_history</code>、<code>write_transcript</code>、<code>persist_large_output</code>、<code>compacted_context</code>、<code>CompactState</code>（纯算法与预算；执行压缩的 pass 在 <code>runtime/compaction_adapter.rs</code>）</td>
 </tr>
 <tr>
 <td><code>crates/tact/src/agent/mod.rs</code></td>

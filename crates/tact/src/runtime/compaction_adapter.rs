@@ -54,9 +54,26 @@ use crate::{
     },
 };
 
-const KEEP_RECENT_TOOL_RESULTS: usize = 12;
-const COMPACTED_TOOL_RESULT: &str =
+/// How many recent tool results survive micro compaction intact; every older
+/// result longer than [`MICRO_COMPACT_STUB_CHARS`] is replaced with
+/// [`COMPACTED_TOOL_RESULT`].
+///
+/// These three live in the code that runs the pass, and
+/// [`crate::runtime::context_adapter`] reads the same constants for its
+/// `micro_compact_due` check. A literal on either side lets "is it due?" and
+/// "what does it do?" disagree — the due check then fires a pass that stubs
+/// nothing, or stays silent while the transcript keeps growing.
+pub(crate) const KEEP_RECENT_TOOL_RESULTS: usize = 12;
+/// Character count above which an old tool result is worth stubbing.
+///
+/// Shorter results stay: they are cheap to carry, and the stub would cost more
+/// tokens than the text it replaces.
+pub(crate) const MICRO_COMPACT_STUB_CHARS: usize = 120;
+pub(crate) const COMPACTED_TOOL_RESULT: &str =
     "[Earlier tool result compacted. Re-run the tool (e.g., read_file) for full content.]";
+/// The stub has to be shorter than the results it replaces, or micro compaction
+/// grows the context it was meant to shrink.
+const _: () = assert!(COMPACTED_TOOL_RESULT.len() < MICRO_COMPACT_STUB_CHARS);
 
 type PreCompactHooks = Vec<Arc<dyn PreCompactFn>>;
 type PostCompactHooks = Vec<Arc<dyn PostCompactFn>>;
@@ -319,7 +336,7 @@ impl TactCompactor {
             else {
                 continue;
             };
-            if content.chars().count() > 120 {
+            if content.chars().count() > MICRO_COMPACT_STUB_CHARS {
                 *content = COMPACTED_TOOL_RESULT.to_string();
                 changed = true;
             }

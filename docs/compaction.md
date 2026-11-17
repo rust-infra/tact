@@ -27,7 +27,7 @@ flowchart TB
     EntryCH --> Push[push user turn]
     EntryEst -->|no| Push
     Push --> Turn([each loop iteration])
-    Turn --> MC[micro_compact]
+    Turn --> MC[compact_micro]
     MC --> Est{should_auto_compact?<br/>incoming = 0}
     Est -->|no| Prompt[LLM]
     Est -->|yes| CH[compact_history]
@@ -75,7 +75,7 @@ Each artifact directory retains at most the 100 newest files after a write.
 
 1. Collect all `ToolResult` blocks (user messages), chronological order  
 2. Keep the last `KEEP_RECENT_TOOL_RESULTS` (12) intact  
-3. Older results with **> 120** characters → stub  
+3. Older results with **> `MICRO_COMPACT_STUB_CHARS`** (120) characters → stub  
 
 ```
 [Earlier tool result compacted. Re-run the tool (e.g., read_file) for full content.]
@@ -86,7 +86,15 @@ Short results stay (high density, low cost). Assistant / thinking / user text ar
 | Constant | Default |
 |----------|---------|
 | `KEEP_RECENT_TOOL_RESULTS` | 12 |
-| Stub length threshold | 120 chars |
+| `MICRO_COMPACT_STUB_CHARS` | 120 chars |
+
+All three live in `runtime/compaction_adapter.rs`, the module that runs the
+pass; `context_adapter.rs`'s `micro_compact_due` imports the same constants, so
+the trigger check and the pass cannot disagree about when it is due. A
+`const _` assertion keeps the stub shorter than the threshold it retires.
+
+`compact::micro_compact()` — the pre-kernel implementation — was deleted in
+`fix/compact-dead-micro-compact`: it had no caller since 84afab48.
 
 ---
 
@@ -94,7 +102,7 @@ Short results stay (high density, low cost). Assistant / thinking / user text ar
 
 **Triggers** (any of):
 - **Entry**: before pushing the user turn, `should_auto_compact` with `incoming_turn` reserved
-- **Each loop iteration**: after `micro_compact`, `should_auto_compact` with `incoming = 0`:
+- **Each loop iteration**: after the micro pass, `should_auto_compact` with `incoming = 0`:
   - **Primary:** `last_token_total + estimate_message_tokens(incoming) >= 80% of agent.model_context_window` (default **200,000** tokens)
   - **Fallback / post-usage growth:** structured context + incoming tokens reaches the same 80% threshold. Text is estimated at ~4 ASCII chars/token and 1 token per non-ASCII character. Images use a fixed 1,600-token vision budget, never their base64-encoded length — an encoded screenshot is not a 30k-token text block.
   - **Responses exception:** the product context policy uses the provider-reported `last_token_total` only. The logical-context estimate is deliberately excluded because native compaction shrinks the wire baseline, not the logical context. An estimate-driven trigger would re-fire forever. No usage yet means no trigger.
