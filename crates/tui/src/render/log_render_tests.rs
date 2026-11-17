@@ -1485,3 +1485,369 @@ fn a_subagent_card_is_openable_in_every_shape_it_can_take() {
         assert_eq!(tool_id, "sa-1", "the {label} card must open its own child");
     }
 }
+
+/// A subagent card's footer is what it says it is: clicking anywhere on the
+/// drawn label opens the transcript.
+///
+/// The rect is measured by the cell, so it has two ways to land somewhere other
+/// than the glyphs: off by the block indent, or short by the progress prefix
+/// (`5/20 lines | `) the drawn footer carries. Both left part of the label dead
+/// while the label itself promised a click — and only the real renderer plus a
+/// real click sees the disagreement, which is why this walks the drawn row
+/// instead of trusting the rect.
+#[test]
+fn every_column_of_a_subagent_footer_opens_the_transcript() {
+    use tact_protocol::{ToolDetailKind, ToolPopupKind, ToolVisualKind};
+
+    fn presentation() -> ToolPresentationInfo {
+        ToolPresentationInfo {
+            visual_kind: ToolVisualKind::Subagent,
+            display_name: "🤖 Subagent".into(),
+            keep_full_live_output: true,
+            detail: ToolDetailKind::Result,
+            popup: ToolPopupKind::SubagentTranscript,
+            compact_result_to_meta: false,
+            keep_live: false,
+        }
+    }
+
+    fn call(lines: usize) -> StepCall {
+        let detail = (0..lines)
+            .map(|i| format!("out-{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        StepCall::new(0, "sa-1", "spawn_subagent", "research")
+            .presentation(presentation())
+            .detail(detail)
+    }
+
+    /// A card in `phase`: still streaming, or ended with `status`.
+    fn card(lines: usize, status: Option<StepStatus>) -> App {
+        let mut app = make_app();
+        let started =
+            StepCall::new(0, "sa-1", "spawn_subagent", "research").presentation(presentation());
+        app.handle_agent_update(started.started());
+        let payload: String = (0..lines).map(|i| format!("out-{i}\n")).collect();
+        app.handle_agent_update(AgentUpdate::ToolProgress {
+            run_id: None,
+            tool_id: "sa-1".into(),
+            chunks: vec![tact_protocol::ToolOutputChunk::other(payload)],
+        });
+        if let Some(status) = status {
+            app.handle_agent_update(call(lines).status(status).finished());
+        }
+        app
+    }
+
+    /// The footer's label as drawn: `│  └ <label> ───…┘`, or its clipped tail
+    /// `└ <label up to the right border>┘` on a narrow terminal. Returns the
+    /// first screen column of a non-blank glyph and the words, so the test
+    /// clicks what a reader sees rather than a rect that might be elsewhere.
+    fn drawn_footer(line: &str) -> Option<(u16, Vec<char>)> {
+        let chars: Vec<char> = line.chars().collect();
+        let corner = chars.iter().position(|c| *c == '└')?;
+        // The label runs until the border line resumes, or — when the terminal
+        // clipped it — until the card's right corner.
+        let end = (corner + 1..chars.len()).find(|i| matches!(chars[*i], '─' | '┘'))?;
+        let label = &chars[corner + 1..end];
+        let lead = label.iter().position(|c| *c != ' ')?;
+        let tail = label.iter().rposition(|c| *c != ' ')? + 1;
+        Some(((corner + 1 + lead) as u16, label[lead..tail].to_vec()))
+    }
+
+    // A narrow terminal clips the footer, and the hit rect has to clip with
+    // it: `100` is the roomy case the bug was found in, `46` puts the card at
+    // its narrowest still-drawable width.
+    for (label, lines, status, width) in [
+        ("live, no progress prefix", 1usize, None, 100u16),
+        ("live, `5/20 lines | `", 20, None, 100),
+        ("live, `5/20 lines | `, narrow", 20, None, 46),
+        ("finished, `[Open]`", 20, Some(StepStatus::Success), 100),
+        ("failed", 3, Some(StepStatus::Failed), 100),
+    ] {
+        let mut probe = card(lines, status);
+        let text = render_log_panel_text(&mut probe, width, 30);
+        let (row, line) = text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains('└'))
+            .map(|(row, line)| (row as u16, line.to_string()))
+            .unwrap_or_else(|| panic!("{label}: the card draws a footer"));
+        let (start, glyphs) = drawn_footer(&line).expect("a footer label");
+        assert!(!glyphs.is_empty(), "{label}: the footer is not empty");
+
+        for offset in 0..glyphs.len() as u16 {
+            let mut app = card(lines, status);
+            let _ = render_log_panel_text(&mut app, width, 30);
+            crate::handle_mouse_event(
+                &mut app,
+                crossterm::event::MouseEvent {
+                    kind: crossterm::event::MouseEventKind::Down(
+                        crossterm::event::MouseButton::Left,
+                    ),
+                    column: start + offset,
+                    row,
+                    modifiers: crossterm::event::KeyModifiers::NONE,
+                },
+            );
+            assert!(
+                app.has_subagent_popup(),
+                "{label}: clicking column {} of {:?} must open the transcript, row: {line:?}",
+                offset + 1,
+                glyphs.iter().collect::<String>(),
+            );
+        }
+    }
+}
+
+/// A live subagent card draws two controls on one meta row: `[Cancel]` at the
+/// row's end, and — when it has no body — the `[Open]` hint before it. Each has
+/// to own exactly its own columns.
+///
+/// The hint's rect was measured against the *unclipped* row, so on a live card
+/// it landed over `[Cancel]`: the click opened the transcript and cancelled
+/// nothing. A hit rect for a glyph the clip removed is worse than no rect, so
+/// the hint now disappears with its glyphs.
+#[test]
+fn a_live_subagent_cards_cancel_button_is_not_covered_by_the_open_hint() {
+    use tact_protocol::{ToolDetailKind, ToolPopupKind, ToolVisualKind};
+
+    fn presentation() -> ToolPresentationInfo {
+        ToolPresentationInfo {
+            visual_kind: ToolVisualKind::Subagent,
+            display_name: "🤖 Subagent".into(),
+            keep_full_live_output: true,
+            detail: ToolDetailKind::Result,
+            popup: ToolPopupKind::SubagentTranscript,
+            compact_result_to_meta: false,
+            keep_live: false,
+        }
+    }
+
+    /// A live, cancellable card with no body yet — the shape that draws both
+    /// controls. `permission` makes the meta row long enough to clip.
+    fn card(permission: Option<&str>) -> App {
+        let mut app = make_app();
+        let call =
+            StepCall::new(0, "sa-1", "spawn_subagent", "research").presentation(presentation());
+        app.handle_agent_update(call.started());
+        let active = &mut app.tools_mut().active[0];
+        active.subagent_child_id = Some("child-1".into());
+        active.output.permission_label = permission.map(str::to_string);
+        app
+    }
+
+    for permission in [None, Some("Always allow this tool for the whole workspace")] {
+        for width in [60u16, 70, 100] {
+            let mut app = card(permission);
+            let text = render_log_panel_text(&mut app, width, 20);
+            let row_text = text.lines().nth(2).expect("the meta row").to_string();
+            let cancel = app
+                .mouse
+                .subagent_cancel_btn_areas
+                .first()
+                .map(|(_, rect)| *rect)
+                .unwrap_or_else(|| panic!("width {width}: the live card draws [Cancel]"));
+            // The drawn glyphs, one entry per screen column.
+            let cells: Vec<char> = row_text.chars().collect();
+            let drawn: String = cells[cancel.x as usize..(cancel.x + cancel.width) as usize]
+                .iter()
+                .collect();
+            assert_eq!(
+                drawn, "[Cancel]",
+                "the cancel rect must be the glyphs it claims to be, row: {row_text:?}"
+            );
+
+            for action in &app.mouse.open_actions {
+                assert!(
+                    !action.rect.intersects(cancel),
+                    "width {width}, permission {permission:?}: {:?} covers [Cancel], row: {row_text:?}",
+                    action.rect,
+                );
+            }
+
+            // And the click on `[Cancel]` is the cancel: it must not open the
+            // view, which is what the covered rect made it do.
+            crate::handle_mouse_event(
+                &mut app,
+                crossterm::event::MouseEvent {
+                    kind: crossterm::event::MouseEventKind::Down(
+                        crossterm::event::MouseButton::Left,
+                    ),
+                    column: cancel.x + 1,
+                    row: cancel.y,
+                    modifiers: crossterm::event::KeyModifiers::NONE,
+                },
+            );
+            assert!(
+                !app.has_subagent_popup(),
+                "width {width}, permission {permission:?}: [Cancel] must cancel, not open the view"
+            );
+        }
+    }
+}
+
+/// A card taller than the log body still has a clickable footer when that
+/// footer is the part on screen.
+///
+/// A tall card is normal. The log follows the tail, so a card that does not fit
+/// is clipped from its top, and the footer is precisely the row that survives
+/// because it is at the bottom. The rect's guard used to require the *whole*
+/// cell to fit the slice, so on a short viewport the label was drawn and
+/// nothing responded to it.
+#[test]
+fn a_footer_visible_in_a_short_viewport_is_clickable() {
+    use tact_protocol::{ToolDetailKind, ToolPopupKind, ToolVisualKind};
+
+    fn presentation() -> ToolPresentationInfo {
+        ToolPresentationInfo {
+            visual_kind: ToolVisualKind::Subagent,
+            display_name: "🤖 Subagent".into(),
+            keep_full_live_output: true,
+            detail: ToolDetailKind::Result,
+            popup: ToolPopupKind::SubagentTranscript,
+            compact_result_to_meta: false,
+            keep_live: false,
+        }
+    }
+
+    // The viewport heights at which the card (6 rows: two header rows plus a
+    // four-row card) does not fit the log body, so its top is clipped.
+    for height in [6u16, 7, 8] {
+        let mut app = make_app();
+        let call =
+            StepCall::new(0, "sa-1", "spawn_subagent", "research").presentation(presentation());
+        app.handle_agent_update(call.started());
+        app.handle_agent_update(AgentUpdate::ToolProgress {
+            run_id: None,
+            tool_id: "sa-1".into(),
+            chunks: vec![tact_protocol::ToolOutputChunk::other("a\nb\n")],
+        });
+
+        let text = render_log_panel_text(&mut app, 100, height);
+        let (row, line) = text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("Click for buffered output"))
+            .map(|(row, line)| (row as u16, line.to_string()))
+            .unwrap_or_else(|| panic!("height {height}: the footer is drawn:\n{text}"));
+        let start = line
+            .find("Click for buffered output")
+            .map(|byte| line[..byte].chars().count() as u16)
+            .expect("label");
+
+        // The drawn footer must have a rect, and that rect must be on it.
+        let rect = app
+            .mouse
+            .open_actions
+            .iter()
+            .map(|action| action.rect)
+            .find(|rect| rect.y == row)
+            .unwrap_or_else(|| {
+                panic!("height {height}: the drawn footer at row {row} has no hit rect:\n{text}")
+            });
+        // The drawn title carries its own pad spaces, so the rect starts one
+        // column before `Click`. What matters is that the words are inside it.
+        let label = "Click for buffered output";
+        assert!(
+            rect.x <= start && rect.right() >= start + label.len() as u16,
+            "height {height}: the rect {rect:?} must cover the drawn label at {start}..{}",
+            start + label.len() as u16
+        );
+
+        crate::handle_mouse_event(
+            &mut app,
+            crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: start + 20,
+                row,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            },
+        );
+        assert!(
+            app.has_subagent_popup(),
+            "height {height}: clicking the drawn footer must open the transcript"
+        );
+    }
+}
+
+/// The footer is clickable in both clip directions.
+///
+/// A card taller than the log body is normal. Scrolled to the tail the top is
+/// cut, and the footer survives at the bottom. Scrolled to the top the bottom is
+/// cut, and `Block` still paints the bottom border with its label at the clip
+/// edge. In both cases the label is on screen, so in both cases a click on it
+/// has to open the transcript.
+#[test]
+fn a_footer_on_a_clipped_card_is_clickable_in_both_directions() {
+    use tact_protocol::{ToolDetailKind, ToolPopupKind, ToolVisualKind};
+
+    fn presentation() -> ToolPresentationInfo {
+        ToolPresentationInfo {
+            visual_kind: ToolVisualKind::Subagent,
+            display_name: "🤖 Subagent".into(),
+            keep_full_live_output: true,
+            detail: ToolDetailKind::Result,
+            popup: ToolPopupKind::SubagentTranscript,
+            compact_result_to_meta: false,
+            keep_live: false,
+        }
+    }
+
+    /// A live card with eight output lines: taller than the 7-row log body the
+    /// test renders into, so it is always clipped somewhere.
+    fn tall_card() -> App {
+        let mut app = make_app();
+        let call =
+            StepCall::new(0, "sa-1", "spawn_subagent", "research").presentation(presentation());
+        app.handle_agent_update(call.started());
+        let payload: String = (0..8).map(|i| format!("line {i}\n")).collect();
+        app.handle_agent_update(AgentUpdate::ToolProgress {
+            run_id: None,
+            tool_id: "sa-1".into(),
+            chunks: vec![tact_protocol::ToolOutputChunk::other(payload)],
+        });
+        app
+    }
+
+    for to_top in [false, true] {
+        let mut probe = tall_card();
+        if to_top {
+            // Render once so the log has a height to scroll within.
+            let _ = render_log_panel_text(&mut probe, 100, 9);
+            probe.scroll_log_to_top();
+        }
+        let text = render_log_panel_text(&mut probe, 100, 9);
+        let (row, line) = text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("Click for buffered output"))
+            .map(|(row, line)| (row as u16, line.to_string()))
+            .unwrap_or_else(|| panic!("scrolled to top: {to_top}: the footer is drawn:\n{text}"));
+        let start = line
+            .find("Click for buffered output")
+            .map(|byte| line[..byte].chars().count() as u16)
+            .expect("label");
+
+        let mut app = tall_card();
+        if to_top {
+            let _ = render_log_panel_text(&mut app, 100, 9);
+            app.scroll_log_to_top();
+        }
+        let _ = render_log_panel_text(&mut app, 100, 9);
+        crate::handle_mouse_event(
+            &mut app,
+            crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: start + 20,
+                row,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            },
+        );
+        assert!(
+            app.has_subagent_popup(),
+            "scrolled to top: {to_top}: clicking the drawn footer at row {row} must open \
+             the transcript, row: {line:?}"
+        );
+    }
+}

@@ -21,8 +21,23 @@ pub struct WriteFileInput {
         description = "**Required.** Path to the file to write, relative to the current workspace. Must not be empty."
     )]
     pub path: String,
-    #[schemars(description = "Complete file content to write.")]
+    #[schemars(
+        description = "File content. Keep one call to roughly 500 lines / 20 KB. \
+                       For a longer file, write the first chunk with `append=false`, \
+                       then add each further chunk with `append=true` on the same \
+                       path. A call that exceeds the model's output budget is \
+                       dropped whole — no file is created and nothing already \
+                       written is kept — so chunk a long file instead of widening \
+                       one call."
+    )]
     pub content: String,
+    #[schemars(
+        description = "Append to the file instead of replacing it. Default false: \
+                       the write truncates any existing file. Set true for every \
+                       chunk after the first when building a file across calls."
+    )]
+    #[serde(default)]
+    pub append: bool,
 }
 
 /// Chunk size for incremental file writes. Tokio's async file I/O runs on the
@@ -35,7 +50,9 @@ const SINGLE_WRITE_THRESHOLD: usize = 256 * 1024;
 
 pub const WRITE_FILE_METADATA: ToolMetadata = ToolMetadata {
     name: "write_file",
-    description: "Write content to file.",
+    description: "Write or append a file. Keep one call small (~500 lines / 20 KB); \
+                  build a longer file by writing the first chunk, then appending the \
+                  rest with `append=true`.",
     permission: PermissionPolicy::WritePath { path_field: "path" },
     permission_prompt: PermissionPromptPolicy::Path { field: "path" },
     resources: ResourcePolicy::WritePath { field: "path" },
@@ -72,15 +89,31 @@ pub async fn write_file(ctx: ToolContext, input: WriteFileInput) -> Result<Strin
     let bytes = input.content.as_bytes();
     let line_count = input.content.lines().count();
 
+    // The mode is the whole difference between the two calls: `append` keeps
+    // what is already on disk (and creates the file when missing), the default
+    // truncates. Everything after the open is identical, so the progress loop
+    // below has one implementation rather than one per mode.
+    let mut file = if input.append {
+        fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&path)
+            .await
+            .map_err(|e| anyhow::anyhow!("Error opening file: {}", e))?
+    } else {
+        fs::File::create(&path)
+            .await
+            .map_err(|e| anyhow::anyhow!("Error creating file: {}", e))?
+    };
+
     if total <= SINGLE_WRITE_THRESHOLD {
-        fs::write(&path, bytes)
+        file.write_all(bytes)
             .await
             .map_err(|e| anyhow::anyhow!("Error writing file: {}", e))?;
-    } else {
-        let mut file = fs::File::create(&path)
+        file.flush()
             .await
-            .map_err(|e| anyhow::anyhow!("Error creating file: {}", e))?;
-
+            .map_err(|e| anyhow::anyhow!("Error flushing file: {}", e))?;
+    } else {
         let mut written = 0usize;
         let mut next_milestone = total / 10;
         let mut last_update = Instant::now();
@@ -122,8 +155,12 @@ pub async fn write_file(ctx: ToolContext, input: WriteFileInput) -> Result<Strin
             .map_err(|e| anyhow::anyhow!("Error flushing file: {}", e))?;
     }
 
+    // The verb carries the mode: "Wrote" over an existing file and "Appended"
+    // differ in what survived, and a model that cannot tell them apart may
+    // re-issue a write that silently drops the earlier chunk.
+    let verb = if input.append { "Appended" } else { "Wrote" };
     Ok(format!(
-        "Wrote {} / {} lines to {}",
+        "{verb} {} / {} lines to {}",
         format_bytes(total),
         line_count,
         path.display()
@@ -155,5 +192,106 @@ mod tests {
         let written =
             std::fs::read_to_string(context.work_dir.join("nested/dir/file.txt")).unwrap();
         assert_eq!(written, "nested content\n");
+    }
+
+    #[tokio::test]
+    async fn append_keeps_the_content_already_on_disk() {
+        let context = test_context("append_keeps_the_content_already_on_disk");
+
+        run_tool(
+            &context,
+            WriteFileTool,
+            "write_file",
+            serde_json::json!({ "path": "chunks.txt", "content": "first\n" }),
+        )
+        .await
+        .unwrap();
+        let output = run_tool(
+            &context,
+            WriteFileTool,
+            "write_file",
+            serde_json::json!({ "path": "chunks.txt", "content": "second\n", "append": true }),
+        )
+        .await
+        .unwrap();
+
+        assert!(output.starts_with("Appended"), "got {output}");
+        let written = std::fs::read_to_string(context.work_dir.join("chunks.txt")).unwrap();
+        assert_eq!(written, "first\nsecond\n");
+    }
+
+    #[tokio::test]
+    async fn a_default_write_replaces_the_file_instead_of_appending() {
+        let context = test_context("a_default_write_replaces_the_file_instead_of_appending");
+
+        run_tool(
+            &context,
+            WriteFileTool,
+            "write_file",
+            serde_json::json!({ "path": "replace.txt", "content": "old\n" }),
+        )
+        .await
+        .unwrap();
+        let output = run_tool(
+            &context,
+            WriteFileTool,
+            "write_file",
+            serde_json::json!({ "path": "replace.txt", "content": "new\n" }),
+        )
+        .await
+        .unwrap();
+
+        assert!(output.starts_with("Wrote"), "got {output}");
+        let written = std::fs::read_to_string(context.work_dir.join("replace.txt")).unwrap();
+        assert_eq!(written, "new\n");
+    }
+
+    #[tokio::test]
+    async fn append_creates_the_file_when_it_is_missing() {
+        let context = test_context("append_creates_the_file_when_it_is_missing");
+
+        let output = run_tool(
+            &context,
+            WriteFileTool,
+            "write_file",
+            serde_json::json!({ "path": "fresh.txt", "content": "only\n", "append": true }),
+        )
+        .await
+        .unwrap();
+
+        assert!(output.starts_with("Appended"), "got {output}");
+        let written = std::fs::read_to_string(context.work_dir.join("fresh.txt")).unwrap();
+        assert_eq!(written, "only\n");
+    }
+
+    /// The streaming branch has its own open call, so append has to be proven
+    /// there too: a `File::create` slipping through would truncate the earlier
+    /// chunk only for files above `SINGLE_WRITE_THRESHOLD`.
+    #[tokio::test]
+    async fn append_keeps_the_file_across_the_streaming_branch() {
+        let context = test_context("append_keeps_the_file_across_the_streaming_branch");
+        let first = "a".repeat(SINGLE_WRITE_THRESHOLD + 1);
+        let second = "b".repeat(SINGLE_WRITE_THRESHOLD + 1);
+
+        run_tool(
+            &context,
+            WriteFileTool,
+            "write_file",
+            serde_json::json!({ "path": "large.txt", "content": first }),
+        )
+        .await
+        .unwrap();
+        run_tool(
+            &context,
+            WriteFileTool,
+            "write_file",
+            serde_json::json!({ "path": "large.txt", "content": second, "append": true }),
+        )
+        .await
+        .unwrap();
+
+        let written = std::fs::read_to_string(context.work_dir.join("large.txt")).unwrap();
+        assert_eq!(written.len(), first.len() + second.len());
+        assert!(written.starts_with('a') && written.ends_with('b'));
     }
 }

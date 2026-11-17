@@ -58,7 +58,7 @@ use crate::{
         },
         util::wrap_line,
     },
-    state::{SubagentPopup, ToolState},
+    state::{SubagentPopup, SubagentTranscript, ToolState},
     theme::{Theme, ThemeName},
     widgets::tool_widget::{
         TOOL_RUNNING_SPINNER, ToolPhase, ToolRenderOutput, ToolWidget, format_bytes,
@@ -267,14 +267,18 @@ pub fn prepare_subagent_popup(
         return;
     };
     let is_live = matches!(source.phase, ToolPhase::Running);
-    let Some(transcript) = tools.transcripts.get(&popup.tool_id) else {
-        return;
-    };
+    // A child's FIRST turn has no committed entry yet — the transcript map has
+    // no entry at all until the first `ToolTranscript` arrives — so a missing
+    // transcript is an empty one, not a reason to bail. Bailing here left the
+    // view blank for exactly the case streaming was added for: the reader
+    // clicks the card while the child is thinking, and the one thing to show is
+    // the text already streaming.
+    let empty = SubagentTranscript::default();
+    let transcript = tools.transcripts.get(&popup.tool_id).unwrap_or(&empty);
     // The in-flight assistant text is part of the layout, so its own revision
     // is part of the cache key — otherwise the first streamed snapshot would
-    // be cached and never grow. It also counts as content on its own: a child's
-    // FIRST turn has no committed entry yet, and bailing here left the popup
-    // blank for exactly the case streaming was added for.
+    // be cached and never grow. It also counts as content on its own, which
+    // with the line below is what makes the first turn render at all.
     let streaming = tools
         .streaming_assistant
         .get(&popup.tool_id)
@@ -1087,9 +1091,14 @@ pub fn render_subagent_body(
     };
     let is_live = ctx.tools.active.iter().any(|a| a.tool_id == popup.tool_id);
 
-    let Some(transcript) = ctx.tools.transcripts.get(&popup.tool_id) else {
-        return surface;
-    };
+    // Missing means empty, the same rule [`prepare_subagent_popup`] applies: a
+    // child's first turn streams before it commits anything, and the map stays
+    // empty until then.
+    let revision = ctx
+        .tools
+        .transcripts
+        .get(&popup.tool_id)
+        .map_or(0, |transcript| transcript.revision);
     let Some(layout) = popup.layout.as_ref() else {
         return surface;
     };
@@ -1100,7 +1109,7 @@ pub fn render_subagent_body(
             .map(String::as_str),
     );
     if !layout.is_valid(
-        transcript.revision,
+        revision,
         streaming_rev,
         body_area.width,
         ctx.theme.name,
@@ -1319,45 +1328,56 @@ mod tests {
     /// A child's FIRST turn has no committed entry yet, so the streaming text
     /// alone must be enough to build a layout — otherwise the popup stays blank
     /// for exactly the case streaming was added for.
+    ///
+    /// Both the absent and the empty transcript are walked, because they are
+    /// different states in production (`ToolTranscript` is what creates the map
+    /// entry) and only one of them used to work: the guard was applied to a
+    /// *missing* transcript, which is the whole first turn, so the view opened
+    /// blank on a child that had started answering.
     #[test]
     fn streaming_alone_builds_a_layout_before_any_committed_entry() {
-        let mut tools = ToolState::default();
-        tools
-            .transcripts
-            .insert("sa-1".into(), SubagentTranscript::default());
-        tools.active.push(ActiveToolBlock {
-            phys_idx: 0,
-            tool_id: "sa-1".into(),
-            output: subagent_card(true),
-            live_output: crate::protocol::ToolOutputBuffer::new_full(1024),
-            started_at: std::time::Instant::now(),
-            subagent_child_id: None,
-        });
-        tools
-            .streaming_assistant
-            .insert("sa-1".into(), "first line\nsecond line".into());
+        for insert_empty_transcript in [false, true] {
+            let mut tools = ToolState::default();
+            if insert_empty_transcript {
+                tools
+                    .transcripts
+                    .insert("sa-1".into(), SubagentTranscript::default());
+            }
+            tools.active.push(ActiveToolBlock {
+                phys_idx: 0,
+                tool_id: "sa-1".into(),
+                output: subagent_card(true),
+                live_output: crate::protocol::ToolOutputBuffer::new_full(1024),
+                started_at: std::time::Instant::now(),
+                subagent_child_id: None,
+            });
+            tools
+                .streaming_assistant
+                .insert("sa-1".into(), "first line\nsecond line".into());
 
-        let theme = theme();
-        let msgs = Messages::by_language(Language::English);
-        let mut popup = SubagentPopup {
-            title: "53. Subagent".into(),
-            scroll: 0,
-            follow: true,
-            unseen: false,
-            tool_id: "sa-1".into(),
-            selection: None,
-            layout: None,
-            expanded_steps: std::collections::HashSet::new(),
-            expanded_rev: 0,
-        };
+            let theme = theme();
+            let msgs = Messages::by_language(Language::English);
+            let mut popup = SubagentPopup {
+                title: "53. Subagent".into(),
+                scroll: 0,
+                follow: true,
+                unseen: false,
+                tool_id: "sa-1".into(),
+                selection: None,
+                layout: None,
+                expanded_steps: std::collections::HashSet::new(),
+                expanded_rev: 0,
+            };
 
-        prepare_subagent_popup(&mut popup, &tools, &theme, &msgs, 60);
-        let layout = popup
-            .layout
-            .as_ref()
-            .expect("a layout from streaming alone");
-        assert!(layout.streaming_rev > 0);
-        assert!(layout.selection_text.contains("first line"));
+            prepare_subagent_popup(&mut popup, &tools, &theme, &msgs, 60);
+            let layout = popup.layout.as_ref().unwrap_or_else(|| {
+                panic!(
+                    "a layout from streaming alone (transcript inserted: {insert_empty_transcript})"
+                )
+            });
+            assert!(layout.streaming_rev > 0);
+            assert!(layout.selection_text.contains("first line"));
+        }
     }
 
     /// The in-flight assistant text is appended to the body and is part of the
