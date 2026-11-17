@@ -3,9 +3,9 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentMessage, AgentRole, CompactionKind, MessageDelta, MessageId, MessageRange, ModelCallKind,
-    ModelCallOptions, ProviderActivity, RunContext, RunId, RunOutcome, RuntimeErrorInfo,
-    TokenUsage, ToolCall, ToolDescriptor, ToolExecutionResult, ToolOutputChunk,
+    AgentMessage, AgentRole, CompactionEvent, CompactionKind, MessageDelta, MessageId,
+    MessageRange, ModelCallKind, ModelCallOptions, ProviderActivity, RunContext, RunId, RunOutcome,
+    RuntimeErrorInfo, TokenUsage, ToolCall, ToolDescriptor, ToolExecutionResult, ToolOutputChunk,
 };
 
 /// Ordered kernel event with no presentation-specific fields.
@@ -78,8 +78,25 @@ pub enum AgentEvent {
         usage: Option<TokenUsage>,
         message_range: Option<MessageRange>,
     },
-    ContextCompacted {
+    /// One compaction's lifecycle: `Started`, then exactly one of
+    /// `Completed` / `Failed` / `Cancelled`.
+    ///
+    /// The kernel is the only emitter, because it is the only component that
+    /// sees all four transitions. Hosts that draw a compaction card (ACP's
+    /// `compaction_update`) follow this instead of matching log text.
+    Compaction(CompactionEvent),
+    /// A post-commit step failed after the compaction had already replaced the
+    /// context.
+    ///
+    /// Deliberately not a terminal [`Self::Compaction`] state: the lifecycle
+    /// already closed `Completed` from the durable replacement, and reopening
+    /// it as `Failed` would contradict the transcript the store holds. This
+    /// says only "the compaction happened, one step after it did not finish",
+    /// so a host can surface the error without repainting a card that is
+    /// correct.
+    CompactionFinishedWithError {
         kind: CompactionKind,
+        error: String,
     },
     Notice {
         notice: AgentNotice,
@@ -124,7 +141,8 @@ impl AgentEvent {
             | Self::ToolStarted { .. }
             | Self::ToolFinished { .. }
             | Self::Usage { .. }
-            | Self::ContextCompacted { .. }
+            | Self::Compaction(_)
+            | Self::CompactionFinishedWithError { .. }
             | Self::Notice { .. }
             | Self::TurnFinished { .. }
             | Self::RunFinished { .. }

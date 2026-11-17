@@ -55,6 +55,27 @@ async fn command_compaction_uses_kernel_owned_replacement_and_events() {
             .any(|update| matches!(update, AgentUpdate::Info(text) if text.contains("Compaction complete (Command)."))),
         "{updates:?}"
     );
+    // The text is for the TUI. The typed lifecycle is what a host that draws a
+    // compaction card follows, and this is the one path that proves it reaches
+    // the sink through the real facade rather than only in a bridge unit test.
+    let events: Vec<_> = updates
+        .iter()
+        .filter_map(|update| match update {
+            AgentUpdate::Compaction(event) => Some(event),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(events.len(), 2, "{updates:?}");
+    assert_eq!(events[0].kind, tact_agent_api::CompactionKind::Command);
+    assert_eq!(events[0].state, tact_agent_api::CompactionState::Started);
+    assert!(
+        matches!(
+            &events[1].state,
+            tact_agent_api::CompactionState::Completed { summary: Some(text) }
+                if text.contains("kernel command summary")
+        ),
+        "{events:?}"
+    );
 }
 
 #[tokio::test]
@@ -528,6 +549,49 @@ async fn responses_compact_history_dispatches_to_native_endpoint() {
         agent.runtime.context.len(),
         2,
         "native compaction keeps the logical context unchanged"
+    );
+    // The card gets the numbers too, not just the TUI log row: the native path
+    // replaces history provider-side, so this read-out is the only body a host
+    // can show. It must be prose, and it must not leak the full provider id.
+    let completed = updates
+        .iter()
+        .find_map(|update| match update {
+            tact_protocol::AgentUpdate::Compaction(event)
+                if matches!(
+                    &event.state,
+                    tact_agent_api::CompactionState::Completed { .. }
+                ) =>
+            {
+                match &event.state {
+                    tact_agent_api::CompactionState::Completed { summary } => Some(summary),
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+        .expect("native compaction must report a completed state");
+    let completed = completed.as_deref().expect("the card needs a body");
+    // The number is the baseline item count, and the prose says so. It must
+    // not claim those items were "kept": the baseline includes the compaction
+    // marker, so "kept" would assert retention the count does not measure.
+    assert!(
+        completed.contains("2 item baseline") && completed.contains("cmp_sanitize"),
+        "native read-out must carry the provider's count and bounded id, got: {completed}"
+    );
+    assert!(
+        !completed.contains("kept"),
+        "the baseline count is not a retained-material count, got: {completed}"
+    );
+    // Bounded, not truncated by accident: the read-out must not be longer than
+    // the log row that carries the same numbers (`compact_id_display` caps the
+    // id at 12 chars), and it must never carry the provider's opaque blob.
+    assert!(
+        completed.len() < 160,
+        "the card shows a read-out, not a dumped payload, got: {completed}"
+    );
+    assert!(
+        !completed.contains(encrypted),
+        "the card must not leak encrypted content, got: {completed}"
     );
 }
 

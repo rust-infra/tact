@@ -118,6 +118,105 @@ pub struct ContextReplacement {
     /// `None` retains the transcript; `Some(vec![])` explicitly clears it.
     pub transcript: Option<Vec<AgentMessage>>,
     pub cursor: CursorUpdate,
+    /// User-displayable summary of what replaced the transcript.
+    ///
+    /// For local summarization this is the prose summary. Native provider
+    /// compaction replaces history inside the provider and yields no local
+    /// text, so there it is the provider's read-out instead (the baseline item
+    /// count and the bounded compaction id, or a plain sentence when the
+    /// cursor carries no product state) — a host that draws a compaction card
+    /// can then show what replaced the history rather than an empty body.
+    ///
+    /// `None` is legitimate and means "there is nothing to say": micro
+    /// compaction stubs old tool results in place, which is not a
+    /// summarization, and inventing prose for it would misdescribe it. A host
+    /// must render `None` as a card with no body rather than as a failure, and
+    /// must treat a blank string the same way as `None` — the field has no
+    /// non-blank contract, because `ContextPolicy` is a published trait and a
+    /// third-party policy never had to honour one.
+    ///
+    /// It travels on the replacement because that value is the only channel the
+    /// kernel has: the text is produced inside the context policy
+    /// (`TactCompactor` keeps the local summary again in its own `last_summary`
+    /// during `compaction_committed`), and the kernel holds the policy as
+    /// `dyn ContextPolicy` and cannot read back through it. Putting it on the
+    /// replacement keeps the text and the transcript it describes in one value
+    /// that cannot disagree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+/// Lifecycle of one compaction, classified by what triggered it.
+///
+/// [`AgentNotice::CompactionStarted`](crate::AgentNotice::CompactionStarted)
+/// still drives the human-readable log line ("[auto compact]" and friends);
+/// this carries the same lifecycle as data so a host that renders a compaction
+/// card (ACP's `compaction_update`) can follow it without parsing text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactionEvent {
+    pub kind: CompactionKind,
+    pub state: CompactionState,
+}
+
+/// Where a [`CompactionEvent`] sits in its lifecycle.
+///
+/// Every compaction that emits [`Self::Started`] emits exactly one terminal
+/// state, so a host never has to fall back to "the turn ended, assume it
+/// failed".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum CompactionState {
+    Started,
+    Completed {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
+    },
+    Failed {
+        error: String,
+    },
+    /// Nothing was replaced: a pre-compaction hook vetoed it, the compactor
+    /// found nothing worth shrinking, or the activation was cancelled.
+    Cancelled {
+        reason: String,
+    },
+}
+
+impl CompactionEvent {
+    pub fn started(kind: CompactionKind) -> Self {
+        Self {
+            kind,
+            state: CompactionState::Started,
+        }
+    }
+
+    pub fn completed(kind: CompactionKind, summary: Option<String>) -> Self {
+        Self {
+            kind,
+            state: CompactionState::Completed { summary },
+        }
+    }
+
+    pub fn failed(kind: CompactionKind, error: impl Into<String>) -> Self {
+        Self {
+            kind,
+            state: CompactionState::Failed {
+                error: error.into(),
+            },
+        }
+    }
+
+    pub fn cancelled(kind: CompactionKind, reason: impl Into<String>) -> Self {
+        Self {
+            kind,
+            state: CompactionState::Cancelled {
+                reason: reason.into(),
+            },
+        }
+    }
+
+    pub fn is_terminal(&self) -> bool {
+        !matches!(self.state, CompactionState::Started)
+    }
 }
 
 /// Context policy failure.
@@ -217,10 +316,12 @@ mod tests {
         let retain = ContextReplacement {
             transcript: None,
             cursor: CursorUpdate::Replace { cursor: None },
+            summary: None,
         };
         let clear = ContextReplacement {
             transcript: Some(Vec::new()),
             cursor: CursorUpdate::Replace { cursor: None },
+            summary: None,
         };
         assert_ne!(retain, clear);
     }
@@ -260,6 +361,7 @@ mod tests {
         let outcome = CompactionOutcome::Replaced(ContextReplacement {
             transcript: Some(Vec::new()),
             cursor: CursorUpdate::Unchanged,
+            summary: Some("condensed".into()),
         });
         let json = serde_json::to_string(&outcome).unwrap();
         assert_eq!(

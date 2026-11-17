@@ -436,12 +436,12 @@ prompt 触发上下文压缩，被截断的模型输出则在句中续写。分�
 </tr>
 </tbody>
 </table>
-<p>三者<strong>各有自己的上限</strong>，不共用一个数（<code>crates/tact/src/recovery.rs</code>）：</p>
-<pre class="rust"><code>pub const MAX_COMPACT_ATTEMPTS: u32 = 3;       // prompt-too-long 压缩重试
-pub const MAX_TRANSPORT_ATTEMPTS: u32 = 10;    // 瞬态网络重试
+<p>真正生效的上限只有两个，各有自己的数（<code>crates/tact/src/recovery.rs</code> / <code>crates/agent_core/src/recovery.rs</code>）：</p>
+<pre class="rust"><code>pub const MAX_TRANSPORT_ATTEMPTS: u32 = 10;    // 瞬态网络重试
 pub const MAX_CONTINUATION_ATTEMPTS: u32 = 3;  // MaxTokens 续写</code></pre>
-<p>传输错误更宽容（长任务可能连续遇到多次间歇失败），压缩与续写各 3
-次。另有两个只属于<strong>摘要调用内部</strong>的预算，不是循环级计数器：<code>MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS</code>（5，摘要调用的瞬态重试）与
+<p>传输错误更宽容（长任务可能连续遇到多次间歇失败）。重试等待优先用服务端返回的 <code>Retry-After</code>，否则指数退避 1s、2s、4s、8s、16s，之后封顶 30s。</p>
+<p><strong>Prompt-too-long 没有循环级上限。</strong>核在 <code>AgentKernel::run_inner</code> 里对 <code>ModelErrorKind::ContextOverflow</code> 触发一次 <code>CompactionRequest::Recovery</code>：压缩把转录替换掉就重试该轮，压缩返回 <code>Skipped</code>（<code>PreCompact</code> 钩子否决，或本就没有可压缩的内容）或失败时，直接以模型错误结束。次数记在 <code>recovery.compact_attempts</code>，但没有任何常量截断它；<code>recovery.rs</code> 里公开的 <code>MAX_COMPACT_ATTEMPTS</code> <strong>当前未被读取</strong>，仅为已发布的 API 保留。</p>
+<p>另有两个只属于<strong>摘要调用内部</strong>的预算，同样不是循环级计数器：<code>MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS</code>（5，摘要调用的瞬态重试）与
 <code>MAX_COMPACT_SUMMARY_ATTEMPTS</code>（5，截断续写，见 <a
 href="./05_chapter_compact_zh.html">上下文压缩</a> §5）。</p>
 <p>当某计数器超过上限（或错误不匹配任何类别）时，<code>agent_loop</code>
@@ -650,8 +650,8 @@ orphaned tool call，不仅限于恢复路径。更干净的长远修复是在
 <td><code>crates/tact/src/recovery.rs</code></td>
 <td><code>RecoveryState</code>、分类器（<code>classify_llm_error</code>
 / <code>classify_error</code> /
-<code>classify_text</code>）、<code>is_transient_http_status</code>、<code>backoff_delay</code>、<code>CONTINUATION_MESSAGE</code>、<code>MAX_COMPACT_ATTEMPTS</code>
-/ <code>MAX_TRANSPORT_ATTEMPTS</code> /
+<code>classify_text</code>）、<code>is_transient_http_status</code>、<code>backoff_delay</code>、<code>CONTINUATION_MESSAGE</code>、<code>MAX_COMPACT_ATTEMPTS</code>（未读取）/
+<code>MAX_TRANSPORT_ATTEMPTS</code> /
 <code>MAX_CONTINUATION_ATTEMPTS</code></td>
 </tr>
 <tr>
@@ -704,9 +704,9 @@ orphaned tool call，不仅限于恢复路径。更干净的长远修复是在
 </tr>
 <tr>
 <td>无用户可配置上限</td>
-<td><code>MAX_COMPACT_ATTEMPTS</code> /
-<code>MAX_TRANSPORT_ATTEMPTS</code> /
-<code>MAX_CONTINUATION_ATTEMPTS</code> 与延迟都是编译期常量</td>
+<td><code>MAX_TRANSPORT_ATTEMPTS</code> /
+<code>MAX_CONTINUATION_ATTEMPTS</code> 与退避延迟都是编译期常量；
+<code>MAX_COMPACT_ATTEMPTS</code> 虽导出但未被读取</td>
 </tr>
 </tbody>
 </table>

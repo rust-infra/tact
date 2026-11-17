@@ -71,6 +71,71 @@ pub(crate) const KEEP_RECENT_TOOL_RESULTS: usize = 12;
 pub(crate) const MICRO_COMPACT_STUB_CHARS: usize = 120;
 pub(crate) const COMPACTED_TOOL_RESULT: &str =
     "[Earlier tool result compacted. Re-run the tool (e.g., read_file) for full content.]";
+/// The read-out a native compaction's card shows in place of a prose summary.
+///
+/// The native path replaces history provider-side, so there is no local text.
+pub(crate) const NATIVE_COMPACTION_FALLBACK_SUMMARY: &str =
+    "Native Responses compaction replaced the conversation provider-side.";
+
+/// What a native Responses compaction actually did, as data.
+///
+/// Two consumers need these numbers and they must not disagree: the TUI-style
+/// log row (`[responses compacted: items=N, id=…]`) and the compaction card's
+/// body. Passing one formatted string between them and re-parsing it was how
+/// the card ended up printing "kept N items" for a count that means something
+/// else — `items` is the **baseline** item count, and the baseline includes
+/// the compaction item itself, so the minimal legal resource reported "kept 1
+/// items" with nothing retained.
+///
+/// Built once per native compaction, from the provider state rather than from
+/// text, so there is no parse step to get wrong and nothing to validate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeReadout {
+    /// The baseline item count the endpoint's compact resource returned.
+    baseline_items: usize,
+    /// The bounded compaction id prefix, or empty when the provider sent none.
+    compact_id: String,
+}
+
+impl NativeReadout {
+    fn from_state(state: &tact_llm::ResponsesConversationState) -> Self {
+        Self {
+            baseline_items: state.input_items.len(),
+            compact_id: compact_id_display(state.compaction_id.as_deref().unwrap_or_default()),
+        }
+    }
+
+    /// The log row the TUI and the desktop render.
+    ///
+    /// Wording and shape are pinned by tests and by `book/23`, so this keeps
+    /// reporting the raw baseline count and says `items` rather than `kept`.
+    fn log_line(&self) -> String {
+        format!(
+            "[responses compacted: items={}, id={}]",
+            self.baseline_items, self.compact_id
+        )
+    }
+
+    /// The card's body: what replaced the history, in prose.
+    ///
+    /// Says "baseline" because that is what the number is. Claiming those
+    /// items were "kept" would assert retention the count does not measure —
+    /// the baseline also holds the compaction marker itself.
+    fn card_text(&self) -> String {
+        if self.compact_id.is_empty() {
+            format!(
+                "Native Responses compaction replaced the conversation with a {} item baseline.",
+                self.baseline_items
+            )
+        } else {
+            format!(
+                "Native Responses compaction replaced the conversation with a {} item baseline \
+                 (provider id {}).",
+                self.baseline_items, self.compact_id
+            )
+        }
+    }
+}
 /// The stub has to be shorter than the results it replaces, or micro compaction
 /// grows the context it was meant to shrink.
 const _: () = assert!(COMPACTED_TOOL_RESULT.len() < MICRO_COMPACT_STUB_CHARS);
@@ -196,8 +261,25 @@ impl TactCompactor {
             });
         }
 
+        let mut native_card = None;
         let (transcript, summary, cursor, success_notice) = if self.native_compaction {
-            let (cursor, success_notice) = self.compact_native(state, model, &cancel).await?;
+            let (cursor, readout) = self.compact_native(state, model, &cancel).await?;
+            // Native compaction always replaces something, so the host always
+            // gets a read-out: the provider's own numbers when its cursor is
+            // readable, a plain sentence when it is not (an external or fake
+            // `ModelPort` may hand back an opaque cursor that carries no Tact
+            // provider state).
+            //
+            // The card text is derived from the same typed value that writes
+            // the log row, so the two describe one fact in two registers
+            // instead of one string being re-parsed into the other.
+            native_card = Some(
+                readout
+                    .as_ref()
+                    .map(NativeReadout::card_text)
+                    .unwrap_or_else(|| NATIVE_COMPACTION_FALLBACK_SUMMARY.to_string()),
+            );
+            let success_notice = readout.as_ref().map(NativeReadout::log_line);
             (None, None, cursor, success_notice)
         } else {
             let (transcript, summary) = self
@@ -211,6 +293,21 @@ impl TactCompactor {
             )
         };
 
+        // The summary goes two ways: the facade keeps it for `/compact`'s own
+        // read-out, and the replacement carries it so a host that renders the
+        // compaction (ACP's card) can show what replaced the history.
+        //
+        // Native compaction has no prose summary — history is replaced
+        // provider-side — so its read-out stands in: a card with an empty body
+        // reads as "nothing happened", while "items=2" is checkable. It stays
+        // out of `summary`/`pending_commit` on purpose: the facade treats that
+        // field as local summarization text (`last_summary`), and a count is not
+        // prose.
+        let summary_for_host = match (summary.clone(), native_card) {
+            (Some(summary), _) => Some(summary),
+            (None, Some(card)) => Some(card),
+            (None, None) => None,
+        };
         *self
             .pending_commit
             .lock()
@@ -221,6 +318,7 @@ impl TactCompactor {
         Ok(CompactionOutcome::Replaced(ContextReplacement {
             transcript,
             cursor,
+            summary: summary_for_host,
         }))
     }
 
@@ -346,9 +444,13 @@ impl TactCompactor {
                 reason: "no old tool result exceeded the compaction threshold".into(),
             });
         }
+        // Micro compaction stubs old tool results in place; there is no
+        // prose summary to show, and inventing one would misdescribe it as a
+        // summarization pass.
         Ok(CompactionOutcome::Replaced(ContextReplacement {
             transcript: Some(messages),
             cursor: CursorUpdate::Unchanged,
+            summary: None,
         }))
     }
 
@@ -357,7 +459,7 @@ impl TactCompactor {
         state: &ContextView<'_>,
         model: &dyn ModelPort,
         cancel: &CancelToken,
-    ) -> Result<(CursorUpdate, Option<String>), ContextError> {
+    ) -> Result<(CursorUpdate, Option<NativeReadout>), ContextError> {
         self.services
             .emit_update(AgentUpdate::Info("[native compact]".into()));
         let request = summary_request(
@@ -378,21 +480,16 @@ impl TactCompactor {
                 // The product adapter can only describe a Tact-owned cursor.
                 // Fake/external ModelPorts may return an opaque cursor; that
                 // must still satisfy the replacement contract, just without a
-                // product-specific success notice.
-                let notice =
+                // product-specific read-out.
+                let readout =
                     tact_llm::neutral::provider_state(cursor)
                         .ok()
                         .map(|state| match state {
                             tact_llm::ProviderConversationState::OpenAiResponses(state) => {
-                                let item_count = state.input_items.len();
-                                let compaction_id = state.compaction_id.unwrap_or_default();
-                                format!(
-                                    "[responses compacted: items={item_count}, id={}]",
-                                    compact_id_display(&compaction_id)
-                                )
+                                NativeReadout::from_state(&state)
                             }
                         });
-                Ok((response.cursor, notice))
+                Ok((response.cursor, readout))
             }
             CursorUpdate::Replace { cursor: None } => Err(ContextError::Compaction(
                 "native Responses compaction returned no replacement cursor".into(),
@@ -744,7 +841,7 @@ impl TactCompactor {
                     if attempt >= MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS
                         || failure != FailureKind::Transient
                     {
-                        return Err(ContextError::Compaction(error.to_string()));
+                        return Err(summary_failure(&error, failure));
                     }
                     attempt = attempt.saturating_add(1);
                     let delay = backoff_delay(attempt.saturating_sub(1));
@@ -781,7 +878,7 @@ impl TactCompactor {
                     if attempt >= MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS
                         || failure != FailureKind::Transient
                     {
-                        return Err(ContextError::Compaction(error.to_string()));
+                        return Err(summary_failure(&error, failure));
                     }
                     attempt = attempt.saturating_add(1);
                     let delay = backoff_delay(attempt.saturating_sub(1));
@@ -916,6 +1013,25 @@ fn summary_request(
 
 fn compaction_error(error: impl std::fmt::Display) -> ContextError {
     ContextError::Compaction(error.to_string())
+}
+
+/// The `ContextError` one exhausted summarizer attempt reports.
+///
+/// A cancelled model call is the user or the host stopping the compaction, not
+/// the summarizer breaking: it must reach the kernel as
+/// [`ContextError::Cancelled`] so the card closes `Cancelled` and `/compact`
+/// does not print a failure line. Every other kind is a real compaction
+/// failure, carried with its provider message.
+///
+/// Both retry loops go through here so neither can forget the distinction —
+/// forgetting it is exactly how a cancel used to be reported as `Failed`.
+fn summary_failure(error: &tact_agent_api::ModelError, failure: FailureKind) -> ContextError {
+    match failure {
+        FailureKind::Cancelled => ContextError::Cancelled,
+        FailureKind::PromptTooLong | FailureKind::Transient | FailureKind::Permanent => {
+            ContextError::Compaction(error.to_string())
+        }
+    }
 }
 
 fn compact_id_display(id: &str) -> String {

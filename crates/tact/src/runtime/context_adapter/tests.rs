@@ -466,6 +466,7 @@ async fn replaced_prepare_run_compaction_reuses_hook_prepared_inputs_once() {
     compactor.push_outcome(CompactionOutcome::Replaced(ContextReplacement {
         transcript: Some(Vec::new()),
         cursor: CursorUpdate::Unchanged,
+        summary: None,
     }));
     let policy = policy_with_compactor(services, &hooks, compactor);
     let model = model();
@@ -528,10 +529,12 @@ async fn micro_replacement_still_allows_auto_before_queued_context() {
     compactor.push_outcome(CompactionOutcome::Replaced(ContextReplacement {
         transcript: Some(Vec::new()),
         cursor: CursorUpdate::Unchanged,
+        summary: None,
     }));
     compactor.push_outcome(CompactionOutcome::Replaced(ContextReplacement {
         transcript: Some(Vec::new()),
         cursor: CursorUpdate::Unchanged,
+        summary: None,
     }));
     let policy = policy_with_compactor(services, &[], compactor);
     let model = model();

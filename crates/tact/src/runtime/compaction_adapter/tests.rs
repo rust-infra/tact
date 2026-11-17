@@ -210,11 +210,19 @@ async fn replacement_commits_and_posts_only_after_kernel_acknowledgement() {
     )
     .await
     .unwrap();
-    let CompactionOutcome::Replaced(ContextReplacement { transcript, cursor }) = outcome else {
+    let CompactionOutcome::Replaced(ContextReplacement {
+        transcript,
+        cursor,
+        summary,
+    }) = outcome
+    else {
         panic!("expected a replacement");
     };
     assert!(transcript.is_some());
     assert_eq!(cursor, CursorUpdate::Replace { cursor: None });
+    // The host-visible summary is the one the facade also keeps for
+    // `/compact`'s read-out; both come from the same local summarization.
+    assert_eq!(summary.as_deref(), Some("summary"));
     assert!(!compactor.compact_state().has_compacted);
     assert!(!compactor.session_start_pending());
     assert_eq!(posts.load(Ordering::Acquire), 0);
@@ -333,7 +341,12 @@ async fn native_compaction_returns_only_a_replacement_cursor() {
     )
     .await
     .unwrap();
-    let CompactionOutcome::Replaced(ContextReplacement { transcript, cursor }) = outcome else {
+    let CompactionOutcome::Replaced(ContextReplacement {
+        transcript,
+        cursor,
+        summary,
+    }) = outcome
+    else {
         panic!("expected a native replacement");
     };
     assert!(transcript.is_none());
@@ -343,6 +356,11 @@ async fn native_compaction_returns_only_a_replacement_cursor() {
             cursor: Some(replacement)
         }
     );
+    // Native compaction keeps its summary provider-side, so there is no prose
+    // to show. This model reports an opaque cursor that carries no Tact
+    // provider state, so there is no item count either — the read-out still
+    // says what happened rather than leaving the card empty.
+    assert_eq!(summary.as_deref(), Some(NATIVE_COMPACTION_FALLBACK_SUMMARY));
     assert!(!compactor.compact_state().has_compacted);
 }
 
@@ -449,10 +467,18 @@ async fn micro_replacement_keeps_recent_results_without_full_post_state() {
     )
     .await
     .unwrap();
-    let CompactionOutcome::Replaced(ContextReplacement { transcript, cursor }) = outcome else {
+    let CompactionOutcome::Replaced(ContextReplacement {
+        transcript,
+        cursor,
+        summary,
+    }) = outcome
+    else {
         panic!("expected a micro replacement");
     };
     assert_eq!(cursor, CursorUpdate::Unchanged);
+    // Micro compaction stubs tool results; inventing prose here would make it
+    // look like a summarization pass.
+    assert_eq!(summary, None);
     let transcript = transcript.expect("micro compaction replaces the transcript");
     let compacted = &transcript[0].content;
     assert!(matches!(
@@ -545,5 +571,196 @@ fn compact_truncation_note_labels_both_units() {
     assert_eq!(
         compact_truncation_note(None, 15_314),
         "thinking block 15314 bytes"
+    );
+}
+
+/// The log row and the card body come from one typed value, in two registers.
+///
+/// They used to be one string: the card re-parsed the log row. That parse had
+/// no validation, so `items=abc` and `items=-5` were asserted as fact, and the
+/// prose claimed those items were "kept" when the number is the baseline item
+/// count — which includes the compaction marker itself.
+#[test]
+fn native_readout_writes_the_log_row_and_the_card_from_one_value() {
+    let readout = NativeReadout {
+        baseline_items: 2,
+        compact_id: "cmp_native_0".into(),
+    };
+    // The log row keeps its shape and its raw baseline count: tests and
+    // `book/23` pin it, and it says `items`, not `kept`.
+    assert_eq!(
+        readout.log_line(),
+        "[responses compacted: items=2, id=cmp_native_0]"
+    );
+    // The card says what the number means.
+    assert_eq!(
+        readout.card_text(),
+        "Native Responses compaction replaced the conversation with a 2 item baseline \
+         (provider id cmp_native_0)."
+    );
+
+    // No provider id: the sentence still reads, without an empty "id ()".
+    let anonymous = NativeReadout {
+        baseline_items: 7,
+        compact_id: String::new(),
+    };
+    assert_eq!(
+        anonymous.card_text(),
+        "Native Responses compaction replaced the conversation with a 7 item baseline."
+    );
+    assert_eq!(anonymous.log_line(), "[responses compacted: items=7, id=]");
+}
+
+/// The minimal legal compact resource retains nothing and must not claim it did.
+///
+/// The baseline holds the compaction item itself, so `items=1` means "one
+/// marker and no retained messages". Reporting "kept 1 items" was the lie;
+/// "a 1 item baseline" is checkable.
+#[test]
+fn a_compaction_item_alone_is_not_reported_as_kept_material() {
+    let readout = NativeReadout {
+        baseline_items: 1,
+        compact_id: "cmp_min_item".into(),
+    };
+    assert_eq!(
+        readout.card_text(),
+        "Native Responses compaction replaced the conversation with a 1 item baseline \
+         (provider id cmp_min_item)."
+    );
+    assert!(
+        !readout.card_text().contains("kept"),
+        "the baseline count is not a retained-material count"
+    );
+}
+
+/// A user cancel that lands inside the summarizer's model call must stay a
+/// cancellation.
+///
+/// `ProviderModel` returns [`ModelErrorKind::Cancelled`] whenever the
+/// activation's token fires mid-request, and `UserCommand::Cancel` fires that
+/// same token. Mapping it to `ContextError::Compaction` made the kernel close
+/// the compaction `Failed`, so the ACP card went red on Esc — reporting the
+/// user's own stop as a breakage.
+#[tokio::test]
+async fn a_cancelled_summarizer_stays_a_cancellation() {
+    let dir = tempfile::tempdir().unwrap();
+    let compactor = compactor(services(), dir.path(), false, &[]);
+    let model = ScriptedModel::new(false);
+    model.push_complete(Err(ModelError::new(
+        ModelErrorKind::Cancelled,
+        "model call cancelled",
+    )));
+    let transcript = transcript();
+    let capabilities = model.capabilities();
+    let session = SessionRef::new("session");
+    let state = ContextView {
+        session: &session,
+        transcript: &transcript,
+        cursor: None,
+        total_turns: 1,
+        max_total_turns: None,
+        last_token_total: Some(100),
+        pending_inputs: &[],
+        capabilities: &capabilities,
+        remaining_turns: None,
+    };
+
+    let error = Compactor::compact(
+        &compactor,
+        &state,
+        CompactionRequest::Command { focus: None },
+        &model,
+        CancelToken::new(),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(error, ContextError::Cancelled),
+        "a cancel must stay a cancel, got {error:?}"
+    );
+    // Nothing was committed, so no success line may follow either.
+    assert!(!compactor.compact_state().has_compacted);
+}
+
+/// The native Responses path has the same rule.
+#[tokio::test]
+async fn a_cancelled_native_compaction_stays_a_cancellation() {
+    let dir = tempfile::tempdir().unwrap();
+    let compactor = compactor(services(), dir.path(), true, &[]);
+    let model = ScriptedModel::new(true);
+    model.push_native(Err(ModelError::new(
+        ModelErrorKind::Cancelled,
+        "model call cancelled",
+    )));
+    let transcript = transcript();
+    let capabilities = model.capabilities();
+    let session = SessionRef::new("session");
+    let state = ContextView {
+        session: &session,
+        transcript: &transcript,
+        cursor: None,
+        total_turns: 1,
+        max_total_turns: None,
+        last_token_total: Some(100),
+        pending_inputs: &[],
+        capabilities: &capabilities,
+        remaining_turns: None,
+    };
+
+    let error = Compactor::compact(
+        &compactor,
+        &state,
+        CompactionRequest::Command { focus: None },
+        &model,
+        CancelToken::new(),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(error, ContextError::Cancelled),
+        "a cancel must stay a cancel on the native path too, got {error:?}"
+    );
+}
+
+/// The counterpart: a real failure is still a failure.
+///
+/// Without this, widening the cancellation rule until nothing failed would
+/// pass the two tests above.
+#[tokio::test]
+async fn a_permanent_summarizer_error_still_fails_the_compaction() {
+    let dir = tempfile::tempdir().unwrap();
+    let compactor = compactor(services(), dir.path(), false, &[]);
+    let model = ScriptedModel::new(false);
+    model.push_complete(Err(ModelError::new(
+        ModelErrorKind::Permanent,
+        "summary failed",
+    )));
+    let transcript = transcript();
+    let capabilities = model.capabilities();
+    let session = SessionRef::new("session");
+    let state = ContextView {
+        session: &session,
+        transcript: &transcript,
+        cursor: None,
+        total_turns: 1,
+        max_total_turns: None,
+        last_token_total: Some(100),
+        pending_inputs: &[],
+        capabilities: &capabilities,
+        remaining_turns: None,
+    };
+
+    let error = Compactor::compact(
+        &compactor,
+        &state,
+        CompactionRequest::Command { focus: None },
+        &model,
+        CancelToken::new(),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(&error, ContextError::Compaction(message) if message.contains("summary failed")),
+        "a real failure must keep its message, got {error:?}"
     );
 }

@@ -78,6 +78,7 @@ async fn max_tokens_with_tools_runs_manual_compaction_before_continuation() {
     context.push_compaction(CompactionOutcome::Replaced(ContextReplacement {
         transcript: None,
         cursor: CursorUpdate::Unchanged,
+        summary: None,
     }));
     let h = harness(model, tools, ScriptedGate::new(), context.clone());
     let mut state = state();

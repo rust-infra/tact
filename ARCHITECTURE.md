@@ -126,8 +126,10 @@ ACP has no Goal update, so Goal snapshots are projected as deduplicated notices
 and a Goal activation owns the turn until the runner emits `TaskIdle`.
 Compaction is advertised as `/compact-context` because T3 reserves the exact
 `/compact` prompt; the adapter keeps that turn open across the bracketed
-summarizer progress lines until Tact reports completion, and clamps the summary
-request to the model's output cap.
+summarizer progress lines (an `Info` line starting with `[` is never an answer)
+and settles it on the terminal `AgentUpdate::Compaction` state, so a vetoed or
+failed compaction does not wait out the command timer. The summary request is
+clamped to the model's output cap.
 
 The adapter also uses ACP's native file and work surfaces: file tools report
 `locations` and edit/write calls carry a renderable `Diff`; background tasks
@@ -399,6 +401,7 @@ Key `AgentUpdate` variants used today:
 | `ThinkingChunk(Started \| Delta(String) \| Finished)` | Streaming reasoning lifecycle. |
 | `ModelInfo(ModelCallParams)` | Model name, max tokens, thinking budget. |
 | `TokenUsage { ... }` | Prompt/completion/cache token counts. |
+| `Compaction(CompactionEvent)` | Typed compaction lifecycle: `Started` / `Completed` / `Failed` / `Cancelled`, carrying `kind`, the local `summary`, and the failure or cancellation `reason`. Emitted next to the plain `Info` lines, which stay for the TUI and the desktop. |
 | `Balance(BalanceInfo)` | DeepSeek / Kimi account balance (where available). |
 | `Info(String)` | Informational notice. |
 | `TaskComplete(String)` | The entire task finished. |
@@ -551,13 +554,21 @@ When the conversation approaches the model context window (`agent.model_context_
 3. For OpenAI `protocol = "responses"` providers this local summary path is **not** used: ordinary requests carry `context_management` with the resolved compact threshold, and `TactCompactor`/`TactModelPort` call the native `POST /responses/compact` endpoint, replacing the opaque protocol cursor (never the logical transcript). Endpoints without native compaction are unsupported — no local-summary fallback. See [Ch 5](./book/05_chapter_compact_zh.html).
 4. Large successful native and MCP outputs are persisted to `<workdir>/.tact/tool-results/<tool_use_id>.txt` instead of being kept verbatim in context. Transcript and tool-result directories each retain the 100 newest files.
 
+Every compaction announces itself with `AgentEvent::Compaction(Started)` and
+reaches exactly one terminal state (`Completed`, `Failed`, or `Cancelled`) from
+the kernel, not from its callers: the kernel is the only component that sees
+both the context policy's outcome and the commit. Frontends that draw a progress
+card follow that event (`AgentUpdate::Compaction`); the human `Info` lines are
+still emitted for the TUI and the desktop. See
+[docs/compaction.md § Lifecycle events](./docs/compaction.md#lifecycle-events).
+
 The TUI bottom-bar row 2 shows the same window as a usage meter (`used / model_context_window`).
 
 Recovery mechanisms inside `AgentKernel::run_inner`:
 
 | Failure | Action |
 |---|---|
-| Prompt too long | Retry after a typed overflow compaction (up to `MAX_RECOVERY_ATTEMPTS`). |
+| Prompt too long | Retry after a typed overflow compaction. There is no fixed retry counter: the loop re-runs until compaction succeeds (transcript replaced) or returns `Skipped`/fails, which surfaces as a model error. `RunOutcome.recovery.compact_attempts` records how many attempts happened. |
 | Transient transport error | Exponential backoff retry. |
 | `max_tokens` truncation with pending tools | Execute pending tools, then continue with a continuation prompt. |
 

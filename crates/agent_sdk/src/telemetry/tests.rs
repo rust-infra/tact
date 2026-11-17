@@ -517,6 +517,7 @@ impl ContextPolicy for CounterContext {
             tact_agent_api::ContextReplacement {
                 transcript: Some(Vec::new()),
                 cursor: tact_agent_api::CursorUpdate::Unchanged,
+                summary: None,
             },
         ))
     }

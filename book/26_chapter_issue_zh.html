@@ -794,6 +794,7 @@
 <li class="toc-l2"><a href="#69-2026-11-16--acp-%E5%9B%9E%E5%90%88%E8%BE%B9%E7%95%8C%E5%9B%9E%E6%94%BE%E4%B8%8E%E5%90%8E%E5%8F%B0%E5%AD%90%E4%BB%A3%E7%90%86%E7%9A%84%E5%8D%81%E4%B8%AA%E4%BF%AE%E5%A4%8D" title="69. 2026-11-16 — ACP：回合边界、回放与后台子代理的十个修复"><span class="toc-label">69. 2026-11-16 — ACP：回合边界、回放与后台子代理的十个修复</span></a></li>
 <li class="toc-l2"><a href="#70-2026-11-17--acp-%E6%B8%85%E7%A9%BA%E7%9A%84%E5%BE%85%E5%8A%9E%E9%9D%A2%E6%9D%BF%E8%A6%81%E7%A7%BB%E9%99%A4%E5%AD%90%E4%BB%A3%E7%90%86%E5%8D%A1%E7%89%87%E4%B8%8D%E5%96%82%E7%BB%99-t3" title="70. 2026-11-17 — ACP：清空的待办面板要移除，子代理会话不喂给 T3"><span class="toc-label">70. 2026-11-17 — ACP：清空的待办面板要移除，子代理会话不喂给 T3</span></a></li>
 <li class="toc-l2"><a href="#71-2026-11-17--%E6%A1%8C%E9%9D%A2%E5%BE%AE%E5%8E%8B%E7%BC%A9%E5%BC%80%E5%85%B3%E6%98%BE%E7%A4%BA-on-%E5%8D%B4%E6%B0%B8%E4%B8%8D%E8%BF%90%E8%A1%8C" title="71. 2026-11-17 — 桌面微压缩开关显示 on，却永不运行"><span class="toc-label">71. 2026-11-17 — 桌面微压缩开关显示 on，却永不运行</span></a></li>
+<li class="toc-l2"><a href="#72-2026-11-17--acp-%E5%8E%8B%E7%BC%A9%E5%8D%A1%E7%89%87%E5%81%9C%E5%9C%A8-compacting-%E6%B0%B8%E4%B8%8D%E8%90%BD%E5%9C%B0" title="72. 2026-11-17 — ACP：压缩卡片停在 Compacting…，永不落地"><span class="toc-label">72. 2026-11-17 — ACP：压缩卡片停在 Compacting…，永不落地</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -23847,6 +23848,59 @@ host 是下次启动真正会传下去的旗标，重启前不能让开关视觉
 <code>cli_args</code>）、<code>crates/desktop_core/src/snapshot.rs</code>
 （<code>micro_compact_view</code>、<code>settings_from</code>）、
 <code>crates/desktop_core/src/controller.rs</code>（<code>desktop_cli_arguments</code>）。</p>
+<hr />
+<h2 id="72-2026-11-17--acp-压缩卡片停在-compacting-永不落地">72. 2026-11-17 — ACP：压缩卡片停在 Compacting…，永不落地</h2>
+<p><strong>现象：</strong>在 T3 里看到 <code>✳ Compacting context</code>，随后
+<code>✳ Compacting…</code>，然后就一直停在那里；下一轮对话已经开始了，卡片还是转的。
+在别的客户端里同样如此，只要那次压缩是自动触发、被 hook 否决或中途失败。</p>
+<p><strong>根因：</strong>适配器靠<strong>匹配提示文案</strong>推进卡片。它只认
+<code>Compaction complete (…).</code> 这一行，于是三类压缩永远等不到收尾：自动压缩的
+结束行措辞不同、<code>PreCompact</code> 否决压根没有结束行、失败时到达的是通用
+<code>Error</code>（<code>Compaction failed: …</code>），和一次无关的模型报错无从区分。
+更根本的问题是位置错了：只有内核同时看得见「上下文策略的结论」和「提交是否成功」，
+任何前端都只能从提示文字里反推。</p>
+<p><strong>决策：</strong>把压缩生命周期做成内核事件，而不是让每个前端解析文字。
+<code>tact_agent_api::CompactionEvent { kind, state }</code> 里
+<code>state</code> 是封闭枚举 <code>Started</code> / <code>Completed</code> /
+<code>Failed</code> / <code>Cancelled</code>，<code>AgentKernel::compact_state</code>
+在开始时发 <code>Started</code>、结束时发恰好一个终态；<code>TactEventBridge</code>
+把它转成 <code>AgentUpdate::Compaction</code>。摘要走
+<code>ContextReplacement.summary</code> → <code>Completed { summary }</code>，
+因为事件发出时 <code>compaction_committed</code>（facade 记录摘要的地方）还没跑。
+原来的 <code>Info</code> 行全部保留：TUI 与桌面端渲染的是文字，丢掉会把用户
+已经在读的日志行变空。</p>
+<p>ACP 侧把这张卡收敛成一个可单测的状态机 <code>CompactionCard</code>：一次压缩
+只用一个 <code>compaction_id</code>（ACP 按 id 原地 patch，首次更新决定时间线位置），
+<code>Started</code> 时开卡、终态时关掉；<code>cancelled</code> 把原因塞进
+<code>error</code>（ACP 没有单独字段），<code>finish_turn</code> 只作为「生产者被
+撕掉」的兜底。顺带修掉一个自相矛盾：<code>compact_history</code> 现在返回
+<code>CompactionOutcome</code>，命令 driver 只在 <code>Replaced</code> 时打
+<code>Compaction complete.</code>，被否决时说
+<code>Nothing to compact: &lt;原因&gt;</code>——否则同一件事会同时出现一张 cancelled
+卡片和一句「压缩完成」。</p>
+<p><strong>验证：</strong><code>every_compaction_kind_reaches_the_host_as_a_typed_event</code>
+逐个 kind 钉住类型化事件（原 bug 就长在这里）；
+<code>a_completed_compaction_still_writes_the_line_the_tui_renders</code> 与
+<code>terminal_compaction_states_do_not_write_a_completion_line</code> 钉住文案边界；
+<code>a_compaction_keeps_one_id_for_its_whole_lifecycle</code>、
+<code>a_vetoed_compaction_is_reported_as_cancelled_not_failed</code>、
+<code>every_compaction_state_maps_to_an_acp_status</code> 钉住 ACP 映射；
+<code>vetoed_compact_command_does_not_claim_success</code> 走真实命令循环，钉住
+「否决不报成功」；<code>compaction_run_does_not_open_an_activation</code> 防止
+压缩冒充一轮对话。<code>scripts/check-rust.sh</code> 全绿（含
+<code>cargo test --workspace</code> 与 book 检查）。</p>
+<p><strong>Pointers：</strong><code>crates/agent_api/src/context.rs</code>
+（<code>CompactionEvent</code>/<code>CompactionState</code>）、
+<code>crates/agent_core/src/kernel.rs</code>（<code>compact_state</code>：
+<code>Started</code> + 唯一终态）、<code>crates/protocol/src/agent.rs</code>
+（<code>AgentUpdate::Compaction</code>）、
+<code>crates/tact/src/runtime/event_adapter.rs</code>、
+<code>crates/tact/src/runtime/compaction_adapter.rs</code>（
+<code>summary_for_host</code>）、<code>crates/tact-acp/src/lib.rs</code>
+（<code>CompactionCard</code>、<code>handle_compaction</code>）、
+<code>crates/tact_host/src/driver.rs</code>（<code>UserCommand::Compact</code>）、
+<code>docs/compaction.md</code>（§ Lifecycle events）、
+<code>crates/tact-acp/README.md</code>（§ Compaction）。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>

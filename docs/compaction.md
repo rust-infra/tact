@@ -123,6 +123,94 @@ the trigger check and the pass cannot disagree about when it is due. A
 
 ---
 
+## Lifecycle events
+
+The kernel is the one component that sees every compaction transition, so it —
+not each frontend — owns reporting them. `TactEventBridge` in
+`crates/tact/src/runtime/event_adapter.rs` turns
+`AgentEvent::Compaction(CompactionEvent)` into
+`AgentUpdate::Compaction(CompactionEvent)`, and every host renders from that:
+
+| Event state | Emitted when | Carries |
+|---|---|---|
+| `Started` | `compact_state` begins, right after the `[auto compact]`-style notice | `kind` |
+| `Completed` | the replacement was persisted and committed | `kind`, `summary` |
+| `Failed` | the context policy or the commit failed | `kind`, `error` |
+| `Cancelled` | a `PreCompact` hook vetoed it, nothing needed compacting, or the activation was cancelled | `kind`, `reason` |
+
+Which failure a compaction reports is decided in one place per layer, and a
+cancellation is never one of them:
+
+- `crates/tact/src/recovery.rs` classifies a model error as
+  `FailureKind::Cancelled`, separate from `Permanent`. Folding it into
+  `Permanent` made the summarizer report the user's own Esc as
+  "context compaction failed", so the card closed `Failed`.
+- `summary_failure` in `crates/tact/src/runtime/compaction_adapter.rs` turns
+  that classification into `ContextError::Cancelled`, which the kernel maps to
+  the `Cancelled` state. Both retry loops (local summary, native Responses) go
+  through it so neither can drift.
+- `command_answer` in `crates/tact-acp/src/lib.rs` decides the command turn's
+  stop reason from the same state: `Failed` closes it as `Error`, everything
+  else as `EndTurn`. Without that, a failed `/compact` settled the turn
+  cleanly and the `Error` update behind it was gated out, so the client showed
+  a red card beside a finished-looking turn.
+- `compact_line` in `crates/tact_host/src/driver.rs` picks the `/compact`
+  read-out. It reads the cancel token rather than the error text, so a cancel
+  prints `Compaction cancelled.` instead of `Compaction failed: run
+  cancelled`.
+
+`CompactionEvent` lives in `tact_agent_api::context` and is a closed enum, so a
+new state cannot be added without every consumer deciding what to draw.
+
+Two notes for anyone adding a consumer:
+
+- **The summary travels on the replacement.** `ContextReplacement.summary` is
+  set by the context policy and copied into the `Completed` event. For local
+  summarization that is the prose summary. Native Responses compaction has no
+  prose — history is replaced provider-side — so its read-out stands in: the
+  **baseline** item count and the bounded compaction id, or a plain sentence
+  when the cursor carries no Tact provider state. The count is a baseline and
+  not a count of retained material (it includes the compaction marker), which
+  is why the card says "a N item baseline" rather than "kept N items". Both
+  the card text and the `[responses compacted: items=…]` log row are built from
+  one typed `NativeReadout`, so neither can drift from the other. Reading
+  `compact_state.last_summary` instead would not work: the kernel emits the
+  event, that field is facade state written by `compaction_committed`, and the
+  policy's return value is the only place both halves of a compaction agree.
+  The read-out stays out of `last_summary` on purpose — that field means local
+  summarization text, and a count is not prose.
+- **`Ok` means the context was replaced.** `compact()` returns `Err` only when
+  nothing was persisted. A step that fails *after* the replacement — a
+  `PostCompact` hook, a policy's bookkeeping in `compaction_committed` —
+  cannot unmake it, so the card already closed `Completed` and the failure
+  travels as `AgentEvent::CompactionFinishedWithError`. Returning `Err` there
+  used to print "Compaction failed" over a transcript the store had compacted.
+- **A hook's `systemMessage` is not the command's answer.** It reaches the host
+  as a plain `AgentUpdate::Info` (`finish_hook_output`), and a `PreCompact` or
+  `PostCompact` hook runs *inside* the compaction, between `Started` and the
+  terminal state. ACP therefore settles a `/compact` turn only on that terminal
+  state while a card is open — otherwise the hook line ended the turn, faulted
+  the live card, and the real terminal drew a second one.
+- **A `None` or blank summary is not a failure.** Micro compaction stubs tool
+  results in place and has no prose to show, so `summary: None` is correct; a
+  blank string is treated as absent at the ACP boundary, because
+  `ContextPolicy` is a published trait and a third-party policy may send one.
+- **The `Info` lines stay.** `[auto compact]`, `[compact summary 1/6]`, and
+  `Compaction complete (Auto).` are what the TUI and the desktop render. The
+  typed event is a second view of the same fact, not a replacement — dropping
+  the text would blank log rows users already read. The completion line is
+  written only for a `Completed` state: `compact_history` returns the
+  `CompactionOutcome`, so `/compact` says `Nothing to compact: <reason>` when
+  a `PreCompact` hook vetoed it or the context held nothing to compact,
+  instead of claiming a success the card next to it contradicts.
+
+Clients that draw a progress card follow the typed event. ACP is the only one
+today: `crates/tact-acp` maps the four states onto `compaction_update` and
+keeps one `compaction_id` for the whole compaction (see
+[crates/tact-acp/README.md](../crates/tact-acp/README.md#compaction)).
+
+---
+
 ## Configuration
 
 | Setting | Default | Effect |
