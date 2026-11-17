@@ -273,6 +273,19 @@ tact-ui --model "claude-sonnet-4-20250514" headless "Refactor the error handling
 tact-ui -m plan headless "Add rate limiting to the API client"
 ```
 
+Driving Tact from an ACP client instead of a terminal:
+
+```bash
+cargo build --release -p tact-acp
+# then point the client at the absolute path of target/release/tact-acp
+```
+
+For T3 Code that is **Settings → Providers → Add provider → ACP**, with
+**ACP source** set to `Local command` and **Executable** set to that path. The
+adapter reads the same `~/.tact/config.toml` (or project `.tact/config.toml`)
+as `tact-ui`, so a provider configured once works from both. See
+[ACP frontend](#acp-frontend-t3-code-and-any-acp-client).
+
 Top-level flags go before the subcommand. `tact-ui headless --model m` is not
 accepted, and the CLI says so rather than silently ignoring the flag.
 
@@ -507,6 +520,38 @@ prompts, instructions, and tool-list change notifications.
 - **TUI mode** (`tact-ui`) — streaming output, syntax-highlighted diffs, interactive permission dialogs
 - **Headless mode** (`tact-ui headless`) — CI/CD pipelines, scripts, or non-interactive workflows
 
+### 🔗 ACP frontend (T3 Code, and any ACP client)
+
+`tact-acp` turns a Tact session into an [Agent Client Protocol](https://agentclientprotocol.com/)
+v2 agent over stdio, so an ACP client can drive Tact with its own chat UI
+instead of a terminal. It is a third frontend over `tact_host`, not a mode of
+the TUI: each ACP session owns one `HostSession`, so model, permission mode,
+Goals, subagents, MCP servers, skills, and hooks come from the same
+configuration `tact-ui` reads.
+
+T3 Code is the first consumer — its **Settings → Providers → Add provider →
+ACP → Local command** flow launches any binary that speaks ACP v2:
+
+```bash
+cargo build --release -p tact-acp    # target/release/tact-acp
+```
+
+What a client gets on the timeline: streaming text and thinking, tool calls
+with renderable diffs and file locations, background tasks as terminals, plan
+updates from the durable task list, the compaction card as a lifecycle
+(`in_progress` → `completed` / `failed` / `cancelled`, carrying Tact's
+summary), token usage, and permission prompts as native dialogs.
+Tact's `/compact`, `/model`, and `/permission` become `/compact-context`,
+`/model-select`, and `/permission-mode`, because T3 reserves the bare spellings;
+the original spellings still work for other clients.
+
+Two adapter behaviours worth knowing: T3's native-session list maps to Tact's
+persisted sessions (import resumes one, delete removes it), and a session lock
+is what keeps two hosts from writing the same session at once. Detached
+subagent sessions are advertised to every client except T3, which renders an
+unknown `sessionUpdate` as an "unsupported update" card. Details and the full
+protocol scope: [`crates/tact-acp/README.md`](./crates/tact-acp/README.md).
+
 ### 🖥️ Tact Desktop
 
 `tact-desktop` is a native GPUI app for macOS, Windows, and Linux over the same
@@ -560,34 +605,35 @@ left off with `--resume-last`.
 
 ## Architecture
 
-Tact is a Cargo workspace, not one binary. The terminal UI and the desktop
-shell are two frontends over one shared runtime:
+Tact is a Cargo workspace, not one binary. The terminal UI, the desktop shell,
+and the ACP frontend are three frontends over one shared runtime:
 
 ```
-tact-ui (terminal)          tact-desktop (GPUI)
-      │                            │
-      │                       tact_desktop_core
-      └──────────┬─────────────────┘
-                 │
-             tact_host        session bootstrap, command loop,
-                 │            Goal runner, permissions
-                 │
-                tact          composition root: tool router, MCP client,
-                 │            hooks, prompts, compaction, SQLite store
-                 │
-         tact_agent_core      bounded kernel: AgentKernel::run, one
-                 │            activation over injected KernelDeps
-                 │
-         tact_agent_api       ports: state, model streams, context,
-                              tools, gates, transcript and usage sinks
+tact-ui (terminal)      tact-desktop (GPUI)      any ACP client
+      │                        │                  (T3 Code, …)
+      │                  tact_desktop_core              │
+      └──────────┬─────────────┘                   tact-acp
+                 │                                      │
+                 └──────────────┬───────────────────────┘
+                                │
+                            tact_host        session bootstrap, command loop,
+                                │            Goal runner, permissions
+                               tact          composition root: tool router,
+                                │            MCP client, hooks, prompts,
+                                │            compaction, SQLite store
+                        tact_agent_core      bounded kernel: AgentKernel::run,
+                                │            one activation over KernelDeps
+                        tact_agent_api       ports: state, model streams, context,
+                                             tools, gates, transcript and usage sinks
 ```
 
 `tact_llm` is the provider SDK and implements `ModelPort`: Anthropic, OpenAI
 Chat Completions, and OpenAI Responses behind one builder. `tact_protocol`
 carries the host/UI wire types, `tact_catalog` the shared command catalog,
-`tui` and `agent_tui_kit` the ratatui rendering, and `tact_agent_sdk` an
-optional embeddable facade. The kernel has no SQLite, MCP transport, provider
-SDK, or UI dependency; `tact` injects all of them.
+`tui` and `agent_tui_kit` the ratatui rendering, `tact-acp` the ACP v2 stdio
+frontend, and `tact_agent_sdk` an optional embeddable facade. The kernel has no
+SQLite, MCP transport, provider SDK, or UI dependency; `tact` injects all of
+them.
 
 The agent loop:
 1. Optionally auto-compacts **old** history (reserving space for the incoming user turn), then appends the turn
@@ -744,8 +790,9 @@ an error that names the replacement key.
 - [`book/index_zh.html`](./book/index_zh.html) is the long-form book, in
   Chinese, with chapters on the agent loop, compaction, tools, MCP, goals, and
   the sandbox.
-- `crates/agent_sdk/README.md` and `crates/tact_llm/README.md` cover embedding
-  the kernel and calling providers directly.
+- `crates/agent_sdk/README.md`, `crates/tact_llm/README.md`, and
+  `crates/tact-acp/README.md` cover embedding the kernel, calling providers
+  directly, and driving Tact from an ACP client.
 
 ## License
 
