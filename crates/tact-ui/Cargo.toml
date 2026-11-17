@@ -26,8 +26,6 @@ tokio = { workspace = true, features = ["fs", "net", "process", "sync", "time", 
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
-async-trait = { workspace = true }
-clap = { workspace = true }
 rmcp = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }

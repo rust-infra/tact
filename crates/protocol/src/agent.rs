@@ -27,6 +27,9 @@ pub enum PermissionMode {
 }
 
 impl PermissionMode {
+    /// Every mode, in the order a picker should offer them.
+    pub const ALL: [Self; 3] = [Self::Default, Self::Plan, Self::Auto];
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Default => "default",

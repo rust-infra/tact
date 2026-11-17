@@ -472,6 +472,22 @@ async fn micro_replacement_keeps_recent_results_without_full_post_state() {
     assert_eq!(posts.load(Ordering::Acquire), 0);
 }
 
+/// The stub only earns its place if it is shorter than what it replaces, and
+/// the due check reads the same two thresholds the pass uses. A literal on
+/// either side would let "is it due?" and "what does it do?" drift apart.
+#[test]
+fn micro_thresholds_are_the_ones_the_due_check_reads() {
+    assert!(
+        COMPACTED_TOOL_RESULT.len() < MICRO_COMPACT_STUB_CHARS,
+        "stub ({} chars) must be shorter than the {} char threshold it retires",
+        COMPACTED_TOOL_RESULT.len(),
+        MICRO_COMPACT_STUB_CHARS
+    );
+    // A result exactly at the threshold survives: the pass compares `>`.
+    assert_eq!(MICRO_COMPACT_STUB_CHARS, 120);
+    assert_eq!(KEEP_RECENT_TOOL_RESULTS, 12);
+}
+
 #[test]
 fn compaction_kinds_map_to_stable_hook_triggers() {
     assert_eq!(trigger_for(CompactionKind::Auto), CompactTrigger::Auto);

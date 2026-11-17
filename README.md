@@ -49,6 +49,32 @@ That's it. Configure a provider, open a terminal, and prompt.
 
 ---
 
+## Why this exists
+
+An agent loop that outlives its context window is a distributed system: it has
+partial state, concurrent writers, retries, crashes, and one very expensive
+shared resource that runs out.
+
+tact is built by someone who has run that class of system before. Six years
+on the backend of Hago (JOYY) — a social product that peaked at 33M MAU and
+10M DAU across Indonesia, India, Singapore, Dubai, Brazil, and the US — on
+the homepage room recommendation pipeline, community, and social graph. Before
+that: PBFT consensus and P2P routing on a DAG blockchain, IM infrastructure
+at Echo Music, cloud storage at Kugou and UpYun.
+
+The design decisions here come from that background:
+
+| Agent runtime problem | What a high-traffic backend does instead |
+|---|---|
+| Context window fills up | Rebuild a projection from the source of truth; keep the cache cheap to discard |
+| A tool returns 40k tokens | Page the results, don't inline them — same as pre-slicing Redis results for a hot API |
+| A goal crashes mid-flight | Lease-fence the writer so the effect can't apply twice |
+| Token cost is invisible | Persist per-call usage, cache hit/miss, and reasoning tokens to local SQLite |
+
+MIT licensed, no account, no hosted service, no telemetry.
+
+---
+
 ## Quick Start
 
 ### 1. Install

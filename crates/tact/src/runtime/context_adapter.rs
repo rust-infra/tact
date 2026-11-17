@@ -10,12 +10,12 @@ use std::{
 
 use super::{
     activation_view::{ModelIdentity, SessionIdentity, TactActivationView},
-    compaction_adapter::Compactor,
+    compaction_adapter::{Compactor, KEEP_RECENT_TOOL_RESULTS, MICRO_COMPACT_STUB_CHARS},
     prompt_adapter::{SystemPromptAssembler, estimate_agent_context_tokens},
     services::TactSharedServices,
 };
 use crate::{
-    compact::should_auto_compact,
+    compact::{AUTO_COMPACT_THRESHOLD_PERCENT, should_auto_compact},
     hook::{
         Hook, HookContextChunk, HookControl, SessionStartContext, SessionStartFn,
         SessionStartSource, UserPromptSubmitFn, frame_hook_context,
@@ -335,7 +335,9 @@ impl TactContextPolicy {
             if last_token_total == 0 {
                 return false;
             }
-            let threshold = context_window.saturating_mul(80).div_ceil(100);
+            let threshold = context_window
+                .saturating_mul(AUTO_COMPACT_THRESHOLD_PERCENT)
+                .div_ceil(100);
             let projected = (last_token_total as usize)
                 .saturating_add(incoming_tokens)
                 .saturating_add(state.capabilities.max_output_tokens as usize);
@@ -362,14 +364,16 @@ impl TactContextPolicy {
             .flat_map(|message| &message.content)
             .filter(|block| matches!(block, tact_agent_api::AgentContentBlock::ToolResult { .. }))
             .collect::<Vec<_>>();
-        positions.len() > 12
-            && positions[..positions.len() - 12].iter().any(|block| {
-                matches!(
-                    block,
-                    tact_agent_api::AgentContentBlock::ToolResult { content, .. }
-                        if content.chars().count() > 120
-                )
-            })
+        positions.len() > KEEP_RECENT_TOOL_RESULTS
+            && positions[..positions.len() - KEEP_RECENT_TOOL_RESULTS]
+                .iter()
+                .any(|block| {
+                    matches!(
+                        block,
+                        tact_agent_api::AgentContentBlock::ToolResult { content, .. }
+                            if content.chars().count() > MICRO_COMPACT_STUB_CHARS
+                    )
+                })
     }
 }
 

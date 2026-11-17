@@ -11,7 +11,6 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::Instant,
 };
 
 use async_trait::async_trait;
@@ -55,9 +54,26 @@ use crate::{
     },
 };
 
-const KEEP_RECENT_TOOL_RESULTS: usize = 12;
-const COMPACTED_TOOL_RESULT: &str =
+/// How many recent tool results survive micro compaction intact; every older
+/// result longer than [`MICRO_COMPACT_STUB_CHARS`] is replaced with
+/// [`COMPACTED_TOOL_RESULT`].
+///
+/// These three live in the code that runs the pass, and
+/// [`crate::runtime::context_adapter`] reads the same constants for its
+/// `micro_compact_due` check. A literal on either side lets "is it due?" and
+/// "what does it do?" disagree — the due check then fires a pass that stubs
+/// nothing, or stays silent while the transcript keeps growing.
+pub(crate) const KEEP_RECENT_TOOL_RESULTS: usize = 12;
+/// Character count above which an old tool result is worth stubbing.
+///
+/// Shorter results stay: they are cheap to carry, and the stub would cost more
+/// tokens than the text it replaces.
+pub(crate) const MICRO_COMPACT_STUB_CHARS: usize = 120;
+pub(crate) const COMPACTED_TOOL_RESULT: &str =
     "[Earlier tool result compacted. Re-run the tool (e.g., read_file) for full content.]";
+/// The stub has to be shorter than the results it replaces, or micro compaction
+/// grows the context it was meant to shrink.
+const _: () = assert!(COMPACTED_TOOL_RESULT.len() < MICRO_COMPACT_STUB_CHARS);
 
 type PreCompactHooks = Vec<Arc<dyn PreCompactFn>>;
 type PostCompactHooks = Vec<Arc<dyn PostCompactFn>>;
@@ -320,7 +336,7 @@ impl TactCompactor {
             else {
                 continue;
             };
-            if content.chars().count() > 120 {
+            if content.chars().count() > MICRO_COMPACT_STUB_CHARS {
                 *content = COMPACTED_TOOL_RESULT.to_string();
                 changed = true;
             }
@@ -347,7 +363,9 @@ impl TactCompactor {
         let request = summary_request(
             self.model.name.clone(),
             state.transcript.iter().map(ModelMessage::from).collect(),
-            self.settings.max_tokens,
+            self.settings
+                .max_tokens
+                .min(model.capabilities().max_output_tokens),
             ModelCallOptions::default(),
         );
         let response = self
@@ -407,6 +425,7 @@ impl TactCompactor {
 
         let model_context_window = self.settings.model_context_window;
         let session_effort = self.settings.reasoning_effort;
+        let model_max_output = model.capabilities().max_output_tokens;
         let summary_text_max_tokens = if model_context_window == 0 {
             COMPACT_SUMMARY_MAX_TOKENS
         } else {
@@ -419,6 +438,9 @@ impl TactCompactor {
             )
             .map_err(compaction_error)?
         };
+        // A model whose output cap is below the computed text budget cannot
+        // serve the request; the cap is the hard ceiling, not the window.
+        let summary_text_max_tokens = summary_text_max_tokens.min(model_max_output);
         let effective_effort =
             session_effort.or_else(|| compact_summary_server_default_effort(&self.provider_kind));
         let reasoning_reserve = effective_effort
@@ -428,17 +450,20 @@ impl TactCompactor {
                     effort,
                 ))
             })
-            .unwrap_or(0);
+            .unwrap_or(0)
+            .min(model_max_output.saturating_sub(summary_text_max_tokens));
         let envelope_floor = if effective_effort.is_some() {
             self.settings
                 .max_tokens
                 .min(compact_summary_envelope_ceiling(model_context_window))
+                .min(model_max_output)
         } else {
             0
         };
         let summary_max_tokens = summary_text_max_tokens
             .saturating_add(reasoning_reserve)
-            .max(envelope_floor);
+            .max(envelope_floor)
+            .min(model_max_output);
         let summary_input_limit = if model_context_window == 0 {
             crate::compact::KEEP_USER_MESSAGE_TOKENS
         } else {
@@ -511,7 +536,6 @@ impl TactCompactor {
             .unwrap_or(u32::MAX)
         };
 
-        let compact_start = Instant::now();
         let mut continuation_attempt = 0u32;
         let mut attempt_max_tokens = summary_max_tokens;
         let mut attempt_reserve = reasoning_reserve;
@@ -593,8 +617,11 @@ impl TactCompactor {
                         observed_think,
                     )
                     .min(max_reserve_for_window)
+                    .min(model_max_output.saturating_sub(summary_text_max_tokens))
                 };
-                attempt_max_tokens = summary_text_max_tokens.saturating_add(attempt_reserve);
+                attempt_max_tokens = summary_text_max_tokens
+                    .saturating_add(attempt_reserve)
+                    .min(model_max_output);
                 self.services.emit_update(AgentUpdate::Info(format!(
                     "[compact continue {continuation_attempt}/{MAX_COMPACT_SUMMARY_ATTEMPTS}] summary truncated ({}), next attempt max_tokens={attempt_max_tokens}",
                     compact_truncation_note(
@@ -692,16 +719,6 @@ impl TactCompactor {
             }
         }
 
-        let elapsed = compact_start.elapsed();
-        {
-            let mut stats = self
-                .services
-                .stats
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            stats.prompt_count = stats.prompt_count.saturating_add(1);
-            stats.llm_call_durations.push(elapsed);
-        }
         Ok((rebuilt.iter().map(agent_message).collect(), summary))
     }
 

@@ -24,6 +24,7 @@ This project is a Cargo Workspace containing the following crates:
 | `crates/desktop_core`         | `tact_desktop_core`    | `2.0.6` (workspace) | GPUI-free desktop controller, transcript reducer, typed snapshots, project/session catalog, desktop settings, and host-session orchestration.                                                                                                           |
 | `crates/desktop`              | `tact-desktop`         | `2.0.6` (workspace) | Native GPUI desktop shell for macOS, Windows, and Linux. Thin UI over `tact_desktop_core` and `tact_catalog`, with Tact-owned gpui-component surfaces.                                                                                                  |
 | `crates/tact-ui`              | `tact-ui`              | `2.0.6` (workspace) | TUI adapter and CLI: terminal rendering/input plus headless CLI, consuming `tact_host` for shared orchestration.                                                                                                                                        |
+| `crates/tact-acp`             | `tact-acp`             | `2.0.6` (workspace) | ACP v2 stdio frontend: one `HostSession` per ACP session, streaming Transcript/tool updates and forwarding permission requests. Used by T3 Code's `Local command` provider.                                                                             |
 | `crates/tact_llm`             | `tact_llm`             | `2.0.6` (workspace) | Stable provider SDK and `tact_agent_api::ModelPort` implementation. `core` exposes the facade, builder, endpoint/limit/auth types, and a lazy stream; protocol adapters are feature-isolated behind `anthropic`, `openai-chat`, and `openai-responses`. |
 | `crates/tool_refactor_macros` | `tool_refactor_macros` | `2.0.6` (workspace) | Proc-macro `#[tool]` that generates `Tool` trait implementations from async functions.                                                                                                                                                                  |
 
@@ -33,6 +34,9 @@ Dependency graph:
 flowchart TB
     tact_ui["tact-ui"] --> tact
     tact_ui --> tact_host["tact_host"]
+    tact_acp["tact-acp"] --> tact
+    tact_acp --> tact_host
+    tact_acp --> tact_protocol
     tact_host --> tact
     tact_host --> tact_llm
     tact_host --> tact_protocol
@@ -84,17 +88,65 @@ Streaming is lazy, cancellation-first, and single-terminal. Product turns keep
 one immutable activation snapshot and use `Provider::with_session_id` for
 subagents so a child never inherits the parent's session header.
 
-Binaries produced by `crates/tact-ui`:
+Binaries:
 
 | Binary | Source | Mode |
 |---|---|---|
 | `tact-ui` | `crates/tact-ui/` | Interactive TUI by default; `headless` subcommand for CI / non-interactive |
+| `tact-acp` | `crates/tact-acp/` | ACP v2 agent over stdio; T3 Code launches it as a `Local command` provider |
 | `tact-desktop` | `crates/desktop/` | Native GPUI desktop app; packaged for macOS, Windows, and Linux |
 
 `tact-ui` crate layout: `main.rs` (dispatch), `interactive.rs`, `headless.rs`, and
 the terminal-specific `headless_session.rs` test harness and `sessions.rs`
 printer. Shared session, driver, Goal, account, permission, and input logic
 lives in `crates/tact_host`.
+
+`tact-acp` is a third frontend over `tact_host`, not a mode of the TUI. Each
+ACP session owns one `HostSession`; a per-session actor turns `AgentUpdate`
+into `session/update` notifications, maps `session/prompt` to
+`UserCommand::SubmitTask` (or to a session action when the text is a `/name`
+or `$skill` the adapter owns), routes Tact's permission prompt through
+`session/request_permission`, and maps `Select` / `MultiSelect` questions to
+form elicitation. The actor is the single writer of the per-session config
+surface: model, permission mode, and thought level are applied only at a turn
+boundary, because a `SetModel` queued behind a running turn would also park the
+UI answers and cancellation that turn waits on. Client MCP servers are merged
+into the session's own `.mcp.json` resolution, so a client that supplies a
+stdio bridge gets its tools without any config write. ACP v2 is still a draft,
+so the adapter pins `agent-client-protocol`'s `unstable_protocol_v2` feature and
+advertises the session baseline plus commands, skills, image prompts, MCP
+transports, and session deletion. The
+baseline `capabilities.session` object is load-bearing rather than decorative:
+v2 has no per-method flags for `session/list`/`resume`/`close`, so a client
+only has them when that object is non-null. T3 reads it that way and gates both
+its native-session list and resume-after-restart on it.
+
+The command surface includes Goal control (`/goal create|list|show|steer|pause|resume|cancel|accept|archive|unarchive`).
+ACP has no Goal update, so Goal snapshots are projected as deduplicated notices
+and a Goal activation owns the turn until the runner emits `TaskIdle`.
+Compaction is advertised as `/compact-context` because T3 reserves the exact
+`/compact` prompt; the adapter keeps that turn open across the bracketed
+summarizer progress lines until Tact reports completion, and clamps the summary
+request to the model's output cap.
+
+The adapter also uses ACP's native file and work surfaces: file tools report
+`locations` and edit/write calls carry a renderable `Diff`; background tasks
+become terminals plus `state_update.background` entries; detached subagents are
+listed there too; compaction progress is a typed `compaction_update`; and
+`session/resume` replays the durable transcript while `session/fork` copies it
+into a new session. The task list owns the plan surface (`plan_update`), and an
+emptied list sends `plan_removed` rather than an empty checklist, because a plan
+update is a wholesale replacement.
+
+Two surfaces are withheld from clients that cannot render them, since a client
+is free to show an unknown update as an error row rather than ignore it. T3
+does exactly that: its ACP driver normalizes a fixed set of `sessionUpdate`
+kinds and turns the rest into `Unsupported ACP update` tool cards. So a client
+identifying itself as `t3-code` in `initialize.info` gets no child sessions — no
+`subagent_update`, no `Session` tool-call reference, no child-session updates —
+and its subagents keep the plain tool card. ACP has no capability bit for child
+sessions, so the implementation name is the signal; remove the gate once T3
+handles them for non-Claude drivers.
 
 ---
 
@@ -816,6 +868,12 @@ If you are reading older branches or notes, the following major evolutions have 
 
 - The plan-then-execute model (`generate_plan()` → sequential `execute_step()`) was first replaced by a streaming facade loop, then by the bounded `tact_agent_core::AgentKernel`; `tact::Agent` remains the compatibility facade.
 - Neutral contracts live in `tact_agent_api`; provider adapters implement `ModelPort`; product adapters in `crates/tact/src/runtime/` implement tool, gate, context, transcript, usage, and event ports.
+- **`/stats` accounting sits at the ports, not in the loop.** The kernel
+  reports `AgentEvent::Usage` (tokens only) and `ToolFinished`; request and
+  response bodies, thinking blocks, and per-call wall time exist only where the
+  bodies meet. `runtime::model_adapter::StatsModelPort` wraps the model port for
+  the LLM half and `TactEventBridge::record_tool` counts the tool half, so every
+  call is counted exactly once regardless of which kernel path ran it.
 - The activation selector, `agent/tool_dispatch.rs`, legacy stream/compaction helpers, and `LegacyModelBridge` were deleted after parity. `tool_schedule.rs` retains only the product `ToolResources` contract and `LoopState` is a read-only activation view.
 - Business tools live in `crates/tact/src/tool/`; the legacy `crates/tools` Sandbox crate was removed.
 - The runtime gained native support for MCP, hooks, permissions, context compaction, recovery, sub-agents, teammates, worktrees, memory, and skills.

@@ -386,6 +386,19 @@ pub fn is_kimi_k3(model: &str) -> bool {
     crate::policy::is_kimi_k3(model)
 }
 
+/// The effort tiers the picker offers when the model has no profile entry.
+///
+/// DeepSeek and Kimi fold the extra tiers (`minimal`, `medium`, `xhigh`) into
+/// `low`/`high` on the wire, so offering them there would show a choice that
+/// cannot be honoured. Every other provider accepts the full ladder.
+pub fn default_effort_tiers(info: &ProviderInfo) -> Vec<crate::OpenAiReasoningEffort> {
+    use crate::OpenAiReasoningEffort as E;
+    match &info.provider {
+        ProviderKind::DeepSeek | ProviderKind::Kimi => vec![E::Low, E::High, E::Max],
+        _ => vec![E::Minimal, E::Low, E::Medium, E::High, E::Xhigh, E::Max],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{

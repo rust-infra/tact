@@ -1271,8 +1271,11 @@ tokio-console subscriber。</li>
 <code>--no-</code> 形式）</td>
 </tr>
 <tr>
-<td><code>--no-micro-compact</code></td>
-<td><code>[agent].micro_compact_enabled</code>（仅关闭）</td>
+<td><code>--micro-compact</code> / <code>--no-micro-compact</code></td>
+<td><code>[agent].micro_compact_enabled</code>：两个旗标都是绝对的，前者开启、
+后者关闭，互斥（同时传入会被 clap 拒绝）。默认关闭，所以
+<code>--micro-compact</code> 是唯一能在没有配置文件的情况下开启它的途径
+——桌面端设置页的开关就走这条路径</td>
 </tr>
 <tr>
 <td><code>--tokio-console</code></td>

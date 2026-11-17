@@ -971,6 +971,7 @@ async fn local_compact_inherits_session_effort() {
     )
     .with_provider_kind(tact_llm::ProviderKind::OpenAi)
     .with_ui_channel(tx);
+    agent.agent_settings.max_tokens = 10_000;
     // High effort + a Claude-style thinking budget on a 128k window: the
     // effort is inherited, the budget is not.
     agent.agent_settings.reasoning_effort = Some(tact_llm::OpenAiReasoningEffort::High);
@@ -1139,6 +1140,7 @@ async fn local_compact_folds_deepseek_effort_for_the_reserve() {
     // reserve must be the high bucket while the wire value stays verbatim.
     agent.agent_settings.reasoning_effort = Some(tact_llm::OpenAiReasoningEffort::Medium);
     agent.agent_settings.model_context_window = 128_000;
+    agent.agent_settings.max_tokens = 10_000;
     agent
         .runtime
         .context
@@ -1202,6 +1204,7 @@ async fn local_compact_keeps_server_default_reasoning_reserve() {
     // explicit effort, so the summary call reserves the high bucket.
     agent.agent_settings.reasoning_effort = None;
     agent.agent_settings.model_context_window = 128_000;
+    agent.agent_settings.max_tokens = 10_000;
     agent
         .runtime
         .context

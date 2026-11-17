@@ -100,6 +100,7 @@ impl HostFactory for RealHostFactory {
             lock_registry: self.lock_registry.clone(),
             progress_capacity: 256,
             account_polling: tact_host::account::is_supported(),
+            extra_mcp_servers: Vec::new(),
         })
         .await?;
         Ok(Box::new(host))

@@ -326,6 +326,10 @@ pub fn cli_catalog_parity_errors() -> Vec<String> {
         ("model-context-window", "model-context-window"),
         ("theme", "theme"),
         ("snapshot-max-items", "snapshot-max-items"),
+        // Both micro-compaction polarities render one setting, like the
+        // notification pair above: a surface that can only express "off" would
+        // offer a switch that never takes effect.
+        ("micro-compact", "micro-compact"),
         ("no-micro-compact", "micro-compact"),
         ("tokio-console", "tokio-console"),
         ("skill-body-auto-inject", "skill-body-auto-inject"),

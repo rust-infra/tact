@@ -14,6 +14,25 @@ pub use sqlite::SqliteSessionStore;
 mod session_lock;
 pub use session_lock::SessionLock;
 
+/// The `<user_request>` body of a T3 Code prompt, when the text carries T3's
+/// instruction wrapper.
+///
+/// T3 prepends `<t3_code_instructions>…</t3_code_instructions>` and a
+/// `<user_request>…</user_request>` envelope on a thread's first turn. The
+/// envelope is model-facing: session titles and transcript replay should show
+/// only the request the user typed. Clients that send the text bare are
+/// unaffected.
+pub fn t3_user_request(text: &str) -> Option<&str> {
+    let text = text.trim_start();
+    if !text.starts_with("<t3_code_instructions>") {
+        return None;
+    }
+    let body = text.split_once("<user_request>")?.1;
+    let body = body.split_once("</user_request>")?.0;
+    let body = body.trim();
+    (!body.is_empty()).then_some(body)
+}
+
 /// Maximum input history entries retained per session.
 pub const MAX_INPUT_HISTORY: usize = 100;
 

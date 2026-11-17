@@ -18,6 +18,7 @@ __pycache__/
 .openai
 .superpowers/
 .tact/
+.tact-acp-images/
 # Obsidian workspace state for the book vault; editor-local, not source.
 /book/.obsidian/
 skills

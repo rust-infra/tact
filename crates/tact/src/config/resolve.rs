@@ -596,9 +596,12 @@ struct NonLlmSettings {
 /// Resolves the non-LLM half of the configuration.
 ///
 /// Precedence, per field: an explicit CLI flag wins, then the TOML value, then
-/// the built-in default. The two negating flags (`--no-notifications`,
+/// the built-in default. The negating flags (`--no-notifications`,
 /// `--no-micro-compact`) are absolute: when set they force the feature off and
-/// the TOML value is not consulted.
+/// the TOML value is not consulted. `--micro-compact` is the one positive
+/// feature flag, because its TOML default is off and a caller with no config
+/// file to edit (the desktop settings surface) would otherwise have no way to
+/// ask for it.
 ///
 /// Returns `Err` for a malformed `[agent].instruction_sources`; callers decide
 /// whether that is fatal (it is not for subcommands that never build a prompt).
@@ -616,10 +619,19 @@ fn resolve_non_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<
         .or(toml_cfg.agent.snapshot_max_items)
         .unwrap_or(120);
 
+    // `--no-micro-compact` and `--micro-compact` are both absolute and clap
+    // rejects passing them together, so the order below only decides what a
+    // hand-built `CliArgs` with both set resolves to: off wins, because a
+    // "stop doing this" request is safer to honour than a stale "do it".
     let micro_compact_enabled = if args.no_micro_compact {
         false
+    } else if args.micro_compact {
+        true
     } else {
-        toml_cfg.agent.micro_compact_enabled.unwrap_or(false)
+        toml_cfg
+            .agent
+            .micro_compact_enabled
+            .unwrap_or(AgentSettings::DEFAULT_MICRO_COMPACT_ENABLED)
     };
 
     let memory_enabled = toml_cfg.agent.memory_enabled.unwrap_or(true);
@@ -1175,6 +1187,7 @@ mod tests {
             model_context_window: None,
             theme: None,
             snapshot_max_items: None,
+            micro_compact: false,
             no_micro_compact: false,
             no_notifications: false,
             tokio_console: false,
@@ -2149,6 +2162,53 @@ model = "gpt-4o"
             resolved.agent.instruction_sources,
             InstructionSources::default()
         );
+    }
+
+    /// The opt-in flag is the only way to turn the pass on without a config
+    /// file, and it has to beat a TOML `false` in both directions.
+    #[test]
+    fn micro_compact_resolves_from_the_flag_toml_and_the_named_default() {
+        // Absent everywhere: the named default, which is off.
+        let resolved = resolve_config(&empty_cli_args(), &openai_toml_config(), None).unwrap();
+        assert_eq!(
+            resolved.agent.micro_compact_enabled,
+            AgentSettings::DEFAULT_MICRO_COMPACT_ENABLED
+        );
+        assert!(!resolved.agent.micro_compact_enabled);
+
+        // `--micro-compact` enables it with no TOML value, and overrides an
+        // explicit `false`.
+        let mut args = empty_cli_args();
+        args.micro_compact = true;
+        let resolved = resolve_config(&args, &openai_toml_config(), None).unwrap();
+        assert!(resolved.agent.micro_compact_enabled);
+
+        let mut toml_cfg = openai_toml_config();
+        toml_cfg.agent.micro_compact_enabled = Some(false);
+        let resolved = resolve_config(&args, &toml_cfg, None).unwrap();
+        assert!(resolved.agent.micro_compact_enabled);
+
+        // TOML alone can enable it, and `--no-micro-compact` beats that.
+        let mut toml_cfg = openai_toml_config();
+        toml_cfg.agent.micro_compact_enabled = Some(true);
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert!(resolved.agent.micro_compact_enabled);
+
+        let mut args = empty_cli_args();
+        args.no_micro_compact = true;
+        let resolved = resolve_config(&args, &toml_cfg, None).unwrap();
+        assert!(!resolved.agent.micro_compact_enabled);
+    }
+
+    /// Hands a `CliArgs` with both flags set would never come from clap, which
+    /// rejects the pair; if one is built by hand anyway, off wins.
+    #[test]
+    fn the_negating_micro_compact_flag_wins_over_the_enabling_one() {
+        let mut args = empty_cli_args();
+        args.micro_compact = true;
+        args.no_micro_compact = true;
+        let resolved = resolve_config(&args, &openai_toml_config(), None).unwrap();
+        assert!(!resolved.agent.micro_compact_enabled);
     }
 
     #[test]

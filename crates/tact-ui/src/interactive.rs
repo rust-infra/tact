@@ -32,6 +32,7 @@ pub async fn run_interactive(
         lock_registry,
         progress_capacity: 256,
         account_polling: account_enabled,
+        extra_mcp_servers: Vec::new(),
     };
     let (mut host, channels) = HostSession::start_with_frontend_channels(host_config).await?;
 

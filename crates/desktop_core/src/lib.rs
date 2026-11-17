@@ -28,7 +28,7 @@ pub use command_router::{
 };
 pub use config::{
     Appearance, DesktopConfig, DesktopTheme, HostLaunchOptions, InitialSession, PermissionModeView,
-    ReducedMotion, app_support_dir,
+    ReducedMotion, app_support_dir, micro_compact_flag,
 };
 pub use controller::{DesktopController, DesktopEvents, help_reader, tact_ui_binary_path};
 pub use effect::{DesktopEffect, DesktopEvent};
