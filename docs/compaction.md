@@ -185,6 +185,12 @@ Two notes for anyone adding a consumer:
   cannot unmake it, so the card already closed `Completed` and the failure
   travels as `AgentEvent::CompactionFinishedWithError`. Returning `Err` there
   used to print "Compaction failed" over a transcript the store had compacted.
+- **A hook's `systemMessage` is not the command's answer.** It reaches the host
+  as a plain `AgentUpdate::Info` (`finish_hook_output`), and a `PreCompact` or
+  `PostCompact` hook runs *inside* the compaction, between `Started` and the
+  terminal state. ACP therefore settles a `/compact` turn only on that terminal
+  state while a card is open — otherwise the hook line ended the turn, faulted
+  the live card, and the real terminal drew a second one.
 - **A `None` or blank summary is not a failure.** Micro compaction stubs tool
   results in place and has no prose to show, so `summary: None` is correct; a
   blank string is treated as absent at the ACP boundary, because

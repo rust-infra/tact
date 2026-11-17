@@ -1409,17 +1409,47 @@ impl CommandAnswer {
     }
 }
 
+/// Whether an ending turn must fault a compaction card it leaves open.
+///
+/// Only when the turn ends *abnormally*. Reaching `finish_turn` with a card
+/// still open normally means the producer died mid-compaction (stdin EOF, a
+/// disconnect, a panic), and the client is owed a terminal state or the card
+/// spins forever.
+///
+/// A clean `EndTurn` is the exception, and it is load-bearing: that is the
+/// state a card reaches when something settled the turn while the compaction
+/// was still running — a bug that `command_answer` now prevents. Faulting the
+/// card there repaints a compaction that is about to succeed as failed, which
+/// is exactly how a hook's `systemMessage` used to turn one compaction into a
+/// red card plus a second one.
+fn closes_compaction_card(stop_reason: &schema::StopReason) -> bool {
+    !matches!(stop_reason, schema::StopReason::EndTurn)
+}
+
 /// Whether one agent update answers a command turn, and how it closes it.
 ///
 /// `None` means the update is not an answer: progress logging, session
 /// bookkeeping, or anything between the prompt and its reply. A `/compact`
-/// turn logs several bracketed lines while it works, so treating "any update"
-/// as the answer would settle the turn before the compaction finished.
-fn command_answer(phase: TurnPhase, update: &AgentUpdate) -> Option<CommandAnswer> {
+/// turn produces more than its own bracketed lines while it works, so
+/// "any update" is not the test — `compaction_open` is.
+///
+/// `compaction_open` is the fact that makes this correct: while a compaction
+/// is live the turn can only be answered by that compaction's terminal state.
+/// A `PreCompact`/`PostCompact` hook's `systemMessage` reaches the host as a
+/// plain `Info` and lands *inside* the compaction window, so treating it as
+/// the answer settled the turn mid-compaction, closed the live card as
+/// `Failed`, and let the real terminal open a second card.
+fn command_answer(
+    phase: TurnPhase,
+    update: &AgentUpdate,
+    compaction_open: bool,
+) -> Option<CommandAnswer> {
     match update {
-        // Bracketed lines are a command's progress, not its answer.
+        // Bracketed lines are a command's progress, not its answer; neither is
+        // any line that arrives while a compaction it started is still open.
         AgentUpdate::Info(text) => {
-            let progress = phase.is_command() && text.trim_start().starts_with('[');
+            let progress =
+                phase.is_command() && (compaction_open || text.trim_start().starts_with('['));
             (!progress).then_some(CommandAnswer::Settled)
         }
         // Its terminal state settles the turn; the card and the idle are two
@@ -1522,6 +1552,14 @@ fn spawn_actor(
                 event = actor.host.next_event() => {
                     match event {
                         Some(event) => {
+                            // Asked before the event is applied, which is safe
+                            // by construction: every arm of `command_answer`
+                            // that can return `Some` is an arm whose effect on
+                            // `turn` cannot change its own answer. `Compaction`
+                            // reads the state, and `Info`'s guard is the card
+                            // opened by an *earlier* `Started`. Asking after
+                            // `handle_event` would need the update kept alive,
+                            // because `handle_event` consumes it.
                             let answers_command = actor.command_answer(&event);
                             actor.handle_event(event);
                             actor.reconcile_pending_requests();
@@ -1710,12 +1748,30 @@ impl CompactionCard {
         updates
     }
 
-    /// Close a still-open card because its turn ended.
+    /// Whether a compaction card is currently open.
+    ///
+    /// True from the `Started` that opened it until one terminal state closes
+    /// it. While it is true, the compaction is running and no plain `Info` can
+    /// be its answer.
+    fn is_open(&self) -> bool {
+        self.open.is_some()
+    }
+
+    /// Close a still-open card because its turn was torn down.
     ///
     /// The typed lifecycle reports every terminal state on its own, so this is
-    /// a safety net for a producer that was torn down mid-compaction (stdin
-    /// EOF, a panic above the kernel). It must never be the normal path: a
-    /// card that reaches it claims a failure that may not have happened.
+    /// a safety net for a producer that died mid-compaction: stdin EOF, a
+    /// disconnect, a panic above the kernel. It must never be the normal path,
+    /// because a card that reaches it claims a failure that may not have
+    /// happened.
+    ///
+    /// It is therefore reserved for the ways a turn can end *abnormally*. A
+    /// clean `EndTurn` while a card is open is not a torn-down producer — it is
+    /// a compaction that something settled the turn out from under — and
+    /// closing the card `Failed` there is what once painted a red card over a
+    /// compaction that went on to finish successfully. See
+    /// [`CommandAnswer`]: no non-terminal update may settle the turn while
+    /// [`CompactionCard::is_open`].
     fn close_orphan(&mut self, error: &str) -> Option<schema::CompactionUpdate> {
         let id = self.open.take()?;
         Some(
@@ -2795,7 +2851,11 @@ impl SessionActor {
         let HostEvent::Agent(update) = event else {
             return None;
         };
-        command_answer(self.turn.phase, update.as_ref())
+        command_answer(
+            self.turn.phase,
+            update.as_ref(),
+            self.turn.compaction.is_open(),
+        )
     }
 
     /// Close a command turn. Idempotent: `finish_turn` is gated on `Running`,
@@ -3348,10 +3408,13 @@ impl SessionActor {
         // client's compaction card spinning forever. The kernel reports every
         // terminal state itself, so reaching this means the producer was torn
         // down mid-compaction.
-        if let Some(update) = self
-            .turn
-            .compaction
-            .close_orphan("compaction did not finish before the turn ended")
+        //
+        // A clean `EndTurn` is excluded: see [`closes_compaction_card`].
+        if closes_compaction_card(&stop_reason)
+            && let Some(update) = self
+                .turn
+                .compaction
+                .close_orphan("compaction did not finish before the turn ended")
         {
             self.send(schema::SessionUpdate::CompactionUpdate(update));
         }
@@ -5087,6 +5150,184 @@ mod tests {
         ));
     }
 
+    /// A hook's `systemMessage` must not settle a `/compact` turn.
+    ///
+    /// `finish_hook_output` turns a hook's `systemMessage` into a plain
+    /// `AgentUpdate::Info`, and a `PreCompact`/`PostCompact` hook runs *inside*
+    /// the compaction — strictly between `Started` and the terminal state. The
+    /// `Info` arm treated every unbracketed line as the command's answer, so
+    /// that line settled the turn, `finish_turn` closed the live card through
+    /// `close_orphan` as `Failed`, and the kernel's real terminal then had no
+    /// open card to patch and minted a second id. One compaction drew two
+    /// cards, the first of them red while it was still running.
+    #[test]
+    fn a_hook_message_mid_compaction_does_not_answer_the_turn() {
+        let phase = TurnPhase::Running(TurnOwner::Command);
+        // The exact shape a PreCompact hook's `systemMessage` produces.
+        let hook_line = AgentUpdate::Info("Checkpointing this session before compaction".into());
+
+        // With a compaction open, the turn is still being answered elsewhere.
+        let mut card = CompactionCard::default();
+        card.apply(&started_compaction(), || schema::CompactionId::new("cmp-1"));
+        assert_eq!(
+            command_answer(phase, &hook_line, card.is_open()),
+            None,
+            "a hook's systemMessage is not `/compact`'s answer"
+        );
+        // Without one, a plain `Info` is an answer, as before.
+        assert_eq!(
+            command_answer(phase, &hook_line, false),
+            Some(CommandAnswer::Settled)
+        );
+    }
+
+    /// The terminal still patches the card the start opened, with the hook
+    /// message in between.
+    ///
+    /// This is the end-to-end shape of the bug above: `Started` → hook
+    /// `systemMessage` → `Completed` must be one card, not two.
+    #[test]
+    fn a_hook_message_between_start_and_terminal_keeps_one_card() {
+        use tact_agent_api::{CompactionEvent, CompactionKind, CompactionState as S};
+
+        let mut card = CompactionCard::default();
+        let mut next = 0u64;
+        let mut mint = || {
+            next += 1;
+            schema::CompactionId::new(format!("cmp-{next}"))
+        };
+        let started = card.apply(&started_compaction(), &mut mint);
+        assert_eq!(started[0].status, schema::CompactionStatus::InProgress);
+
+        // The hook line arrives; it must not reach `close_orphan`.
+        assert_eq!(
+            command_answer(
+                TurnPhase::Running(TurnOwner::Command),
+                &AgentUpdate::Info("Checkpointing this session before compaction".into()),
+                card.is_open(),
+            ),
+            None
+        );
+
+        let completed = card.apply(
+            &CompactionEvent {
+                kind: CompactionKind::Command,
+                state: S::Completed {
+                    summary: Some("what changed".into()),
+                },
+            },
+            &mut mint,
+        );
+        assert_eq!(
+            completed[0].compaction_id, started[0].compaction_id,
+            "the terminal must patch the card the start opened"
+        );
+        assert_eq!(completed[0].status, schema::CompactionStatus::Completed);
+    }
+
+    /// The production sequence end to end: one card, no early idle.
+    ///
+    /// This walks the exact updates a `/compact` with a `PreCompact` hook
+    /// emits, through the same two calls the actor loop makes
+    /// (`command_answer`, then `CompactionCard::apply`), and records what a
+    /// client would see. Before the fix the hook line settled the turn, so the
+    /// card closed `Failed` while the compaction was still running and the
+    /// real terminal opened a second card.
+    #[test]
+    fn a_hook_message_mid_compaction_draws_one_card_and_settles_once() {
+        use tact_agent_api::{CompactionEvent, CompactionKind, CompactionState as S};
+
+        let phase = TurnPhase::Running(TurnOwner::Command);
+        let mut card = CompactionCard::default();
+        let mut next = 0u64;
+        let mut mint = || {
+            next += 1;
+            schema::CompactionId::new(format!("compaction-{next}"))
+        };
+        let mut answers: Vec<Option<CommandAnswer>> = Vec::new();
+        let mut updates = Vec::new();
+
+        for update in [
+            AgentUpdate::Info("[compact]".into()),
+            AgentUpdate::Compaction(CompactionEvent {
+                kind: CompactionKind::Command,
+                state: S::Started,
+            }),
+            // The hook's `systemMessage`.
+            AgentUpdate::Info("Checkpointing this session before compaction".into()),
+            AgentUpdate::Info("[compact summary 1/6] request ...".into()),
+            AgentUpdate::Compaction(CompactionEvent {
+                kind: CompactionKind::Command,
+                state: S::Completed {
+                    summary: Some("what changed".into()),
+                },
+            }),
+        ] {
+            // The loop asks first, then applies — the same order as production.
+            answers.push(command_answer(phase, &update, card.is_open()));
+            if let AgentUpdate::Compaction(event) = &update {
+                updates.extend(card.apply(event, &mut mint));
+            }
+        }
+
+        // Only the terminal answers the turn.
+        assert_eq!(
+            answers,
+            vec![None, None, None, None, Some(CommandAnswer::Settled)],
+            "no non-terminal update may settle a /compact turn"
+        );
+        // One card, opened in progress and completed — never failed.
+        assert_eq!(updates.len(), 2, "{updates:?}");
+        assert_eq!(updates[0].status, schema::CompactionStatus::InProgress);
+        assert_eq!(updates[1].status, schema::CompactionStatus::Completed);
+        assert_eq!(
+            updates[0].compaction_id, updates[1].compaction_id,
+            "one compaction is one card"
+        );
+        assert!(!card.is_open(), "the terminal must have closed the card");
+    }
+
+    /// A torn-down producer still closes its card; a clean end does not.
+    ///
+    /// The safety net must survive the `EndTurn` exclusion, or a producer that
+    /// died mid-compaction would leave the client's card spinning forever.
+    #[test]
+    fn only_an_abnormal_end_faults_an_open_card() {
+        use tact_agent_api::{CompactionEvent, CompactionKind, CompactionState as S};
+
+        // Abnormal ends: the client is owed a terminal state.
+        for stop in [
+            schema::StopReason::Cancelled,
+            schema::StopReason::Error(schema::ErrorStopReason::new()),
+        ] {
+            assert!(closes_compaction_card(&stop), "{stop:?} ends abnormally");
+            let mut card = CompactionCard::default();
+            card.apply(
+                &CompactionEvent {
+                    kind: CompactionKind::Command,
+                    state: S::Started,
+                },
+                || schema::CompactionId::new("cmp-1"),
+            );
+            let update = card
+                .close_orphan("compaction did not finish before the turn ended")
+                .expect("a torn-down producer must close its card");
+            assert_eq!(update.status, schema::CompactionStatus::Failed);
+            assert!(!card.is_open());
+        }
+
+        // A clean end is not a teardown: faulting here is the bug that painted
+        // a red card over a compaction that went on to succeed.
+        assert!(!closes_compaction_card(&schema::StopReason::EndTurn));
+    }
+
+    fn started_compaction() -> tact_agent_api::CompactionEvent {
+        tact_agent_api::CompactionEvent {
+            kind: tact_agent_api::CompactionKind::Command,
+            state: tact_agent_api::CompactionState::Started,
+        }
+    }
+
     #[test]
     fn a_failed_compaction_closes_its_card_with_the_error() {
         use tact_agent_api::{CompactionEvent, CompactionKind, CompactionState as S};
@@ -5199,7 +5440,7 @@ mod tests {
             },
         });
         assert_eq!(
-            command_answer(phase, &failed),
+            command_answer(phase, &failed, false),
             Some(CommandAnswer::Failed),
             "a failed /compact must close the turn as an error"
         );
@@ -5213,7 +5454,7 @@ mod tests {
             },
         });
         assert_eq!(
-            command_answer(phase, &completed),
+            command_answer(phase, &completed, false),
             Some(CommandAnswer::Settled)
         );
     }
@@ -5234,14 +5475,18 @@ mod tests {
             None,
             "a running compaction has no answer yet"
         );
-        assert_eq!(command_answer(phase, &started), None);
+        assert_eq!(command_answer(phase, &started, false), None);
         assert_eq!(
-            command_answer(phase, &AgentUpdate::Info("[compact] started".into())),
+            command_answer(phase, &AgentUpdate::Info("[compact] started".into()), false),
             None,
             "the bracketed progress line `/compact` logs is not its answer"
         );
         assert_eq!(
-            command_answer(phase, &AgentUpdate::Info("Nothing to compact".into())),
+            command_answer(
+                phase,
+                &AgentUpdate::Info("Nothing to compact".into()),
+                false
+            ),
             Some(CommandAnswer::Settled),
             "a plain read-out is the answer"
         );

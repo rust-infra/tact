@@ -225,8 +225,20 @@ lines are worded differently.
 - The existing `Info` lines (`[auto compact]`, `Compaction complete (Auto).`)
   still go out for the TUI and the desktop. Two views of one fact on purpose:
   dropping the text would blank a log row users already read.
-- A `/compact` command turn settles on the terminal typed event, so a vetoed or
-  failed compaction no longer waits out the command settle timer.
+- A `/compact` command turn settles **only** on the terminal typed event, so a
+  vetoed or failed compaction no longer waits out the command settle timer.
+  "Only" is the load-bearing word: while a card is open, no plain `Info` can
+  answer the turn. A `PreCompact`/`PostCompact` hook's `systemMessage` arrives
+  as an unbracketed `Info` *inside* the compaction window, and treating it as
+  the answer settled the turn mid-compaction — `finish_turn` then faulted the
+  live card and the real terminal opened a second one. `command_answer` takes
+  `CompactionCard::is_open()` for exactly this.
+- `finish_turn` faults a card it still finds open only when the turn ends
+  **abnormally** (`closes_compaction_card`). A clean `EndTurn` with a card open
+  means something settled the turn out from under a running compaction; the
+  safety net exists for the other case, a producer torn down mid-compaction
+  (stdin EOF, disconnect, panic), where the client is otherwise left with a
+  card that spins forever.
 
 ### Goal notices
 
