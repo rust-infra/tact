@@ -17,6 +17,19 @@ ensure consistent and efficient tool usage in this project.
 - For multi-line or structured changes, prefer `edit_file` with a larger
   `new_text`. For new files or complete rewrites, use `write_file`.
 
+### write_file
+
+- `write_file` replaces the whole file by default; `append=true` keeps what is
+  already on disk (and creates the file when it is missing). Every chunk after
+  the first one of a file you are building goes in with `append=true`.
+- Keep one call to roughly 500 lines / 20 KB. A single call whose arguments
+  exceed the model's output budget is dropped whole — no file is created and
+  nothing already written survives — so an oversized call costs the entire
+  file, not just the tail.
+- Do not append with `edit_file`: it replaces the *first* match of `old_text`,
+  so an anchor line that repeats in the file puts the new chunk near the top
+  instead of at the end.
+
 ### bash and the workspace path space
 
 - By default `bash` runs on the host and `pwd` is the project directory, so host
