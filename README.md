@@ -396,7 +396,10 @@ desktop releases.
 Multi-turn conversation loop with progressive context management:
 
 1. **Large-output spill** — oversized tool results land on disk with a short preview in context
-2. **Micro-compact (optional)** — when enabled, stub old tool results before each LLM call (keep the last 12 intact)
+2. **Micro-compact (optional, off by default)** — `[agent].micro_compact_enabled =
+   true` (or `--micro-compact`) stubs old tool results before each LLM call,
+   keeping the 12 most recent and only stubbing results longer than 120 chars.
+   It never runs on a provider that supports native compaction.
 3. **Full compact** — for chat-completions providers, when reported or
    estimated tokens hit about 80% of `model_context_window`, on
    prompt-too-long recovery, or through a successful `compact` tool, write a
@@ -406,7 +409,63 @@ Multi-turn conversation loop with progressive context management:
 
 The entry path reserves the incoming user turn before push, so a large prompt cannot overflow immediately after append. Failed `compact` tool calls leave history intact.
 
+A compaction is observable, not guessed from log text: the kernel emits
+`AgentEvent::Compaction` (`Started` + exactly one of `Completed` / `Failed` /
+`Cancelled`), and a frontend that draws a progress card follows
+`AgentUpdate::Compaction`. The human `Info` lines stay for the TUI and desktop.
+
 Details: [`book/05_chapter_compact_zh.html`](./book/05_chapter_compact_zh.html), [`docs/compaction.md`](./docs/compaction.md).
+
+### 🔁 Recovery & Retries
+
+Failures are typed and each kind has its own answer, in `AgentKernel::run_inner`:
+
+- **Transient transport** — HTTP 408, 429, 5xx, and request errors are retried
+  up to `MAX_TRANSPORT_ATTEMPTS` (10). `Retry-After` wins when the provider
+  sends it; otherwise backoff is 1s, 2s, 4s, 8s, 16s, then 30s.
+- **Truncated output** — a `max_tokens` stop with pending tool calls runs those
+  tools, then appends a continuation prompt, up to `MAX_CONTINUATION_ATTEMPTS`
+  (3). From the second attempt on, the continuation asks for the final result
+  instead of more analysis.
+- **Prompt too long** — the kernel runs a recovery compaction and retries the
+  turn. There is no compact counter: the retry loop ends when compaction is
+  skipped (a `PreCompact` hook veto, or nothing to compact) or fails, and that
+  becomes the model error the user sees. `RunOutcome.recovery.compact_attempts`
+  only reports how many times it ran. `MAX_COMPACT_ATTEMPTS` in
+  `crates/tact/src/recovery.rs` is exported but never read.
+
+Attempts are reported live as `[Recovery] backoff (n/10)` and
+`[Recovery] continue (n/3)` lines and counted in `RunOutcome.recovery`, so a
+frontend can show how close the run came to giving up.
+
+### ⚡ Parallel Tool Execution
+
+One model turn can request several tools. The kernel resolves each call's
+footprint (paths read, paths written, or a barrier) and groups the calls into
+waves before running any of them:
+
+- Two calls conflict when either is a barrier, or one writes a path the other
+  reads or writes. Two pure reads never conflict.
+- A wave runs its calls concurrently; the next wave starts when its predecessor
+  finishes. Each call reports `ToolFinished` as it completes, but the transcript
+  is written in the model's order, not the completion order.
+- `bash`, `ask_user`, `compact`, `background_run`, `goal_request_input`,
+  `worktree_create` / `worktree_run` / `worktree_remove`, and a plain
+  `spawn_subagent` are barriers — they run solo. `spawn_subagent { worktree:
+  true }` is the one input-dependent exception: it reports `independent()`
+  because the child is scoped to its own lane.
+- Task, Goal-checkpoint, and team tools declare a shared *scope* instead of a
+  barrier: same-scope writes serialize against each other, but they still
+  overlap unrelated file reads.
+- MCP tools scoped to a server serialize against each other (each server is a
+  synthetic write path) and parallelize across servers.
+- Framework work around each call (stats, step events, hooks, permission
+  prompts) stays sequential, so a gate is asked in model order.
+
+Each accepted call is announced twice: `ToolQueued` at acceptance and
+`ToolStarted` when its wave actually begins, which is what lets a UI draw a
+queued card instead of claiming a tool is running while an earlier wave is still
+executing. Detail: [`docs/parallel_tool_execution.md`](./docs/parallel_tool_execution.md).
 
 ### 🔧 Native Tool Set
 
@@ -449,6 +508,26 @@ in `config.toml` holds only the mode.
 - **Skills** — `SKILL.md` playbooks. Roots load in this order, and a later root wins on a name clash: `~/.agents/skills/` (Codex compatibility), `~/.tact/skills/`, `<workdir>/.tact/skills/`, then any `[agent].skill_dirs`. The system prompt lists names and descriptions; the full body arrives via `load_skill` or a TUI `/skill-name`. `<workdir>/.claude/skills` is not scanned.
 - **Model picker** — TUI `/model` uses configured `models = [...]` first and supplements OpenAI-compatible `openai`, `deepseek`, and `kimi` providers with a cached `GET {base_url}/models` result. `/model-subagent` switches the model sub-agents use.
 - **Voice input** — optional microphone recording and transcription via OpenAI, Google Cloud Speech-to-Text, or a local `whisper.cpp` server, configured under `[voice]` (macOS-first). Google API-key mode uses synchronous recognition for recordings up to 60 seconds.
+
+### 🗂️ Persistent Memory
+
+A memory is a Markdown file with YAML frontmatter (`name`, `description`,
+`type`, `modified`) holding one fact worth keeping: a preference, a correction,
+a project constraint, or a pointer to an external resource. Memories live one
+directory **per git repository** under `~/.tact/projects/<slug>/memory/`, keyed
+on the repository's common git dir, so a checkout and its worktrees share one
+directory while an unrelated project never inherits its facts.
+
+Only the generated `MEMORY.md` index is injected into the system prompt, capped
+at 200 lines or 25 KB, whichever comes first. Topic bodies stay on disk and the
+model fetches the one it needs with `load_memory`; `save_memory` writes a new
+one. That is what keeps the per-session cost flat however many memories
+accumulate — and why the file tools' workspace confinement does not leave them
+unreachable, since the memory tools read `$HOME` on the model's behalf.
+
+`[agent].memory_enabled = false` drops the index, the guidance, and both tools
+while leaving the files on disk; `auto_memory_directory` points the store
+somewhere else. Detail: [`book/03_chapter_memory_zh.html`](./book/03_chapter_memory_zh.html).
 
 ### 🧩 Plugin Marketplace
 
@@ -498,6 +577,25 @@ completion is checked against the recorded evidence, not taken on the model's
 word; a Goal with no required criteria is self-attested and labelled that way.
 See [`book/28_chapter_goal_zh.html`](./book/28_chapter_goal_zh.html).
 
+### 📋 Durable Task DAG
+
+A Task is a unit of work the agent keeps for the session, persisted in
+`<project>/.tact/tact.db` and shared across the TUI, the desktop and ACP. Tasks
+are created with `task_create`, read with `task_get` / `task_list`, and updated
+with `task_update` — including `addBlockedBy` / `addBlocks`, which record a
+dependency DAG rather than a flat checklist. The edges are descriptive: they
+drive the `/tasks-dag` view and are mirrored on the other task's
+`blocks`/`blocked_by`, and completing a task clears them, but nothing refuses a
+`task_update` because an upstream task is open.
+
+Four states, each with a marker the model reads back in `task_list`:
+`[ ]` pending, `[>]` in progress, `[x]` completed, `[-]` deleted. `/tasks-dag`
+shows the dependency graph: the TUI renders it from a generated Mermaid source
+at the popup's width, and the desktop lists each task with its blockers. The
+ACP frontend republishes the same list as a client `plan` update. Writes are
+serialized through a synthetic `SharedState` resource scope, so two parallel
+tool calls cannot interleave a create and an update. Detail: [`book/19_chapter_persistent_tasks_zh.html`](./book/19_chapter_persistent_tasks_zh.html).
+
 ### 📈 Trajectory page
 
 `/trajectory` opens a ledger of what the current run did: one numbered record
@@ -514,6 +612,25 @@ Each task can run in its own `git worktree` lane. No branch switching, no stash 
 Native [Model Context Protocol](https://modelcontextprotocol.io/) client.
 Connect a server and Tact exposes its tools, resources, resource templates,
 prompts, instructions, and tool-list change notifications.
+
+### 🌐 Hosted Web Search (OpenAI Responses)
+
+On a provider configured with `protocol = "responses"` — official OpenAI, and
+any compatible endpoint you point at the Responses API — Tact injects the
+provider's hosted `web_search` tool alongside the function tools it already
+sends. There is no config switch and no capability probe: it is part of the
+responses request path.
+
+Two invariants hold. Tact **injects, never replaces**: an MCP server that also
+offers a `web_search` function tool keeps it, and the two coexist. And a hosted
+search is executed by the provider, not by Tact: it never becomes a
+`ContentBlock::ToolUse`, never passes through `execute_tool_call`, and never
+touches the permission gate. It reaches the timeline as tool-card-shaped
+`web_search` step events carrying the query, duration, and failure text.
+
+The `/responses/compact` path deliberately does not inject it — compaction asks
+for a summary, not new evidence. Detail:
+[`book/22_chapter_llm_zh.html`](./book/22_chapter_llm_zh.html) §6.2.1.1.
 
 ### 📡 TUI & Headless
 
@@ -556,25 +673,84 @@ protocol scope: [`crates/tact-acp/README.md`](./crates/tact-acp/README.md).
 
 `tact-desktop` is a native GPUI app for macOS, Windows, and Linux over the same
 `tact_host` runtime, store, and command catalog as the terminal. It adds a
-session sidebar, a chat transcript with grouped tool cards and a multi-file
-diff review, Markdown and Mermaid rendering, and five inspector tabs: Run,
-Goals, Subagents, Background, Context. An extensions manager covers MCP
-servers, skills, plugins, and hook review.
+session sidebar, a chat transcript with grouped tool cards, Markdown and Mermaid
+rendering, and five inspector tabs: Run, Goals, Subagents, Context, Background.
+An extensions manager covers MCP servers, skills, plugins, and hook review, and
+a multi-file patch opens as a review table with one accept/reject mark per file.
+
+Interaction surface. Both frontends share the runtime, so several of these
+exist in the terminal too; what differs is the pointer and selection model.
+
+- **Prompt queue** — a prompt submitted mid-run is queued instead of rejected in
+  both frontends. The desktop adds queue selection: `Alt+↑` / `Alt+↓` move the
+  highlighted entry and expand the queue, and `Enter` sends that entry now
+  rather than waiting its turn.
+- **Slash completion** — `/` opens completion over the composer rather than as a
+  separate list surface: `↑` / `↓` move, `Tab` / `Shift+Tab` complete, `Enter`
+  runs, `Esc` dismisses. It completes commands, their subcommands and argument
+  choices, and every discovered skill; choosing an argument (such as a model
+  name) inserts the resolved value.
+- **Clickable file links** — absolute paths inside assistant Markdown are
+  rewritten to display relative to the project and open in the system's default
+  application, while the underlying message text keeps the absolute path. This
+  is desktop-only; the terminal keeps the raw path text.
+- **Back to the newest message** — `Cmd/Ctrl+Shift+L` jumps to the bottom of a
+  long transcript (the terminal offers the same through its scroll-away pill).
+- **System prompt viewer** — `/view-system-prompt` opens the assembled prompt as
+  a typed reader tab instead of a popup over the log.
+
+Surrounding surfaces:
+
+- **Session manager** — one overlay lists every session across projects with an
+  Active / Archived / All filter and fuzzy search over title and id. Rows
+  archive, restore, and rename in place.
+- **`@` file mentions** — typing `@` at the start of the composer or after
+  whitespace filters a flat list of every file in the workspace (skipping
+  `.git`, `target`, `.tact`, `node_modules`) by substring; picking one inserts
+  its path as text. The terminal's picker browses one directory at a time
+  instead.
+- **Attachments** — a file button opens the native multi-file picker, and
+  pasting a clipboard image writes it to a temp file. Both land in an
+  attachment strip under the composer and are appended to the submitted prompt
+  as `@path`, so the model decides when to spend a `read_image` call on them.
+  The terminal has no attachment strip; it relies on `@path` typed by hand.
+- **Composer controls** — `@` and `/` buttons insert a mention or a command
+  without typing the sigil, and the trailing controls expose the reasoning
+  effort and permission-mode pickers beside the composer instead of a slash
+  command.
+- **Voice** — when `[voice]` is configured and its provider has an API key, the
+  composer records, transcribes, and inserts the text. A missing key surfaces as
+  a hint instead of a dead button. The terminal has the same worker, bound to
+  `voice.voice_keybind`.
+- **Trajectory** — the Run tab flips between **Chat** and **Trajectory**, and
+  the ledger's detail pane has Summary, Payload, Result, Schema, and Timing
+  tabs. The terminal opens the same ledger as a popup page.
+- **Sticky task strip** — collapsed by default to the one task currently moving,
+  expandable to the grouped list, with the same ranking the TUI's sticky host
+  uses. Ten rows scroll at a time.
+- **Appearance** — Tact / Claude / Cursor theme families, each with a light and
+  dark palette, plus a 1.0–1.5 text scale, a language toggle, and a reduced
+  motion preference that composes with the OS setting. These persist in
+  `desktop-settings.json` under the platform app-data directory.
 
 | Shortcut | Does |
 |---|---|
 | `Cmd/Ctrl+K` | Command palette (every `tact-ui` command and setting) |
 | `Cmd/Ctrl+B` | Show or hide the session sidebar |
 | `Cmd/Ctrl+Alt+B` | Show or hide the inspector |
-| `Cmd/Ctrl+1` … `5` | Switch inspector tab |
+| `Cmd/Ctrl+1` … `5` | Switch inspector tab: Run, Goals, Subagents, Context, Background |
+| `Cmd/Ctrl+Shift+L` | Jump to the newest message |
 | `Cmd/Ctrl+N` | New session |
 | `Cmd/Ctrl+,` | Settings |
 | `Cmd/Ctrl+Enter` | Submit the composer |
 | `Cmd/Ctrl+.` | Cancel the run |
+| `Alt+↑` / `Alt+↓` | Select the previous / next queued prompt |
+| `Enter` (queue focused) | Send the selected queued prompt now |
 | `Cmd/Ctrl+Q` | Quit |
 | `Esc` | Dismiss the current overlay |
 
-`secondary` is `Cmd` on macOS and `Ctrl` elsewhere. The full table lives in
+`secondary` is `Cmd` on macOS and `Ctrl` elsewhere. The full table, including
+the slash-overlay bindings that only apply while it is open, lives in
 `crates/desktop/src/keymap.rs`.
 
 ### 🖼️ Image attachments (vision)
@@ -591,6 +767,22 @@ accept `text` reject the request (HTTP 400, e.g. `unknown variant image_url,
 expected text`). Use a multimodal model (e.g. Claude vision, GPT-4o), or omit
 image attachments on text-only models. Tact rejects the turn up front when the
 active model is not vision-capable, instead of failing at the API.
+
+### 🔔 Notifications
+
+`[agent].notifications_enabled` (default `true`, or `--no-notifications` /
+`--notifications`) turns on a native OS notification when a task completes and
+when a step fails. Delivery is macOS-only today: the runtime shells out to
+`osascript` for a real notification banner, and every other platform treats the
+call as a no-op rather than failing. The two triggers are the `TaskComplete` and
+`StepFailed` updates on the shared update sink, so every frontend inherits them.
+
+The desktop has a second, independent switch: `notifications` in
+`desktop-settings.json` gates the OS banner for the app's own
+`DesktopEffect::Notify` effects (settings saved, restart required, where to pick
+a subagent model). It does not read or write
+`agent.notifications_enabled`, so turning one off leaves the other alone; the
+in-app toast is shown either way.
 
 ### 💾 Persistent State
 
@@ -790,9 +982,25 @@ an error that names the replacement key.
 - [`book/index_zh.html`](./book/index_zh.html) is the long-form book, in
   Chinese, with chapters on the agent loop, compaction, tools, MCP, goals, and
   the sandbox.
-- `crates/agent_sdk/README.md`, `crates/tact_llm/README.md`, and
-  `crates/tact-acp/README.md` cover embedding the kernel, calling providers
-  directly, and driving Tact from an ACP client.
+- Crate docs: [`crates/tact_host/README.md`](./crates/tact_host/README.md) (the
+  UI-independent orchestration layer every frontend shares),
+  [`crates/agent_sdk/README.md`](./crates/agent_sdk/README.md) (embedding the
+  kernel),
+  [`crates/agent_tui_kit/README.md`](./crates/agent_tui_kit/README.md) (the
+  reusable `AgentUpdate`-driven widget kit),
+  [`crates/tact_llm/README.md`](./crates/tact_llm/README.md) (calling providers
+  directly), and [`crates/tact-acp/README.md`](./crates/tact-acp/README.md)
+  (driving Tact from an ACP client).
+- Desktop design notes:
+  [`docs/design/tact-desktop/README.md`](./docs/design/tact-desktop/README.md)
+  (component map and interaction inventory),
+  [`slash-command-audit.md`](./docs/design/tact-desktop/slash-command-audit.md)
+  (command-by-command coverage), and
+  [`visual-verification.md`](./docs/design/tact-desktop/visual-verification.md)
+  (offscreen capture and live-window checks).
+- [`THIRD-PARTY-NOTICES.md`](./THIRD-PARTY-NOTICES.md) covers the primary UI
+  dependencies and bundled fonts and icons; release archives ship the generated
+  full license list next to it.
 
 ## License
 

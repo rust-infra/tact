@@ -568,7 +568,7 @@ Recovery mechanisms inside `AgentKernel::run_inner`:
 
 | Failure | Action |
 |---|---|
-| Prompt too long | Retry after a typed overflow compaction (up to `MAX_RECOVERY_ATTEMPTS`). |
+| Prompt too long | Retry after a typed overflow compaction. There is no fixed retry counter: the loop re-runs until compaction succeeds (transcript replaced) or returns `Skipped`/fails, which surfaces as a model error. `RunOutcome.recovery.compact_attempts` records how many attempts happened. |
 | Transient transport error | Exponential backoff retry. |
 | `max_tokens` truncation with pending tools | Execute pending tools, then continue with a continuation prompt. |
 

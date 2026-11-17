@@ -10,10 +10,12 @@
 //!   stop further expansion and request only a concise final result.
 //! - [`continuation_message`]: selector that chooses the direct-resume prompt
 //!   on attempt 1 and the convergence prompt on later attempts.
-//! - [`MAX_COMPACT_ATTEMPTS`]: prompt-too-long compaction retries.
 //! - [`MAX_TRANSPORT_ATTEMPTS`]: transient network error retries (higher for
 //!   long-running tasks that may encounter multiple intermittent failures).
 //! - [`MAX_CONTINUATION_ATTEMPTS`]: max-tokens continuation retries.
+//! - [`MAX_COMPACT_ATTEMPTS`]: **not enforced today.** The kernel retries a
+//!   prompt-too-long turn after compaction with no counter of its own; this
+//!   constant is kept for the API it was published with and is not read.
 //! - [`MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS`]: transient retries during the
 //!   compaction summary call itself.
 //! - [`MAX_COMPACT_SUMMARY_ATTEMPTS`]: compaction-summarizer attempts before a

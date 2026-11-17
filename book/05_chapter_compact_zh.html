@@ -573,7 +573,7 @@ recovery）先跑 <code>micro_compact</code>（默认关闭时立即返回，见
 compact 调用不会改写历史。</li>
 <li><strong>Prompt-too-long 恢复</strong> 执行
 <code>compact_history</code> 后 <code>continue</code> 循环（同一任务、新
-context）。上限：<code>MAX_COMPACT_ATTEMPTS</code>（3，<code>crates/tact/src/recovery.rs</code>）。细节见
+context）。<strong>没有固定的压缩重试上限</strong>：压缩被跳过（<code>PreCompact</code> 钩子否决、或本就没有可压缩的内容）或以错误结束时，本轮以模型错误失败；成功替换后则继续跑。尝试次数记录在 <code>RunOutcome.recovery.compact_attempts</code>，<code>crates/tact/src/recovery.rs</code> 里的 <code>MAX_COMPACT_ATTEMPTS</code> 目前<strong>未被读取</strong>。细节见
 <a href="./06_chapter_recovery_zh.html">错误恢复</a>。</li>
 <li><strong>手动 <code>compact</code> 工具</strong>
 不能在工具处理函数<em>内部</em>改写 context（API 有效性）。Dispatch
