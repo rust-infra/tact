@@ -3,9 +3,9 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentMessage, AgentRole, CompactionKind, MessageDelta, MessageId, MessageRange, ModelCallKind,
-    ModelCallOptions, ProviderActivity, RunContext, RunId, RunOutcome, RuntimeErrorInfo,
-    TokenUsage, ToolCall, ToolDescriptor, ToolExecutionResult, ToolOutputChunk,
+    AgentMessage, AgentRole, CompactionEvent, CompactionKind, MessageDelta, MessageId,
+    MessageRange, ModelCallKind, ModelCallOptions, ProviderActivity, RunContext, RunId, RunOutcome,
+    RuntimeErrorInfo, TokenUsage, ToolCall, ToolDescriptor, ToolExecutionResult, ToolOutputChunk,
 };
 
 /// Ordered kernel event with no presentation-specific fields.
@@ -78,9 +78,13 @@ pub enum AgentEvent {
         usage: Option<TokenUsage>,
         message_range: Option<MessageRange>,
     },
-    ContextCompacted {
-        kind: CompactionKind,
-    },
+    /// One compaction's lifecycle: `Started`, then exactly one of
+    /// `Completed` / `Failed` / `Cancelled`.
+    ///
+    /// The kernel is the only emitter, because it is the only component that
+    /// sees all four transitions. Hosts that draw a compaction card (ACP's
+    /// `compaction_update`) follow this instead of matching log text.
+    Compaction(CompactionEvent),
     Notice {
         notice: AgentNotice,
     },
@@ -124,7 +128,7 @@ impl AgentEvent {
             | Self::ToolStarted { .. }
             | Self::ToolFinished { .. }
             | Self::Usage { .. }
-            | Self::ContextCompacted { .. }
+            | Self::Compaction(_)
             | Self::Notice { .. }
             | Self::TurnFinished { .. }
             | Self::RunFinished { .. }

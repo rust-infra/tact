@@ -19,9 +19,9 @@ mod store;
 pub mod test_support;
 
 pub use context::{
-    CompactionKind, CompactionOutcome, CompactionRequest, ContextError, ContextPolicy,
-    ContextPreparation, ContextReplacement, ContextView, PreparationDecision, PreparedRequest,
-    RequestPlan,
+    CompactionEvent, CompactionKind, CompactionOutcome, CompactionRequest, CompactionState,
+    ContextError, ContextPolicy, ContextPreparation, ContextReplacement, ContextView,
+    PreparationDecision, PreparedRequest, RequestPlan,
 };
 pub use event::{AgentEvent, AgentNotice, EventDelivery};
 pub use extension::{EventObserver, EventPort};

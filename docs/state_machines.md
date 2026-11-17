@@ -15,7 +15,7 @@ in `crates/agent_api/src/event.rs`.
 | Run and turn | `RunStarted`, `TurnStarted`, `TurnFinished`, `RunFinished`, `RunFailed` |
 | Model and message | `ModelCallStarted`, `MessageStarted`, `MessageDelta`, `MessageFinished` |
 | Tool lifecycle | `ToolQueued`, `ToolStarted`, `ToolProgress`, `ToolFinished` |
-| Accounting | `Usage`, `ContextCompacted`, `Notice` |
+| Accounting | `Usage`, `Compaction`, `Notice` |
 
 `AgentEvent::delivery()` separates advisory progress from reliable terminal
 events. `MessageDelta` and `ToolProgress` are progress events. Every lifecycle,

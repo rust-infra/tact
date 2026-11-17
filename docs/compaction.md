@@ -123,6 +123,48 @@ the trigger check and the pass cannot disagree about when it is due. A
 
 ---
 
+## Lifecycle events
+
+The kernel is the one component that sees every compaction transition, so it —
+not each frontend — owns reporting them. `TactEventBridge` in
+`crates/tact/src/runtime/event_adapter.rs` turns
+`AgentEvent::Compaction(CompactionEvent)` into
+`AgentUpdate::Compaction(CompactionEvent)`, and every host renders from that:
+
+| Event state | Emitted when | Carries |
+|---|---|---|
+| `Started` | `compact_state` begins, right after the `[auto compact]`-style notice | `kind` |
+| `Completed` | the replacement was persisted and committed | `kind`, `summary` |
+| `Failed` | the context policy or the commit failed | `kind`, `error` |
+| `Cancelled` | a `PreCompact` hook vetoed it, nothing needed compacting, or the activation was cancelled | `kind`, `reason` |
+
+`CompactionEvent` lives in `tact_agent_api::context` and is a closed enum, so a
+new state cannot be added without every consumer deciding what to draw.
+
+Two notes for anyone adding a consumer:
+
+- **The summary travels on the replacement.** `ContextReplacement.summary` is
+  set by the context policy (`None` for native Responses compaction, which keeps
+  its summary provider-side) and copied into the `Completed` event. Reading
+  `compact_state.last_summary` instead would not work: the kernel emits the
+  event, that field is facade state written by `compaction_committed`, and the
+  policy's return value is the only place both halves of a compaction agree.
+- **The `Info` lines stay.** `[auto compact]`, `[compact summary 1/6]`, and
+  `Compaction complete (Auto).` are what the TUI and the desktop render. The
+  typed event is a second view of the same fact, not a replacement — dropping
+  the text would blank log rows users already read. The completion line is
+  written only for a `Completed` state: `compact_history` returns the
+  `CompactionOutcome`, so `/compact` says `Nothing to compact: <reason>` when
+  a `PreCompact` hook vetoed it or the context held nothing to compact,
+  instead of claiming a success the card next to it contradicts.
+
+Clients that draw a progress card follow the typed event. ACP is the only one
+today: `crates/tact-acp` maps the four states onto `compaction_update` and
+keeps one `compaction_id` for the whole compaction (see
+[crates/tact-acp/README.md](../crates/tact-acp/README.md#compaction)).
+
+---
+
 ## Configuration
 
 | Setting | Default | Effect |

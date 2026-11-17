@@ -640,6 +640,10 @@ impl TrajectoryLog {
             AgentUpdate::ToolTranscript { .. }
             | AgentUpdate::ToolTranscriptStream { .. }
             | AgentUpdate::TokenUsage(_)
+            // The ledger's compaction row comes from the `Info` line the
+            // bridge sends next to this typed lifecycle event; adding a second
+            // row for the same compaction would double it.
+            | AgentUpdate::Compaction(_)
             | AgentUpdate::ModelInfo(_)
             | AgentUpdate::TurnStats { .. }
             | AgentUpdate::RunStarted { .. }

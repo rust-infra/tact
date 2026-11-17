@@ -87,9 +87,35 @@ impl TelemetryEventObserver {
                 );
             }
             AgentEvent::Usage { .. } => {}
-            AgentEvent::ContextCompacted { kind } => {
-                info!(target: "tact_agent_sdk", kind = ?kind, "agent context compacted");
-            }
+            AgentEvent::Compaction(event) => match &event.state {
+                tact_agent_api::CompactionState::Started => {
+                    debug!(target: "tact_agent_sdk", kind = ?event.kind, "agent compaction started");
+                }
+                tact_agent_api::CompactionState::Completed { summary } => {
+                    info!(
+                        target: "tact_agent_sdk",
+                        kind = ?event.kind,
+                        has_summary = summary.is_some(),
+                        "agent context compacted"
+                    );
+                }
+                tact_agent_api::CompactionState::Failed { error } => {
+                    warn!(
+                        target: "tact_agent_sdk",
+                        kind = ?event.kind,
+                        error,
+                        "agent compaction failed"
+                    );
+                }
+                tact_agent_api::CompactionState::Cancelled { reason } => {
+                    debug!(
+                        target: "tact_agent_sdk",
+                        kind = ?event.kind,
+                        reason,
+                        "agent compaction cancelled"
+                    );
+                }
+            },
             AgentEvent::Notice { notice } => match notice {
                 AgentNotice::RecoveryBackoff {
                     attempt,

@@ -210,11 +210,19 @@ async fn replacement_commits_and_posts_only_after_kernel_acknowledgement() {
     )
     .await
     .unwrap();
-    let CompactionOutcome::Replaced(ContextReplacement { transcript, cursor }) = outcome else {
+    let CompactionOutcome::Replaced(ContextReplacement {
+        transcript,
+        cursor,
+        summary,
+    }) = outcome
+    else {
         panic!("expected a replacement");
     };
     assert!(transcript.is_some());
     assert_eq!(cursor, CursorUpdate::Replace { cursor: None });
+    // The host-visible summary is the one the facade also keeps for
+    // `/compact`'s read-out; both come from the same local summarization.
+    assert_eq!(summary.as_deref(), Some("summary"));
     assert!(!compactor.compact_state().has_compacted);
     assert!(!compactor.session_start_pending());
     assert_eq!(posts.load(Ordering::Acquire), 0);
@@ -333,7 +341,12 @@ async fn native_compaction_returns_only_a_replacement_cursor() {
     )
     .await
     .unwrap();
-    let CompactionOutcome::Replaced(ContextReplacement { transcript, cursor }) = outcome else {
+    let CompactionOutcome::Replaced(ContextReplacement {
+        transcript,
+        cursor,
+        summary,
+    }) = outcome
+    else {
         panic!("expected a native replacement");
     };
     assert!(transcript.is_none());
@@ -343,6 +356,8 @@ async fn native_compaction_returns_only_a_replacement_cursor() {
             cursor: Some(replacement)
         }
     );
+    // Native compaction keeps its summary provider-side; nothing local to show.
+    assert_eq!(summary, None);
     assert!(!compactor.compact_state().has_compacted);
 }
 
@@ -449,10 +464,18 @@ async fn micro_replacement_keeps_recent_results_without_full_post_state() {
     )
     .await
     .unwrap();
-    let CompactionOutcome::Replaced(ContextReplacement { transcript, cursor }) = outcome else {
+    let CompactionOutcome::Replaced(ContextReplacement {
+        transcript,
+        cursor,
+        summary,
+    }) = outcome
+    else {
         panic!("expected a micro replacement");
     };
     assert_eq!(cursor, CursorUpdate::Unchanged);
+    // Micro compaction stubs tool results; inventing prose here would make it
+    // look like a summarization pass.
+    assert_eq!(summary, None);
     let transcript = transcript.expect("micro compaction replaces the transcript");
     let compacted = &transcript[0].content;
     assert!(matches!(

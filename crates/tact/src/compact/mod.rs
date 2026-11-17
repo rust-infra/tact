@@ -24,6 +24,14 @@ use tokio::io::AsyncWriteExt;
 
 use crate::{consts::TactPath, goal::is_goal_context_text, hook::is_hook_context_text};
 
+/// What one compaction did: replaced the context, or declined to.
+///
+/// Callers need this to tell "compacted" from "nothing to do" — a vetoed or
+/// empty compaction is not a success line. Re-exported here because
+/// [`CompactTrigger`] is the frontend-facing entry point and callers should
+/// not have to know the kernel crate to read its result.
+pub use tact_agent_api::CompactionOutcome;
+
 /// Character threshold above which a single tool output is persisted to
 /// disk instead of being kept in the context.
 const PERSIST_THRESHOLD: usize = 30_000;

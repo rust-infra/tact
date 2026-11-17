@@ -446,10 +446,24 @@ impl TactEventBridge {
                         .send(AgentUpdate::TokenUsage(host_neutral_token_usage(&usage)));
                 }
             }
-            AgentEvent::ContextCompacted { kind } => {
-                self.events.send(AgentUpdate::Info(format!(
-                    "Compaction complete ({kind:?})."
-                )));
+            AgentEvent::Compaction(event) => {
+                // The typed lifecycle goes out first, then the human line for
+                // the one terminal state that has always had one. Both exist
+                // on purpose: the TUI and the desktop render the text, and a
+                // host that draws a compaction card (ACP) needs the lifecycle.
+                // Text alone was the bug — several producers log lines that do
+                // not match, and a failed `/compact` arrives as an `Error`
+                // with no way to tell it from an unrelated model failure.
+                let completed_kind = match &event.state {
+                    tact_agent_api::CompactionState::Completed { .. } => Some(event.kind),
+                    _ => None,
+                };
+                self.events.send(AgentUpdate::Compaction(event));
+                if let Some(kind) = completed_kind {
+                    self.events.send(AgentUpdate::Info(format!(
+                        "Compaction complete ({kind:?})."
+                    )));
+                }
             }
             AgentEvent::Notice { notice } => self.emit_notice(notice),
         }
@@ -678,15 +692,106 @@ mod tests {
     }
 
     #[test]
+    fn every_compaction_kind_reaches_the_host_as_a_typed_event() {
+        use tact_agent_api::{CompactionKind, CompactionState};
+
+        // The original bug: the adapter matched notice text, and only some
+        // kinds produce a line it recognized. Every kind must reach the host
+        // as data, independent of that line's wording.
+        let kinds = [
+            CompactionKind::Auto,
+            CompactionKind::Manual,
+            CompactionKind::Recovery,
+            CompactionKind::Command,
+            CompactionKind::Micro,
+        ];
+        for kind in kinds {
+            let (bridge, mut rx) = bridge();
+            bridge.emit(AgentEvent::Compaction(tact_agent_api::CompactionEvent {
+                kind,
+                state: CompactionState::Started,
+            }));
+            let updates = drain(&mut rx);
+            assert!(
+                matches!(
+                    updates.as_slice(),
+                    [AgentUpdate::Compaction(event)]
+                        if event.kind == kind && event.state == CompactionState::Started
+                ),
+                "{kind:?} did not reach the host as a started event: {updates:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_completed_compaction_still_writes_the_line_the_tui_renders() {
+        use tact_agent_api::{CompactionKind, CompactionState};
+
+        // Two views of one fact, on purpose: the TUI and the desktop render
+        // the text, and ACP needs the lifecycle. Dropping the text would blank
+        // a log row users already see.
+        let (bridge, mut rx) = bridge();
+        bridge.emit(AgentEvent::Compaction(tact_agent_api::CompactionEvent {
+            kind: CompactionKind::Command,
+            state: CompactionState::Completed {
+                summary: Some("condensed".into()),
+            },
+        }));
+        let updates = drain(&mut rx);
+        assert!(matches!(
+            &updates[0],
+            AgentUpdate::Compaction(event)
+                if event.state == CompactionState::Completed {
+                    summary: Some("condensed".into())
+                }
+        ));
+        assert!(matches!(
+            &updates[1],
+            AgentUpdate::Info(text) if text == "Compaction complete (Command)."
+        ));
+    }
+
+    #[test]
+    fn terminal_compaction_states_do_not_write_a_completion_line() {
+        use tact_agent_api::{CompactionKind, CompactionState};
+
+        // "[auto compact]" already names a start, and a cancelled compaction
+        // must not read as a finished one.
+        for state in [
+            CompactionState::Started,
+            CompactionState::Failed {
+                error: "boom".into(),
+            },
+            CompactionState::Cancelled {
+                reason: "hook vetoed".into(),
+            },
+        ] {
+            let (bridge, mut rx) = bridge();
+            bridge.emit(AgentEvent::Compaction(tact_agent_api::CompactionEvent {
+                kind: CompactionKind::Auto,
+                state,
+            }));
+            let updates = drain(&mut rx);
+            assert!(
+                !updates
+                    .iter()
+                    .any(|update| matches!(update, AgentUpdate::Info(_))),
+                "a non-completed compaction wrote a completion line: {updates:?}"
+            );
+        }
+    }
+
+    #[test]
     fn compaction_run_does_not_open_an_activation() {
         let (bridge, mut rx) = bridge();
         bridge.emit(AgentEvent::RunStarted {
             run_id: tact_agent_api::RunId::new("compact-1"),
             session: tact_agent_api::SessionRef::new("session-1"),
         });
-        bridge.emit(AgentEvent::ContextCompacted {
+        bridge.emit(AgentEvent::Compaction(tact_agent_api::CompactionEvent {
             kind: tact_agent_api::CompactionKind::Command,
-        });
+            state: tact_agent_api::CompactionState::Completed { summary: None },
+        }));
         bridge.emit(AgentEvent::RunFinished {
             outcome: tact_agent_api::RunOutcome {
                 stop: tact_agent_api::RunStop::Completed,

@@ -840,6 +840,16 @@ pub enum AgentUpdate {
     },
     /// Full replacement snapshot for the desktop background-task list.
     BackgroundTasksChanged { tasks: Vec<BackgroundTaskSnapshot> },
+    /// One compaction's lifecycle, as data.
+    ///
+    /// Emitted alongside the `Info` line that names the compaction
+    /// ("[auto compact]", "Compaction complete (Command)."), which stays
+    /// because the TUI and desktop render it and it costs nothing to keep two
+    /// views of the same fact. A host that draws a compaction card (ACP) needs
+    /// the lifecycle, not a log line: it must know when the card opens *and*
+    /// when it closes, and text matching cannot tell a `/compact` failure from
+    /// an unrelated model error.
+    Compaction(tact_agent_api::CompactionEvent),
 }
 
 /// Lifecycle of a streaming thinking / reasoning block.
@@ -1240,6 +1250,52 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn compaction_update_carries_the_whole_lifecycle() {
+        use tact_agent_api::{CompactionEvent, CompactionKind, CompactionState};
+
+        let started = AgentUpdate::Compaction(CompactionEvent {
+            kind: CompactionKind::Auto,
+            state: CompactionState::Started,
+        });
+        assert!(matches!(
+            started,
+            AgentUpdate::Compaction(CompactionEvent {
+                kind: CompactionKind::Auto,
+                state: CompactionState::Started,
+            })
+        ));
+
+        let completed = AgentUpdate::Compaction(CompactionEvent {
+            kind: CompactionKind::Command,
+            state: CompactionState::Completed {
+                summary: Some("summary text".into()),
+            },
+        });
+        match completed {
+            AgentUpdate::Compaction(event) => {
+                assert_eq!(event.kind, CompactionKind::Command);
+                assert!(event.is_terminal());
+                assert!(matches!(
+                    event.state,
+                    CompactionState::Completed { summary: Some(text) } if text == "summary text"
+                ));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+
+        // A failed compaction must be able to say why: `Error(AgentErrorKind)`
+        // carries no attribution, which is why `/compact` failures used to be
+        // indistinguishable from an unrelated model error.
+        let failed = CompactionEvent::failed(CompactionKind::Command, "summarizer exploded");
+        assert!(failed.is_terminal());
+        assert!(matches!(
+            failed.state,
+            CompactionState::Failed { error } if error == "summarizer exploded"
+        ));
+        assert!(!CompactionEvent::started(CompactionKind::Micro).is_terminal());
     }
 
     #[test]

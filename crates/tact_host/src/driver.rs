@@ -2149,15 +2149,26 @@ async fn handle_user_command_with_account(
         }
         UserCommand::Compact => {
             agent.emit_update(AgentUpdate::Info("[compacting]".into()));
-            if let Err(error) = agent
+            // The kernel already reported the typed lifecycle (including the
+            // in-progress card) and its own outcome. Only a real replacement
+            // gets the success line: a `PreCompact` veto or an empty context
+            // returns `Skipped`, and saying "complete" there would contradict
+            // the cancelled card the same compaction just closed.
+            match agent
                 .compact_history_with_trigger(tact::compact::CompactTrigger::Command, None)
                 .await
             {
-                agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(format!(
-                    "Compaction failed: {error}"
-                ))));
-            } else {
-                agent.emit_update(AgentUpdate::Info("Compaction complete.".into()));
+                Ok(tact::compact::CompactionOutcome::Replaced(_)) => {
+                    agent.emit_update(AgentUpdate::Info("Compaction complete.".into()));
+                }
+                Ok(tact::compact::CompactionOutcome::Skipped { reason }) => {
+                    agent.emit_update(AgentUpdate::Info(format!("Nothing to compact: {reason}")));
+                }
+                Err(error) => {
+                    agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(format!(
+                        "Compaction failed: {error}"
+                    ))));
+                }
             }
         }
         UserCommand::QueryBalance => {

@@ -1462,6 +1462,11 @@ fn spawn_actor(
                                         !(actor.turn.phase.is_command()
                                             && text.trim_start().starts_with('['))
                                     }
+                                    // A compaction is the whole answer to
+                                    // `/compact`, and a vetoed or failed one
+                                    // never reaches the "Compaction complete"
+                                    // line; its terminal state settles the turn.
+                                    AgentUpdate::Compaction(event) => event.is_terminal(),
                                     AgentUpdate::MdInfo(_)
                                     | AgentUpdate::PopupMarkdown { .. }
                                     | AgentUpdate::Error(_) => true,
@@ -1551,8 +1556,114 @@ struct Turn {
     agent_message: Option<OpenMessage>,
     thought: Option<OpenMessage>,
     tools: HashMap<String, OpenTool>,
-    compaction: Option<schema::CompactionId>,
+    compaction: CompactionCard,
     awaiting_goal_list: bool,
+}
+
+/// The client's compaction card, as a state machine over one compaction.
+///
+/// ACP patches a compaction entity in place by id, and the first update fixes
+/// its position in the timeline: one compaction is therefore **one** id for
+/// its whole life. Minting an id per status would draw a second card for the
+/// same compaction, and dropping the id on a terminal status would make a
+/// later update open a third.
+///
+/// The adapter used to derive this from notice text, which cannot close the
+/// card when a `/compact` fails (the failure arrives as a generic `Error`) and
+/// misreads a compaction whose log lines are worded differently. `Started`
+/// always comes from the kernel, so this consumes the typed lifecycle and
+/// keeps only the one fact the protocol needs: whether a card is open.
+///
+/// Kept free of the connection and of `AgentUpdate`, so the transition table
+/// is unit-testable without an ACP session.
+#[derive(Default)]
+struct CompactionCard {
+    open: Option<schema::CompactionId>,
+}
+
+impl CompactionCard {
+    /// Apply one lifecycle event, returning the updates to send.
+    ///
+    /// Usually one. A `Started` that arrives while a card is still open is a
+    /// bug in the producer (the kernel runs compactions one at a time), and
+    /// closing the orphan first keeps the client from showing a card that
+    /// would otherwise spin forever.
+    fn apply(
+        &mut self,
+        event: &tact_agent_api::CompactionEvent,
+        mint: impl FnOnce() -> schema::CompactionId,
+    ) -> Vec<schema::CompactionUpdate> {
+        use tact_agent_api::{CompactionEvent, CompactionState};
+
+        // `kind` names the trigger (auto / command / recovery…), which the ACP
+        // entity has no field for; the card only tracks whether one is open.
+        let CompactionEvent { state, .. } = event;
+        let mut updates = Vec::new();
+        match state {
+            CompactionState::Started => {
+                if let Some(orphan) = self.open.take() {
+                    updates.push(
+                        schema::CompactionUpdate::new(orphan, schema::CompactionStatus::Failed)
+                            .error("another compaction started before this one finished"),
+                    );
+                }
+                let id = mint();
+                self.open = Some(id.clone());
+                updates.push(schema::CompactionUpdate::new(
+                    id,
+                    schema::CompactionStatus::InProgress,
+                ));
+            }
+            CompactionState::Completed { summary } => {
+                // A completion with no card open is a real possibility: the
+                // adapter can be attached to a session mid-compaction (resume
+                // replays history without replaying events). Opening the card
+                // now and closing it at once tells the client the compaction
+                // happened instead of silently dropping the news.
+                let id = self.open.take().unwrap_or_else(mint);
+                let mut update =
+                    schema::CompactionUpdate::new(id, schema::CompactionStatus::Completed);
+                if let Some(summary) = summary {
+                    update = update.summary(vec![summary.clone().into()]);
+                }
+                updates.push(update);
+            }
+            CompactionState::Failed { error } => {
+                let id = self.open.take().unwrap_or_else(mint);
+                updates.push(
+                    schema::CompactionUpdate::new(id, schema::CompactionStatus::Failed)
+                        .error(error.clone()),
+                );
+            }
+            CompactionState::Cancelled { reason } => {
+                let id = self.open.take().unwrap_or_else(mint);
+                // ACP has no `reason` field, and `error` is the only free-text
+                // slot on the entity; a cancelled compaction is not an error,
+                // so it is set only when there is something to say.
+                let update = schema::CompactionUpdate::new(id, schema::CompactionStatus::Cancelled);
+                updates.push(if reason.trim().is_empty() {
+                    update
+                } else {
+                    update.error(reason.clone())
+                });
+            }
+        }
+        updates
+    }
+
+    /// Close a still-open card because its turn ended.
+    ///
+    /// The typed lifecycle reports every terminal state on its own, so this is
+    /// a safety net for a producer that was torn down mid-compaction (stdin
+    /// EOF, a panic above the kernel). It must never be the normal path: a
+    /// card that reaches it claims a failure that may not have happened.
+    fn close_orphan(&mut self, error: &str) -> Option<schema::CompactionUpdate> {
+        let id = self.open.take()?;
+        Some(
+            schema::CompactionUpdate::new(id, schema::CompactionStatus::Failed)
+                .error(error.to_string()),
+        )
+    }
 }
 
 /// One Tact UI request, normalized across the `AgentUpdate` hint and the
@@ -1856,11 +1967,7 @@ impl SessionActor {
                 self.finish_turn(schema::StopReason::EndTurn, None);
             }
             AgentUpdate::Error(kind) => {
-                // The driver reports a failed `/compact` as an error, not as
-                // an info line, so the typed compaction state has to inspect
-                // this text too or it would stay `in_progress` for the client.
                 let text = kind.to_string();
-                self.handle_compaction_progress(&text);
                 self.notice(
                     schema::NoticeSeverity::Error,
                     "Tact turn failed",
@@ -1928,8 +2035,10 @@ impl SessionActor {
                 purpose,
                 kind: UiRequestKind::Multi,
             }),
+            AgentUpdate::Compaction(event) => {
+                self.handle_compaction(&event);
+            }
             AgentUpdate::Info(text) | AgentUpdate::MdInfo(text) => {
-                self.handle_compaction_progress(&text);
                 self.notice(schema::NoticeSeverity::Info, "Tact", Some(text));
             }
             // Commands the host answers as a read-out rather than a turn:
@@ -2747,35 +2856,18 @@ impl SessionActor {
         }
     }
 
-    fn handle_compaction_progress(&mut self, text: &str) {
-        let lower = text.to_ascii_lowercase();
-        let started = text.contains("[compacting]")
-            || text.starts_with("[compact")
-            || lower.contains("compaction started");
-        let completed = lower.contains("compaction complete");
-        let failed = lower.contains("compaction failed") || lower.contains("compact failed");
-        if !started && !completed && !failed {
-            return;
-        }
-        let id =
-            self.turn.compaction.clone().unwrap_or_else(|| {
-                schema::CompactionId::new(self.next_id("compaction").0.to_string())
-            });
-        self.turn.compaction = Some(id.clone());
-        let status = if completed {
-            schema::CompactionStatus::Completed
-        } else if failed {
-            schema::CompactionStatus::Failed
-        } else {
-            schema::CompactionStatus::InProgress
-        };
-        let mut update = schema::CompactionUpdate::new(id, status);
-        if failed {
-            update = update.error(text.to_string());
-        }
-        self.send(schema::SessionUpdate::CompactionUpdate(update));
-        if completed || failed {
-            self.turn.compaction = None;
+    /// Publish one compaction lifecycle event to the client's card.
+    ///
+    /// The lifecycle is typed all the way from the kernel; nothing here reads
+    /// notice text, because a log line cannot tell a compaction from anything
+    /// else that happens to contain the word.
+    fn handle_compaction(&mut self, event: &tact_agent_api::CompactionEvent) {
+        let next_id = self.next_message.fetch_add(1, Ordering::Relaxed);
+        let updates = self.turn.compaction.apply(event, || {
+            schema::CompactionId::new(format!("compaction-{next_id}"))
+        });
+        for update in updates {
+            self.send(schema::SessionUpdate::CompactionUpdate(update));
         }
     }
 
@@ -3180,12 +3272,15 @@ impl SessionActor {
     /// cancel on an idle session cannot produce a second turn boundary.
     fn finish_turn(&mut self, stop_reason: schema::StopReason, fallback_text: Option<String>) {
         // A turn that ends while its summary is still open must not leave the
-        // client's compaction card spinning forever.
-        if let Some(id) = self.turn.compaction.take() {
-            self.send(schema::SessionUpdate::CompactionUpdate(
-                schema::CompactionUpdate::new(id, schema::CompactionStatus::Failed)
-                    .error("compaction did not finish before the turn ended"),
-            ));
+        // client's compaction card spinning forever. The kernel reports every
+        // terminal state itself, so reaching this means the producer was torn
+        // down mid-compaction.
+        if let Some(update) = self
+            .turn
+            .compaction
+            .close_orphan("compaction did not finish before the turn ended")
+        {
+            self.send(schema::SessionUpdate::CompactionUpdate(update));
         }
         self.finalize_agent_message();
         self.finalize_thought();
@@ -4847,6 +4942,226 @@ mod tests {
         // client identifies as `t3-code`, so a probe is not mistaken for it.
         let probe = schema::Implementation::new("t3-code-provider-test", "0.0.0");
         assert!(client_renders_child_sessions(&probe));
+    }
+
+    /// Every `CompactionState` the kernel can emit, with the ACP status it
+    /// must produce. The table is the contract: a new state on either side
+    /// fails to compile rather than silently leaving a card spinning.
+    fn compaction_status(state: &tact_agent_api::CompactionState) -> schema::CompactionStatus {
+        use tact_agent_api::{CompactionEvent, CompactionKind};
+        let mut card = CompactionCard::default();
+        let mut minted = 0u64;
+        let updates = card.apply(
+            &CompactionEvent {
+                kind: CompactionKind::Command,
+                state: state.clone(),
+            },
+            || {
+                minted += 1;
+                schema::CompactionId::new(format!("cmp-{minted}"))
+            },
+        );
+        assert_eq!(updates.len(), 1, "one event, one update: {updates:?}");
+        // This walks the states in isolation, so `Started` is the only one that
+        // gets its id from the mint; the terminal states see no open card and
+        // take the "attached mid-compaction" path. Reusing a `Started` id is
+        // covered by `a_compaction_keeps_one_id_for_its_whole_lifecycle`.
+        updates[0].status.clone()
+    }
+
+    #[test]
+    fn a_compaction_keeps_one_id_for_its_whole_lifecycle() {
+        use tact_agent_api::{CompactionEvent, CompactionKind, CompactionState as S};
+
+        let mut card = CompactionCard::default();
+        let mut next = 0u64;
+        let mut mint = || {
+            next += 1;
+            schema::CompactionId::new(format!("cmp-{next}"))
+        };
+
+        let started = card.apply(
+            &CompactionEvent {
+                kind: CompactionKind::Command,
+                state: S::Started,
+            },
+            &mut mint,
+        );
+        assert_eq!(started.len(), 1);
+        assert_eq!(started[0].status, schema::CompactionStatus::InProgress);
+
+        let completed = card.apply(
+            &CompactionEvent {
+                kind: CompactionKind::Command,
+                state: S::Completed {
+                    summary: Some("what changed".into()),
+                },
+            },
+            &mut mint,
+        );
+        assert_eq!(completed.len(), 1);
+        assert_eq!(
+            completed[0].compaction_id, started[0].compaction_id,
+            "the completion must patch the card the start opened"
+        );
+        assert_eq!(completed[0].status, schema::CompactionStatus::Completed);
+        // The summary is not a decoration: the client shows it in place of the
+        // history it never saw.
+        assert!(matches!(
+            &completed[0].summary,
+            agent_client_protocol::schema::MaybeUndefined::Value(blocks)
+                if blocks.len() == 1
+        ));
+    }
+
+    #[test]
+    fn a_failed_compaction_closes_its_card_with_the_error() {
+        use tact_agent_api::{CompactionEvent, CompactionKind, CompactionState as S};
+
+        let mut card = CompactionCard::default();
+        let mut next = 0u64;
+        let mut mint = || {
+            next += 1;
+            schema::CompactionId::new(format!("cmp-{next}"))
+        };
+        let started = card.apply(
+            &CompactionEvent {
+                kind: CompactionKind::Command,
+                state: S::Started,
+            },
+            &mut mint,
+        );
+        let failed = card.apply(
+            &CompactionEvent {
+                kind: CompactionKind::Command,
+                state: S::Failed {
+                    error: "summarization failed".into(),
+                },
+            },
+            &mut mint,
+        );
+        assert_eq!(failed[0].compaction_id, started[0].compaction_id);
+        assert_eq!(failed[0].status, schema::CompactionStatus::Failed);
+        assert!(matches!(
+            &failed[0].error,
+            agent_client_protocol::schema::MaybeUndefined::Value(error)
+                if error == "summarization failed"
+        ));
+        // Closed: no later terminal state may re-close it, and a new
+        // compaction mints a new id.
+        assert!(card.close_orphan("turn ended").is_none());
+    }
+
+    #[test]
+    fn a_vetoed_compaction_is_reported_as_cancelled_not_failed() {
+        use tact_agent_api::{CompactionEvent, CompactionKind, CompactionState as S};
+
+        let mut card = CompactionCard::default();
+        let mut next = 0u64;
+        let mut mint = || {
+            next += 1;
+            schema::CompactionId::new(format!("cmp-{next}"))
+        };
+        card.apply(
+            &CompactionEvent {
+                kind: CompactionKind::Auto,
+                state: S::Started,
+            },
+            &mut mint,
+        );
+        let cancelled = card.apply(
+            &CompactionEvent {
+                kind: CompactionKind::Auto,
+                state: S::Cancelled {
+                    reason: "PreCompact hook vetoed compaction".into(),
+                },
+            },
+            &mut mint,
+        );
+        assert_eq!(cancelled[0].status, schema::CompactionStatus::Cancelled);
+        assert!(matches!(
+            &cancelled[0].error,
+            agent_client_protocol::schema::MaybeUndefined::Value(reason)
+                if reason.contains("vetoed")
+        ));
+    }
+
+    #[test]
+    fn a_terminal_state_without_a_start_still_reaches_the_client() {
+        use tact_agent_api::{CompactionEvent, CompactionKind, CompactionState as S};
+
+        // A resumed session can be attached mid-compaction, after the
+        // `Started` event was already consumed by another process. Dropping
+        // the completion would hide the only evidence the compaction happened.
+        let mut card = CompactionCard::default();
+        let updates = card.apply(
+            &CompactionEvent {
+                kind: CompactionKind::Auto,
+                state: S::Completed { summary: None },
+            },
+            || schema::CompactionId::new("cmp-late"),
+        );
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].status, schema::CompactionStatus::Completed);
+    }
+
+    #[test]
+    fn a_second_start_closes_the_orphaned_card() {
+        use tact_agent_api::{CompactionEvent, CompactionKind, CompactionState as S};
+
+        // The kernel compacts one at a time, so this cannot happen by design;
+        // if it ever does, the client must not keep a card that no event will
+        // ever close.
+        let mut card = CompactionCard::default();
+        let mut next = 0u64;
+        let mut mint = || {
+            next += 1;
+            schema::CompactionId::new(format!("cmp-{next}"))
+        };
+        card.apply(
+            &CompactionEvent {
+                kind: CompactionKind::Auto,
+                state: S::Started,
+            },
+            &mut mint,
+        );
+        let updates = card.apply(
+            &CompactionEvent {
+                kind: CompactionKind::Micro,
+                state: S::Started,
+            },
+            &mut mint,
+        );
+        assert_eq!(updates.len(), 2, "orphan closed, new card opened");
+        assert_eq!(updates[0].status, schema::CompactionStatus::Failed);
+        assert_eq!(updates[1].status, schema::CompactionStatus::InProgress);
+        assert_ne!(updates[0].compaction_id, updates[1].compaction_id);
+    }
+
+    #[test]
+    fn every_compaction_state_maps_to_an_acp_status() {
+        use tact_agent_api::CompactionState as S;
+
+        assert_eq!(
+            compaction_status(&S::Started),
+            schema::CompactionStatus::InProgress
+        );
+        assert_eq!(
+            compaction_status(&S::Completed { summary: None }),
+            schema::CompactionStatus::Completed
+        );
+        assert_eq!(
+            compaction_status(&S::Failed {
+                error: "boom".into()
+            }),
+            schema::CompactionStatus::Failed
+        );
+        assert_eq!(
+            compaction_status(&S::Cancelled {
+                reason: "vetoed".into()
+            }),
+            schema::CompactionStatus::Cancelled
+        );
     }
 
     #[test]

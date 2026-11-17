@@ -430,6 +430,12 @@ impl DesktopState {
                         .replace(" turn(s)", " 轮后停止，达到最大轮次"),
                 )
             }
+            (message, CatalogLocale::Zh) if message.starts_with("Nothing to compact: ") => {
+                Some(format!(
+                    "无可压缩内容：{}",
+                    message.trim_start_matches("Nothing to compact: ")
+                ))
+            }
             (message, CatalogLocale::Zh) if message.starts_with("Background check failed: ") => {
                 Some(format!(
                     "后台检查失败：{}",

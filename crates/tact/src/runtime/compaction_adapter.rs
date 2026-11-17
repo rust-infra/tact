@@ -211,6 +211,12 @@ impl TactCompactor {
             )
         };
 
+        // The same text goes two ways: the facade keeps it for `/compact`'s
+        // own read-out, and the replacement carries it so a host that renders
+        // the compaction (ACP's card) can show what replaced the history.
+        // Native provider compaction has no local text at all, which is what
+        // `None` here means — not "the summary was lost".
+        let summary_for_host = summary.clone();
         *self
             .pending_commit
             .lock()
@@ -221,6 +227,7 @@ impl TactCompactor {
         Ok(CompactionOutcome::Replaced(ContextReplacement {
             transcript,
             cursor,
+            summary: summary_for_host,
         }))
     }
 
@@ -346,9 +353,13 @@ impl TactCompactor {
                 reason: "no old tool result exceeded the compaction threshold".into(),
             });
         }
+        // Micro compaction stubs old tool results in place; there is no
+        // prose summary to show, and inventing one would misdescribe it as a
+        // summarization pass.
         Ok(CompactionOutcome::Replaced(ContextReplacement {
             transcript: Some(messages),
             cursor: CursorUpdate::Unchanged,
+            summary: None,
         }))
     }
 

@@ -8,15 +8,16 @@ use futures_util::future::{BoxFuture, Either, select};
 use futures_util::stream::FuturesUnordered;
 use tact_agent_api::{
     AgentContentBlock, AgentEvent, AgentMessage, AgentNotice, AgentRole, AgentState, CancelToken,
-    CompactionOutcome, CompactionRequest, ContextError, ContextPreparation, ContextReplacement,
-    ContextView, CursorUpdate, GateDecision, HostYieldReason, MessageDelta, MessageOrigin,
-    MessageRange, ModelCallKind, ModelCapabilities, ModelCursor, ModelError, ModelErrorKind,
-    ModelEvent, ModelPort, ModelRequest, ModelResponse, PreparationDecision, RecoveryStats,
-    RequestPlan, ResolvedToolCall, RunContext, RunInput, RunOutcome, RunPhase, RunStop, SessionRef,
-    SessionStateSnapshot, StopReason, StoreError, ToolCall, ToolDirective, ToolError,
-    ToolExecutionContext, ToolExecutionError, ToolExecutionErrorKind, ToolExecutionResult,
-    ToolExecutionStatus, ToolGateContext, ToolGateError, ToolOutputChunk, ToolProgressSink,
-    ToolResultStatus, ToolSnapshot, UsageError, UsageRecord,
+    CompactionEvent, CompactionKind, CompactionOutcome, CompactionRequest, ContextError,
+    ContextPreparation, ContextReplacement, ContextView, CursorUpdate, GateDecision,
+    HostYieldReason, MessageDelta, MessageOrigin, MessageRange, ModelCallKind, ModelCapabilities,
+    ModelCursor, ModelError, ModelErrorKind, ModelEvent, ModelPort, ModelRequest, ModelResponse,
+    PreparationDecision, RecoveryStats, RequestPlan, ResolvedToolCall, RunContext, RunInput,
+    RunOutcome, RunPhase, RunStop, SessionRef, SessionStateSnapshot, StopReason, StoreError,
+    ToolCall, ToolDirective, ToolError, ToolExecutionContext, ToolExecutionError,
+    ToolExecutionErrorKind, ToolExecutionResult, ToolExecutionStatus, ToolGateContext,
+    ToolGateError, ToolOutputChunk, ToolProgressSink, ToolResultStatus, ToolSnapshot, UsageError,
+    UsageRecord,
 };
 
 use crate::deps::{AgentKernel, KernelError};
@@ -1199,6 +1200,13 @@ impl AgentKernel {
         Ok(())
     }
 
+    /// Run one compaction and report its whole lifecycle.
+    ///
+    /// Every compaction that announces itself with a `Started` event also
+    /// reaches exactly one terminal state, emitted here rather than by the
+    /// caller: a host that draws a compaction card (ACP's `compaction_update`)
+    /// otherwise has to guess from the turn boundary, which cannot tell "still
+    /// running when the turn ended" from "the model call failed".
     async fn compact_state(
         &self,
         state: &mut AgentState,
@@ -1213,9 +1221,47 @@ impl AgentKernel {
             });
         }
         let kind = request.kind();
+        // The notice stays: the TUI and the desktop render it as a log line.
         self.events.emit(AgentEvent::Notice {
             notice: AgentNotice::CompactionStarted { kind },
         });
+        self.events
+            .emit(AgentEvent::Compaction(CompactionEvent::started(kind)));
+
+        let result = self
+            .compact_state_body(state, session, request, cancel, model)
+            .await;
+        match &result {
+            Ok(CompactionOutcome::Replaced(replacement)) => {
+                self.events
+                    .emit(AgentEvent::Compaction(CompactionEvent::completed(
+                        kind,
+                        replacement.summary.clone(),
+                    )));
+            }
+            Ok(CompactionOutcome::Skipped { reason }) => {
+                self.events
+                    .emit(AgentEvent::Compaction(CompactionEvent::cancelled(
+                        kind,
+                        reason.clone(),
+                    )));
+            }
+            Err(failure) => {
+                self.events
+                    .emit(AgentEvent::Compaction(failure.compaction_event(kind)));
+            }
+        }
+        result.map_err(CompactionFailure::into_kernel_error)
+    }
+
+    async fn compact_state_body(
+        &self,
+        state: &mut AgentState,
+        session: &SessionRef,
+        request: CompactionRequest,
+        cancel: CancelToken,
+        model: &ObservedModelPort,
+    ) -> Result<CompactionOutcome, CompactionFailure> {
         let committed_request = request.clone();
         model.set_call_kind(ModelCallKind::LocalCompact);
         let capabilities = self.deps.model.capabilities();
@@ -1234,8 +1280,7 @@ impl AgentKernel {
             .deps
             .context
             .compact(&view, request, model, cancel.clone())
-            .await
-            .map_err(context_error)?;
+            .await?;
 
         for call in model.drain_calls() {
             state.last_token_total = call
@@ -1245,7 +1290,10 @@ impl AgentKernel {
             self.record_usage(call, None, &cancel).await?;
         }
 
-        if let CompactionOutcome::Replaced(ContextReplacement { transcript, cursor }) = &outcome {
+        if let CompactionOutcome::Replaced(ContextReplacement {
+            transcript, cursor, ..
+        }) = &outcome
+        {
             self.wait_store(
                 self.deps
                     .transcript
@@ -1258,7 +1306,6 @@ impl AgentKernel {
                 state.transcript = transcript.clone();
             }
             apply_cursor(&mut state.cursor, cursor.clone());
-            self.events.emit(AgentEvent::ContextCompacted { kind });
 
             let view = ContextView {
                 session,
@@ -1274,8 +1321,7 @@ impl AgentKernel {
             self.deps
                 .context
                 .compaction_committed(&view, &committed_request)
-                .await
-                .map_err(context_error)?;
+                .await?;
         }
         Ok(outcome)
     }
@@ -1744,6 +1790,63 @@ impl AgentKernel {
 
 fn context_error(error: ContextError) -> KernelError {
     KernelError::Context(error.to_string())
+}
+
+/// Why one compaction produced no replacement.
+///
+/// Separate from [`KernelError`] because the two are not the same set: a
+/// cancelled compaction is not a run failure, and a usage-persistence failure
+/// is not a compaction failure. Keeping the classification explicit is what
+/// lets [`Kernel::compact_state`] report a terminal compaction state before
+/// converting back to the run-level error the caller expects.
+#[derive(Debug)]
+enum CompactionFailure {
+    /// The host or user withdrew the activation mid-compaction.
+    Cancelled,
+    /// The context policy refused or failed the compaction itself.
+    Context(String),
+    /// Anything else the compaction body hit (transcript commit, usage flush).
+    Other(KernelError),
+}
+
+impl From<ContextError> for CompactionFailure {
+    fn from(error: ContextError) -> Self {
+        match error {
+            ContextError::Cancelled => Self::Cancelled,
+            other => Self::Context(other.to_string()),
+        }
+    }
+}
+
+impl From<KernelError> for CompactionFailure {
+    fn from(error: KernelError) -> Self {
+        match error {
+            KernelError::Cancelled => Self::Cancelled,
+            other => Self::Other(other),
+        }
+    }
+}
+
+impl CompactionFailure {
+    /// The terminal compaction state this failure reports to hosts.
+    ///
+    /// A cancellation is `Cancelled`, not `Failed`: the ACP card and any other
+    /// reader must be able to tell "the user stopped it" from "it broke".
+    fn compaction_event(&self, kind: CompactionKind) -> CompactionEvent {
+        match self {
+            Self::Cancelled => CompactionEvent::cancelled(kind, "compaction cancelled"),
+            Self::Context(error) => CompactionEvent::failed(kind, error.clone()),
+            Self::Other(error) => CompactionEvent::failed(kind, error.to_string()),
+        }
+    }
+
+    fn into_kernel_error(self) -> KernelError {
+        match self {
+            Self::Cancelled => KernelError::Cancelled,
+            Self::Context(error) => KernelError::Context(error),
+            Self::Other(error) => error,
+        }
+    }
 }
 
 fn failed_result(kind: ToolExecutionErrorKind, message: impl Into<String>) -> ToolExecutionResult {

@@ -284,7 +284,10 @@ pub enum RequestPreparation {
 pub struct ScriptedContext {
     run: Mutex<VecDeque<RunPreparation>>,
     request: Mutex<VecDeque<RequestPreparation>>,
-    compact: Mutex<VecDeque<tact_agent_api::CompactionOutcome>>,
+    /// Scripted compaction results, in call order. A `Result` and not an
+    /// outcome because a failing compaction is exactly the case hosts must
+    /// still see a terminal state for.
+    compact: Mutex<VecDeque<Result<tact_agent_api::CompactionOutcome, ContextError>>>,
     compact_model_calls: Mutex<u32>,
     native_compaction_calls: Mutex<u32>,
     compact_requests: Mutex<Vec<tact_agent_api::CompactionRequest>>,
@@ -332,7 +335,15 @@ impl ScriptedContext {
         self.compact
             .lock()
             .expect("compaction scripts lock")
-            .push_back(outcome);
+            .push_back(Ok(outcome));
+    }
+
+    /// Script a compaction that fails instead of replacing the transcript.
+    pub fn push_compaction_error(&self, error: ContextError) {
+        self.compact
+            .lock()
+            .expect("compaction scripts lock")
+            .push_back(Err(error));
     }
 
     pub fn set_compaction_model_calls(&self, calls: u32) {
@@ -562,7 +573,7 @@ impl ContextPolicy for ScriptedContext {
             .lock()
             .expect("compaction scripts lock")
             .pop_front()
-            .ok_or_else(|| ContextError::Compaction("no compaction script".into()))
+            .unwrap_or_else(|| Err(ContextError::Compaction("no compaction script".into())))
     }
 
     async fn compaction_committed(

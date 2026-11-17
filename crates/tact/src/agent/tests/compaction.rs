@@ -55,6 +55,27 @@ async fn command_compaction_uses_kernel_owned_replacement_and_events() {
             .any(|update| matches!(update, AgentUpdate::Info(text) if text.contains("Compaction complete (Command)."))),
         "{updates:?}"
     );
+    // The text is for the TUI. The typed lifecycle is what a host that draws a
+    // compaction card follows, and this is the one path that proves it reaches
+    // the sink through the real facade rather than only in a bridge unit test.
+    let events: Vec<_> = updates
+        .iter()
+        .filter_map(|update| match update {
+            AgentUpdate::Compaction(event) => Some(event),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(events.len(), 2, "{updates:?}");
+    assert_eq!(events[0].kind, tact_agent_api::CompactionKind::Command);
+    assert_eq!(events[0].state, tact_agent_api::CompactionState::Started);
+    assert!(
+        matches!(
+            &events[1].state,
+            tact_agent_api::CompactionState::Completed { summary: Some(text) }
+                if text.contains("kernel command summary")
+        ),
+        "{events:?}"
+    );
 }
 
 #[tokio::test]

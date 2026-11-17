@@ -90,10 +90,10 @@ so importing a session a live host still holds (a running T3 thread, `tact-ui`,
 - T3 reserves the exact `/compact` prompt for its own compaction driver and
   rejects it before the provider starts. The adapter therefore advertises the
   same operation as `/compact-context`; a `/compact` that arrives from another
-  ACP client is still routed to Tact. Compaction progress is bracketed
-  (`[compacting]`, `[compact summary 1/6]`, …), and the command turn stays open
-  until `Compaction complete` or an error, so a client does not finalize the
-  turn while the summary is still being generated.
+  ACP client is still routed to Tact. The command turn stays open until the
+  compaction reaches a terminal state (`completed`, `failed`, or `cancelled`),
+  so a client does not finalize the turn while the summary is still being
+  generated — see [Compaction](#compaction).
 - T3 also owns the bare `/model` and `/permission` composer commands. The
   adapter therefore advertises `/model-select` and `/permission-mode` (while
   still accepting the bare spellings from other clients); the T3 model picker
@@ -141,8 +141,11 @@ so importing a session a live host still holds (a running T3 thread, `tact-ui`,
 - The first prompt publishes a `session_info_update` title, and later turns
   refresh its `updatedAt`. Usage updates carry the context window; cost is
   omitted because Tact has no per-session cost source.
-- Compaction progress is sent as `compaction_update` (in-progress/completed/
-  failed) in addition to the existing notice text.
+- Compaction is sent as `compaction_update` for its whole lifecycle
+  (`in_progress` → `completed` / `failed` / `cancelled`), driven by the typed
+  `AgentUpdate::Compaction` the kernel emits, not by matching notice text. The
+  completed update carries Tact's summary; the existing `Info` log lines stay
+  for the TUI and the desktop. See [Compaction](#compaction).
 - Goals are a notice whose `description` is the plain-text read-out and whose
   `_meta` carries the same `Vec<GoalSnapshot>` as JSON under `tact/goals`. ACP
   has no Goal update, and a `PlanEntry` (three statuses, one line of text)
@@ -184,6 +187,32 @@ so importing a session a live host still holds (a running T3 thread, `tact-ui`,
   cursors with `-32602`. It sends `replay_complete` and an idle before the
   response. A live session's model options are read back from its actor.
 
+### Compaction
+
+Tact's kernel emits one typed `AgentUpdate::Compaction` per lifecycle step
+(`started`, then exactly one of `completed`, `failed`, `cancelled`), and the
+adapter maps it onto ACP's `compaction_update`. The event is data, not prose:
+attaching to notice text could not close the card when a `/compact` failed
+(the failure arrives as a generic `Error`) and misread compaction whose log
+lines are worded differently.
+
+- One compaction is one `compaction_id`. ACP patches an entity in place by id
+  and the first update fixes its timeline position, so minting a new id per
+  status would draw a second card. `CompactionCard` in `lib.rs` is the whole
+  state machine, and it is unit-tested without a connection.
+- `completed` carries Tact's summary as `summary: [text]`, so a client can show
+  what replaced the history it never sees. Native provider compaction replaces
+  history provider-side and has no local text; there `summary` is omitted
+  rather than faked.
+- `failed` carries the error text. `cancelled` covers a `PreCompact` hook veto
+  and a user cancellation, and sets `error` to the reason — ACP has no
+  separate field, and a cancelled compaction is not a failure.
+- The existing `Info` lines (`[auto compact]`, `Compaction complete (Auto).`)
+  still go out for the TUI and the desktop. Two views of one fact on purpose:
+  dropping the text would blank a log row users already read.
+- A `/compact` command turn settles on the terminal typed event, so a vetoed or
+  failed compaction no longer waits out the command settle timer.
+
 ### Goal notices
 
 ACP v2 has no Goal update, so `AgentUpdate::GoalsChanged` becomes one `notice`.
@@ -209,12 +238,11 @@ plan already owns the plan surface.
 
 ## Not implemented yet
 
-- `compaction_summary_chunk` streaming. The complete summary stays in the
-  transcript; the lifecycle is reported through `compaction_update`. No
-  `AgentUpdate` carries the summary text, so the adapter has nothing to chunk:
-  `compaction_adapter::finish_success` stores it in `compact_state.last_summary`
-  and the progress events are `AgentUpdate::Info` lines. Streaming it therefore
-  needs a new cross-crate event, not an adapter change.
+- `compaction_summary_chunk` streaming. The summary arrives once, on the
+  `completed` update; ACP's streaming chunk is not emitted. Tact's compaction
+  produces the summary in one model response (nothing to chunk) and the
+  facade's own `[compact summary n/m]` progress lines are `Info` text for the
+  TUI, not content the adapter may forward as summary chunks.
 - A native Goal surface. Goals are notices; the structured snapshot is in
   `_meta` rather than a protocol type of its own. T3's own Goal panel belongs to
   its driver, and its notice decoder keeps `_meta` but its `NoticeReceived`
