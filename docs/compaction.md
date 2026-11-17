@@ -138,6 +138,27 @@ not each frontend — owns reporting them. `TactEventBridge` in
 | `Failed` | the context policy or the commit failed | `kind`, `error` |
 | `Cancelled` | a `PreCompact` hook vetoed it, nothing needed compacting, or the activation was cancelled | `kind`, `reason` |
 
+Which failure a compaction reports is decided in one place per layer, and a
+cancellation is never one of them:
+
+- `crates/tact/src/recovery.rs` classifies a model error as
+  `FailureKind::Cancelled`, separate from `Permanent`. Folding it into
+  `Permanent` made the summarizer report the user's own Esc as
+  "context compaction failed", so the card closed `Failed`.
+- `summary_failure` in `crates/tact/src/runtime/compaction_adapter.rs` turns
+  that classification into `ContextError::Cancelled`, which the kernel maps to
+  the `Cancelled` state. Both retry loops (local summary, native Responses) go
+  through it so neither can drift.
+- `command_answer` in `crates/tact-acp/src/lib.rs` decides the command turn's
+  stop reason from the same state: `Failed` closes it as `Error`, everything
+  else as `EndTurn`. Without that, a failed `/compact` settled the turn
+  cleanly and the `Error` update behind it was gated out, so the client showed
+  a red card beside a finished-looking turn.
+- `compact_line` in `crates/tact_host/src/driver.rs` picks the `/compact`
+  read-out. It reads the cancel token rather than the error text, so a cancel
+  prints `Compaction cancelled.` instead of `Compaction failed: run
+  cancelled`.
+
 `CompactionEvent` lives in `tact_agent_api::context` and is a closed enum, so a
 new state cannot be added without every consumer deciding what to draw.
 

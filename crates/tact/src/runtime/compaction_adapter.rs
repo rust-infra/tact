@@ -783,7 +783,7 @@ impl TactCompactor {
                     if attempt >= MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS
                         || failure != FailureKind::Transient
                     {
-                        return Err(ContextError::Compaction(error.to_string()));
+                        return Err(summary_failure(&error, failure));
                     }
                     attempt = attempt.saturating_add(1);
                     let delay = backoff_delay(attempt.saturating_sub(1));
@@ -820,7 +820,7 @@ impl TactCompactor {
                     if attempt >= MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS
                         || failure != FailureKind::Transient
                     {
-                        return Err(ContextError::Compaction(error.to_string()));
+                        return Err(summary_failure(&error, failure));
                     }
                     attempt = attempt.saturating_add(1);
                     let delay = backoff_delay(attempt.saturating_sub(1));
@@ -955,6 +955,25 @@ fn summary_request(
 
 fn compaction_error(error: impl std::fmt::Display) -> ContextError {
     ContextError::Compaction(error.to_string())
+}
+
+/// The `ContextError` one exhausted summarizer attempt reports.
+///
+/// A cancelled model call is the user or the host stopping the compaction, not
+/// the summarizer breaking: it must reach the kernel as
+/// [`ContextError::Cancelled`] so the card closes `Cancelled` and `/compact`
+/// does not print a failure line. Every other kind is a real compaction
+/// failure, carried with its provider message.
+///
+/// Both retry loops go through here so neither can forget the distinction —
+/// forgetting it is exactly how a cancel used to be reported as `Failed`.
+fn summary_failure(error: &tact_agent_api::ModelError, failure: FailureKind) -> ContextError {
+    match failure {
+        FailureKind::Cancelled => ContextError::Cancelled,
+        FailureKind::PromptTooLong | FailureKind::Transient | FailureKind::Permanent => {
+            ContextError::Compaction(error.to_string())
+        }
+    }
 }
 
 /// Turn the native path's diagnostic line into text a compaction card can show.

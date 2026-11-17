@@ -29,8 +29,10 @@ use crate::{consts::TactPath, goal::is_goal_context_text, hook::is_hook_context_
 /// Callers need this to tell "compacted" from "nothing to do" — a vetoed or
 /// empty compaction is not a success line. Re-exported here because
 /// [`CompactTrigger`] is the frontend-facing entry point and callers should
-/// not have to know the kernel crate to read its result.
-pub use tact_agent_api::CompactionOutcome;
+/// not have to know the kernel crate to read its result. [`ContextReplacement`]
+/// comes with it: it is the payload of the variant every caller matches on, so
+/// leaving it behind would make the re-export unusable on its own.
+pub use tact_agent_api::{CompactionOutcome, ContextReplacement, CursorUpdate};
 
 /// Character threshold above which a single tool output is persisted to
 /// disk instead of being kept in the context.

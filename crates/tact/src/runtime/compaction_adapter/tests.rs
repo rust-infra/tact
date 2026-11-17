@@ -593,3 +593,135 @@ fn native_readout_turns_the_log_row_into_card_prose() {
         NATIVE_COMPACTION_FALLBACK_SUMMARY
     );
 }
+
+/// A user cancel that lands inside the summarizer's model call must stay a
+/// cancellation.
+///
+/// `ProviderModel` returns [`ModelErrorKind::Cancelled`] whenever the
+/// activation's token fires mid-request, and `UserCommand::Cancel` fires that
+/// same token. Mapping it to `ContextError::Compaction` made the kernel close
+/// the compaction `Failed`, so the ACP card went red on Esc — reporting the
+/// user's own stop as a breakage.
+#[tokio::test]
+async fn a_cancelled_summarizer_stays_a_cancellation() {
+    let dir = tempfile::tempdir().unwrap();
+    let compactor = compactor(services(), dir.path(), false, &[]);
+    let model = ScriptedModel::new(false);
+    model.push_complete(Err(ModelError::new(
+        ModelErrorKind::Cancelled,
+        "model call cancelled",
+    )));
+    let transcript = transcript();
+    let capabilities = model.capabilities();
+    let session = SessionRef::new("session");
+    let state = ContextView {
+        session: &session,
+        transcript: &transcript,
+        cursor: None,
+        total_turns: 1,
+        max_total_turns: None,
+        last_token_total: Some(100),
+        pending_inputs: &[],
+        capabilities: &capabilities,
+        remaining_turns: None,
+    };
+
+    let error = Compactor::compact(
+        &compactor,
+        &state,
+        CompactionRequest::Command { focus: None },
+        &model,
+        CancelToken::new(),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(error, ContextError::Cancelled),
+        "a cancel must stay a cancel, got {error:?}"
+    );
+    // Nothing was committed, so no success line may follow either.
+    assert!(!compactor.compact_state().has_compacted);
+}
+
+/// The native Responses path has the same rule.
+#[tokio::test]
+async fn a_cancelled_native_compaction_stays_a_cancellation() {
+    let dir = tempfile::tempdir().unwrap();
+    let compactor = compactor(services(), dir.path(), true, &[]);
+    let model = ScriptedModel::new(true);
+    model.push_native(Err(ModelError::new(
+        ModelErrorKind::Cancelled,
+        "model call cancelled",
+    )));
+    let transcript = transcript();
+    let capabilities = model.capabilities();
+    let session = SessionRef::new("session");
+    let state = ContextView {
+        session: &session,
+        transcript: &transcript,
+        cursor: None,
+        total_turns: 1,
+        max_total_turns: None,
+        last_token_total: Some(100),
+        pending_inputs: &[],
+        capabilities: &capabilities,
+        remaining_turns: None,
+    };
+
+    let error = Compactor::compact(
+        &compactor,
+        &state,
+        CompactionRequest::Command { focus: None },
+        &model,
+        CancelToken::new(),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(error, ContextError::Cancelled),
+        "a cancel must stay a cancel on the native path too, got {error:?}"
+    );
+}
+
+/// The counterpart: a real failure is still a failure.
+///
+/// Without this, widening the cancellation rule until nothing failed would
+/// pass the two tests above.
+#[tokio::test]
+async fn a_permanent_summarizer_error_still_fails_the_compaction() {
+    let dir = tempfile::tempdir().unwrap();
+    let compactor = compactor(services(), dir.path(), false, &[]);
+    let model = ScriptedModel::new(false);
+    model.push_complete(Err(ModelError::new(
+        ModelErrorKind::Permanent,
+        "summary failed",
+    )));
+    let transcript = transcript();
+    let capabilities = model.capabilities();
+    let session = SessionRef::new("session");
+    let state = ContextView {
+        session: &session,
+        transcript: &transcript,
+        cursor: None,
+        total_turns: 1,
+        max_total_turns: None,
+        last_token_total: Some(100),
+        pending_inputs: &[],
+        capabilities: &capabilities,
+        remaining_turns: None,
+    };
+
+    let error = Compactor::compact(
+        &compactor,
+        &state,
+        CompactionRequest::Command { focus: None },
+        &model,
+        CancelToken::new(),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(&error, ContextError::Compaction(message) if message.contains("summary failed")),
+        "a real failure must keep its message, got {error:?}"
+    );
+}

@@ -131,6 +131,10 @@ pub enum FailureKind {
     PromptTooLong,
     /// Retryable transport/rate-limit failure; back off and retry.
     Transient,
+    /// The caller stopped the call. Not a failure to report, and never a
+    /// reason to retry: a cancellation the user asked for must not be retried,
+    /// and it must not be described as a breakage either.
+    Cancelled,
     /// Everything else — surface to the caller.
     Permanent,
 }
@@ -180,9 +184,14 @@ pub fn classify_model_error(error: &tact_agent_api::ModelError) -> FailureKind {
     match error.kind {
         tact_agent_api::ModelErrorKind::ContextOverflow => FailureKind::PromptTooLong,
         tact_agent_api::ModelErrorKind::Transient => FailureKind::Transient,
-        tact_agent_api::ModelErrorKind::Permanent
-        | tact_agent_api::ModelErrorKind::Cancelled
-        | tact_agent_api::ModelErrorKind::Unsupported => FailureKind::Permanent,
+        // A cancelled call is neither retryable nor a breakage. It used to be
+        // folded into `Permanent`, so the compaction summarizer reported the
+        // user's own cancel as "context compaction failed", and the ACP card
+        // closed red on Esc.
+        tact_agent_api::ModelErrorKind::Cancelled => FailureKind::Cancelled,
+        tact_agent_api::ModelErrorKind::Permanent | tact_agent_api::ModelErrorKind::Unsupported => {
+            FailureKind::Permanent
+        }
     }
 }
 
@@ -333,6 +342,31 @@ mod tests {
         assert_eq!(classify_error(&overflow), FailureKind::PromptTooLong);
         assert_eq!(classify_error(&transient), FailureKind::Transient);
         assert_eq!(classify_error(&permanent), FailureKind::Permanent);
+    }
+
+    /// A cancelled model call is not a breakage and not a retry.
+    ///
+    /// Folding it into `Permanent` made the compaction summarizer report the
+    /// user's own cancel as "context compaction failed", which closed the ACP
+    /// card red on Esc.
+    #[test]
+    fn a_cancelled_model_call_is_classified_as_cancelled() {
+        let cancelled = tact_agent_api::ModelError::new(
+            tact_agent_api::ModelErrorKind::Cancelled,
+            "model call cancelled",
+        );
+        assert_eq!(
+            classify_model_error(&cancelled),
+            FailureKind::Cancelled,
+            "a cancel must stay distinguishable from a permanent failure"
+        );
+        assert_eq!(
+            classify_error(&anyhow::Error::from(cancelled)),
+            FailureKind::Cancelled,
+            "the downcast path must agree with the direct one"
+        );
+        assert_ne!(FailureKind::Cancelled, FailureKind::Permanent);
+        assert_ne!(FailureKind::Cancelled, FailureKind::Transient);
     }
 
     /// `Agent::stream_message` preserves the typed error, so the downcast path

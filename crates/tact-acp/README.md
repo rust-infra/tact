@@ -210,6 +210,12 @@ lines are worded differently.
 - `failed` carries the error text. `cancelled` covers a `PreCompact` hook veto
   and a user cancellation, and sets `error` to the reason — ACP has no
   separate field, and a cancelled compaction is not a failure.
+- The stop reason of the idle follows the same state: `failed` closes the turn
+  as `Error`, and `completed`/`cancelled` close it as `EndTurn`. Both used to
+  close as `EndTurn`, so a failed `/compact` showed a red card beside a turn
+  that looked finished, and the `Error` update behind it was dropped by
+  `finish_turn`'s `is_running` gate. `CommandAnswer` in `lib.rs` is the rule,
+  and `command_answer` is the pure function that applies it.
 - The existing `Info` lines (`[auto compact]`, `Compaction complete (Auto).`)
   still go out for the TUI and the desktop. Two views of one fact on purpose:
   dropping the text would blank a log row users already read.

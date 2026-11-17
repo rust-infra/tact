@@ -1366,6 +1366,76 @@ impl TurnPhase {
     }
 }
 
+/// How a command turn's last update settles it.
+///
+/// A command turn closes on the update that answers it, and the *reason*
+/// differs by answer: a read-out is a clean `EndTurn`, while a failed
+/// `/compact` has to reach the client as an error. Settling both as `EndTurn`
+/// made a failed compaction look finished — the card was red, the turn was
+/// green, and the following `Error` update's own `finish_turn` was gated out
+/// because the turn was already idle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CommandAnswer {
+    /// A read-out that succeeded.
+    Settled,
+    /// The answer reported a failure; close the turn with an error stop reason.
+    Failed,
+}
+
+impl CommandAnswer {
+    /// The answer implied by a compaction state, or `None` while one is still
+    /// running.
+    ///
+    /// Terminality is part of this match rather than a check at the call site:
+    /// a `Started` state has no answer yet, and folding that into a "settled"
+    /// arm would let a caller end a `/compact` turn mid-compaction.
+    ///
+    /// `Cancelled` is a clean stop, not an error: the user or a hook stopped
+    /// it, and reporting that as a failure made Esc look like a crash.
+    fn for_compaction(state: &tact_agent_api::CompactionState) -> Option<Self> {
+        match state {
+            tact_agent_api::CompactionState::Started => None,
+            tact_agent_api::CompactionState::Completed { .. }
+            | tact_agent_api::CompactionState::Cancelled { .. } => Some(Self::Settled),
+            tact_agent_api::CompactionState::Failed { .. } => Some(Self::Failed),
+        }
+    }
+
+    fn stop_reason(self) -> schema::StopReason {
+        match self {
+            Self::Settled => schema::StopReason::EndTurn,
+            Self::Failed => schema::StopReason::Error(schema::ErrorStopReason::new()),
+        }
+    }
+}
+
+/// Whether one agent update answers a command turn, and how it closes it.
+///
+/// `None` means the update is not an answer: progress logging, session
+/// bookkeeping, or anything between the prompt and its reply. A `/compact`
+/// turn logs several bracketed lines while it works, so treating "any update"
+/// as the answer would settle the turn before the compaction finished.
+fn command_answer(phase: TurnPhase, update: &AgentUpdate) -> Option<CommandAnswer> {
+    match update {
+        // Bracketed lines are a command's progress, not its answer.
+        AgentUpdate::Info(text) => {
+            let progress = phase.is_command() && text.trim_start().starts_with('[');
+            (!progress).then_some(CommandAnswer::Settled)
+        }
+        // Its terminal state settles the turn; the card and the idle are two
+        // views of one fact, so the state also decides the stop reason. A
+        // `Started` compaction answers nothing, so a `/compact` keeps running
+        // until the summary is committed.
+        AgentUpdate::Compaction(event) => CommandAnswer::for_compaction(&event.state),
+        // `handle_update` already closes the turn on an error, so this only
+        // matters when something kept the phase running; reporting success
+        // there would be the lie the failed-compaction path used to tell.
+        AgentUpdate::Error(_) => Some(CommandAnswer::Failed),
+        AgentUpdate::MdInfo(_) | AgentUpdate::PopupMarkdown { .. } => Some(CommandAnswer::Settled),
+        _ => None,
+    }
+}
+
 enum SessionCommand {
     /// A prompt or slash command from `session/prompt`. The actor decides
     /// whether it becomes a model turn or a session action.
@@ -1452,32 +1522,11 @@ fn spawn_actor(
                 event = actor.host.next_event() => {
                     match event {
                         Some(event) => {
-                            let answers_command = match &event {
-                                HostEvent::Agent(update) => match update.as_ref() {
-                                    // A command turn may log bracketed progress
-                                    // (compaction saves the transcript and
-                                    // prints every summary stage). Those lines
-                                    // are not its answer.
-                                    AgentUpdate::Info(text) => {
-                                        !(actor.turn.phase.is_command()
-                                            && text.trim_start().starts_with('['))
-                                    }
-                                    // A compaction is the whole answer to
-                                    // `/compact`, and a vetoed or failed one
-                                    // never reaches the "Compaction complete"
-                                    // line; its terminal state settles the turn.
-                                    AgentUpdate::Compaction(event) => event.is_terminal(),
-                                    AgentUpdate::MdInfo(_)
-                                    | AgentUpdate::PopupMarkdown { .. }
-                                    | AgentUpdate::Error(_) => true,
-                                    _ => false,
-                                },
-                                _ => false,
-                            };
+                            let answers_command = actor.command_answer(&event);
                             actor.handle_event(event);
                             actor.reconcile_pending_requests();
-                            if answers_command {
-                                actor.settle_command_turn();
+                            if let Some(answer) = answers_command {
+                                actor.settle_command_turn(answer);
                             }
                         }
                         None => {
@@ -1508,7 +1557,11 @@ fn spawn_actor(
                         Some(SessionCommand::RequiresActionIfPending { request_id }) => {
                             actor.requires_action_if_pending(request_id);
                         }
-                        Some(SessionCommand::SettleCommand) => actor.settle_command_turn(),
+                        Some(SessionCommand::SettleCommand) => {
+                            // The answer window closed with no answer-carrying
+                            // update: nothing claimed a failure, so end cleanly.
+                            actor.settle_command_turn(CommandAnswer::Settled)
+                        }
                         Some(SessionCommand::Close(reply)) => {
                             let result = actor
                                 .host
@@ -2130,13 +2183,13 @@ impl SessionActor {
         if goals.is_empty() {
             if answers_list {
                 self.send(schema::SessionUpdate::Notice(goal_notice(&goals)));
-                self.settle_command_turn();
+                self.settle_command_turn(CommandAnswer::Settled);
             }
             return;
         }
         self.send(schema::SessionUpdate::Notice(goal_notice(&goals)));
         if answers_list {
-            self.settle_command_turn();
+            self.settle_command_turn(CommandAnswer::Settled);
         }
     }
 
@@ -2725,12 +2778,26 @@ impl SessionActor {
         }
     }
 
+    /// Whether one host event answers the running command turn, and how.
+    ///
+    /// `None` means the event is not an answer: progress logging, session
+    /// bookkeeping, or anything that arrives between the prompt and the reply.
+    /// A `/compact` turn logs several bracketed lines while it works, so
+    /// treating "any update" as the answer would settle the turn before the
+    /// compaction ever finished.
+    fn command_answer(&self, event: &HostEvent) -> Option<CommandAnswer> {
+        let HostEvent::Agent(update) = event else {
+            return None;
+        };
+        command_answer(self.turn.phase, update.as_ref())
+    }
+
     /// Close a command turn. Idempotent: `finish_turn` is gated on `Running`,
     /// so an event that already settled is not settled twice.
-    fn settle_command_turn(&mut self) {
+    fn settle_command_turn(&mut self, answer: CommandAnswer) {
         if self.turn.phase.is_command() {
             self.turn.awaiting_goal_list = false;
-            self.finish_turn(schema::StopReason::EndTurn, None);
+            self.finish_turn(answer.stop_reason(), None);
         }
     }
 
@@ -5084,6 +5151,122 @@ mod tests {
             agent_client_protocol::schema::MaybeUndefined::Value(reason)
                 if reason.contains("vetoed")
         ));
+    }
+
+    /// A failed `/compact` closes the turn as an error, not as a clean end.
+    ///
+    /// The card and the turn are two views of one fact, and they used to
+    /// disagree: the failed `Compaction` update settled the command turn as
+    /// `EndTurn`, which moved the phase to `Idle`, and the `Error` update that
+    /// followed was then gated out by `finish_turn`'s `is_running` check. The
+    /// client showed a red card beside a turn that had finished normally.
+    #[test]
+    fn a_failed_compaction_ends_the_turn_with_an_error_stop_reason() {
+        use tact_agent_api::CompactionState as S;
+
+        assert_eq!(
+            CommandAnswer::for_compaction(&S::Failed {
+                error: "summarizer exploded".into()
+            })
+            .expect("a failed compaction is terminal")
+            .stop_reason(),
+            schema::StopReason::Error(schema::ErrorStopReason::new()),
+            "a real failure must reach the client as one"
+        );
+    }
+
+    /// The turn-settling rule reads the compaction's own state, not the text.
+    ///
+    /// The card and the idle are two views of one fact. Deriving the idle from
+    /// the `Compaction` update is what makes them agree: no notice text is
+    /// consulted, so a producer that words its log line differently cannot
+    /// change the outcome.
+    #[test]
+    fn a_failed_compaction_update_answers_the_turn_as_a_failure() {
+        use tact_agent_api::{CompactionEvent, CompactionKind, CompactionState as S};
+
+        let phase = TurnPhase::Running(TurnOwner::Command);
+        let failed = AgentUpdate::Compaction(CompactionEvent {
+            kind: CompactionKind::Command,
+            state: S::Failed {
+                error: "summarizer exploded".into(),
+            },
+        });
+        assert_eq!(
+            command_answer(phase, &failed),
+            Some(CommandAnswer::Failed),
+            "a failed /compact must close the turn as an error"
+        );
+
+        // A successful one is a clean end, and the `Info` line the adapter
+        // sends beside it must not be mistaken for the answer first.
+        let completed = AgentUpdate::Compaction(CompactionEvent {
+            kind: CompactionKind::Command,
+            state: S::Completed {
+                summary: Some("what changed".into()),
+            },
+        });
+        assert_eq!(
+            command_answer(phase, &completed),
+            Some(CommandAnswer::Settled)
+        );
+    }
+
+    /// Progress logging is not an answer; the idle must wait for the terminal
+    /// state, or a `/compact` turn would end before the compaction did.
+    #[test]
+    fn a_compaction_progress_line_does_not_answer_the_turn() {
+        use tact_agent_api::{CompactionEvent, CompactionKind, CompactionState as S};
+
+        let phase = TurnPhase::Running(TurnOwner::Command);
+        let started = AgentUpdate::Compaction(CompactionEvent {
+            kind: CompactionKind::Command,
+            state: S::Started,
+        });
+        assert_eq!(
+            CommandAnswer::for_compaction(&S::Started),
+            None,
+            "a running compaction has no answer yet"
+        );
+        assert_eq!(command_answer(phase, &started), None);
+        assert_eq!(
+            command_answer(phase, &AgentUpdate::Info("[compact] started".into())),
+            None,
+            "the bracketed progress line `/compact` logs is not its answer"
+        );
+        assert_eq!(
+            command_answer(phase, &AgentUpdate::Info("Nothing to compact".into())),
+            Some(CommandAnswer::Settled),
+            "a plain read-out is the answer"
+        );
+    }
+
+    /// The other three terminal states are clean stops.
+    ///
+    /// `Cancelled` matters most: the user pressed Esc or a hook vetoed the
+    /// compaction, and painting that as an error would call their own action a
+    /// crash.
+    #[test]
+    fn a_cancelled_or_completed_compaction_ends_the_turn_cleanly() {
+        use tact_agent_api::CompactionState as S;
+
+        for state in [
+            S::Completed { summary: None },
+            S::Completed {
+                summary: Some("what changed".into()),
+            },
+            S::Cancelled {
+                reason: "PreCompact hook vetoed compaction".into(),
+            },
+        ] {
+            assert_eq!(
+                CommandAnswer::for_compaction(&state)
+                    .expect("a terminal state answers the turn")
+                    .stop_reason(),
+                schema::StopReason::EndTurn,
+                "{state:?} must not be reported as a failure"
+            );
+        }
     }
 
     #[test]
