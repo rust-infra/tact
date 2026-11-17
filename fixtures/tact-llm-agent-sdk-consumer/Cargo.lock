@@ -1466,7 +1466,6 @@ version = "2.0.6"
 dependencies = [
  "async-trait",
  "futures-util",
- "serde",
  "serde_json",
  "tact_agent_api",
  "thiserror",

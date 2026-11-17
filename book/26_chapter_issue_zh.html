@@ -793,6 +793,12 @@
 <li class="toc-l2"><a href="#37-2026-11-11--dev-%E7%BC%96%E8%AF%91%E6%97%B6%E9%97%B4%E4%B8%8E%E4%BB%93%E5%BA%93%E7%BB%93%E6%9E%84%E5%99%AA%E9%9F%B3" title="37. 2026-11-11 — 开发编译时间与「仓库太大」的上下文噪音"><span class="toc-label">37. 2026-11-11 — 开发编译时间与「仓库太大」的上下文噪音</span></a></li>
 <li class="toc-l2"><a href="#39-2026-11-13--desktop-%E5%90%AF%E5%8A%A8%E6%97%B6-mcp-%E8%BF%9E%E6%8E%A5%E6%9C%9F%E9%97%B4%E5%88%87%E4%B8%8D%E4%BA%86-session" title="39. 2026-11-13 — Desktop 启动时，MCP 连接期间切不了 session"><span class="toc-label">39. 2026-11-13 — Desktop 启动时，MCP 连接期间切不了 session</span></a></li>
 <li class="toc-l2"><a href="#38-2026-11-13--macos-%E7%AD%BE%E5%90%8D%E7%BC%BA%E5%A4%B1%E6%8B%A6%E4%BD%8F%E6%95%B4%E4%B8%AA%E5%8F%91%E5%B8%83" title="38. 2026-11-13 — macOS 签名缺失拦住整个发布"><span class="toc-label">38. 2026-11-13 — macOS 签名缺失拦住整个发布</span></a></li>
+<li class="toc-l2"><a href="#67-2026-11-15--acp-%E6%9C%AC%E5%9C%B0%E4%BD%9C%E7%AD%94%E7%9A%84-prompt-%E4%B8%8D-settle%E7%BA%BF%E7%A8%8B%E6%B0%B8%E8%BF%9C-working" title="67. 2026-11-15 — ACP：本地作答的 prompt 不 settle，T3 线程永远显示 Working"><span class="toc-label">67. 2026-11-15 — ACP：本地作答的 prompt 不 settle，T3 线程永远显示 Working</span></a></li>
+<li class="toc-l2"><a href="#68-2026-11-15--stats-%E5%9C%A8%E5%86%85%E6%A0%B8%E9%87%8D%E6%9E%84%E5%90%8E%E5%BD%92%E9%9B%B6%E6%89%80%E6%9C%89%E8%AE%A1%E6%95%B0%E6%90%AC%E5%9B%9E%E7%AB%AF%E5%8F%A3" title="68. 2026-11-15 — /stats 在 kernel 重构后归零：所有计数搬回端口"><span class="toc-label">68. 2026-11-15 — /stats 在 kernel 重构后归零：所有计数搬回端口</span></a></li>
+<li class="toc-l2"><a href="#69-2026-11-16--acp-%E5%9B%9E%E5%90%88%E8%BE%B9%E7%95%8C%E5%9B%9E%E6%94%BE%E4%B8%8E%E5%90%8E%E5%8F%B0%E5%AD%90%E4%BB%A3%E7%90%86%E7%9A%84%E5%8D%81%E4%B8%AA%E4%BF%AE%E5%A4%8D" title="69. 2026-11-16 — ACP：回合边界、回放与后台子代理的十个修复"><span class="toc-label">69. 2026-11-16 — ACP：回合边界、回放与后台子代理的十个修复</span></a></li>
+<li class="toc-l2"><a href="#70-2026-11-17--acp-%E6%B8%85%E7%A9%BA%E7%9A%84%E5%BE%85%E5%8A%9E%E9%9D%A2%E6%9D%BF%E8%A6%81%E7%A7%BB%E9%99%A4%E5%AD%90%E4%BB%A3%E7%90%86%E5%8D%A1%E7%89%87%E4%B8%8D%E5%96%82%E7%BB%99-t3" title="70. 2026-11-17 — ACP：清空的待办面板要移除，子代理会话不喂给 T3"><span class="toc-label">70. 2026-11-17 — ACP：清空的待办面板要移除，子代理会话不喂给 T3</span></a></li>
+<li class="toc-l2"><a href="#71-2026-11-17--%E6%A1%8C%E9%9D%A2%E5%BE%AE%E5%8E%8B%E7%BC%A9%E5%BC%80%E5%85%B3%E6%98%BE%E7%A4%BA-on-%E5%8D%B4%E6%B0%B8%E4%B8%8D%E8%BF%90%E8%A1%8C" title="71. 2026-11-17 — 桌面微压缩开关显示 on，却永不运行"><span class="toc-label">71. 2026-11-17 — 桌面微压缩开关显示 on，却永不运行</span></a></li>
+<li class="toc-l2"><a href="#72-2026-11-17--acp-%E5%8E%8B%E7%BC%A9%E5%8D%A1%E7%89%87%E5%81%9C%E5%9C%A8-compacting-%E6%B0%B8%E4%B8%8D%E8%90%BD%E5%9C%B0" title="72. 2026-11-17 — ACP：压缩卡片停在 Compacting…，永不落地"><span class="toc-label">72. 2026-11-17 — ACP：压缩卡片停在 Compacting…，永不落地</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -23857,6 +23863,266 @@ Linux 与 Windows 的桌面包也成功，但两个 macOS 桌面任务失败（�
 <a href="../README.md">README.md</a> 的 Tact Desktop 段、
 <a href="../docs/design/tact-desktop/visual-verification.md">visual-verification.md</a> §4。
 配好六个 secret 后无需改动代码，同一个 tag 重跑即回到签名路径。</p>
+<hr />
+<h2 id="67-2026-11-15--acp-本地作答的-prompt-不-settle线程永远-working">67. 2026-11-15 — ACP：本地作答的 prompt 不 settle，T3 线程永远显示 Working</h2>
+<p><strong>现象：</strong>在 T3 里输入一个不存在的 <code>$skill</code>
+（例如 <code>$no-such-skill</code>），Tact 立刻回了一条「Unknown skill …
+Available: …」提示，但线程停在 <code>Working</code>，一分钟、两分钟都不结束；
+再发消息被 T3 当作 steer 塞进同一个回合，按 Esc 也只会多出几行
+<code>Tact Cancelling...</code>。同一个线程里先跑过 <code>/stats</code> 又切换过模型，
+只有这一条卡住。</p>
+<p><strong>根因：</strong>ACP 的 <code>session/prompt</code> 响应只表示
+「已插入」，回合结束要看随后的 idle <code>state_update</code>。适配器里
+<code>/model</code>/<code>/permission</code>/<code>/thought</code> 的本地应用
+（<code>apply_slash_config</code>）和未知技能（<code>invoke_skill</code> 的
+<code>Notice</code> 分支）都在适配器内直接作答，既不经过 host 的
+<code>forward_slash_command</code>（那里有 <code>command_turn</code> 与 750ms
+兜底 settle），也不启动模型回合，于是没有任何路径发出 idle。客户端于是认为
+回合仍在进行。第二条消息之所以变成 steer，正是 T3 还在等第一条的 idle。</p>
+<p><strong>决策：</strong>把「谁来 settle」变成显式返回值，而不是靠记忆维护。
+<code>handle_prompt_command</code> 返回该 prompt 是否交给了 host：交给 host 的
+（<code>Forward</code>、<code>Host</code>、<code>Then</code> 的后半）由
+host 自己的回合边界收尾；适配器自己作答的（<code>Model</code>/<code>Permission</code>/
+<code>Thought</code>、未知技能）返回 <code>false</code>，
+<code>handle_prompt</code> 随即在<b>没有运行中回合</b>时补一个
+<code>EndTurn</code> idle（<code>settle_local_prompt</code>）。带运行中回合时
+不发，否则会把模型正在跑的回合提前关掉。<code>Then</code> 分支额外清掉
+<code>command_turn</code>：否则 <code>/stats</code> 的读数会被当成前半段命令的
+答案，抢先 settle 掉后半段请求的回合。</p>
+<p>同一轮真机验证还暴露了第二个入口问题：T3 只在 prompt 以 <code>/</code> 开头时
+跳过它的指令包裹，所以线程的第一条 <code>$skill</code> 会以
+<code>&lt;t3_code_instructions&gt;…&lt;user_request&gt;$name …&lt;/user_request&gt;</code>
+的形式到达，之前的解析器看到的是 <code>&lt;</code>，于是把
+<code>$name</code> 原样丢给模型。<code>wrapped_user_request</code> 现在只识别
+完整的 T3 包裹并取出请求正文参与命令解析；解析结果若仍是普通文本，则整段（含指令）
+照旧转给模型，模型侧的包装行为不变。裸客户端（无包裹）走原路径。</p>
+<p><strong>验证：</strong>真机 T3（本地 <code>acpRegistry</code> provider，DeepSeek
+后端）逐条点过：未知技能发出提示后线程转入 Done；新建线程的首条
+<code>$unslop …</code> 正确执行技能（此前被当作纯文本，模型答的是「看不到技能」）；
+<code>/stats</code> 读数与 idle 正常；权限卡 Approve 后命令落盘并回 <code>DONE</code>；
+运行中切模型由 T3 发 <code>session/set_config_option</code> 并生效。回归测试在
+<code>crates/tact-acp/tests/acp_session.rs</code>：未知技能与非法
+<code>/model</code> 值都必须收到 Notice 且随后收到 <code>EndTurn</code> idle；
+<code>/model</code> 的两个分支同样断言 idle；
+<code>crates/tact-acp/src/lib.rs</code> 的单元测试覆盖包裹识别
+（完整/半截/非 T3 包裹）与包裹内的 <code>$skill</code> 解析。</p>
+<p><strong>Pointers：</strong> <code>crates/tact-acp/src/lib.rs</code>
+（<code>handle_prompt</code>、<code>handle_prompt_command</code>、
+<code>settle_local_prompt</code>、<code>wrapped_user_request</code>）、
+<code>crates/tact-acp/README.md</code> 的 protocol scope 段。</p>
+<hr />
+<h2 id="68-2026-11-15--stats-在内核重构后归零所有计数搬回端口">68. 2026-11-15 — /stats 在 kernel 重构后归零：所有计数搬回端口</h2>
+<p><strong>现象：</strong>TUI 与 T3 的 <code>/stats</code> 都显示
+<code>LLM API calls 0</code>、<code>Prompt tokens 0</code>、没有任何工具行，
+只有 <code>Elapsed</code> 在走——即使同一个 session 的 <code>token_usages</code>
+表里已有 4 条完整记录、模型确实回了话。诊断来自 ACP 真机验证：跑完两轮
+bash 工具调用后 <code>/stats</code> 仍是空的。</p>
+<p><strong>根因：</strong><code>SessionStats</code> 的写入点在 #99 的 kernel
+重构里全部失效：旧的 <code>agent/mod.rs</code> 里有五处
+<code>stats.write().record_token_usage(..)</code>、<code>prompt_count += 1</code>、
+<code>record_tool_stats(..)</code>，重构后这些行随旧循环一起删掉，但
+<code>SessionStats</code> 的结构、<code>summary()</code> 渲染和
+<code>/stats</code> 命令都保留了下来。于是共享的 <code>Arc&lt;RwLock&lt;SessionStats&gt;&gt;</code>
+还在被创建、被读取、被 <code>record_rtk</code> 与 compaction 的
+<code>compactions</code> 计数器写入，唯独没有任何代码再写主计数。
+更微妙的是 kernel 的 <code>AgentEvent::Usage</code> 只带 token 数，不带请求与
+响应正文，所以即使想从事件侧补，也补不出 prompt/response chars 与 thinking 统计。</p>
+<p><strong>决策：</strong>计数回到它唯一能看清的地方——端口，而不是循环。
+LLM 侧新增 <code>StatsModelPort</code>（<code>runtime/model_adapter.rs</code>），
+把模型端口整体包一层：<code>stream</code>/<code>complete</code>/<code>compact</code>
+进入时计 <code>prompt_count</code> 与序列化请求的字符数，拿到响应时计
+响应字符、thinking 块与字符、单次耗时，并把 provider 上报的 usage
+折进 token 累计。流式调用在 <code>Finished</code> 事件里记账，因此错误流与
+中途丢弃的流只计请求、不计耗时，与重构前的语义一致。
+工具侧由 <code>TactEventBridge::record_tool</code> 在
+<code>AgentEvent::ToolFinished</code> 处记账——bridge 是唯一能看到每次调用
+终局的地方，被 gate 拒绝的调用也会以失败结束，同样要计数。
+compaction 里那份手写的 <code>prompt_count</code>/<code>llm_call_durations</code>
+自增随之删除，因为它统计的那次调用已经由 <code>StatsModelPort::compact</code>
+计过一次，留着就会重复。</p>
+<p><strong>验证：</strong>真机 T3 新线程跑一轮 bash 工具调用后 <code>/stats</code>
+输出 <code>LLM API calls 2</code>、<code>Prompt tokens 54374</code>、
+<code>Thinking blocks 1</code>、工具表 <code>bash 1 (1/0) 5ms</code>，
+与 DB 中的用量行一致。单测：
+<code>runtime::model_adapter::tests::a_completed_call_records_stats_once</code>
+断言一次调用把 call 数、两边字符数、thinking 计数与 token 各加一次；
+<code>runtime::event_adapter::tests::a_finished_call_is_counted_in_the_session_stats</code>
+断言成功/失败各一次 bash 调用只计一次、时长累加正确。</p>
+<p><strong>Pointers：</strong><code>crates/tact/src/runtime/model_adapter.rs</code>
+（<code>StatsModelPort</code>）、<code>runtime/event_adapter.rs</code>
+（<code>with_stats</code>、<code>record_tool</code>）、
+<code>runtime/composition.rs</code>（两处接线）、<code>stats.rs</code>（未改动的
+结构）。</p>
+<hr />
+<h2 id="69-2026-11-16--acp-回合边界回放与后台子代理的十个修复">69. 2026-11-16 — ACP：回合边界、回放与后台子代理的十个修复</h2>
+<p><strong>现象：</strong>ACP 前端一次性补齐 fork、diff、background、
+compaction、session info 与回放后，代码审查发现十处会让 T3 看到错误状态或
+错误内容的问题：运行中再发 <code>/stats</code> 会立刻结束模型回合；后台子代理
+在父回合结束的瞬间被标成 cancelled 并失去后续输出；恢复会话时压缩摘要和
+hook/goal 上下文会变成用户气泡；文件工具的 diff 会声称文件只剩被编辑的片段；
+两张图片会互相覆盖；<code>/compact</code> 失败后客户端一直转圈；删除非活动
+会话会落到进程 cwd 的库。</p>
+<p><strong>根因：</strong>回合边界有两个所有者却没有区分：
+<code>forward_command</code> 对任何命令都置 <code>command_turn</code>，
+即使模型回合已经在跑，于是命令的读数或 750ms 兜底定时器会把
+<code>finish_turn</code> 提前叫到；而 <code>finish_turn</code> 又无条件
+drain 所有 <code>subagent_sessions</code>，把 <code>async_launched</code>
+子代理同样按 cancelled 收尾。回放侧只看 <code>message.role</code>，
+丢掉了 <code>MessageOrigin</code>，所以为模型保存的注入行全被当成用户输入；
+标题推导也直接取第一段文本，于是 T3 的 <code>&lt;t3_code_instructions&gt;</code>
+包裹成为 Native sessions 的标题。其余问题同源：展示层用参数伪造事实
+（diff、图片名），而不是读取真实文件或给它唯一身份。</p>
+<p><strong>决策：</strong>边界与事实都只留一个来源。命令只有在自己开启回合时
+才持有 <code>command_turn</code>；<code>finish_turn</code> 只取消非
+<code>detached</code> 的子会话，后台子代理留给 <code>SubagentFinished</code>。
+回放按 <code>origin.is_user_turn()</code>/<code>ToolResult</code> 过滤，
+用户文本先经共享的 <code>t3_user_request</code> 取出
+<code>&lt;user_request&gt;</code> 正文；会话标题复用同一解析。
+文件 diff 读取编辑前的工作区文件（<code>edit_file</code> 应用
+<code>old_text</code>/<code>new_text</code>，<code>write_file</code> 读取旧内容），
+再用前后缀上下文生成真实 unified patch；超过 2 MiB 或非 UTF-8 时宁可不画。
+图片名带 session 与 message id，不再用块序号。压缩失败在
+<code>AgentUpdate::Error</code> 与回合结束时补发 <code>failed</code>；
+空的后台快照不再发布状态；删除会话按 new/list/resume 记录的工作区定位。</p>
+<p><strong>验证：</strong><code>cargo test -p tact-acp</code> 31 个单元测试
+加 1 个端到端测试通过，新增
+<code>edit_diff_reads_the_file_instead_of_inventing_one</code>、
+<code>write_diff_shows_the_replaced_file_content</code>、
+<code>write_diff_marks_a_new_file_as_added</code> 与图片命名断言；
+<code>crates/tact/src/store/session_store/sqlite.rs</code> 新增
+<code>t3_instruction_wrapper_derives_the_user_request_as_title</code>。
+<code>scripts/check-rust.sh</code> 全量通过（含 book 检查）。</p>
+<p><strong>Pointers：</strong><code>crates/tact-acp/src/lib.rs</code>
+（<code>forward_command</code>、<code>finish_turn</code>、
+<code>replay_history</code>、<code>tool_diff</code>、<code>prompt_text</code>）、
+<code>crates/tact/src/store/session_store</code>
+（<code>t3_user_request</code>、标题推导）、
+<code>crates/tact-acp/README.md</code> 与
+<a href="../ARCHITECTURE.md">ARCHITECTURE.md</a> 的 ACP 段。</p>
+<h2 id="70-2026-11-17--acp-清空的待办面板要移除子代理卡片不喂给-t3">70. 2026-11-17 — ACP：清空的待办面板要移除，子代理会话不喂给 T3</h2>
+<p><strong>现象：</strong>T3 里的待办面板在任务被删光之后仍然停在最后一份清单上，
+把已经取消的工作当成还没做完；每个 <code>spawn_subagent</code> 还会在时间线里
+落下两张 <code>Unsupported ACP update: subagent_update</code> 卡片。</p>
+<p><strong>根因：</strong>两处都是"发了一个客户端处理不了的东西"。<code>plan_update</code>
+是整体替换：任务列表清空时再发一份空清单，客户端只会把它画成"没有任务"的
+空面板或干脆忽略，永远不会知道这份计划结束了——结束需要 <code>plan_removed</code>。
+子代理侧，ACP v2 允许 agent 通告子会话，但 T3 的 ACP 驱动只归一化一组固定的
+<code>sessionUpdate</code>，其余一律转成 <code>Unsupported ACP update</code>
+工具卡；<code>subagent_update</code> 不在那一组里（它有的子会话抽取只对 Claude
+驱动开启），所以标准做法在这里等于两张废卡。</p>
+<p><strong>决策：</strong>计划有第三个状态。<code>plan_message</code> 区分
+"未变"、"移除"、"替换"：清空后发 <code>plan_removed</code>，而从未发布过计划时
+保持安静（没有可移除的东西）。子代理会话按客户端决定：<code>initialize.info</code>
+里 <code>name == "t3-code"</code> 时整条子会话路径关闭——不公告、父工具卡不带
+<code>Session</code> 引用、子会话更新也不发；其他客户端照旧拿到完整协议行为。
+ACP 没有子会话能力位，T3 也不发能承载它的 <code>_meta</code>，实现名是唯一可用
+的信号，而本仓库已有按 T3 分流的先例（<code>t3_user_request</code>、
+<code>t3_safe_config_command_names</code>）。T3 处理了非 Claude 驱动的
+<code>subagent_update</code> 之后，删掉 <code>client_renders_child_sessions</code>
+即可。</p>
+<p><strong>验证：</strong><code>plan_message</code> 的四个分支各有单元测试
+（未变、清空即移除、从未发布保持安静、整体替换）；
+<code>t3_is_not_offered_child_sessions</code> 与
+<code>other_clients_keep_child_sessions</code> 固定住客户端判定，
+包括不把 T3 的探测实例名 <code>t3-code-provider-test</code> 当成真身。
+<code>cargo test -p tact-acp --lib</code> 32 项通过，
+<code>scripts/check-rust.sh</code> 全量通过（含 book 检查）。</p>
+<p><strong>Pointers：</strong><code>crates/tact-acp/src/lib.rs</code>
+（<code>PlanMessage</code>/<code>plan_message</code>、<code>publish_plan</code>、
+<code>ClientSupport</code>、<code>client_renders_child_sessions</code>、
+<code>announce_subagent</code>）、
+<code>crates/tact-acp/Cargo.toml</code>（<code>unstable_plan_operations</code>）、
+<code>crates/tact-acp/README.md</code> 的协议范围与"尚未实现"两节。</p>
+<hr />
+<h2 id="71-2026-11-17--桌面微压缩开关显示-on-却永不运行">71. 2026-11-17 — 桌面微压缩开关显示 on，却永不运行</h2>
+<p><strong>现象：</strong>桌面端设置页把「Micro compaction」画成 <code>on</code>，
+但 <code>micro_compact</code> 一次都没跑过；把开关拨到 on 之后再重启，依旧不跑。</p>
+<p><strong>根因：</strong>同一个默认值在两个 crate 里各写了一遍，而且方向相反。
+显示侧 <code>snapshot.rs</code> 写的是 <code>host.micro_compact.unwrap_or(true)</code>，
+执行侧 <code>config/resolve.rs</code> 是 <code>unwrap_or(false)</code>——这个 pass
+自 <code>5cb59451</code> 起就是 opt-in，所以全新安装时界面显示 on 而引擎跑 off。
+第二层更硬：桌面端只有 <code>args.no_micro_compact = host.micro_compact == Some(false)</code>
+一条通道，<strong>没有能表达「开」的旗标</strong>。TOML 默认 false，于是开关拨到
+<code>Some(true)</code> 之后，子进程拿不到任何参数，照旧按默认关闭启动。</p>
+<p><strong>决策：</strong>补 <code>--micro-compact</code> 正向旗标，与
+<code>--no-micro-compact</code> 用 clap <code>conflicts_with</code> 互斥（手写
+<code>CliArgs</code> 同时置位时「关闭」优先，因为「别做了」比过期的「去做」更该被尊重）。
+默认值收敛为 <code>AgentSettings::DEFAULT_MICRO_COMPACT_ENABLED</code> 一个常量，
+显示侧 import 它而不是再写一份。三态语义落在一个纯函数
+<code>desktop_core::micro_compact_flag(Option&lt;bool&gt;)</code> 里，进程内
+<code>CliArgs</code> 与交给子进程的 argv 共用同一份判断——它们此前是分开写的，
+而只有 argv 那侧是错的。设置页读取的优先级是 host 覆盖 → 已解析配置 → 常量：
+host 是下次启动真正会传下去的旗标，重启前不能让开关视觉上弹回旧值。</p>
+<p><strong>验证：</strong>新测试各自钉住一处，并都做过反向验证——把实现改回旧行为后
+两条都会红。<code>the_micro_compact_setting_reaches_the_child_as_both_polarities</code>
+钉住三态与两种渲染；<code>the_micro_compact_view_falls_back_to_the_resolvers_default</code>
+钉住显示侧优先级与默认值来源；
+<code>micro_compact_resolves_from_the_flag_toml_and_the_named_default</code>
+与 <code>the_negating_micro_compact_flag_wins_over_the_enabling_one</code>
+钉住解析优先级。<code>cargo test -p tact --lib config::</code> 146 项通过，
+<code>cargo test -p tact_desktop_core --lib</code> 194 项通过。</p>
+<p><strong>Pointers：</strong><code>crates/tact/src/config/cli.rs</code>
+（<code>micro_compact</code>/<code>no_micro_compact</code>）、
+<code>crates/tact/src/config/resolve.rs</code>（<code>resolve_non_llm</code>）、
+<code>crates/tact/src/config/types.rs</code>
+（<code>DEFAULT_MICRO_COMPACT_ENABLED</code>）、
+<code>crates/desktop_core/src/config.rs</code>（<code>micro_compact_flag</code>、
+<code>cli_args</code>）、<code>crates/desktop_core/src/snapshot.rs</code>
+（<code>micro_compact_view</code>、<code>settings_from</code>）、
+<code>crates/desktop_core/src/controller.rs</code>（<code>desktop_cli_arguments</code>）。</p>
+<hr />
+<h2 id="72-2026-11-17--acp-压缩卡片停在-compacting-永不落地">72. 2026-11-17 — ACP：压缩卡片停在 Compacting…，永不落地</h2>
+<p><strong>现象：</strong>在 T3 里看到 <code>✳ Compacting context</code>，随后
+<code>✳ Compacting…</code>，然后就一直停在那里；下一轮对话已经开始了，卡片还是转的。
+在别的客户端里同样如此，只要那次压缩是自动触发、被 hook 否决或中途失败。</p>
+<p><strong>根因：</strong>适配器靠<strong>匹配提示文案</strong>推进卡片。它只认
+<code>Compaction complete (…).</code> 这一行，于是三类压缩永远等不到收尾：自动压缩的
+结束行措辞不同、<code>PreCompact</code> 否决压根没有结束行、失败时到达的是通用
+<code>Error</code>（<code>Compaction failed: …</code>），和一次无关的模型报错无从区分。
+更根本的问题是位置错了：只有内核同时看得见「上下文策略的结论」和「提交是否成功」，
+任何前端都只能从提示文字里反推。</p>
+<p><strong>决策：</strong>把压缩生命周期做成内核事件，而不是让每个前端解析文字。
+<code>tact_agent_api::CompactionEvent { kind, state }</code> 里
+<code>state</code> 是封闭枚举 <code>Started</code> / <code>Completed</code> /
+<code>Failed</code> / <code>Cancelled</code>，<code>AgentKernel::compact_state</code>
+在开始时发 <code>Started</code>、结束时发恰好一个终态；<code>TactEventBridge</code>
+把它转成 <code>AgentUpdate::Compaction</code>。摘要走
+<code>ContextReplacement.summary</code> → <code>Completed { summary }</code>，
+因为事件发出时 <code>compaction_committed</code>（facade 记录摘要的地方）还没跑。
+原来的 <code>Info</code> 行全部保留：TUI 与桌面端渲染的是文字，丢掉会把用户
+已经在读的日志行变空。</p>
+<p>ACP 侧把这张卡收敛成一个可单测的状态机 <code>CompactionCard</code>：一次压缩
+只用一个 <code>compaction_id</code>（ACP 按 id 原地 patch，首次更新决定时间线位置），
+<code>Started</code> 时开卡、终态时关掉；<code>cancelled</code> 把原因塞进
+<code>error</code>（ACP 没有单独字段），<code>finish_turn</code> 只作为「生产者被
+撕掉」的兜底。顺带修掉一个自相矛盾：<code>compact_history</code> 现在返回
+<code>CompactionOutcome</code>，命令 driver 只在 <code>Replaced</code> 时打
+<code>Compaction complete.</code>，被否决时说
+<code>Nothing to compact: &lt;原因&gt;</code>——否则同一件事会同时出现一张 cancelled
+卡片和一句「压缩完成」。</p>
+<p><strong>验证：</strong><code>every_compaction_kind_reaches_the_host_as_a_typed_event</code>
+逐个 kind 钉住类型化事件（原 bug 就长在这里）；
+<code>a_completed_compaction_still_writes_the_line_the_tui_renders</code> 与
+<code>terminal_compaction_states_do_not_write_a_completion_line</code> 钉住文案边界；
+<code>a_compaction_keeps_one_id_for_its_whole_lifecycle</code>、
+<code>a_vetoed_compaction_is_reported_as_cancelled_not_failed</code>、
+<code>every_compaction_state_maps_to_an_acp_status</code> 钉住 ACP 映射；
+<code>vetoed_compact_command_does_not_claim_success</code> 走真实命令循环，钉住
+「否决不报成功」；<code>compaction_run_does_not_open_an_activation</code> 防止
+压缩冒充一轮对话。<code>scripts/check-rust.sh</code> 全绿（含
+<code>cargo test --workspace</code> 与 book 检查）。</p>
+<p><strong>Pointers：</strong><code>crates/agent_api/src/context.rs</code>
+（<code>CompactionEvent</code>/<code>CompactionState</code>）、
+<code>crates/agent_core/src/kernel.rs</code>（<code>compact_state</code>：
+<code>Started</code> + 唯一终态）、<code>crates/protocol/src/agent.rs</code>
+（<code>AgentUpdate::Compaction</code>）、
+<code>crates/tact/src/runtime/event_adapter.rs</code>、
+<code>crates/tact/src/runtime/compaction_adapter.rs</code>（
+<code>summary_for_host</code>）、<code>crates/tact-acp/src/lib.rs</code>
+（<code>CompactionCard</code>、<code>handle_compaction</code>）、
+<code>crates/tact_host/src/driver.rs</code>（<code>UserCommand::Compact</code>）、
+<code>docs/compaction.md</code>（§ Lifecycle events）、
+<code>crates/tact-acp/README.md</code>（§ Compaction）。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>

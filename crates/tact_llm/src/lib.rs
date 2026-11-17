@@ -172,11 +172,12 @@ pub(crate) use progress::{
 };
 #[cfg(feature = "legacy-tact")]
 pub use provider::{
-    Client, ProviderInfo, current_provider_kind, get_llm_client, get_provider, init_provider,
-    init_provider_with_credentials, is_account_query_supported, is_deepseek,
-    is_deepseek_balance_supported, is_kimi, is_kimi_balance_supported, is_kimi_coding, is_kimi_k2x,
-    is_kimi_k3, is_kimi_k27, is_kimi_usage_supported, model_uses_effort, read_provider,
-    supports_vision, try_active_credential_provider, try_get_provider, update_provider_info,
+    Client, ProviderInfo, current_provider_kind, default_effort_tiers, get_llm_client,
+    get_provider, init_provider, init_provider_with_credentials, is_account_query_supported,
+    is_deepseek, is_deepseek_balance_supported, is_kimi, is_kimi_balance_supported, is_kimi_coding,
+    is_kimi_k2x, is_kimi_k3, is_kimi_k27, is_kimi_usage_supported, model_uses_effort,
+    read_provider, supports_vision, try_active_credential_provider, try_get_provider,
+    update_provider_info,
 };
 #[cfg(feature = "legacy-tact")]
 pub use provider_model::ProviderModel;

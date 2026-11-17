@@ -1,8 +1,12 @@
-//! Context compaction and transcript persistence.
+//! Context compaction helpers and transcript persistence.
 //!
-//! When the conversation grows too large this module provides:
-//! - [`micro_compact`]: truncates old tool results while keeping the most
-//!   recent `KEEP_RECENT_TOOL_RESULTS` entries intact.
+//! This module is the algorithm library behind compaction: pure functions and
+//! the budgets they read. The pass that actually runs them — hooks, the
+//! summariser request, and the transcript rewrite — lives in
+//! [`crate::runtime::compaction_adapter`]; micro compaction in particular was
+//! moved there and has no re-export here, so do not look for a `micro_compact`
+//! entry point in this file.
+//!
 //! - [`persist_large_output`]: writes oversized tool outputs to disk and
 //!   returns a preview with a file path.
 //! - [`write_transcript`]: serialises the entire conversation as JSONL.
@@ -20,17 +24,21 @@ use tokio::io::AsyncWriteExt;
 
 use crate::{consts::TactPath, goal::is_goal_context_text, hook::is_hook_context_text};
 
-/// How many recent tool results to preserve during micro-compaction;
-/// all earlier tool results with > 120 chars are replaced with a stub.
-const KEEP_RECENT_TOOL_RESULTS: usize = 12;
+/// What one compaction did: replaced the context, or declined to.
+///
+/// Callers need this to tell "compacted" from "nothing to do" — a vetoed or
+/// empty compaction is not a success line. Re-exported here because
+/// [`CompactTrigger`] is the frontend-facing entry point and callers should
+/// not have to know the kernel crate to read its result. [`ContextReplacement`]
+/// comes with it: it is the payload of the variant every caller matches on, so
+/// leaving it behind would make the re-export unusable on its own.
+pub use tact_agent_api::{CompactionOutcome, ContextReplacement, CursorUpdate};
+
 /// Character threshold above which a single tool output is persisted to
 /// disk instead of being kept in the context.
 const PERSIST_THRESHOLD: usize = 30_000;
 /// Number of characters shown in the preview when persisting a large output.
 const PREVIEW_CHARS: usize = 2_000;
-const COMPACTED_TOOL_RESULT: &str =
-    "[Earlier tool result compacted. Re-run the tool (e.g., read_file) for full content.]";
-const _: () = assert!(COMPACTED_TOOL_RESULT.len() < 120);
 const OMITTED_IMAGE: &str = "[Earlier image attachment omitted during compaction.]";
 const MAX_COMPACT_ARTIFACTS: usize = 100;
 
@@ -52,7 +60,7 @@ pub const HANDOFF_CLOSE_TAG: &str = "</context-handoff>";
 /// rebuilding compacted history (roughly 80k ASCII characters).
 pub const KEEP_USER_MESSAGE_TOKENS: usize = 20_000;
 const COMPACT_REBUILD_HEADROOM_PERCENT: usize = 20;
-const AUTO_COMPACT_THRESHOLD_PERCENT: usize = 80;
+pub(crate) const AUTO_COMPACT_THRESHOLD_PERCENT: usize = 80;
 
 /// Fraction of the context window at which the system prompt starts steering
 /// large work at subagents.
@@ -144,41 +152,6 @@ pub struct CompactState {
     pub has_compacted: bool,
     pub last_summary: Option<String>,
     pub recent_files: Vec<String>,
-}
-
-/// Truncates old tool-result blocks in-place, preserving the most recent
-/// [`KEEP_RECENT_TOOL_RESULTS`] entries.  Any older result longer than 120
-/// characters is replaced with a stub message.
-pub fn micro_compact(messages: &mut [Message], enabled: bool) {
-    if !enabled {
-        return;
-    }
-    let tool_result_positions = collect_tool_result_positions(messages);
-    if tool_result_positions.len() <= KEEP_RECENT_TOOL_RESULTS {
-        return;
-    }
-
-    let compact_until = tool_result_positions.len() - KEEP_RECENT_TOOL_RESULTS;
-    for (message_idx, block_idx) in tool_result_positions.into_iter().take(compact_until) {
-        let Some(message) = messages.get_mut(message_idx) else {
-            continue;
-        };
-        let MessageContent::Blocks { content } = &mut message.content else {
-            continue;
-        };
-        let Some(ContentBlock::ToolResult {
-            content: tool_content,
-            ..
-        }) = content.get_mut(block_idx)
-        else {
-            continue;
-        };
-
-        // TODO 120? if the tool is read_file or some special tool, should be kept full or more content
-        if tool_content.chars().count() > 120 {
-            *tool_content = COMPACTED_TOOL_RESULT.to_string();
-        }
-    }
 }
 
 /// Conservative token estimate: ASCII averages four characters per token,
@@ -741,27 +714,12 @@ async fn prune_compact_artifacts(
 }
 
 /// Produces a replacement context (single user message) containing a
-/// summary of what was compacted. Used by [`crate::agent::Agent::compact_history_legacy`].
+/// summary of what was compacted.
+///
+/// The rollback path it was written for no longer exists; the live rebuild is
+/// [`build_compacted_history`], which also keeps recent real user turns.
 pub fn compacted_context(summary: String) -> Vec<Message> {
     vec![summary_message(&summary, None)]
-}
-
-fn collect_tool_result_positions(messages: &[Message]) -> Vec<(usize, usize)> {
-    let mut positions = Vec::with_capacity(messages.len());
-    for (message_idx, message) in messages.iter().enumerate() {
-        if !matches!(message.role, Role::User) {
-            continue;
-        }
-        let MessageContent::Blocks { content } = &message.content else {
-            continue;
-        };
-        for (block_idx, block) in content.iter().enumerate() {
-            if matches!(block, ContentBlock::ToolResult { .. }) {
-                positions.push((message_idx, block_idx));
-            }
-        }
-    }
-    positions
 }
 
 /// Decide whether auto-compact should run before the next LLM call.

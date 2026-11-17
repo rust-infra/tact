@@ -13,7 +13,7 @@
 
 use std::time::{Duration, Instant};
 
-use tact_host::{Frontend, Notices, bootstrap_session};
+use tact_host::{Frontend, Notices, SessionBuild, bootstrap_session};
 use tact_protocol::{AgentUpdate, StepResult, StepStatus, TokenUsageInfo, update_channel};
 
 use crate::case::EvalCase;
@@ -135,10 +135,13 @@ impl Runner for HostRunner {
             &tact_path,
             work_dir.clone(),
             skill_registry,
-            session_id.clone(),
             store,
-            Frontend::Observing(tx),
-            Notices::Stderr,
+            SessionBuild {
+                session_id: session_id.clone(),
+                frontend: Frontend::Observing(tx),
+                notices: Notices::Stderr,
+                extra_mcp_servers: Vec::new(),
+            },
         )
         .await
         {

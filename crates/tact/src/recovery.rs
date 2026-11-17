@@ -10,10 +10,12 @@
 //!   stop further expansion and request only a concise final result.
 //! - [`continuation_message`]: selector that chooses the direct-resume prompt
 //!   on attempt 1 and the convergence prompt on later attempts.
-//! - [`MAX_COMPACT_ATTEMPTS`]: prompt-too-long compaction retries.
 //! - [`MAX_TRANSPORT_ATTEMPTS`]: transient network error retries (higher for
 //!   long-running tasks that may encounter multiple intermittent failures).
 //! - [`MAX_CONTINUATION_ATTEMPTS`]: max-tokens continuation retries.
+//! - [`MAX_COMPACT_ATTEMPTS`]: **not enforced today.** The kernel retries a
+//!   prompt-too-long turn after compaction with no counter of its own; this
+//!   constant is kept for the API it was published with and is not read.
 //! - [`MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS`]: transient retries during the
 //!   compaction summary call itself.
 //! - [`MAX_COMPACT_SUMMARY_ATTEMPTS`]: compaction-summarizer attempts before a
@@ -129,6 +131,10 @@ pub enum FailureKind {
     PromptTooLong,
     /// Retryable transport/rate-limit failure; back off and retry.
     Transient,
+    /// The caller stopped the call. Not a failure to report, and never a
+    /// reason to retry: a cancellation the user asked for must not be retried,
+    /// and it must not be described as a breakage either.
+    Cancelled,
     /// Everything else — surface to the caller.
     Permanent,
 }
@@ -178,11 +184,19 @@ pub fn classify_model_error(error: &tact_agent_api::ModelError) -> FailureKind {
     match error.kind {
         tact_agent_api::ModelErrorKind::ContextOverflow => FailureKind::PromptTooLong,
         tact_agent_api::ModelErrorKind::Transient => FailureKind::Transient,
+        // A cancelled call is neither retryable nor a breakage. It used to be
+        // folded into `Permanent`, so the compaction summarizer reported the
+        // user's own cancel as "context compaction failed", and the ACP card
+        // closed red on Esc.
+        tact_agent_api::ModelErrorKind::Cancelled => FailureKind::Cancelled,
+        tact_agent_api::ModelErrorKind::Permanent | tact_agent_api::ModelErrorKind::Unsupported => {
+            FailureKind::Permanent
+        }
         // `Authentication` is not retryable: the same key produces the same 401
         // no matter how many times it is sent. Everything unknown is treated
         // the same way — retrying something we cannot classify only spends the
         // user's quota.
-        _ => FailureKind::Permanent,
+        tact_agent_api::ModelErrorKind::Authentication | _ => FailureKind::Permanent,
     }
 }
 
@@ -538,6 +552,31 @@ mod tests {
         assert_eq!(classify_error(&overflow), FailureKind::PromptTooLong);
         assert_eq!(classify_error(&transient), FailureKind::Transient);
         assert_eq!(classify_error(&permanent), FailureKind::Permanent);
+    }
+
+    /// A cancelled model call is not a breakage and not a retry.
+    ///
+    /// Folding it into `Permanent` made the compaction summarizer report the
+    /// user's own cancel as "context compaction failed", which closed the ACP
+    /// card red on Esc.
+    #[test]
+    fn a_cancelled_model_call_is_classified_as_cancelled() {
+        let cancelled = tact_agent_api::ModelError::new(
+            tact_agent_api::ModelErrorKind::Cancelled,
+            "model call cancelled",
+        );
+        assert_eq!(
+            classify_model_error(&cancelled),
+            FailureKind::Cancelled,
+            "a cancel must stay distinguishable from a permanent failure"
+        );
+        assert_eq!(
+            classify_error(&anyhow::Error::from(cancelled)),
+            FailureKind::Cancelled,
+            "the downcast path must agree with the direct one"
+        );
+        assert_ne!(FailureKind::Cancelled, FailureKind::Permanent);
+        assert_ne!(FailureKind::Cancelled, FailureKind::Transient);
     }
 
     /// `Agent::stream_message` preserves the typed error, so the downcast path

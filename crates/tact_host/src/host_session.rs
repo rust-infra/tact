@@ -27,7 +27,8 @@ use crate::{
     driver::run_command_loop_with_account,
     extensions::{HostExtensionService, default_plugin_home},
     session_bootstrap::{
-        Frontend, Notices, SessionSelection, UiWiring, bootstrap_session, open_session_selected,
+        Frontend, Notices, SessionBuild, SessionSelection, UiWiring, bootstrap_session,
+        open_session_selected,
     },
     session_lock::{SessionLockGuard, SessionLockRegistry},
 };
@@ -59,6 +60,12 @@ pub struct HostSessionConfig {
     pub lock_registry: Arc<SessionLockRegistry>,
     pub progress_capacity: usize,
     pub account_polling: bool,
+    /// MCP servers the frontend supplies for this session only.
+    ///
+    /// An ACP client passes its own stdio bridge here: those servers exist for
+    /// one session and are not written to any config file. They resolve as if
+    /// declared last, so they win a name collision with workspace config.
+    pub extra_mcp_servers: Vec<(String, tact::mcp::McpProjectConfig)>,
 }
 
 /// Raw streams for a frontend that still pumps the existing channel-shaped
@@ -259,22 +266,27 @@ impl HostSession {
             default_plugin_home(),
         );
         let build_skill_registry = skill_registry.clone();
+        let extra_mcp_servers = config.extra_mcp_servers;
         let build = Box::new(move |tx: UpdateSender, responder: UiResponder| {
             let tact_path = tact_path.clone();
             let work_dir = work_dir.clone();
             let store = store.clone();
             let session_id = build_session_id.clone();
             let skill_registry = build_skill_registry.clone();
+            let extra_mcp_servers = extra_mcp_servers.clone();
             Box::pin(async move {
                 let notices = Notices::Ui(tx.clone());
                 bootstrap_session(
                     &tact_path,
                     work_dir,
                     skill_registry,
-                    session_id,
                     store,
-                    Frontend::Interactive(UiWiring { tx, responder }),
-                    notices,
+                    SessionBuild {
+                        session_id,
+                        frontend: Frontend::Interactive(UiWiring { tx, responder }),
+                        notices,
+                        extra_mcp_servers,
+                    },
                 )
                 .await
                 .map_err(|error| HostFailure::Bootstrap(error.to_string()))
@@ -721,6 +733,7 @@ mod tests {
                 lock_registry: self.registry.clone(),
                 progress_capacity: 16,
                 account_polling: false,
+                extra_mcp_servers: Vec::new(),
             }
         }
     }

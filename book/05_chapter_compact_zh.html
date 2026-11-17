@@ -394,6 +394,7 @@
 <li class="toc-l3"><a href="#compactstate-%E4%B8%8E%E8%BF%91%E6%9C%9F%E6%96%87%E4%BB%B6" title="CompactState 与近期文件"><span class="toc-label">CompactState 与近期文件</span></a></li>
 <li class="toc-l3"><a href="#%E5%8E%8B%E7%BC%A9%E5%89%8D%E5%90%8E%E5%AF%B9%E6%AF%94" title="压缩前后对比"><span class="toc-label">压缩前后对比</span></a></li>
 <li class="toc-l2"><a href="#6-%E6%89%8B%E5%8A%A8%E5%8E%8B%E7%BC%A9compact-%E5%B7%A5%E5%85%B7" title="6. 手动压缩：compact 工具"><span class="toc-label">6. 手动压缩：compact 工具</span></a></li>
+<li class="toc-l3"><a href="#6-1-%E7%94%9F%E5%91%BD%E5%91%A8%E6%9C%9F%E4%BA%8B%E4%BB%B6" title="6.1 生命周期事件"><span class="toc-label">6.1 生命周期事件</span></a></li>
 <li class="toc-l2"><a href="#7-%E5%A4%A7%E8%BE%93%E5%87%BA%E6%BA%A2%E5%87%BApersist_large_output" title="7. 大输出溢出（persist_large_output）"><span class="toc-label">7. 大输出溢出（persist_large_output）</span></a></li>
 <li class="toc-l3"><a href="#%E4%B8%BA%E4%BB%80%E4%B9%88%E9%9C%80%E8%A6%81-persisted-output-%E6%A0%87%E7%AD%BE" title="为什么需要 &lt;persisted-output&gt; 标签"><span class="toc-label">为什么需要 &lt;persisted-output&gt; 标签</span></a></li>
 <li class="toc-l3"><a href="#stub-vs-%E4%BF%A1%E5%B0%81" title="Stub vs 信封"><span class="toc-label">Stub vs 信封</span></a></li>
@@ -572,7 +573,7 @@ recovery）先跑 <code>micro_compact</code>（默认关闭时立即返回，见
 compact 调用不会改写历史。</li>
 <li><strong>Prompt-too-long 恢复</strong> 执行
 <code>compact_history</code> 后 <code>continue</code> 循环（同一任务、新
-context）。上限：<code>MAX_COMPACT_ATTEMPTS</code>（3，<code>crates/tact/src/recovery.rs</code>）。细节见
+context）。<strong>没有固定的压缩重试上限</strong>：压缩被跳过（<code>PreCompact</code> 钩子否决、或本就没有可压缩的内容）或以错误结束时，本轮以模型错误失败；成功替换后则继续跑。尝试次数记录在 <code>RunOutcome.recovery.compact_attempts</code>，<code>crates/tact/src/recovery.rs</code> 里的 <code>MAX_COMPACT_ATTEMPTS</code> 目前<strong>未被读取</strong>。细节见
 <a href="./06_chapter_recovery_zh.html">错误恢复</a>。</li>
 <li><strong>手动 <code>compact</code> 工具</strong>
 不能在工具处理函数<em>内部</em>改写 context（API 有效性）。Dispatch
@@ -581,20 +582,27 @@ context）。上限：<code>MAX_COMPACT_ATTEMPTS</code>（3，<code>crates/tact/
 </ol>
 <hr />
 <h2 id="3-微压缩micro-compaction">3. 微压缩（Micro-Compaction）</h2>
-<p><code>micro_compact(messages, enabled)</code>
-在每次模型请求前运行，但 <strong><code>enabled</code> 默认是
+<p><code>runtime/compaction_adapter.rs</code> 的
+<code>compact_micro</code>（经 <code>ContextPolicy::compact(CompactionRequest::Micro)</code>
+调用）在每次模型请求前运行，但
+<strong><code>micro_compact_enabled</code> 默认是
 <code>false</code></strong>：自 2026-07-24（<code>5cb59451</code>）起
 micro-compact
 改为<strong>按需开启</strong>——<code>[agent].micro_compact_enabled = true</code>
-才跑（见 §9）。<code>--no-micro-compact</code>
-是绝对的「强制关闭」，只能把 TOML 里显式写下的 <code>true</code> 覆盖回
-<code>false</code>，无法开启——在默认配置下它是多余的。只触碰包含
+或 <code>--micro-compact</code> 才跑（见 §9）。<code>--no-micro-compact</code>
+是绝对的「强制关闭」，能把 TOML 里显式写下的 <code>true</code> 覆盖回
+<code>false</code>；两个旗标互斥。只触碰包含
 <code>ContentBlock::ToolResult</code> 的 <strong>user
 角色</strong>消息。完整自动压缩也会在此时执行（<code>incoming = 0</code>）；入口路径会在
 push 前单独预留 incoming user turn。</p>
-<pre class="rust"><code>const KEEP_RECENT_TOOL_RESULTS: usize = 12;
-const COMPACTED_TOOL_RESULT: &amp;str =
-    &quot;[Earlier tool result compacted. Re-run the tool (e.g., read_file) for full content.]&quot;;</code></pre>
+<pre class="rust"><code>pub(crate) const KEEP_RECENT_TOOL_RESULTS: usize = 12;
+pub(crate) const MICRO_COMPACT_STUB_CHARS: usize = 120;
+pub(crate) const COMPACTED_TOOL_RESULT: &amp;str =
+    &quot;[Earlier tool result compacted. Re-run the tool (e.g., read_file) for full content.]&quot;;
+const _: () = assert!(COMPACTED_TOOL_RESULT.len() &lt; MICRO_COMPACT_STUB_CHARS);</code></pre>
+<p>前两个常量由执行侧（<code>runtime/compaction_adapter.rs</code>）与
+<code>micro_compact_due</code> 判断侧（<code>runtime/context_adapter.rs</code>）共用同一份定义，
+避免「判定该压」和「实际压什么」的阈值漂移。</p>
 <h3 id="算法">算法</h3>
 <pre class="mermaid">flowchart TD
     A[扫描 messages] --&gt; B[按时间顺序收集 ToolResult 位置]
@@ -1348,6 +1356,62 @@ context 重写 <code>messages</code>
 才表示没有请求手动压缩或调用失败。正常顺序是：先追加并持久化 tool
 result，再调用 <code>compact_history(Some(focus))</code> 真正改写
 context。</p>
+<h3 id="6-1-生命周期事件">6.1 生命周期事件</h3>
+<p>内核是唯一能看到压缩全部状态迁移的组件，因此由它（而不是每个前端）负责上报。
+<code>crates/tact/src/runtime/event_adapter.rs</code> 把
+<code>AgentEvent::Compaction(CompactionEvent)</code> 转成
+<code>AgentUpdate::Compaction</code>，各宿主据此渲染：</p>
+<table>
+<thead>
+<tr>
+<th>状态</th>
+<th>何时发出</th>
+<th>携带</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Started</code></td>
+<td><code>compact_state</code> 开始时（紧跟在 <code>[auto compact]</code> 这类提示之后）</td>
+<td><code>kind</code></td>
+</tr>
+<tr>
+<td><code>Completed</code></td>
+<td>替换已持久化并提交之后</td>
+<td><code>kind</code>、<code>summary</code></td>
+</tr>
+<tr>
+<td><code>Failed</code></td>
+<td>上下文策略或提交失败</td>
+<td><code>kind</code>、<code>error</code></td>
+</tr>
+<tr>
+<td><code>Cancelled</code></td>
+<td>被 <code>PreCompact</code> hook 否决、没有可压缩内容、或激活被取消</td>
+<td><code>kind</code>、<code>reason</code></td>
+</tr>
+</tbody>
+</table>
+<p>两个给后续维护者的要点：</p>
+<ul>
+<li><strong>摘要挂在替换体上。</strong>
+<code>ContextReplacement.summary</code> 由压缩器填写（原生 Responses
+压缩把摘要留在服务端，所以是 <code>None</code>），再复制进
+<code>Completed</code>。不能改在发出事件时去读
+<code>compact_state.last_summary</code>：事件在
+<code>compaction_committed</code> 之前就发出了，而摘要正是在后者里写入的。</li>
+<li><strong>文字提示保留。</strong>
+<code>[auto compact]</code>、<code>[compact summary 1/6]</code>、<code>Compaction
+complete (Auto).</code> 是 TUI 与桌面端实际渲染的内容。类型化事件是同一事实的第二个视图，
+不是替代品。只有 <code>Completed</code> 才写完成行：<code>compact_history</code>
+现在返回 <code>CompactionOutcome</code>，<code>/compact</code> 被
+<code>PreCompact</code> 否决或本来没有可压缩内容时输出
+<code>Nothing to compact: &lt;原因&gt;</code>，不会再和旁边那张 cancelled
+卡片自相矛盾。</li>
+</ul>
+<p>需要进度卡片的客户端读类型化事件。目前只有 ACP 一个：<code>crates/tact-acp</code>
+把四种状态映射到 <code>compaction_update</code>，并在整个压缩过程中复用同一个
+<code>compaction_id</code>（ACP 按 id 原地 patch，首次更新确定时间线位置）。</p>
 <hr />
 <h2 id="7-大输出溢出persist_large_output">7.
 大输出溢出（<code>persist_large_output</code>）</h2>
@@ -1504,10 +1568,14 @@ provider
 provider 仍保持经典 <code>min(窗口 × 20%, 2,000)</code> 文本上限</td>
 </tr>
 <tr>
-<td><code>agent.micro_compact_enabled</code>（<code>--no-micro-compact</code>）</td>
+<td><code>agent.micro_compact_enabled</code>（<code>--micro-compact</code> /
+<code>--no-micro-compact</code>）</td>
 <td><strong><code>false</code></strong></td>
-<td>每轮 stub 的开关。默认关闭（opt-in）：TOML 里写 <code>true</code>
-才启用；<code>--no-micro-compact</code> 只能强制关闭，无法开启</td>
+<td>每轮 stub 的开关。默认关闭（opt-in）：TOML 里写 <code>true</code>，或传
+<code>--micro-compact</code>；<code>--no-micro-compact</code> 强制关闭，
+两个旗标互斥且都压过 TOML。默认值与「界面显示什么」共用
+<code>AgentSettings::DEFAULT_MICRO_COMPACT_ENABLED</code> 一个常量，
+避免显示侧再写一份字面量</td>
 </tr>
 </tbody>
 </table>
@@ -1526,7 +1594,7 @@ provider 仍保持经典 <code>min(窗口 × 20%, 2,000)</code> 文本上限</td
 <tbody>
 <tr>
 <td><code>crates/tact/src/compact/mod.rs</code></td>
-<td><code>micro_compact</code>、<code>should_auto_compact</code>、<code>estimate_context_tokens</code>、<code>collect_user_messages</code>、<code>build_compacted_history</code>、<code>write_transcript</code>、<code>persist_large_output</code>、<code>compacted_context</code>、<code>CompactState</code></td>
+<td><code>should_auto_compact</code>、<code>AUTO_COMPACT_THRESHOLD_PERCENT</code>、<code>estimate_context_tokens</code>、<code>collect_user_messages</code>、<code>build_compacted_history</code>、<code>write_transcript</code>、<code>persist_large_output</code>、<code>compacted_context</code>、<code>CompactState</code>（纯算法与预算；执行压缩的 pass 在 <code>runtime/compaction_adapter.rs</code>）</td>
 </tr>
 <tr>
 <td><code>crates/tact/src/agent/mod.rs</code></td>
@@ -1551,6 +1619,11 @@ directive；近期文件追踪</td>
 <tr>
 <td><code>crates/tact/src/consts.rs</code></td>
 <td><code>transcript_dir()</code>、<code>tool_results_dir()</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/runtime/event_adapter.rs</code></td>
+<td><code>AgentEvent::Compaction</code> →
+<code>AgentUpdate::Compaction</code>；四条提示文字仍照发</td>
 </tr>
 <tr>
 <td><code>docs/compaction.md</code></td>

@@ -731,6 +731,65 @@ async fn command_compact_native_responses_failure_keeps_context() {
     server.verify().await;
 }
 
+/// A `/compact` the `PreCompact` hook vetoes.
+///
+/// The kernel reports the veto as `Cancelled`; the command loop must not then
+/// print "Compaction complete." for it. `/compact` is the one path where a
+/// person reads the outcome directly, so the two must agree.
+#[tokio::test]
+async fn vetoed_compact_command_does_not_claim_success() {
+    use tact::{compact::CompactTrigger, hook::HookControl};
+    use tact_protocol::CompactionState;
+    use tact_ui::test_support::{build_test_agent_with_mode, install_test_config};
+
+    install_test_config();
+    let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (mut agent, work_dir) = build_test_agent_with_mode(
+        // One canned turn so that a veto that fails to fire produces a clear
+        // assertion about the untouched context rather than a mock panic.
+        MockClient::new(vec![(
+            vec![text_block("should never be summarized")],
+            Some(StopReason::EndTurn),
+        )]),
+        Some(agent_tx),
+        PermissionMode::Auto,
+    );
+    let original = vec![
+        Message::new_text(Role::User, "first turn"),
+        Message::new_text(Role::Assistant, "second turn"),
+    ];
+    agent.replace_context_for_test(original.clone());
+    let agent = agent.with_pre_compact(|_, trigger| {
+        assert_eq!(trigger, CompactTrigger::Command);
+        Box::pin(async move { Ok(HookControl::Block("no compacting today".into())) })
+    });
+
+    let (agent, updates) = drive_compact_command(agent, work_dir, agent_rx).await;
+
+    let infos = info_messages(&updates);
+    assert!(
+        infos.iter().any(|msg| msg.contains("Nothing to compact")),
+        "a vetoed compaction must say why it did nothing, got: {updates:?}"
+    );
+    assert!(
+        !infos.iter().any(|msg| msg == "Compaction complete."),
+        "a vetoed compaction must not claim success, got: {updates:?}"
+    );
+    assert!(
+        updates.iter().any(|update| matches!(
+            update,
+            AgentUpdate::Compaction(event)
+                if matches!(event.state, CompactionState::Cancelled { .. })
+        )),
+        "the host card needs the typed cancelled state, got: {updates:?}"
+    );
+    assert_eq!(
+        messages_json(agent.context()),
+        messages_json(&original),
+        "a vetoed compaction must leave the context untouched"
+    );
+}
+
 #[tokio::test]
 async fn restart_round_trip_preserves_compaction_and_unknown_items() {
     let server = MockServer::start().await;

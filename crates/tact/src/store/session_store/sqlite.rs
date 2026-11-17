@@ -268,7 +268,7 @@ impl SqliteSessionStore {
                 if !message.origin.is_user_turn() {
                     continue;
                 }
-                title = derive_session_title(&agent_message_text(&message));
+                title = derive_session_title(&message.text_content());
                 if title.is_some() {
                     break;
                 }
@@ -474,19 +474,8 @@ fn tool_result_statuses(message: &AgentMessage) -> Vec<tact_agent_api::ToolResul
         .collect()
 }
 
-fn agent_message_text(message: &AgentMessage) -> String {
-    message
-        .content
-        .iter()
-        .filter_map(|block| match block {
-            AgentContentBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 fn derive_session_title(text: &str) -> Option<String> {
+    let text = super::t3_user_request(text).unwrap_or(text);
     let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if normalized.is_empty() {
         return None;
@@ -771,7 +760,7 @@ impl super::SessionStore for SqliteSessionStore {
         let derived_title = message
             .origin
             .is_user_turn()
-            .then(|| agent_message_text(message))
+            .then(|| message.text_content())
             .and_then(|text| derive_session_title(&text));
         let now = Self::now();
         let mut tx = self
@@ -2074,6 +2063,28 @@ mod tests {
             .await
             .unwrap();
         assert!(store.list_sessions(None).await.unwrap()[0].title.is_none());
+    }
+
+    #[tokio::test]
+    async fn t3_instruction_wrapper_derives_the_user_request_as_title() {
+        let (_tmp, store) = new_store_with_session("session").await;
+        let prompt = "<t3_code_instructions>\n## T3 Code interaction mode: Default\n\
+                      Make reasonable assumptions.\n</t3_code_instructions>\n\n\
+                      <user_request>\nFix the parser\n</user_request>\n\n\
+                      <runtime_info>You are running in T3 Code.</runtime_info>";
+        store
+            .append_agent_message(
+                "session",
+                &AgentMessage::text(AgentRole::User, MessageOrigin::User, prompt),
+                1,
+            )
+            .await
+            .unwrap();
+        let title = store.list_sessions(None).await.unwrap()[0]
+            .title
+            .clone()
+            .unwrap();
+        assert_eq!(title, "Fix the parser");
     }
 
     #[tokio::test]

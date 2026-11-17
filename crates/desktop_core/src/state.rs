@@ -410,6 +410,7 @@ impl DesktopState {
             ("Cancelling...", CatalogLocale::Zh) => Some("正在取消…".to_string()),
             ("[compacting]", CatalogLocale::Zh) => Some("正在压缩…".to_string()),
             ("Compaction complete.", CatalogLocale::Zh) => Some("压缩完成。".to_string()),
+            ("Compaction cancelled.", CatalogLocale::Zh) => Some("压缩已取消。".to_string()),
             ("Cancelled by user", CatalogLocale::Zh) => Some("用户已取消".to_string()),
             ("(no goals)", CatalogLocale::Zh) => Some("暂无 Goal".to_string()),
             (message, CatalogLocale::Zh) if message.starts_with("Compaction complete (") => {
@@ -429,6 +430,12 @@ impl DesktopState {
                         .trim_start_matches("[max turns] stopped after ")
                         .replace(" turn(s)", " 轮后停止，达到最大轮次"),
                 )
+            }
+            (message, CatalogLocale::Zh) if message.starts_with("Nothing to compact: ") => {
+                Some(format!(
+                    "无可压缩内容：{}",
+                    message.trim_start_matches("Nothing to compact: ")
+                ))
             }
             (message, CatalogLocale::Zh) if message.starts_with("Background check failed: ") => {
                 Some(format!(

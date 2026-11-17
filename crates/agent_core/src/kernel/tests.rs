@@ -160,6 +160,7 @@ async fn replacement_case(
     context.push_compaction(CompactionOutcome::Replaced(ContextReplacement {
         transcript,
         cursor,
+        summary: None,
     }));
     let kernel = AgentKernel::new(KernelDeps {
         model,

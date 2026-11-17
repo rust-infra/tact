@@ -33,6 +33,9 @@ struct TrackedTool {
 /// Forwards kernel events exactly once to the existing `AgentUpdate` host.
 pub(crate) struct TactEventBridge {
     events: UpdateSink,
+    /// `/stats` tool accounting. Absent in tests and in any composition that
+    /// does not own a stats handle; the bridge still forwards the events.
+    stats: Option<std::sync::Arc<std::sync::RwLock<crate::stats::SessionStats>>>,
     state: Mutex<BridgeState>,
 }
 
@@ -47,6 +50,7 @@ impl TactEventBridge {
     pub(crate) fn new(events: UpdateSink) -> Self {
         Self {
             events,
+            stats: None,
             state: Mutex::new(BridgeState {
                 next_step: 0,
                 tools: HashMap::new(),
@@ -54,6 +58,48 @@ impl TactEventBridge {
                 activity_terminal: HashSet::new(),
             }),
         }
+    }
+
+    /// Count tool calls into the session's `/stats`.
+    ///
+    /// The bridge is the one place that sees every tool event, so a call is
+    /// counted here rather than in the tool port: a queued call that the gate
+    /// refuses never reaches the port but does finish, and `/stats` has always
+    /// counted those.
+    pub(crate) fn with_stats(
+        mut self,
+        stats: std::sync::Arc<std::sync::RwLock<crate::stats::SessionStats>>,
+    ) -> Self {
+        self.stats = Some(stats);
+        self
+    }
+
+    fn record_tool(&self, name: &str, status: ToolExecutionStatus, duration: std::time::Duration) {
+        let Some(stats) = &self.stats else {
+            return;
+        };
+        let mut stats = stats
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let key = name.to_string();
+        *stats.tool_counts.entry(key.clone()).or_insert(0) += 1;
+        match status {
+            ToolExecutionStatus::Succeeded => {
+                *stats.tool_success_counts.entry(key.clone()).or_insert(0) += 1;
+            }
+            ToolExecutionStatus::Failed => {
+                *stats.tool_failure_counts.entry(key.clone()).or_insert(0) += 1;
+            }
+            // A cancelled call still happened; only success/failure is
+            // tallied, matching the pre-kernel counters.
+            ToolExecutionStatus::Cancelled => {}
+        }
+        *stats
+            .tool_total_durations_ms
+            .entry(key.clone())
+            .or_insert(0) += duration.as_millis() as u64;
+        *stats.tool_timing_counts.entry(key).or_insert(0) += 1;
+        stats.tool_durations_ms.push(duration.as_millis() as u64);
     }
 
     fn track_tool(
@@ -334,6 +380,9 @@ impl TactEventBridge {
                         input: serde_json::Value::Null,
                     }
                 });
+                // Counted here rather than at `ToolQueued`: a call the gate
+                // refuses still finishes (as failed) and was counted before.
+                self.record_tool(&tracked.tool_name, result.status, duration);
                 match result.status {
                     ToolExecutionStatus::Succeeded => {
                         let output = result_text(&result);
@@ -407,9 +456,33 @@ impl TactEventBridge {
                         .send(AgentUpdate::TokenUsage(host_neutral_token_usage(&usage)));
                 }
             }
-            AgentEvent::ContextCompacted { kind } => {
+            AgentEvent::Compaction(event) => {
+                // The typed lifecycle goes out first, then the human line for
+                // the one terminal state that has always had one. Both exist
+                // on purpose: the TUI and the desktop render the text, and a
+                // host that draws a compaction card (ACP) needs the lifecycle.
+                // Text alone was the bug — several producers log lines that do
+                // not match, and a failed `/compact` arrives as an `Error`
+                // with no way to tell it from an unrelated model failure.
+                let completed_kind = match &event.state {
+                    tact_agent_api::CompactionState::Completed { .. } => Some(event.kind),
+                    _ => None,
+                };
+                self.events.send(AgentUpdate::Compaction(event));
+                if let Some(kind) = completed_kind {
+                    self.events.send(AgentUpdate::Info(format!(
+                        "Compaction complete ({kind:?})."
+                    )));
+                }
+            }
+            AgentEvent::CompactionFinishedWithError { kind, error } => {
+                // The card already closed `Completed` above: the replacement is
+                // durable. This warns instead, because the failed step (a
+                // PostCompact hook, a policy's own bookkeeping) still left work
+                // undone and the user should know without being told the
+                // compaction failed.
                 self.events.send(AgentUpdate::Info(format!(
-                    "Compaction complete ({kind:?})."
+                    "[compact post-commit step failed] {kind:?}: {error}"
                 )));
             }
             AgentEvent::Notice { notice } => self.emit_notice(notice),
@@ -699,15 +772,106 @@ mod tests {
     }
 
     #[test]
+    fn every_compaction_kind_reaches_the_host_as_a_typed_event() {
+        use tact_agent_api::{CompactionKind, CompactionState};
+
+        // The original bug: the adapter matched notice text, and only some
+        // kinds produce a line it recognized. Every kind must reach the host
+        // as data, independent of that line's wording.
+        let kinds = [
+            CompactionKind::Auto,
+            CompactionKind::Manual,
+            CompactionKind::Recovery,
+            CompactionKind::Command,
+            CompactionKind::Micro,
+        ];
+        for kind in kinds {
+            let (bridge, mut rx) = bridge();
+            bridge.emit(AgentEvent::Compaction(tact_agent_api::CompactionEvent {
+                kind,
+                state: CompactionState::Started,
+            }));
+            let updates = drain(&mut rx);
+            assert!(
+                matches!(
+                    updates.as_slice(),
+                    [AgentUpdate::Compaction(event)]
+                        if event.kind == kind && event.state == CompactionState::Started
+                ),
+                "{kind:?} did not reach the host as a started event: {updates:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_completed_compaction_still_writes_the_line_the_tui_renders() {
+        use tact_agent_api::{CompactionKind, CompactionState};
+
+        // Two views of one fact, on purpose: the TUI and the desktop render
+        // the text, and ACP needs the lifecycle. Dropping the text would blank
+        // a log row users already see.
+        let (bridge, mut rx) = bridge();
+        bridge.emit(AgentEvent::Compaction(tact_agent_api::CompactionEvent {
+            kind: CompactionKind::Command,
+            state: CompactionState::Completed {
+                summary: Some("condensed".into()),
+            },
+        }));
+        let updates = drain(&mut rx);
+        assert!(matches!(
+            &updates[0],
+            AgentUpdate::Compaction(event)
+                if event.state == CompactionState::Completed {
+                    summary: Some("condensed".into())
+                }
+        ));
+        assert!(matches!(
+            &updates[1],
+            AgentUpdate::Info(text) if text == "Compaction complete (Command)."
+        ));
+    }
+
+    #[test]
+    fn terminal_compaction_states_do_not_write_a_completion_line() {
+        use tact_agent_api::{CompactionKind, CompactionState};
+
+        // "[auto compact]" already names a start, and a cancelled compaction
+        // must not read as a finished one.
+        for state in [
+            CompactionState::Started,
+            CompactionState::Failed {
+                error: "boom".into(),
+            },
+            CompactionState::Cancelled {
+                reason: "hook vetoed".into(),
+            },
+        ] {
+            let (bridge, mut rx) = bridge();
+            bridge.emit(AgentEvent::Compaction(tact_agent_api::CompactionEvent {
+                kind: CompactionKind::Auto,
+                state,
+            }));
+            let updates = drain(&mut rx);
+            assert!(
+                !updates
+                    .iter()
+                    .any(|update| matches!(update, AgentUpdate::Info(_))),
+                "a non-completed compaction wrote a completion line: {updates:?}"
+            );
+        }
+    }
+
+    #[test]
     fn compaction_run_does_not_open_an_activation() {
         let (bridge, mut rx) = bridge();
         bridge.emit(AgentEvent::RunStarted {
             run_id: tact_agent_api::RunId::new("compact-1"),
             session: tact_agent_api::SessionRef::new("session-1"),
         });
-        bridge.emit(AgentEvent::ContextCompacted {
+        bridge.emit(AgentEvent::Compaction(tact_agent_api::CompactionEvent {
             kind: tact_agent_api::CompactionKind::Command,
-        });
+            state: tact_agent_api::CompactionState::Completed { summary: None },
+        }));
         bridge.emit(AgentEvent::RunFinished {
             outcome: tact_agent_api::RunOutcome {
                 stop: tact_agent_api::RunStop::Completed,
@@ -957,6 +1121,57 @@ mod tests {
                 if result.status == StepStatus::Cancelled
                     && result.message == "Cancelled by user"
         ));
+    }
+
+    /// `/stats` tool accounting: the bridge is the only place that sees every
+    /// finished call, so it counts success/failure and wall time there.
+    #[test]
+    fn a_finished_call_is_counted_in_the_session_stats() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let stats = Arc::new(std::sync::RwLock::new(crate::stats::SessionStats::default()));
+        let bridge = TactEventBridge::new(UpdateSink::for_ui(tx)).with_stats(stats.clone());
+
+        bridge.emit(AgentEvent::ToolStarted {
+            call: ToolCall {
+                id: "call-ok".into(),
+                name: "bash".into(),
+                input: serde_json::json!({ "command": "true" }),
+            },
+            descriptor: None,
+        });
+        bridge.emit(AgentEvent::ToolFinished {
+            run_id: tact_agent_api::RunId::new("run-1"),
+            call_id: "call-ok".into(),
+            result: ToolExecutionResult::success(ToolOutcome::text("done")),
+            permission_label: None,
+            duration: Duration::from_millis(40),
+        });
+        bridge.emit(AgentEvent::ToolStarted {
+            call: ToolCall {
+                id: "call-bad".into(),
+                name: "bash".into(),
+                input: serde_json::json!({ "command": "false" }),
+            },
+            descriptor: None,
+        });
+        bridge.emit(AgentEvent::ToolFinished {
+            run_id: tact_agent_api::RunId::new("run-1"),
+            call_id: "call-bad".into(),
+            result: ToolExecutionResult::failure(ToolExecutionError {
+                kind: ToolExecutionErrorKind::Tool,
+                message: "boom".into(),
+            }),
+            permission_label: None,
+            duration: Duration::from_millis(10),
+        });
+
+        let stats = stats.read().expect("stats lock");
+        assert_eq!(stats.tool_counts.get("bash").copied(), Some(2));
+        assert_eq!(stats.tool_success_counts.get("bash").copied(), Some(1));
+        assert_eq!(stats.tool_failure_counts.get("bash").copied(), Some(1));
+        assert_eq!(stats.tool_total_durations_ms.get("bash").copied(), Some(50));
+        assert_eq!(stats.tool_timing_counts.get("bash").copied(), Some(2));
+        assert_eq!(stats.tool_durations_ms, vec![40, 10]);
     }
 
     /// A dispatched call gets its plan step and a queued card; the wave-start

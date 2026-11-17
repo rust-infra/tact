@@ -16,8 +16,8 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use futures_util::FutureExt;
 use tact_agent_api::{
-    AgentState, MessageOrigin, ModelCallOptions, ModelCapabilities, ReasoningEffort, RunId,
-    RunInput, RunStop, SessionRef,
+    AgentState, CompactionOutcome, MessageOrigin, ModelCallOptions, ModelCapabilities,
+    ReasoningEffort, RunId, RunInput, RunStop, SessionRef,
 };
 use tact_agent_core::KernelError;
 use tact_llm::{
@@ -1525,7 +1525,7 @@ impl Agent {
     async fn compact_with_kernel(
         &mut self,
         request: tact_agent_api::CompactionRequest,
-    ) -> Result<()> {
+    ) -> Result<CompactionOutcome> {
         let native_compaction = self.native_compaction_available();
         self.ensure_session().await?;
         let (composition, session_id, receipts) = self.kernel_composition();
@@ -1558,7 +1558,7 @@ impl Agent {
         drop(guard);
 
         match unwound {
-            Ok(result) => result.map(|_| ()).map_err(|error| match error {
+            Ok(result) => result.map_err(|error| match error {
                 KernelError::Usage(message) if native_compaction => {
                     anyhow::anyhow!("failed to persist Responses compact usage: {message}")
                 }
@@ -1963,7 +1963,7 @@ impl Agent {
     // TODO(compact): summarization input is a crude tail-truncation to 80k
     // chars of raw JSON; consider a smarter selection (e.g. drop tool-result
     // bodies first, keep user/assistant text).
-    pub async fn compact_history(&mut self, focus: Option<&str>) -> Result<()> {
+    pub async fn compact_history(&mut self, focus: Option<&str>) -> Result<CompactionOutcome> {
         self.compact_history_with_trigger(CompactTrigger::Auto, focus)
             .await
     }
@@ -1971,11 +1971,15 @@ impl Agent {
     /// Compacts with an explicit [`CompactTrigger`] (used by the recovery /
     /// manual-compact / slash-command paths so plugin `PreCompact` /
     /// `PostCompact` matchers can distinguish them).
+    ///
+    /// Returns what actually happened rather than `()`: a `PreCompact` veto or
+    /// a context with nothing to compact yields `Skipped`, and a caller that
+    /// prints "compacted" for it would be lying to the user.
     pub async fn compact_history_with_trigger(
         &mut self,
         trigger: CompactTrigger,
         focus: Option<&str>,
-    ) -> Result<()> {
+    ) -> Result<CompactionOutcome> {
         let focus = focus.map(str::to_string);
         let request = match trigger {
             CompactTrigger::Auto => tact_agent_api::CompactionRequest::Auto { focus },

@@ -1392,6 +1392,35 @@ fn capitalize_first(text: &str) -> String {
     }
 }
 
+/// The one line `/compact` reports for what actually happened.
+///
+/// The kernel already emitted the typed lifecycle, including the terminal
+/// state; this line is the human read-out the TUI and the desktop render, and
+/// it must not contradict the card. Two cases are easy to get wrong:
+///
+/// - a `PreCompact` veto or an empty context returns `Skipped`, so "complete"
+///   would sit beside a card the same compaction just closed as cancelled;
+/// - a cancel returns `Err`, but the user stopping the compaction is not the
+///   compaction breaking. The token is the fact, read here rather than parsed
+///   out of the error text.
+fn compact_line(
+    result: anyhow::Result<tact::compact::CompactionOutcome>,
+    cancelled: bool,
+) -> AgentUpdate {
+    match result {
+        Ok(tact::compact::CompactionOutcome::Replaced(_)) => {
+            AgentUpdate::Info("Compaction complete.".into())
+        }
+        Ok(tact::compact::CompactionOutcome::Skipped { reason }) => {
+            AgentUpdate::Info(format!("Nothing to compact: {reason}"))
+        }
+        Err(_) if cancelled => AgentUpdate::Info("Compaction cancelled.".into()),
+        Err(error) => {
+            AgentUpdate::Error(AgentErrorKind::Other(format!("Compaction failed: {error}")))
+        }
+    }
+}
+
 fn is_active_run_error(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         matches!(
@@ -2177,16 +2206,15 @@ async fn handle_user_command_with_account(
         }
         UserCommand::Compact => {
             agent.emit_update(AgentUpdate::Info("[compacting]".into()));
-            if let Err(error) = agent
+            // The kernel already reported the typed lifecycle (including the
+            // in-progress card) and its own outcome. Only a real replacement
+            // gets the success line: a `PreCompact` veto or an empty context
+            // returns `Skipped`, and saying "complete" there would contradict
+            // the cancelled card the same compaction just closed.
+            let result = agent
                 .compact_history_with_trigger(tact::compact::CompactTrigger::Command, None)
-                .await
-            {
-                agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(format!(
-                    "Compaction failed: {error}"
-                ))));
-            } else {
-                agent.emit_update(AgentUpdate::Info("Compaction complete.".into()));
-            }
+                .await;
+            agent.emit_update(compact_line(result, agent.is_cancelled()));
         }
         UserCommand::QueryBalance => {
             let Some(account_tx) = account_tx else {
@@ -2436,7 +2464,7 @@ mod tests {
         AgentErrorKind, AgentUpdate, SurfaceQuery, SurfaceSnapshot, UpdateSink, UserCommand,
     };
 
-    use super::handle_user_command;
+    use super::{compact_line, handle_user_command};
     use crate::test_support::{build_test_agent, install_test_config};
 
     fn text_block(content: &str) -> ContentBlock {
@@ -2533,6 +2561,84 @@ mod tests {
             error.contains("truncated") && error.contains("output token limit"),
             "the error must name the cause, got {error:?}"
         );
+    }
+
+    /// A `/compact` the user cancelled must not be reported as a failure.
+    ///
+    /// The kernel closes the compaction card as `Cancelled`; the driver used to
+    /// take the `Err` arm, stringify it, and print "Compaction failed: run
+    /// cancelled" beside that card. The token is the fact, not the message
+    /// text: a cancel carries `KernelError::Cancelled` today, but matching on
+    /// the token means a future wording change cannot bring the lie back.
+    #[test]
+    fn a_cancelled_compact_reports_cancellation_not_failure() {
+        let cancelled = Err(anyhow::anyhow!("run cancelled"));
+        assert!(matches!(
+            compact_line(cancelled, true),
+            AgentUpdate::Info(text) if text == "Compaction cancelled."
+        ));
+    }
+
+    /// The failure line still exists for a real failure: the check above must
+    /// not have been implemented by swallowing every error.
+    #[test]
+    fn a_broken_compact_still_reports_failure() {
+        let failed = Err(anyhow::anyhow!("summarizer exploded"));
+        assert!(matches!(
+            compact_line(failed, false),
+            AgentUpdate::Error(AgentErrorKind::Other(message))
+                if message.contains("Compaction failed") && message.contains("summarizer exploded")
+        ));
+    }
+
+    /// A post-commit failure does not print "Compaction failed".
+    ///
+    /// `compact_line` only sees `Err` when nothing was replaced, because the
+    /// kernel keeps those two apart. This pins the reason that split exists: the
+    /// driver's error line is a claim about the transcript, and the transcript
+    /// *was* compacted.
+    #[test]
+    fn a_committed_compaction_never_prints_a_failure_line() {
+        use tact::compact::{CompactionOutcome, ContextReplacement};
+
+        // The replacement is what the kernel hands back; the post-commit
+        // failure travels on its own event.
+        let committed = Ok(CompactionOutcome::Replaced(ContextReplacement {
+            transcript: None,
+            cursor: tact::compact::CursorUpdate::Unchanged,
+            summary: Some("what changed".into()),
+        }));
+        assert!(matches!(
+            compact_line(committed, false),
+            AgentUpdate::Info(text) if text == "Compaction complete."
+        ));
+    }
+
+    /// The three successful shapes keep their own lines.
+    ///
+    /// `Skipped` is the one that used to read "complete": a vetoed compaction
+    /// prints a success line beside a card that says cancelled.
+    #[test]
+    fn a_settled_compaction_reports_what_actually_happened() {
+        use tact::compact::{CompactionOutcome, ContextReplacement};
+
+        let replaced = CompactionOutcome::Replaced(ContextReplacement {
+            transcript: None,
+            cursor: tact::compact::CursorUpdate::Unchanged,
+            summary: None,
+        });
+        assert!(
+            matches!(compact_line(Ok(replaced), false), AgentUpdate::Info(text) if text == "Compaction complete.")
+        );
+
+        let skipped = CompactionOutcome::Skipped {
+            reason: "PreCompact hook vetoed compaction".into(),
+        };
+        assert!(matches!(
+            compact_line(Ok(skipped), false),
+            AgentUpdate::Info(text)
+                if text == "Nothing to compact: PreCompact hook vetoed compaction"
+        ));
     }
 
     /// The completing path still reports completion: the check above must not

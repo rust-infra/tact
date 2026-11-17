@@ -573,6 +573,9 @@ impl App {
             AgentUpdate::TokenUsage(_)
             | AgentUpdate::ModelInfo(_)
             | AgentUpdate::TurnStats { .. }
+            // The typed compaction lifecycle writes no row of its own: the
+            // `Info` line sent beside it is the one that reaches the log.
+            | AgentUpdate::Compaction(_)
             | AgentUpdate::RunStarted { .. }
             | AgentUpdate::RunFinished { .. }
             | AgentUpdate::RunFailed { .. }
@@ -654,6 +657,10 @@ impl App {
             //   change. It appends to its own card, earlier in the log.
             AgentUpdate::ThinkingChunk(_)
             | AgentUpdate::TokenUsage(_)
+            // The typed compaction lifecycle rides next to the `Info` line
+            // that actually writes the log row: it must not also end the
+            // reasoning region, or the row lands in the wrong card.
+            | AgentUpdate::Compaction(_)
             | AgentUpdate::TurnStats { .. }
             | AgentUpdate::RunStarted { .. }
             | AgentUpdate::RunFinished { .. }

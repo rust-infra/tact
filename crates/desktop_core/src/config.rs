@@ -121,6 +121,25 @@ impl Default for HostLaunchOptions {
     }
 }
 
+/// The CLI flag that carries a tri-state micro-compaction setting to the engine.
+///
+/// `None` defers to the config file, so it yields no flag. `Some(true)` is the
+/// only way to ask for a pass whose default is off, and `Some(false)` forces it
+/// off even when `config.toml` enables it.
+///
+/// Single source for two renderings of the same decision: the in-process
+/// [`CliArgs`] and the argv this desktop hands to a spawned `tact-ui`. They were
+/// written separately, and only the argv one was ever wrong — it emitted
+/// `--no-micro-compact` for `Some(false)` and nothing at all for `Some(true)`,
+/// so turning the setting on changed the config and still ran the off path.
+pub const fn micro_compact_flag(value: Option<bool>) -> Option<&'static str> {
+    match value {
+        Some(true) => Some("--micro-compact"),
+        Some(false) => Some("--no-micro-compact"),
+        None => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionModeView {
@@ -289,6 +308,7 @@ impl DesktopConfig {
         args.max_tokens = self.host.max_tokens;
         args.model_context_window = self.host.model_context_window;
         args.snapshot_max_items = self.host.snapshot_max_items;
+        args.micro_compact = self.host.micro_compact == Some(true);
         args.no_micro_compact = self.host.micro_compact == Some(false);
         args.tokio_console = self.host.tokio_console;
         args.skill_body_auto_inject = self.host.skill_body_auto_inject;
@@ -398,5 +418,72 @@ mod tests {
         assert!(!ReducedMotion::Never.reduce(true));
         assert!(ReducedMotion::System.reduce(true));
         assert!(!ReducedMotion::System.reduce(false));
+    }
+
+    /// The switch that reaches the child process must be able to say *on*, not
+    /// only "off".
+    ///
+    /// The pass is opt-in, so a surface whose only flag is `--no-micro-compact`
+    /// can never enable it: turning the setting on persisted `Some(true)`,
+    /// spawned `tact-ui` without any flag, and the child fell back to the off
+    /// default. `None` still has to mean "no flag", so the config file's value
+    /// stays in charge when the surface has no opinion.
+    ///
+    /// Both renderings of this decision go through the same function — the
+    /// in-process `CliArgs` and the argv handed to a spawned `tact-ui` — so
+    /// pinning the function pins them together.
+    #[test]
+    fn the_micro_compact_setting_reaches_the_child_as_both_polarities() {
+        assert_eq!(super::micro_compact_flag(None), None);
+        assert_eq!(
+            super::micro_compact_flag(Some(true)),
+            Some("--micro-compact")
+        );
+        assert_eq!(
+            super::micro_compact_flag(Some(false)),
+            Some("--no-micro-compact")
+        );
+
+        // And both renderings consume it.
+        let app_data = tempfile::tempdir().unwrap();
+        let mut config = DesktopConfig::load(app_data.path().to_path_buf()).unwrap();
+
+        config.host.micro_compact = None;
+        assert!(!config.cli_args().micro_compact);
+        assert!(!config.cli_args().no_micro_compact);
+
+        config.host.micro_compact = Some(true);
+        assert!(config.cli_args().micro_compact);
+        assert!(!config.cli_args().no_micro_compact);
+
+        config.host.micro_compact = Some(false);
+        assert!(!config.cli_args().micro_compact);
+        assert!(config.cli_args().no_micro_compact);
+    }
+
+    /// An unset setting is described by the resolver's default, not by a
+    /// second literal in this crate. They disagreed (`true` here, `false` in
+    /// `config::resolve`), so a fresh install showed "Micro compaction: on"
+    /// for a pass that never ran.
+    #[test]
+    fn the_micro_compact_view_falls_back_to_the_resolvers_default() {
+        let default = tact::config::AgentSettings::DEFAULT_MICRO_COMPACT_ENABLED;
+        assert!(!default, "the pass is opt-in; this test pins that too");
+
+        // Nothing configured anywhere: the resolver's default, never a local one.
+        assert_eq!(crate::snapshot::micro_compact_view(None, None), default);
+
+        // No host opinion: `config.toml`, via the resolved settings, decides.
+        assert!(!crate::snapshot::micro_compact_view(None, Some(false)));
+        assert!(crate::snapshot::micro_compact_view(None, Some(true)));
+
+        // A host override is what next launch passes as a flag, and that flag
+        // beats the config file — including while a restart is still pending,
+        // so a toggle does not visually snap back.
+        assert!(!crate::snapshot::micro_compact_view(
+            Some(false),
+            Some(true)
+        ));
+        assert!(crate::snapshot::micro_compact_view(Some(true), Some(false)));
     }
 }

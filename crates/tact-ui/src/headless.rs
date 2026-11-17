@@ -5,7 +5,7 @@ use tact_protocol::{UpdateReceiver, update_channel};
 
 use crate::{
     headless_log,
-    session_bootstrap::{Frontend, Notices, bootstrap_session, open_session},
+    session_bootstrap::{Frontend, Notices, SessionBuild, bootstrap_session, open_session},
     session_lock::SessionLockRegistry,
     user_message::build_user_message,
 };
@@ -126,10 +126,13 @@ async fn run_headless_locked(
         &tact_path,
         work_dir.clone(),
         skill_registry,
-        session_id.clone(),
         session_store,
-        Frontend::Observing(observer_tx),
-        Notices::Stderr,
+        SessionBuild {
+            session_id: session_id.clone(),
+            frontend: Frontend::Observing(observer_tx),
+            notices: Notices::Stderr,
+            extra_mcp_servers: Vec::new(),
+        },
     )
     .await?;
 

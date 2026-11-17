@@ -689,16 +689,37 @@ effort，再按实测 reasoning 调整预留）</td>
 </tr>
 <tr>
 <td><code>Compaction complete.</code></td>
-<td><code>UserCommand::Compact</code> 成功完成</td>
+<td><code>UserCommand::Compact</code> 真正替换了上下文</td>
+</tr>
+<tr>
+<td><code>Compaction cancelled.</code></td>
+<td><code>UserCommand::Compact</code> 被用户取消；内核已把卡片关成
+<code>Cancelled</code>，所以这里不是失败行</td>
+</tr>
+<tr>
+<td><code>[compact post-commit step failed] &lt;kind&gt;: &lt;错误&gt;</code></td>
+<td>替换已持久化之后，<code>PostCompact</code> hook 或策略的收尾步骤失败；
+压缩本身成功，卡片仍为 <code>Completed</code></td>
+</tr>
+<tr>
+<td><code>Nothing to compact: &lt;原因&gt;</code></td>
+<td><code>UserCommand::Compact</code> 没有压缩：<code>PreCompact</code>
+hook 否决、或本来没有可压缩内容（<code>compact_history</code> 返回
+<code>Skipped</code>）</td>
 </tr>
 </tbody>
 </table>
-<p>前三行同时也是事后<strong>区分触发源的唯一办法</strong>：<code>[compacting]</code>
+<p>这些文案同时也是事后<strong>区分触发源的线索</strong>：<code>[compacting]</code>
 / <code>Compaction complete.</code>
 表示命令路径（<code>/compact</code>，键入或用命令面板选中），<code>[auto compact]</code>
 表示 <code>agent_loop</code> 里的 80% /
 估算触发，<code>[Recovery] compact (n/N): context too large</code> 表示
-provider 拒收了这个 prompt。<code>/compact</code>
+provider 拒收了这个 prompt。程序读取时<strong>不要</strong>解析这些字符串：
+<code>AgentUpdate::Compaction</code> 带着类型化的
+<code>kind</code>（<code>auto</code> / <code>manual</code> /
+<code>recovery</code> / <code>command</code> /
+<code>micro</code>）和生命周期状态，需要判断触发源或进度的宿主应当读它。
+<code>/compact</code>
 在库里<strong>不留文本痕迹</strong>—— palette command 从不经过
 <code>dispatch_user_task</code>，而只有那条路径会调
 <code>save_history</code>，所以 <code>input_history</code>

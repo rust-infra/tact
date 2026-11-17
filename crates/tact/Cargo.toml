@@ -35,7 +35,6 @@ reqwest = { workspace = true, features = ["multipart"] }
 reqwest13 = { workspace = true }
 rmcp = { workspace = true }
 schemars = { workspace = true }
-secrecy = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

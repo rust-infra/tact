@@ -39,12 +39,14 @@ questions and the book chapter explains the design and its history.
   rendering split.
 - [`tool_rendering.md`](tool_rendering.md): tool cards, grouped tools, live
   output, and detail popups.
+- [`design/tui-trajectory.md`](design/tui-trajectory.md): the trajectory page
+  and its detail tabs.
 - [`book/23_chapter_tui_zh.html`](../book/23_chapter_tui_zh.html): TUI design
   and interaction history.
 - [`book/25_chapter_protocol_zh.html`](../book/25_chapter_protocol_zh.html):
   `AgentUpdate`, `UserCommand`, and gate sequencing.
 
-## Provider SDK
+## Provider SDK and crates
 
 - [`tact-llm-public-api.md`](tact-llm-public-api.md): stable `tact_llm` surface.
 - [`tact-llm-feature-edges.md`](tact-llm-feature-edges.md): optional feature
@@ -52,6 +54,18 @@ questions and the book chapter explains the design and its history.
 - [`tact-llm-redaction.md`](tact-llm-redaction.md): telemetry redaction rules.
 - [`crates/tact_llm/README.md`](../crates/tact_llm/README.md): usage and
   release status.
+- [`crates/tact_host/README.md`](../crates/tact_host/README.md): the
+  UI-independent orchestration layer every frontend shares.
+- [`crates/agent_sdk/README.md`](../crates/agent_sdk/README.md): embedding the
+  kernel through the ergonomic facade.
+- [`crates/agent_tui_kit/README.md`](../crates/agent_tui_kit/README.md): the
+  reusable `AgentUpdate`-driven TUI component kit.
+
+## ACP frontend
+
+- [`crates/tact-acp/README.md`](../crates/tact-acp/README.md): protocol scope,
+  T3 Code setup, command surface, compaction and Goal projection, and the
+  adapter's design notes.
 
 ## Desktop
 

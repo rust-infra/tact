@@ -284,11 +284,17 @@ pub enum RequestPreparation {
 pub struct ScriptedContext {
     run: Mutex<VecDeque<RunPreparation>>,
     request: Mutex<VecDeque<RequestPreparation>>,
-    compact: Mutex<VecDeque<tact_agent_api::CompactionOutcome>>,
+    /// Scripted compaction results, in call order. A `Result` and not an
+    /// outcome because a failing compaction is exactly the case hosts must
+    /// still see a terminal state for.
+    compact: Mutex<VecDeque<Result<tact_agent_api::CompactionOutcome, ContextError>>>,
     compact_model_calls: Mutex<u32>,
     native_compaction_calls: Mutex<u32>,
     compact_requests: Mutex<Vec<tact_agent_api::CompactionRequest>>,
     compaction_commits: Mutex<Vec<tact_agent_api::CompactionRequest>>,
+    /// A post-commit step that fails, for exercising the "replacement is
+    /// durable, one step after it was not" path. `None` means it succeeds.
+    compaction_commit_error: Mutex<Option<ContextError>>,
     prepare_run_calls: Mutex<u32>,
     prepare_request_calls: Mutex<u32>,
 }
@@ -303,6 +309,7 @@ impl Default for ScriptedContext {
             native_compaction_calls: Mutex::new(0),
             compact_requests: Mutex::new(Vec::new()),
             compaction_commits: Mutex::new(Vec::new()),
+            compaction_commit_error: Mutex::new(None),
             prepare_run_calls: Mutex::new(0),
             prepare_request_calls: Mutex::new(0),
         }
@@ -332,7 +339,23 @@ impl ScriptedContext {
         self.compact
             .lock()
             .expect("compaction scripts lock")
-            .push_back(outcome);
+            .push_back(Ok(outcome));
+    }
+
+    /// Script a compaction that fails instead of replacing the transcript.
+    pub fn push_compaction_error(&self, error: ContextError) {
+        self.compact
+            .lock()
+            .expect("compaction scripts lock")
+            .push_back(Err(error));
+    }
+
+    /// Script a post-commit step that fails after a durable replacement.
+    pub fn fail_next_compaction_commit(&self, error: ContextError) {
+        *self
+            .compaction_commit_error
+            .lock()
+            .expect("compaction commit error lock") = Some(error);
     }
 
     pub fn set_compaction_model_calls(&self, calls: u32) {
@@ -562,7 +585,7 @@ impl ContextPolicy for ScriptedContext {
             .lock()
             .expect("compaction scripts lock")
             .pop_front()
-            .ok_or_else(|| ContextError::Compaction("no compaction script".into()))
+            .unwrap_or_else(|| Err(ContextError::Compaction("no compaction script".into())))
     }
 
     async fn compaction_committed(
@@ -574,7 +597,15 @@ impl ContextPolicy for ScriptedContext {
             .lock()
             .expect("compaction commits lock")
             .push(request.clone());
-        Ok(())
+        match self
+            .compaction_commit_error
+            .lock()
+            .expect("compaction commit error lock")
+            .take()
+        {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 }
 

@@ -98,6 +98,7 @@ async fn context_overflow_compacts_and_retries_as_a_second_dispatch() {
     context.push_compaction(CompactionOutcome::Replaced(ContextReplacement {
         transcript: None,
         cursor: CursorUpdate::Unchanged,
+        summary: None,
     }));
     let h = harness(
         model,
@@ -122,9 +123,10 @@ async fn context_overflow_compacts_and_retries_as_a_second_dispatch() {
     );
     assert!(h.events.events().iter().any(|event| matches!(
         event,
-        AgentEvent::ContextCompacted {
-            kind: tact_agent_api::CompactionKind::Recovery
-        }
+        AgentEvent::Compaction(tact_agent_api::CompactionEvent {
+            kind: tact_agent_api::CompactionKind::Recovery,
+            state: tact_agent_api::CompactionState::Completed { .. },
+        })
     )));
 }
 
@@ -586,6 +588,7 @@ async fn auto_compaction_records_model_usage_before_retrying_preparation() {
     context.push_compaction(CompactionOutcome::Replaced(ContextReplacement {
         transcript: None,
         cursor: CursorUpdate::Unchanged,
+        summary: None,
     }));
     let h = harness(
         model,
@@ -635,6 +638,7 @@ async fn compaction_usage_assigns_last_token_total_from_total_tokens() {
     context.push_compaction(CompactionOutcome::Replaced(ContextReplacement {
         transcript: None,
         cursor: CursorUpdate::Unchanged,
+        summary: None,
     }));
     let h = harness(
         model,
@@ -667,6 +671,7 @@ async fn compaction_commit_callback_runs_after_the_replacement_is_persisted() {
     context.push_compaction(CompactionOutcome::Replaced(ContextReplacement {
         transcript: Some(Vec::new()),
         cursor: CursorUpdate::Unchanged,
+        summary: None,
     }));
     let h = harness(
         model,
@@ -702,6 +707,7 @@ async fn failed_replacement_never_acknowledges_compaction_commit() {
     context.push_compaction(CompactionOutcome::Replaced(ContextReplacement {
         transcript: Some(Vec::new()),
         cursor: CursorUpdate::Unchanged,
+        summary: None,
     }));
     let store = FailingTranscriptStore::new(None, Some(1));
     let kernel = AgentKernel::new(KernelDeps {
@@ -746,6 +752,7 @@ async fn native_compaction_records_native_usage_and_diagnostics() {
     context.push_compaction(CompactionOutcome::Replaced(ContextReplacement {
         transcript: None,
         cursor: CursorUpdate::Replace { cursor: None },
+        summary: None,
     }));
     let h = harness(
         model,
@@ -802,6 +809,7 @@ async fn every_preparation_compaction_request_uses_the_typed_protocol() {
         context.push_compaction(CompactionOutcome::Replaced(ContextReplacement {
             transcript: None,
             cursor: CursorUpdate::Unchanged,
+            summary: None,
         }));
         let kind = request.kind();
         let h = harness(
@@ -822,7 +830,10 @@ async fn every_preparation_compaction_request_uses_the_typed_protocol() {
         assert_eq!(context.prepare_request_calls(), 2);
         assert!(h.events.events().iter().any(|event| matches!(
             event,
-            AgentEvent::ContextCompacted { kind: observed } if *observed == kind
+            AgentEvent::Compaction(tact_agent_api::CompactionEvent {
+                kind: observed,
+                state: tact_agent_api::CompactionState::Completed { .. },
+            }) if *observed == kind
         )));
     }
 }
@@ -898,6 +909,7 @@ async fn native_cursor_only_replacement_retains_the_transcript() {
         cursor: CursorUpdate::Replace {
             cursor: Some(cursor.clone()),
         },
+        summary: None,
     }));
     let h = harness(
         model,
@@ -1068,4 +1080,310 @@ fn no_content_response(id: &str) -> tact_agent_api::ModelResponse {
     response.message =
         AgentMessage::new(AgentRole::Assistant, MessageOrigin::Assistant, Vec::new());
     response
+}
+
+#[tokio::test]
+async fn a_completed_compaction_carries_the_summary_the_host_shows() {
+    let model = ScriptedModel::new(vec![events(text_response(
+        "a1",
+        "done",
+        StopReason::EndTurn,
+    ))]);
+    let context = ScriptedContext::new();
+    context.push_compaction(CompactionOutcome::Replaced(ContextReplacement {
+        transcript: Some(Vec::new()),
+        cursor: CursorUpdate::Unchanged,
+        summary: Some("condensed the first twelve turns".into()),
+    }));
+    let h = harness(
+        model,
+        ScriptedTools::new(Vec::new()),
+        ScriptedGate::new(),
+        context.clone(),
+    );
+    let mut state = state();
+
+    h.kernel
+        .compact(
+            &mut state,
+            &session(),
+            RunId::new("compact-1"),
+            CompactionRequest::Command { focus: None },
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+
+    // The summary travels on the replacement, not in a side channel: it is
+    // the only text a host can show for a compaction it never watched run.
+    assert!(h.events.events().iter().any(|event| matches!(
+        event,
+        AgentEvent::Compaction(tact_agent_api::CompactionEvent {
+            kind: tact_agent_api::CompactionKind::Command,
+            state: tact_agent_api::CompactionState::Completed { summary: Some(text) },
+        }) if text == "condensed the first twelve turns"
+    )));
+}
+
+#[tokio::test]
+async fn a_failed_compaction_reports_a_terminal_state_before_the_error() {
+    let model = ScriptedModel::new(Vec::new());
+    let context = ScriptedContext::new();
+    context.push_compaction_error(tact_agent_api::ContextError::Compaction(
+        "summarizer exploded".into(),
+    ));
+    let h = harness(
+        model,
+        ScriptedTools::new(Vec::new()),
+        ScriptedGate::new(),
+        context,
+    );
+    let mut state = state();
+
+    let error = h
+        .kernel
+        .compact(
+            &mut state,
+            &session(),
+            RunId::new("compact-1"),
+            CompactionRequest::Command { focus: None },
+            CancelToken::new(),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, crate::deps::KernelError::Context(_)),
+        "{error:?}"
+    );
+    // Exactly two compaction events: the start and one terminal state. A host
+    // that draws a card from the first must be closed by the second, and it
+    // must say *why*.
+    let events: Vec<_> = h
+        .events
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            AgentEvent::Compaction(event) => Some(event),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert_eq!(events[0].state, tact_agent_api::CompactionState::Started);
+    assert!(matches!(
+        &events[1].state,
+        tact_agent_api::CompactionState::Failed { error } if error.contains("summarizer exploded")
+    ));
+}
+
+/// A step that fails *after* the replacement was persisted is not a failed
+/// compaction.
+///
+/// `compaction_committed` runs once the kernel has already called
+/// `TranscriptStore::replace` and updated the caller's transcript and cursor.
+/// A `?` there used to turn a durable replacement into a `Failed` card and a
+/// "Compaction failed" line, while the store held the compacted context — the
+/// two halves of the same fact disagreeing.
+///
+/// The card now closes `Completed` from the replacement, and the post-commit
+/// failure travels as its own event. `Err` keeps meaning "nothing was
+/// replaced", which is what every caller branch on.
+#[tokio::test]
+async fn a_failed_post_commit_step_does_not_unmake_the_replacement() {
+    let model = ScriptedModel::new(Vec::new());
+    let context = ScriptedContext::new();
+    context.push_compaction(CompactionOutcome::Replaced(ContextReplacement {
+        transcript: Some(vec![tact_agent_api::AgentMessage::text(
+            tact_agent_api::AgentRole::User,
+            tact_agent_api::MessageOrigin::User,
+            "compacted",
+        )]),
+        cursor: tact_agent_api::CursorUpdate::Replace { cursor: None },
+        summary: Some("what changed".into()),
+    }));
+    // A PostCompact hook, or a third-party ContextPolicy's own bookkeeping.
+    context.fail_next_compaction_commit(tact_agent_api::ContextError::Compaction(
+        "hook exploded".into(),
+    ));
+    let h = harness(
+        model,
+        ScriptedTools::new(Vec::new()),
+        ScriptedGate::new(),
+        context,
+    );
+    let mut state = state();
+
+    // Ok, not Err: the compaction happened.
+    let outcome = h
+        .kernel
+        .compact(
+            &mut state,
+            &session(),
+            RunId::new("compact-1"),
+            CompactionRequest::Command { focus: None },
+            CancelToken::new(),
+        )
+        .await
+        .expect("a durable replacement is not a failed compaction");
+    assert!(matches!(outcome, CompactionOutcome::Replaced(_)));
+
+    let events = h.events.events();
+    let cards: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::Compaction(event) => Some(event),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(cards.len(), 2, "start and one terminal state: {cards:?}");
+    // The card says what happened, and carries the summary that replaced the
+    // history.
+    assert!(matches!(
+        &cards[1].state,
+        tact_agent_api::CompactionState::Completed { summary: Some(summary) }
+            if summary == "what changed"
+    ));
+
+    // The failure is still reported, as its own fact.
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::CompactionFinishedWithError { error, .. } if error.contains("hook exploded")
+        )),
+        "a failed post-commit step must not be silent: {events:?}"
+    );
+}
+
+/// The other half of the invariant: `Err` still means nothing was replaced.
+///
+/// The test above would also pass if the kernel had simply stopped reporting
+/// failures. This pins the boundary from the other side — a policy failure
+/// before the replacement is still an `Err` and still closes the card `Failed`.
+#[tokio::test]
+async fn a_policy_failure_before_the_replacement_is_still_an_error() {
+    let model = ScriptedModel::new(Vec::new());
+    let context = ScriptedContext::new();
+    context.push_compaction_error(tact_agent_api::ContextError::Compaction(
+        "summarizer exploded".into(),
+    ));
+    let h = harness(
+        model,
+        ScriptedTools::new(Vec::new()),
+        ScriptedGate::new(),
+        context,
+    );
+    let mut state = state();
+
+    let error = h
+        .kernel
+        .compact(
+            &mut state,
+            &session(),
+            RunId::new("compact-1"),
+            CompactionRequest::Command { focus: None },
+            CancelToken::new(),
+        )
+        .await
+        .expect_err("nothing was replaced, so this is a failure");
+    assert!(
+        matches!(error, crate::deps::KernelError::Context(_)),
+        "{error:?}"
+    );
+    assert!(
+        h.events.events().iter().any(|event| matches!(
+            event,
+            AgentEvent::Compaction(tact_agent_api::CompactionEvent {
+                state: tact_agent_api::CompactionState::Failed { .. },
+                ..
+            })
+        )),
+        "the card must close Failed when nothing was replaced"
+    );
+    assert!(
+        !h.events
+            .events()
+            .iter()
+            .any(|event| matches!(event, AgentEvent::CompactionFinishedWithError { .. })),
+        "no replacement means no post-commit fact to report"
+    );
+}
+
+#[tokio::test]
+async fn a_cancelled_compaction_is_cancelled_not_failed() {
+    let model = ScriptedModel::new(Vec::new());
+    let context = ScriptedContext::new();
+    context.push_compaction_error(tact_agent_api::ContextError::Cancelled);
+    let h = harness(
+        model,
+        ScriptedTools::new(Vec::new()),
+        ScriptedGate::new(),
+        context,
+    );
+    let mut state = state();
+
+    let error = h
+        .kernel
+        .compact(
+            &mut state,
+            &session(),
+            RunId::new("compact-1"),
+            CompactionRequest::Command { focus: None },
+            CancelToken::new(),
+        )
+        .await
+        .unwrap_err();
+
+    // A user's stop is not a breakage, and the two must not look alike: the
+    // ACP card shows a different status for each, and `/compact` retries the
+    // first but not the second.
+    assert!(
+        matches!(error, crate::deps::KernelError::Cancelled),
+        "{error:?}"
+    );
+    assert!(h.events.events().iter().any(|event| matches!(
+        event,
+        AgentEvent::Compaction(tact_agent_api::CompactionEvent {
+            state: tact_agent_api::CompactionState::Cancelled { .. },
+            ..
+        })
+    )));
+}
+
+#[tokio::test]
+async fn a_vetoed_compaction_is_cancelled_not_failed() {
+    let model = ScriptedModel::new(vec![events(text_response(
+        "a1",
+        "done",
+        StopReason::EndTurn,
+    ))]);
+    let context = ScriptedContext::new();
+    context.push_request(RequestPreparation::Compact {
+        request: CompactionRequest::Auto { focus: None },
+        if_skipped: Vec::new(),
+    });
+    context.push_compaction(CompactionOutcome::Skipped {
+        reason: "PreCompact hook vetoed compaction".into(),
+    });
+    let h = harness(
+        model,
+        ScriptedTools::new(Vec::new()),
+        ScriptedGate::new(),
+        context,
+    );
+    let mut state = state();
+
+    h.kernel
+        .run(&mut state, input("go"), CancelToken::new())
+        .await
+        .unwrap();
+
+    // A veto is a decision, not a crash: a host that draws the card would
+    // otherwise show a red failure for a hook doing what it was configured to.
+    assert!(h.events.events().iter().any(|event| matches!(
+        event,
+        AgentEvent::Compaction(tact_agent_api::CompactionEvent {
+            state: tact_agent_api::CompactionState::Cancelled { reason },
+            ..
+        }) if reason.contains("vetoed")
+    )));
 }
