@@ -1009,6 +1009,16 @@ const THOUGHT_LEVEL_CONFIG_ID: &str = "thought_level";
 /// The single plan id this adapter uses, so each task-list update replaces the
 /// previous checklist rather than accumulating plans.
 const TACT_PLAN_ID: &str = "tasks";
+/// `_meta` key carrying the structured Goal list beside the Goal notice text.
+///
+/// ACP has no Goal update, and a Plan cannot hold one: a `PlanEntry` is a step
+/// with three statuses, while a Goal is a durable intention with ten. So the
+/// notice stays the surface, and this key is the machine-readable copy a client
+/// that recognizes it can draw a native panel from. ACP asks for a namespaced
+/// key; this one is namespaced by the adapter name rather than a domain Tact
+/// does not own. If the payload ever needs a shape it cannot grow into, use a
+/// new key instead of redefining this one.
+const GOALS_META_KEY: &str = "tact/goals";
 /// Workspace-relative directory prompt images are written to.
 const ACP_IMAGE_DIR: &str = ".tact-acp-images";
 /// How long a non-turn slash command may take to produce its answer.
@@ -1880,6 +1890,10 @@ impl SessionActor {
     /// emits `GoalsChanged` on every reconcile tick; comparing against the last
     /// snapshot keeps that from turning into a stream of identical notices.
     /// An empty snapshot is silent: `/goal list` already answers "(no goals)".
+    ///
+    /// [`goal_notice`] builds the notice: the plain-text read-out every client
+    /// renders, plus the same snapshot under [`GOALS_META_KEY`] for a client
+    /// that draws a native panel from it.
     fn announce_goals(&mut self, goals: Vec<GoalSnapshot>) {
         // `/goal list` has no other answer when the workspace is non-empty, and
         // a periodic reconcile can deliver this snapshot before the command's
@@ -1895,34 +1909,12 @@ impl SessionActor {
         self.last_goals = goals.clone();
         if goals.is_empty() {
             if answers_list {
-                self.notice(
-                    schema::NoticeSeverity::Info,
-                    "Goals",
-                    Some("(no goals)".to_string()),
-                );
+                self.send(schema::SessionUpdate::Notice(goal_notice(&goals)));
                 self.settle_command_turn();
             }
             return;
         }
-        let body = goals
-            .iter()
-            .map(|goal| {
-                let mut line = format!(
-                    "{} {} — {} · tasks {}/{}",
-                    goal.status.marker(),
-                    goal.title,
-                    goal_status_label(goal.status),
-                    goal.task_completed,
-                    goal.task_total,
-                );
-                if let Some(reason) = &goal.wait_reason {
-                    line.push_str(&format!(" · waiting: {reason}"));
-                }
-                line
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        self.notice(schema::NoticeSeverity::Info, "Goals", Some(body));
+        self.send(schema::SessionUpdate::Notice(goal_notice(&goals)));
         if answers_list {
             self.settle_command_turn();
         }
@@ -3852,6 +3844,56 @@ fn create_goal_command(args: &str) -> UserCommand {
     }
 }
 
+/// Build the notice for a Goal snapshot.
+///
+/// One notice carries the snapshot twice. `description` is the plain-text
+/// read-out every client renders — one line per Goal, empty list as
+/// "(no goals)". [`GOALS_META_KEY`] holds the same `Vec<GoalSnapshot>` as JSON
+/// for a client that draws a native panel; it carries `objective`, `criteria`,
+/// `acceptance`, `run_budget`, `phase`, and `archived`, which no one-line entry
+/// can.
+///
+/// A client that ignores `_meta` loses nothing it could have rendered before,
+/// and ACP requires implementations to ignore keys they do not recognize, so
+/// the key is safe to always send. It is set even for an empty list (`[]`), so
+/// a panel built from an earlier snapshot can clear itself.
+fn goal_notice(goals: &[GoalSnapshot]) -> schema::Notice {
+    let description = if goals.is_empty() {
+        "(no goals)".to_string()
+    } else {
+        goals
+            .iter()
+            .map(|goal| {
+                let mut line = format!(
+                    "{} {} — {} · tasks {}/{}",
+                    goal.status.marker(),
+                    goal.title,
+                    goal_status_label(goal.status),
+                    goal.task_completed,
+                    goal.task_total,
+                );
+                if let Some(reason) = &goal.wait_reason {
+                    line.push_str(&format!(" · waiting: {reason}"));
+                }
+                line
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let mut meta = schema::Meta::new();
+    // A snapshot that cannot serialize is a bug, but it must not cost the user
+    // the text notice or the turn's idle: the notice stands on its own.
+    match serde_json::to_value(goals) {
+        Ok(value) => {
+            meta.insert(GOALS_META_KEY.to_string(), value);
+        }
+        Err(error) => debug!(%error, "failed to serialize Goals for notice metadata"),
+    }
+    schema::Notice::new(schema::NoticeSeverity::Info, "Goals")
+        .description(Some(description))
+        .meta(meta)
+}
+
 fn goal_status_label(status: GoalStatusSnapshot) -> &'static str {
     match status {
         GoalStatusSnapshot::Draft => "draft",
@@ -4111,6 +4153,7 @@ async fn replay_history(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tact_protocol::GoalPhaseSnapshot;
 
     fn selection() -> SelectOption {
         SelectOption {
@@ -4561,6 +4604,67 @@ mod tests {
             ),
             None,
             "a command is not a file path"
+        );
+    }
+
+    #[test]
+    fn a_goal_notice_carries_the_snapshot_beside_the_text() {
+        // The text notice is the fallback every client renders; `_meta` is the
+        // same snapshot for a client that draws a native panel. Losing either
+        // one must not silently drop the other.
+        let goal = GoalSnapshot {
+            id: "g1".into(),
+            title: "Ship the adapter".into(),
+            objective: "Land the ACP goal surface".into(),
+            status: GoalStatusSnapshot::WaitingPermission,
+            phase: GoalPhaseSnapshot::Execution,
+            task_total: 3,
+            task_completed: 1,
+            wait_reason: Some("write_file needs approval".into()),
+            archived: false,
+            ..GoalSnapshot::default()
+        };
+        let notice = goal_notice(std::slice::from_ref(&goal));
+        assert_eq!(notice.title, "Goals");
+        let text = notice.description.expect("the notice must keep its text");
+        assert!(
+            text.contains("Ship the adapter")
+                && text.contains("waiting for permission")
+                && text.contains("tasks 1/3")
+                && text.contains("write_file needs approval"),
+            "the text read-out must survive without _meta: {text}"
+        );
+
+        let carried = notice
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.get(GOALS_META_KEY))
+            .expect("the structured snapshot must be under the documented key");
+        let round_trip: Vec<GoalSnapshot> =
+            serde_json::from_value(carried.clone()).expect("the payload is the host's own type");
+        assert_eq!(round_trip, vec![goal]);
+
+        // Fields the one-line text cannot carry must survive the round trip,
+        // or the structured copy would be no better than the notice body.
+        let waiting = &round_trip[0];
+        assert_eq!(waiting.objective, "Land the ACP goal surface");
+        assert_eq!(waiting.status, GoalStatusSnapshot::WaitingPermission);
+        assert_eq!(waiting.phase, GoalPhaseSnapshot::Execution);
+    }
+
+    #[test]
+    fn an_empty_goal_list_still_names_the_key() {
+        // `/goal list` on an empty workspace sends "(no goals)"; a client that
+        // reads the key must see an empty list rather than a missing key, so it
+        // can clear a panel it drew for an earlier snapshot.
+        let notice = goal_notice(&[]);
+        assert_eq!(notice.description.as_deref(), Some("(no goals)"));
+        assert_eq!(
+            notice
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get(GOALS_META_KEY)),
+            Some(&serde_json::json!([]))
         );
     }
 

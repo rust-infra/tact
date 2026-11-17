@@ -138,6 +138,13 @@ so importing a session a live host still holds (a running T3 thread, `tact-ui`,
   omitted because Tact has no per-session cost source.
 - Compaction progress is sent as `compaction_update` (in-progress/completed/
   failed) in addition to the existing notice text.
+- Goals are a notice whose `description` is the plain-text read-out and whose
+  `_meta` carries the same `Vec<GoalSnapshot>` as JSON under `tact/goals`. ACP
+  has no Goal update, and a `PlanEntry` (three statuses, one line of text)
+  cannot hold a Goal (ten statuses, objective, criteria, acceptance, budget).
+  The text stands alone for clients that ignore `_meta`; a client that reads
+  the key can draw a native panel without a second protocol surface. See
+  [Goal notices](#goal-notices).
 - `session/fork` copies the durable transcript into a new session and resumes
   it. `session/resume` with `replayFrom: start` reconstructs user/assistant
   messages, thoughts, and tool calls/results before `replay_complete`.
@@ -163,13 +170,36 @@ so importing a session a live host still holds (a running T3 thread, `tact-ui`,
   cursors with `-32602`. It sends `replay_complete` and an idle before the
   response. A live session's model options are read back from its actor.
 
+### Goal notices
+
+ACP v2 has no Goal update, so `AgentUpdate::GoalsChanged` becomes one `notice`.
+The notice carries the snapshot twice:
+
+- `title` is `"Goals"` and `description` is one line per Goal
+  (`▸ Title — waiting for permission · tasks 1/3 · waiting: <reason>`). This is
+  the read-out every client renders, and it is what `/goal list` answers with.
+- `_meta["tact/goals"]` is the same `Vec<GoalSnapshot>` serialized as JSON.
+  It carries what the text cannot: `objective`, `criteria`, `acceptance`,
+  `run_budget`, `phase`, and `archived`.
+
+An empty list still sets the key to `[]`, so a client that drew a panel from an
+earlier snapshot can clear it. Notices are not session history and a client may
+ignore them entirely — do not treat `_meta` as durable storage; `session/resume`
+replays real transcript entries, not notices.
+
+Goals are deliberately **not** published as a second `planId`. `PlanEntry` has
+`content`, `priority`, and three statuses; a Goal has ten statuses and five
+nested fields. Collapsing one into the other would show `Verifying`,
+`WaitingPermission`, and `Failed` as the same "in progress" row, and the `tasks`
+plan already owns the plan surface.
+
 ## Not implemented yet
 
 - `compaction_summary_chunk` streaming. The complete summary stays in the
   transcript; the lifecycle is reported through `compaction_update`.
-- A typed Goal surface. ACP has no Goal update, so Goals are notices; T3's
-  native Goal commands are gated to its own drivers and never reach this
-  adapter.
+- A native Goal surface. Goals are notices; the structured snapshot is in
+  `_meta` rather than a protocol type of its own. T3's own Goal panel belongs to
+  its driver, so an ACP client draws whatever it chooses from `tact/goals`.
 - URL-based elicitation.
 - Audio and binary embedded-resource prompts.
 - Prompt suggestions and usage cost, which have no Tact data source.
