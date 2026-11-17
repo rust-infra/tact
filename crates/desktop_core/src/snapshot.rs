@@ -333,6 +333,25 @@ pub struct SettingsView {
     pub config_path: Option<String>,
 }
 
+/// What the micro-compaction setting should read in the Settings surface.
+///
+/// Three sources, in order of authority:
+///
+/// 1. `host` — the desktop override. It is what the next launch passes as
+///    `--micro-compact` / `--no-micro-compact`, and that flag beats the config
+///    file, so this is the effective value and also the honest pending one: a
+///    toggle that requires a restart must not snap back to the old value.
+/// 2. `resolved` — the settings the engine actually installed. It answers for
+///    a host that has no opinion (`None`), where `config.toml` decides.
+/// 3. [`tact::config::AgentSettings::DEFAULT_MICRO_COMPACT_ENABLED`] — the
+///    resolver's own default, imported rather than restated. This used to be a
+///    `true` literal here against a `false` one in the resolver, so a fresh
+///    install offered a switch reading "on" for a pass that never ran.
+pub(crate) fn micro_compact_view(host: Option<bool>, resolved: Option<bool>) -> bool {
+    host.or(resolved)
+        .unwrap_or(tact::config::AgentSettings::DEFAULT_MICRO_COMPACT_ENABLED)
+}
+
 /// Build the startup-global settings view from the desktop configuration.
 pub fn settings_from(config: &crate::DesktopConfig) -> SettingsView {
     SettingsView {
@@ -346,7 +365,12 @@ pub fn settings_from(config: &crate::DesktopConfig) -> SettingsView {
         max_tokens: config.host.max_tokens,
         context_window: config.host.model_context_window,
         snapshot_max_items: config.host.snapshot_max_items,
-        micro_compact: config.host.micro_compact.unwrap_or(true),
+        micro_compact: micro_compact_view(
+            config.host.micro_compact,
+            tact::config::try_settings()
+                .as_ref()
+                .map(|settings| settings.agent.micro_compact_enabled),
+        ),
         tokio_console: config.host.tokio_console,
         skill_body_auto_inject: config.host.skill_body_auto_inject,
         config_path: config

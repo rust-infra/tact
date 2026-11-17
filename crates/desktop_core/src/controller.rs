@@ -21,6 +21,7 @@ use crate::{
     commands::{CommandRoute, route_command, route_setting},
     error::{DesktopClosed, DesktopShutdownError, DesktopStartError, FailureKind, FailureView},
     intent::{DesktopIntent, GateResponse, ReaderRef, ReaderRequest, SettingValue, Submission},
+    micro_compact_flag,
     runtime::{HostBackend, HostFactory, RealHostFactory},
     state::{DesktopState, SessionUiState},
     transcript::GateResponseError,
@@ -2036,8 +2037,8 @@ impl DesktopActor {
         if let Some(snapshot) = host.snapshot_max_items {
             push_cli_argument(&mut arguments, "--snapshot-max-items", snapshot.to_string());
         }
-        if host.micro_compact == Some(false) {
-            arguments.push("--no-micro-compact".into());
+        if let Some(flag) = micro_compact_flag(host.micro_compact) {
+            arguments.push(flag.into());
         }
         if host.tokio_console {
             arguments.push("--tokio-console".into());

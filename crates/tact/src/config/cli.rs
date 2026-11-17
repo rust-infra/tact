@@ -75,8 +75,17 @@ pub struct CliArgs {
     #[arg(long)]
     pub snapshot_max_items: Option<usize>,
 
+    /// Enable the opt-in micro-compaction pass over old tool results.
+    ///
+    /// The pass itself is off unless `[agent].micro_compact_enabled = true`;
+    /// this flag is that switch for callers that have no TOML to edit (the
+    /// desktop settings surface). It states an intent rather than an override,
+    /// so it wins over both the TOML value and a default that is off.
+    #[arg(long, conflicts_with = "no_micro_compact")]
+    pub micro_compact: bool,
+
     /// Disable micro-compaction of old tool results.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "micro_compact")]
     pub no_micro_compact: bool,
 
     /// Enable tokio-console debugging subscriber.

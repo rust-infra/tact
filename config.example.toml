@@ -208,7 +208,8 @@ mode = "default"
 # Off by default since 2026-07-24: the stub pass invalidates the prompt prefix
 # cache on providers with automatic prefix caching, and `read_file` returns
 # bounded pages of its own, so the pass costs more than it saves. Set `true` to
-# enable it; `--no-micro-compact` can only force it off.
+# enable it, or pass `--micro-compact`; `--no-micro-compact` forces it off even
+# when this says `true`.
 # micro_compact_enabled = true
 
 # Enable Tact's persistent memory (default: true).

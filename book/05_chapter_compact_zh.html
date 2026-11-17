@@ -588,9 +588,9 @@ context）。上限：<code>MAX_COMPACT_ATTEMPTS</code>（3，<code>crates/tact/
 <code>false</code></strong>：自 2026-07-24（<code>5cb59451</code>）起
 micro-compact
 改为<strong>按需开启</strong>——<code>[agent].micro_compact_enabled = true</code>
-才跑（见 §9）。<code>--no-micro-compact</code>
-是绝对的「强制关闭」，只能把 TOML 里显式写下的 <code>true</code> 覆盖回
-<code>false</code>，无法开启——在默认配置下它是多余的。只触碰包含
+或 <code>--micro-compact</code> 才跑（见 §9）。<code>--no-micro-compact</code>
+是绝对的「强制关闭」，能把 TOML 里显式写下的 <code>true</code> 覆盖回
+<code>false</code>；两个旗标互斥。只触碰包含
 <code>ContentBlock::ToolResult</code> 的 <strong>user
 角色</strong>消息。完整自动压缩也会在此时执行（<code>incoming = 0</code>）；入口路径会在
 push 前单独预留 incoming user turn。</p>
@@ -1511,10 +1511,14 @@ provider
 provider 仍保持经典 <code>min(窗口 × 20%, 2,000)</code> 文本上限</td>
 </tr>
 <tr>
-<td><code>agent.micro_compact_enabled</code>（<code>--no-micro-compact</code>）</td>
+<td><code>agent.micro_compact_enabled</code>（<code>--micro-compact</code> /
+<code>--no-micro-compact</code>）</td>
 <td><strong><code>false</code></strong></td>
-<td>每轮 stub 的开关。默认关闭（opt-in）：TOML 里写 <code>true</code>
-才启用；<code>--no-micro-compact</code> 只能强制关闭，无法开启</td>
+<td>每轮 stub 的开关。默认关闭（opt-in）：TOML 里写 <code>true</code>，或传
+<code>--micro-compact</code>；<code>--no-micro-compact</code> 强制关闭，
+两个旗标互斥且都压过 TOML。默认值与「界面显示什么」共用
+<code>AgentSettings::DEFAULT_MICRO_COMPACT_ENABLED</code> 一个常量，
+避免显示侧再写一份字面量</td>
 </tr>
 </tbody>
 </table>

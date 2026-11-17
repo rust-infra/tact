@@ -793,6 +793,7 @@
 <li class="toc-l2"><a href="#68-2026-11-15--stats-%E5%9C%A8%E5%86%85%E6%A0%B8%E9%87%8D%E6%9E%84%E5%90%8E%E5%BD%92%E9%9B%B6%E6%89%80%E6%9C%89%E8%AE%A1%E6%95%B0%E6%90%AC%E5%9B%9E%E7%AB%AF%E5%8F%A3" title="68. 2026-11-15 — /stats 在 kernel 重构后归零：所有计数搬回端口"><span class="toc-label">68. 2026-11-15 — /stats 在 kernel 重构后归零：所有计数搬回端口</span></a></li>
 <li class="toc-l2"><a href="#69-2026-11-16--acp-%E5%9B%9E%E5%90%88%E8%BE%B9%E7%95%8C%E5%9B%9E%E6%94%BE%E4%B8%8E%E5%90%8E%E5%8F%B0%E5%AD%90%E4%BB%A3%E7%90%86%E7%9A%84%E5%8D%81%E4%B8%AA%E4%BF%AE%E5%A4%8D" title="69. 2026-11-16 — ACP：回合边界、回放与后台子代理的十个修复"><span class="toc-label">69. 2026-11-16 — ACP：回合边界、回放与后台子代理的十个修复</span></a></li>
 <li class="toc-l2"><a href="#70-2026-11-17--acp-%E6%B8%85%E7%A9%BA%E7%9A%84%E5%BE%85%E5%8A%9E%E9%9D%A2%E6%9D%BF%E8%A6%81%E7%A7%BB%E9%99%A4%E5%AD%90%E4%BB%A3%E7%90%86%E5%8D%A1%E7%89%87%E4%B8%8D%E5%96%82%E7%BB%99-t3" title="70. 2026-11-17 — ACP：清空的待办面板要移除，子代理会话不喂给 T3"><span class="toc-label">70. 2026-11-17 — ACP：清空的待办面板要移除，子代理会话不喂给 T3</span></a></li>
+<li class="toc-l2"><a href="#71-2026-11-17--%E6%A1%8C%E9%9D%A2%E5%BE%AE%E5%8E%8B%E7%BC%A9%E5%BC%80%E5%85%B3%E6%98%BE%E7%A4%BA-on-%E5%8D%B4%E6%B0%B8%E4%B8%8D%E8%BF%90%E8%A1%8C" title="71. 2026-11-17 — 桌面微压缩开关显示 on，却永不运行"><span class="toc-label">71. 2026-11-17 — 桌面微压缩开关显示 on，却永不运行</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -23809,6 +23810,43 @@ ACP 没有子会话能力位，T3 也不发能承载它的 <code>_meta</code>，
 <code>announce_subagent</code>）、
 <code>crates/tact-acp/Cargo.toml</code>（<code>unstable_plan_operations</code>）、
 <code>crates/tact-acp/README.md</code> 的协议范围与"尚未实现"两节。</p>
+<hr />
+<h2 id="71-2026-11-17--桌面微压缩开关显示-on-却永不运行">71. 2026-11-17 — 桌面微压缩开关显示 on，却永不运行</h2>
+<p><strong>现象：</strong>桌面端设置页把「Micro compaction」画成 <code>on</code>，
+但 <code>micro_compact</code> 一次都没跑过；把开关拨到 on 之后再重启，依旧不跑。</p>
+<p><strong>根因：</strong>同一个默认值在两个 crate 里各写了一遍，而且方向相反。
+显示侧 <code>snapshot.rs</code> 写的是 <code>host.micro_compact.unwrap_or(true)</code>，
+执行侧 <code>config/resolve.rs</code> 是 <code>unwrap_or(false)</code>——这个 pass
+自 <code>5cb59451</code> 起就是 opt-in，所以全新安装时界面显示 on 而引擎跑 off。
+第二层更硬：桌面端只有 <code>args.no_micro_compact = host.micro_compact == Some(false)</code>
+一条通道，<strong>没有能表达「开」的旗标</strong>。TOML 默认 false，于是开关拨到
+<code>Some(true)</code> 之后，子进程拿不到任何参数，照旧按默认关闭启动。</p>
+<p><strong>决策：</strong>补 <code>--micro-compact</code> 正向旗标，与
+<code>--no-micro-compact</code> 用 clap <code>conflicts_with</code> 互斥（手写
+<code>CliArgs</code> 同时置位时「关闭」优先，因为「别做了」比过期的「去做」更该被尊重）。
+默认值收敛为 <code>AgentSettings::DEFAULT_MICRO_COMPACT_ENABLED</code> 一个常量，
+显示侧 import 它而不是再写一份。三态语义落在一个纯函数
+<code>desktop_core::micro_compact_flag(Option&lt;bool&gt;)</code> 里，进程内
+<code>CliArgs</code> 与交给子进程的 argv 共用同一份判断——它们此前是分开写的，
+而只有 argv 那侧是错的。设置页读取的优先级是 host 覆盖 → 已解析配置 → 常量：
+host 是下次启动真正会传下去的旗标，重启前不能让开关视觉上弹回旧值。</p>
+<p><strong>验证：</strong>新测试各自钉住一处，并都做过反向验证——把实现改回旧行为后
+两条都会红。<code>the_micro_compact_setting_reaches_the_child_as_both_polarities</code>
+钉住三态与两种渲染；<code>the_micro_compact_view_falls_back_to_the_resolvers_default</code>
+钉住显示侧优先级与默认值来源；
+<code>micro_compact_resolves_from_the_flag_toml_and_the_named_default</code>
+与 <code>the_negating_micro_compact_flag_wins_over_the_enabling_one</code>
+钉住解析优先级。<code>cargo test -p tact --lib config::</code> 146 项通过，
+<code>cargo test -p tact_desktop_core --lib</code> 194 项通过。</p>
+<p><strong>Pointers：</strong><code>crates/tact/src/config/cli.rs</code>
+（<code>micro_compact</code>/<code>no_micro_compact</code>）、
+<code>crates/tact/src/config/resolve.rs</code>（<code>resolve_non_llm</code>）、
+<code>crates/tact/src/config/types.rs</code>
+（<code>DEFAULT_MICRO_COMPACT_ENABLED</code>）、
+<code>crates/desktop_core/src/config.rs</code>（<code>micro_compact_flag</code>、
+<code>cli_args</code>）、<code>crates/desktop_core/src/snapshot.rs</code>
+（<code>micro_compact_view</code>、<code>settings_from</code>）、
+<code>crates/desktop_core/src/controller.rs</code>（<code>desktop_cli_arguments</code>）。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>

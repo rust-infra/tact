@@ -186,7 +186,8 @@ pub struct AgentTomlConfig {
     /// Max entries in the system-prompt project structure snapshot.
     pub snapshot_max_items: Option<usize>,
 
-    /// Enable micro-compaction of old tool results (default: true)
+    /// Enable micro-compaction of old tool results (default: false — see
+    /// [`AgentSettings::DEFAULT_MICRO_COMPACT_ENABLED`]).
     pub micro_compact_enabled: Option<bool>,
 
     /// Enable Tact's persistent memory (default: true).
@@ -519,6 +520,21 @@ pub struct AgentSettings {
     pub auto_memory_directory: Option<String>,
     /// Optional subagent provider/model configuration.
     pub subagent: Option<SubagentSettings>,
+}
+
+impl AgentSettings {
+    /// Built-in default for the opt-in Tier-2 micro-compaction pass.
+    ///
+    /// Off since 2026-07-24 (`5cb59451`): the stub pass invalidates the prompt
+    /// prefix cache on providers with automatic prefix caching, and `read_file`
+    /// returns bounded pages of its own, so it cost more than it saved.
+    ///
+    /// Defined here rather than written as a literal at each site, because a
+    /// surface that *displays* this setting has to agree with the resolver that
+    /// *runs* it. They disagreed once: the desktop view defaulted the unset
+    /// field to `true` while this resolver defaulted it to `false`, so a fresh
+    /// install offered a switch that read "on" and did nothing.
+    pub const DEFAULT_MICRO_COMPACT_ENABLED: bool = false;
 }
 
 #[derive(Debug, Clone)]
