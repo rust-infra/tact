@@ -16,7 +16,10 @@ name = "tact_acp"
 path = "src/lib.rs"
 
 [dependencies]
-agent-client-protocol = { version = "5.3", default-features = false, features = ["stdio", "unstable_protocol_v2", "unstable_session_fork"] }
+# `unstable_plan_operations` adds `plan_removed`: the only way a client learns
+# the todo panel is finished instead of merely unchanged. T3 maps it to a
+# `PlanUpdated { kind: "removed" }` and marks the plan superseded.
+agent-client-protocol = { version = "5.3", default-features = false, features = ["stdio", "unstable_protocol_v2", "unstable_session_fork", "unstable_plan_operations"] }
 anyhow = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }

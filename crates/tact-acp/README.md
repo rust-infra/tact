@@ -114,6 +114,11 @@ so importing a session a live host still holds (a running T3 thread, `tact-ui`,
 - Live state: `usage_update` from the reported token total and the configured
   context window, and `plan_update` from Tact's persistent task list. A client's
   context meter and todo panel therefore track the same numbers the TUI shows.
+  When the task list empties, the plan is *removed* (`plan_removed`) rather
+  than replaced by an empty list: an update is a wholesale replacement, so
+  without the removal the panel would keep drawing the last checklist as still
+  in progress. A list that is empty before anything was published stays silent,
+  since there is no plan to remove.
 - Client-provided MCP servers (`stdio` and `http`) are connected for the session.
   They are merged into the workspace's `.mcp.json` resolution as if declared
   last, and never written to a config file.
@@ -154,8 +159,17 @@ so importing a session a live host still holds (a running T3 thread, `tact-ui`,
   `subagent_update`, and the parent tool call carries a `Session` content
   reference. Child transcript entries are routed under the child session ID,
   and the final summary is a `session_message` back to the parent. The ordinary
-  tool card remains as a fallback for clients that do not render child sessions
-  yet (including T3 builds that only consume this in their Claude flavor).
+  tool card is the fallback for clients that do not render child sessions, and
+  it is a complete record of the same call.
+- T3 is such a client, so it is *not* sent any of this: naming itself
+  `t3-code` in `initialize.info` switches child sessions off for that
+  connection, and its subagents show the plain tool card. ACP has no capability
+  for child sessions and T3 sends no `_meta` that could carry one, so the
+  implementation name is the only signal. Withholding is deliberate rather than
+  merely conservative: T3 normalizes a fixed set of `sessionUpdate` kinds and
+  renders every other one as an `Unsupported ACP update: …` tool card in the
+  transcript, and `subagent_update` is not in that set for a non-Claude driver.
+  Delete the gate in `client_renders_child_sessions` when that changes.
 - Single- and multi-select `ask_user` questions map to ACP form elicitation
   (`elicitation/create`) when the client advertised
   `capabilities.elicitation.form`. Option values are the Tact option indices,
@@ -196,10 +210,16 @@ plan already owns the plan surface.
 ## Not implemented yet
 
 - `compaction_summary_chunk` streaming. The complete summary stays in the
-  transcript; the lifecycle is reported through `compaction_update`.
+  transcript; the lifecycle is reported through `compaction_update`. No
+  `AgentUpdate` carries the summary text, so the adapter has nothing to chunk:
+  `compaction_adapter::finish_success` stores it in `compact_state.last_summary`
+  and the progress events are `AgentUpdate::Info` lines. Streaming it therefore
+  needs a new cross-crate event, not an adapter change.
 - A native Goal surface. Goals are notices; the structured snapshot is in
   `_meta` rather than a protocol type of its own. T3's own Goal panel belongs to
-  its driver, so an ACP client draws whatever it chooses from `tact/goals`.
+  its driver, and its notice decoder keeps `_meta` but its `NoticeReceived`
+  renderer drops it, so a panel from `tact/goals` needs client work this
+  adapter cannot do from its side.
 - URL-based elicitation.
 - Audio and binary embedded-resource prompts.
 - Prompt suggestions and usage cost, which have no Tact data source.

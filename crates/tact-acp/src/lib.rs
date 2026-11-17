@@ -14,7 +14,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
@@ -84,6 +84,7 @@ pub async fn run() -> anyhow::Result<()> {
                         .as_ref()
                         .is_some_and(|elicitation| elicitation.supports_form());
                     manager.set_elicitation_form(form);
+                    manager.set_child_sessions(client_renders_child_sessions(&request.info));
                     responder.respond(
                         schema::InitializeResponse::new(
                             request.protocol_version,
@@ -401,6 +402,10 @@ struct ManagerInner {
     /// Connection-scoped, captured once in `initialize`. ACP has one
     /// connection per process, so this is not per session.
     elicitation_form: AtomicBool,
+    /// Whether the client renders child sessions, also from `initialize`. A
+    /// `OnceLock` rather than an atomic because there is no meaningful "unset"
+    /// value to publish: before `initialize` no session exists.
+    child_sessions: OnceLock<bool>,
 }
 
 /// Address for one live session. Immutable after creation, so the manager can
@@ -414,15 +419,49 @@ struct SessionHandle {
     commands: mpsc::UnboundedSender<SessionCommand>,
 }
 
+/// Everything `initialize` settled about the client, carried to each session.
+///
+/// Read once at session creation rather than on demand: it is connection
+/// state, and a session's actor must never re-read the connection.
 #[derive(Clone, Copy, Debug)]
-struct ElicitationSupport {
-    form: bool,
+struct ClientSupport {
+    /// The client advertised form elicitation.
+    elicitation_form: bool,
+    /// The client renders ACP v2 child sessions.
+    child_sessions: bool,
 }
 
+/// Whether the client that sent `initialize` renders child sessions.
+///
+/// ACP tells clients to ignore updates they do not understand, but T3 renders
+/// every unrecognised `sessionUpdate` as an `Unsupported ACP update` tool card
+/// in the middle of the transcript. Its ACP driver normalizes a fixed set of
+/// kinds and `subagent_update` is not in that set (the child-session extraction
+/// it does have is gated to its Claude flavor), so announcing a child session to
+/// T3 costs every subagent two junk cards.
+///
+/// The implementation name is the only signal available: ACP v2 has no
+/// capability for child sessions, and T3 sends no `_meta` that could carry one.
+/// This repo already keys behaviour on T3 elsewhere (`t3_user_request`,
+/// `t3_safe_config_command_names`), so the same check is used here instead of
+/// inventing a private capability T3 would ignore.
+///
+/// Delete this gate once T3 handles `subagent_update` for non-Claude agents.
+fn client_renders_child_sessions(client: &schema::Implementation) -> bool {
+    client.name != T3_CLIENT_NAME
+}
+
+/// The `name` T3 puts in `initialize.info`.
+const T3_CLIENT_NAME: &str = "t3-code";
+
 impl ManagerInner {
-    fn elicitation(&self) -> ElicitationSupport {
-        ElicitationSupport {
-            form: self.elicitation_form.load(Ordering::Acquire),
+    fn support(&self) -> ClientSupport {
+        ClientSupport {
+            elicitation_form: self.elicitation_form.load(Ordering::Acquire),
+            // `initialize` runs once per connection, so the first answer is the
+            // one every session gets. A client that never identified itself
+            // keeps the full protocol behaviour.
+            child_sessions: self.child_sessions.get().copied().unwrap_or(true),
         }
     }
 }
@@ -439,6 +478,7 @@ impl SessionManager {
                 next_message: Arc::new(AtomicU64::new(1)),
                 config_error,
                 elicitation_form: AtomicBool::new(false),
+                child_sessions: OnceLock::new(),
             }),
         }
     }
@@ -447,8 +487,15 @@ impl SessionManager {
         self.inner.elicitation_form.store(form, Ordering::Release);
     }
 
-    fn elicitation(&self) -> ElicitationSupport {
-        self.inner.elicitation()
+    fn set_child_sessions(&self, child_sessions: bool) {
+        // A duplicate `initialize` must not rewrite an answer sessions were
+        // already created from.
+        let _ = self.inner.child_sessions.set(child_sessions);
+    }
+
+    /// What `initialize` learned about this client.
+    fn support(&self) -> ClientSupport {
+        self.inner.support()
     }
 
     fn ensure_config(&self) -> Result<(), Error> {
@@ -506,7 +553,7 @@ impl SessionManager {
                 connection.clone(),
                 SessionSelection::New,
                 state,
-                self.elicitation(),
+                self.support(),
                 mcp_servers,
             )
             .await?;
@@ -591,7 +638,7 @@ impl SessionManager {
                 connection.clone(),
                 SessionSelection::Resume(session_id.to_string()),
                 state,
-                self.elicitation(),
+                self.support(),
                 mcp_servers,
             )
             .await?;
@@ -662,7 +709,7 @@ impl SessionManager {
                 connection,
                 SessionSelection::Resume(new_id.clone()),
                 state,
-                self.elicitation(),
+                self.support(),
                 mcp_servers,
             )
             .await?;
@@ -694,7 +741,7 @@ impl SessionManager {
         connection: ConnectionTo<Client>,
         selection: SessionSelection,
         state: SessionState,
-        elicitation: ElicitationSupport,
+        support: ClientSupport,
         mcp_servers: Vec<(String, tact::mcp::McpProjectConfig)>,
     ) -> Result<schema::SessionId, Error> {
         let tact_path = TactPath::new(cwd.clone());
@@ -741,7 +788,7 @@ impl SessionManager {
             command_rx,
             self.inner.next_message.clone(),
             state,
-            elicitation,
+            support,
         );
         info!(%session_id, "ACP session started");
         Ok(session_id)
@@ -1009,6 +1056,61 @@ const THOUGHT_LEVEL_CONFIG_ID: &str = "thought_level";
 /// The single plan id this adapter uses, so each task-list update replaces the
 /// previous checklist rather than accumulating plans.
 const TACT_PLAN_ID: &str = "tasks";
+
+/// What [`plan_message`] decided an incoming task list means to the client.
+///
+/// The three cases are separate because they are three different conclusions,
+/// not one "changed" flag: a plan the client already shows must not be re-sent,
+/// a plan that emptied out must be *removed* rather than replaced by an empty
+/// list, and only the remaining case is an ordinary content change.
+enum PlanMessage {
+    /// The client already shows this exact list.
+    Unchanged,
+    /// The list is now empty and the client shows a plan, so drop it.
+    Remove,
+    /// Send the list as the plan's new contents.
+    Replace,
+}
+
+/// Decide what to tell the client about `next`.
+///
+/// `current` is the plan the client shows, or `None` when none was published.
+/// An empty list is only a removal when something is showing: a client that
+/// never saw this plan has nothing to drop, and ACP's own `plan_removed` is a
+/// removal notice for a plan identified by id, not a way to say "no tasks".
+fn plan_message(
+    current: Option<&[(String, schema::PlanEntryStatus)]>,
+    next: &[(String, schema::PlanEntryStatus)],
+) -> PlanMessage {
+    match current {
+        Some(current) if current == next => PlanMessage::Unchanged,
+        Some(_) if next.is_empty() => PlanMessage::Remove,
+        None if next.is_empty() => PlanMessage::Unchanged,
+        _ => PlanMessage::Replace,
+    }
+}
+
+/// Tact's task snapshots as the `(content, status)` pairs a plan entry needs.
+///
+/// The pair is the comparison key as well as the content: two task lists that
+/// produce the same pairs look identical to the client, so there is no reason
+/// to send the second one.
+fn plan_entries(tasks: &[TaskSnapshot]) -> Vec<(String, schema::PlanEntryStatus)> {
+    tasks
+        .iter()
+        .map(|task| {
+            (
+                task.subject.clone(),
+                match task.status {
+                    TaskStatusSnapshot::Pending => schema::PlanEntryStatus::Pending,
+                    TaskStatusSnapshot::InProgress => schema::PlanEntryStatus::InProgress,
+                    TaskStatusSnapshot::Completed => schema::PlanEntryStatus::Completed,
+                },
+            )
+        })
+        .collect()
+}
+
 /// `_meta` key carrying the structured Goal list beside the Goal notice text.
 ///
 /// ACP has no Goal update, and a Plan cannot hold one: a `PlanEntry` is a step
@@ -1322,7 +1424,7 @@ fn spawn_actor(
     mut command_rx: mpsc::UnboundedReceiver<SessionCommand>,
     next_message: Arc<AtomicU64>,
     state: SessionState,
-    elicitation: ElicitationSupport,
+    support: ClientSupport,
 ) {
     tokio::spawn(async move {
         let mut actor = SessionActor {
@@ -1334,14 +1436,14 @@ fn spawn_actor(
             next_message,
             state,
             turn: Turn::default(),
-            elicitation,
+            support,
             open_requests: HashMap::new(),
             published_requests: HashSet::new(),
             subagent_sessions: HashMap::new(),
             title_sent: false,
             background: None,
             context_window: context_window(),
-            last_plan: Vec::new(),
+            last_plan: None,
             last_goals: Vec::new(),
         };
         actor.reconcile_pending_requests();
@@ -1494,7 +1596,10 @@ struct SessionActor {
     next_message: Arc<AtomicU64>,
     state: SessionState,
     turn: Turn,
-    elicitation: ElicitationSupport,
+    /// What this client can render, fixed at session start. Suppressing a
+    /// surface is a client decision, not a protocol one, so it is read from
+    /// the connection's `initialize` and never changes mid-session.
+    support: ClientSupport,
     /// Cancellation handles for ACP requests the adapter published, keyed by
     /// Tact's request id. This is a withdrawal index, not a second pending
     /// request registry: `UiResponder` remains authoritative for answering.
@@ -1515,8 +1620,11 @@ struct SessionActor {
     /// The context window to report with usage. The window is configuration,
     /// not an event, so it is read once at session start.
     context_window: u64,
-    /// The last plan published, so an unchanged task list is not re-sent.
-    last_plan: Vec<(String, schema::PlanEntryStatus)>,
+    /// The plan the client is currently showing, so an unchanged task list is
+    /// not re-sent. `None` means no plan was ever published: an empty list then
+    /// has nothing to remove, and a `plan_removed` for a plan the client never
+    /// saw would be a no-op at best.
+    last_plan: Option<Vec<(String, schema::PlanEntryStatus)>>,
     /// The last Goal snapshot announced, so a reconcile tick is not a notice.
     last_goals: Vec<GoalSnapshot>,
 }
@@ -1854,34 +1962,37 @@ impl SessionActor {
     ///
     /// The task list is the only user-facing checklist Tact has, so it is what
     /// a client's todo panel should show. One stable plan id means each update
-    /// replaces the previous list, which is the semantics ACP gives it.
+    /// replaces the previous list, which is the semantics ACP gives it — and a
+    /// task list that empties out must be *removed*, not replaced by an empty
+    /// list, or the client's todo panel keeps showing the last checklist
+    /// forever. That is the one place a plan is not just "replace contents".
     fn publish_plan(&mut self, tasks: &[TaskSnapshot]) {
-        let entries = tasks
-            .iter()
-            .map(|task| {
-                (
-                    task.subject.clone(),
-                    match task.status {
-                        TaskStatusSnapshot::Pending => schema::PlanEntryStatus::Pending,
-                        TaskStatusSnapshot::InProgress => schema::PlanEntryStatus::InProgress,
-                        TaskStatusSnapshot::Completed => schema::PlanEntryStatus::Completed,
-                    },
-                )
-            })
-            .collect::<Vec<_>>();
-        if entries == self.last_plan {
-            return;
+        let next = plan_entries(tasks);
+        match plan_message(self.last_plan.as_deref(), &next) {
+            PlanMessage::Unchanged => {}
+            PlanMessage::Remove => {
+                self.last_plan = None;
+                self.send(schema::SessionUpdate::PlanRemoved(
+                    schema::PlanRemoved::new(TACT_PLAN_ID),
+                ));
+            }
+            PlanMessage::Replace => {
+                let entries = next
+                    .iter()
+                    .map(|(content, status)| {
+                        schema::PlanEntry::new(
+                            content.clone(),
+                            schema::PlanEntryPriority::Medium,
+                            status.clone(),
+                        )
+                    })
+                    .collect();
+                self.last_plan = Some(next);
+                self.send(schema::SessionUpdate::PlanUpdate(schema::PlanUpdate::new(
+                    schema::PlanUpdateContent::items(TACT_PLAN_ID, entries),
+                )));
+            }
         }
-        self.last_plan = entries.clone();
-        let entries = entries
-            .into_iter()
-            .map(|(content, status)| {
-                schema::PlanEntry::new(content, schema::PlanEntryPriority::Medium, status)
-            })
-            .collect();
-        self.send(schema::SessionUpdate::PlanUpdate(schema::PlanUpdate::new(
-            schema::PlanUpdateContent::items(TACT_PLAN_ID, entries),
-        )));
     }
 
     /// Announce a Goal snapshot change.
@@ -1960,7 +2071,7 @@ impl SessionActor {
             request.purpose,
             UiRequestPurpose::Question | UiRequestPurpose::Other
         );
-        if question && self.elicitation.form && !request.options.is_empty() {
+        if question && self.support.elicitation_form && !request.options.is_empty() {
             self.schedule_requires_action(request.request_id);
             self.spawn_elicitation(request);
             return;
@@ -2722,8 +2833,11 @@ impl SessionActor {
     }
 
     /// Announce an ACP v2 child session for a `spawn_subagent` call. The parent
-    /// tool call also gets a display-only session reference; clients that do
-    /// not render child sessions keep the existing tool card.
+    /// tool call also gets a display-only session reference.
+    ///
+    /// A client that cannot render child sessions gets none of this: it sees
+    /// the ordinary tool card, which is a complete record of the same call. See
+    /// [`ClientSupport::child_sessions`].
     fn announce_subagent(
         &mut self,
         tool_id: &str,
@@ -2731,7 +2845,7 @@ impl SessionActor {
         arg_full: &str,
         presentation: &ToolPresentationInfo,
     ) -> Option<schema::SessionId> {
-        if presentation.visual_kind != ToolVisualKind::Subagent {
+        if presentation.visual_kind != ToolVisualKind::Subagent || !self.support.child_sessions {
             return None;
         }
         if let Some(session) = self.subagent_sessions.get(tool_id) {
@@ -4666,6 +4780,73 @@ mod tests {
                 .and_then(|meta| meta.get(GOALS_META_KEY)),
             Some(&serde_json::json!([]))
         );
+    }
+
+    /// A plan the client already shows must not be re-sent, or every reconcile
+    /// tick would repaint the todo panel.
+    #[test]
+    fn an_unchanged_plan_is_not_resent() {
+        let current = [("ship it".to_string(), schema::PlanEntryStatus::InProgress)];
+        assert!(matches!(
+            plan_message(Some(&current), &current),
+            PlanMessage::Unchanged
+        ));
+    }
+
+    /// An emptied task list must *remove* the plan. ACP treats an update as a
+    /// full replacement of the plan with that id; without the removal the
+    /// client has no way to learn the checklist is over and would keep showing
+    /// the last task forever.
+    #[test]
+    fn an_emptied_plan_is_removed_not_replaced() {
+        let current = [("ship it".to_string(), schema::PlanEntryStatus::Completed)];
+        assert!(matches!(
+            plan_message(Some(&current), &[]),
+            PlanMessage::Remove
+        ));
+    }
+
+    /// A client that never saw a plan has nothing to remove, so an empty list
+    /// stays silent rather than sending a removal for an unknown plan id.
+    #[test]
+    fn an_empty_plan_with_nothing_published_stays_silent() {
+        assert!(matches!(plan_message(None, &[]), PlanMessage::Unchanged));
+    }
+
+    #[test]
+    fn a_new_plan_is_replaced_wholesale() {
+        let next = [("ship it".to_string(), schema::PlanEntryStatus::Pending)];
+        assert!(matches!(plan_message(None, &next), PlanMessage::Replace));
+
+        let current = [("ship it".to_string(), schema::PlanEntryStatus::Pending)];
+        let next = [("ship it".to_string(), schema::PlanEntryStatus::Completed)];
+        assert!(matches!(
+            plan_message(Some(&current), &next),
+            PlanMessage::Replace
+        ));
+    }
+
+    /// T3 renders an unrecognised `sessionUpdate` as an "unsupported update"
+    /// tool card, so announcing a child session to it would put two junk cards
+    /// in the transcript of every subagent. It keeps the plain tool card.
+    #[test]
+    fn t3_is_not_offered_child_sessions() {
+        let t3 = schema::Implementation::new("t3-code", "0.0.0");
+        assert!(!client_renders_child_sessions(&t3));
+    }
+
+    /// Every other ACP client keeps the full protocol behaviour: ACP requires
+    /// clients to ignore updates they do not understand, so a client that does
+    /// not know child sessions is not harmed by receiving them.
+    #[test]
+    fn other_clients_keep_child_sessions() {
+        let other = schema::Implementation::new("some-other-client", "1.2.3");
+        assert!(client_renders_child_sessions(&other));
+
+        // T3's own probe and test harnesses use their own names; only the real
+        // client identifies as `t3-code`, so a probe is not mistaken for it.
+        let probe = schema::Implementation::new("t3-code-provider-test", "0.0.0");
+        assert!(client_renders_child_sessions(&probe));
     }
 
     #[test]

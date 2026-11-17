@@ -134,7 +134,19 @@ The adapter also uses ACP's native file and work surfaces: file tools report
 become terminals plus `state_update.background` entries; detached subagents are
 listed there too; compaction progress is a typed `compaction_update`; and
 `session/resume` replays the durable transcript while `session/fork` copies it
-into a new session.
+into a new session. The task list owns the plan surface (`plan_update`), and an
+emptied list sends `plan_removed` rather than an empty checklist, because a plan
+update is a wholesale replacement.
+
+Two surfaces are withheld from clients that cannot render them, since a client
+is free to show an unknown update as an error row rather than ignore it. T3
+does exactly that: its ACP driver normalizes a fixed set of `sessionUpdate`
+kinds and turns the rest into `Unsupported ACP update` tool cards. So a client
+identifying itself as `t3-code` in `initialize.info` gets no child sessions — no
+`subagent_update`, no `Session` tool-call reference, no child-session updates —
+and its subagents keep the plain tool card. ACP has no capability bit for child
+sessions, so the implementation name is the signal; remove the gate once T3
+handles them for non-Claude drivers.
 
 ---
 

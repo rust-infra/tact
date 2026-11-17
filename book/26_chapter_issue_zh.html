@@ -792,6 +792,7 @@
 <li class="toc-l2"><a href="#67-2026-11-15--acp-%E6%9C%AC%E5%9C%B0%E4%BD%9C%E7%AD%94%E7%9A%84-prompt-%E4%B8%8D-settle%E7%BA%BF%E7%A8%8B%E6%B0%B8%E8%BF%9C-working" title="67. 2026-11-15 — ACP：本地作答的 prompt 不 settle，T3 线程永远显示 Working"><span class="toc-label">67. 2026-11-15 — ACP：本地作答的 prompt 不 settle，T3 线程永远显示 Working</span></a></li>
 <li class="toc-l2"><a href="#68-2026-11-15--stats-%E5%9C%A8%E5%86%85%E6%A0%B8%E9%87%8D%E6%9E%84%E5%90%8E%E5%BD%92%E9%9B%B6%E6%89%80%E6%9C%89%E8%AE%A1%E6%95%B0%E6%90%AC%E5%9B%9E%E7%AB%AF%E5%8F%A3" title="68. 2026-11-15 — /stats 在 kernel 重构后归零：所有计数搬回端口"><span class="toc-label">68. 2026-11-15 — /stats 在 kernel 重构后归零：所有计数搬回端口</span></a></li>
 <li class="toc-l2"><a href="#69-2026-11-16--acp-%E5%9B%9E%E5%90%88%E8%BE%B9%E7%95%8C%E5%9B%9E%E6%94%BE%E4%B8%8E%E5%90%8E%E5%8F%B0%E5%AD%90%E4%BB%A3%E7%90%86%E7%9A%84%E5%8D%81%E4%B8%AA%E4%BF%AE%E5%A4%8D" title="69. 2026-11-16 — ACP：回合边界、回放与后台子代理的十个修复"><span class="toc-label">69. 2026-11-16 — ACP：回合边界、回放与后台子代理的十个修复</span></a></li>
+<li class="toc-l2"><a href="#70-2026-11-17--acp-%E6%B8%85%E7%A9%BA%E7%9A%84%E5%BE%85%E5%8A%9E%E9%9D%A2%E6%9D%BF%E8%A6%81%E7%A7%BB%E9%99%A4%E5%AD%90%E4%BB%A3%E7%90%86%E5%8D%A1%E7%89%87%E4%B8%8D%E5%96%82%E7%BB%99-t3" title="70. 2026-11-17 — ACP：清空的待办面板要移除，子代理会话不喂给 T3"><span class="toc-label">70. 2026-11-17 — ACP：清空的待办面板要移除，子代理会话不喂给 T3</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -23774,6 +23775,40 @@ drain 所有 <code>subagent_sessions</code>，把 <code>async_launched</code>
 （<code>t3_user_request</code>、标题推导）、
 <code>crates/tact-acp/README.md</code> 与
 <a href="../ARCHITECTURE.md">ARCHITECTURE.md</a> 的 ACP 段。</p>
+<h2 id="70-2026-11-17--acp-清空的待办面板要移除子代理卡片不喂给-t3">70. 2026-11-17 — ACP：清空的待办面板要移除，子代理会话不喂给 T3</h2>
+<p><strong>现象：</strong>T3 里的待办面板在任务被删光之后仍然停在最后一份清单上，
+把已经取消的工作当成还没做完；每个 <code>spawn_subagent</code> 还会在时间线里
+落下两张 <code>Unsupported ACP update: subagent_update</code> 卡片。</p>
+<p><strong>根因：</strong>两处都是"发了一个客户端处理不了的东西"。<code>plan_update</code>
+是整体替换：任务列表清空时再发一份空清单，客户端只会把它画成"没有任务"的
+空面板或干脆忽略，永远不会知道这份计划结束了——结束需要 <code>plan_removed</code>。
+子代理侧，ACP v2 允许 agent 通告子会话，但 T3 的 ACP 驱动只归一化一组固定的
+<code>sessionUpdate</code>，其余一律转成 <code>Unsupported ACP update</code>
+工具卡；<code>subagent_update</code> 不在那一组里（它有的子会话抽取只对 Claude
+驱动开启），所以标准做法在这里等于两张废卡。</p>
+<p><strong>决策：</strong>计划有第三个状态。<code>plan_message</code> 区分
+"未变"、"移除"、"替换"：清空后发 <code>plan_removed</code>，而从未发布过计划时
+保持安静（没有可移除的东西）。子代理会话按客户端决定：<code>initialize.info</code>
+里 <code>name == "t3-code"</code> 时整条子会话路径关闭——不公告、父工具卡不带
+<code>Session</code> 引用、子会话更新也不发；其他客户端照旧拿到完整协议行为。
+ACP 没有子会话能力位，T3 也不发能承载它的 <code>_meta</code>，实现名是唯一可用
+的信号，而本仓库已有按 T3 分流的先例（<code>t3_user_request</code>、
+<code>t3_safe_config_command_names</code>）。T3 处理了非 Claude 驱动的
+<code>subagent_update</code> 之后，删掉 <code>client_renders_child_sessions</code>
+即可。</p>
+<p><strong>验证：</strong><code>plan_message</code> 的四个分支各有单元测试
+（未变、清空即移除、从未发布保持安静、整体替换）；
+<code>t3_is_not_offered_child_sessions</code> 与
+<code>other_clients_keep_child_sessions</code> 固定住客户端判定，
+包括不把 T3 的探测实例名 <code>t3-code-provider-test</code> 当成真身。
+<code>cargo test -p tact-acp --lib</code> 32 项通过，
+<code>scripts/check-rust.sh</code> 全量通过（含 book 检查）。</p>
+<p><strong>Pointers：</strong><code>crates/tact-acp/src/lib.rs</code>
+（<code>PlanMessage</code>/<code>plan_message</code>、<code>publish_plan</code>、
+<code>ClientSupport</code>、<code>client_renders_child_sessions</code>、
+<code>announce_subagent</code>）、
+<code>crates/tact-acp/Cargo.toml</code>（<code>unstable_plan_operations</code>）、
+<code>crates/tact-acp/README.md</code> 的协议范围与"尚未实现"两节。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>
