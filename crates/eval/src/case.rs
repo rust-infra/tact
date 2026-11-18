@@ -37,7 +37,28 @@ pub struct EvalCase {
     /// name by accident.
     #[serde(default)]
     pub id: String,
-    pub prompt: String,
+    /// A single-prompt case, spelled `prompt = "..."`.
+    ///
+    /// Kept as its own field rather than folded into [`Self::prompts`] because
+    /// it is the spelling every existing suite uses, and because `prompt` and
+    /// `prompts` together would be a second way to say the same thing. Exactly
+    /// one of the two must be present; [`Self::validate_shape`] refuses both or
+    /// neither.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    /// A multi-turn case: every prompt is sent to the same session, in order.
+    ///
+    /// This is what a conversation regression needs. "Change the file you just
+    /// wrote", "now summarise what you did", and a compaction case that must
+    /// survive more than one turn are all unexpressible with one prompt, and
+    /// they are where the agent loop actually breaks.
+    ///
+    /// The graders still judge the final state: the answer is the last turn's
+    /// text, and the files are whatever the last turn left. A case that needs
+    /// to judge an intermediate turn belongs in its own case, because a
+    /// transcript grader is a different (and much less stable) thing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prompts: Vec<String>,
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
     #[serde(default = "default_isolation")]
@@ -79,17 +100,60 @@ impl EvalCase {
         Ok(case)
     }
 
+    /// The turns this case sends, in order.
+    ///
+    /// One accessor rather than two fields at every call site, so a runner
+    /// cannot forget that a case may have more than one prompt.
+    pub fn turns(&self) -> Vec<&str> {
+        match (&self.prompt, self.prompts.is_empty()) {
+            (Some(prompt), true) => vec![prompt.as_str()],
+            (None, false) => self.prompts.iter().map(String::as_str).collect(),
+            // Unreachable for a loaded case; `validate_shape` refuses this. A
+            // constructed one gets no turns rather than a panic, and the run
+            // then fails as an empty turn instead of taking the process down.
+            (Some(prompt), false) => vec![prompt.as_str()],
+            (None, true) => Vec::new(),
+        }
+    }
+
     /// Everything that can be decided from the file alone.
     pub(crate) fn validate_shape(&self, path: &Path) -> Result<()> {
-        if self.prompt.trim().is_empty() {
-            anyhow::bail!("{}: prompt is empty", path.display());
-        }
+        self.validate_turns(path)?;
         self.validate_id(path)?;
         if self.timeout_secs == 0 {
             anyhow::bail!("{}: timeout_secs must be positive", path.display());
         }
         for grader in &self.graders {
             grader.validate(path)?;
+        }
+        Ok(())
+    }
+
+    /// Exactly one of `prompt` and `prompts` must carry the case's turns.
+    ///
+    /// Both is ambiguous — which one wins? — and neither is an empty case that
+    /// would run nothing and grade an empty answer. `prompts` must also be
+    /// non-empty and carry no blank turn: a blank turn is a prompt the model is
+    /// asked to answer with nothing, which no suite means.
+    fn validate_turns(&self, path: &Path) -> Result<()> {
+        match (&self.prompt, self.prompts.is_empty()) {
+            (Some(prompt), true) => {
+                if prompt.trim().is_empty() {
+                    anyhow::bail!("{}: prompt is empty", path.display());
+                }
+            }
+            (None, false) => {
+                for (index, prompt) in self.prompts.iter().enumerate() {
+                    if prompt.trim().is_empty() {
+                        anyhow::bail!("{}: prompts[{}] is empty", path.display(), index);
+                    }
+                }
+            }
+            (Some(_), false) => anyhow::bail!(
+                "{}: a case declares `prompt` or `prompts`, not both",
+                path.display()
+            ),
+            (None, true) => anyhow::bail!("{}: a case needs `prompt` or `prompts`", path.display()),
         }
         Ok(())
     }
@@ -430,6 +494,68 @@ mod tests {
 
             assert_eq!(EvalCase::load(&path).unwrap().id, id);
         }
+    }
+
+    #[test]
+    fn a_single_prompt_case_still_loads_and_reports_one_turn() {
+        // The spelling every existing suite uses must keep working: `prompt` is
+        // now optional so `prompts` can exist, not so suites have to change.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("single.toml");
+        std::fs::write(&path, "prompt = \"write it\"\n").unwrap();
+
+        let case = EvalCase::load(&path).unwrap();
+
+        assert_eq!(case.turns(), ["write it"]);
+    }
+
+    #[test]
+    fn a_multi_turn_case_reports_its_prompts_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("multi.toml");
+        std::fs::write(&path, "prompts = [\"write it\", \"now read it back\"]\n").unwrap();
+
+        let case = EvalCase::load(&path).unwrap();
+
+        assert_eq!(case.turns(), ["write it", "now read it back"]);
+        assert_eq!(case.prompt, None);
+    }
+
+    #[test]
+    fn a_case_declaring_both_prompt_and_prompts_is_refused() {
+        // Two spellings of the same thing is ambiguous: which one runs? Refusing
+        // at load beats a runner silently picking one.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("both.toml");
+        std::fs::write(&path, "prompt = \"a\"\nprompts = [\"b\"]\n").unwrap();
+
+        let error = EvalCase::load(&path).unwrap_err().to_string();
+
+        assert!(error.contains("not both"), "{error}");
+    }
+
+    #[test]
+    fn a_case_with_neither_prompt_form_is_refused() {
+        // Without this, the case runs nothing and grades an empty answer, which
+        // looks like a model failure rather than a broken case.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("none.toml");
+        std::fs::write(&path, "timeout_secs = 5\n").unwrap();
+
+        let error = EvalCase::load(&path).unwrap_err().to_string();
+
+        assert!(error.contains("needs `prompt` or `prompts`"), "{error}");
+    }
+
+    #[test]
+    fn a_blank_turn_inside_prompts_is_refused_and_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blank-turn.toml");
+        std::fs::write(&path, "prompts = [\"ok\", \"  \"]\n").unwrap();
+
+        let error = EvalCase::load(&path).unwrap_err().to_string();
+
+        assert!(error.contains("prompts[1]"), "{error}");
     }
 
     #[test]

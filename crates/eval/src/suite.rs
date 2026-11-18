@@ -489,7 +489,8 @@ mod tests {
 
         let case = EvalCase {
             id: format!("copy-{}", uuid::Uuid::new_v4()),
-            prompt: "p".into(),
+            prompt: Some("p".into()),
+            prompts: Vec::new(),
             timeout_secs: 1,
             isolation: Isolation::Copy {
                 fixture: fixture.path().to_path_buf(),

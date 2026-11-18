@@ -461,7 +461,8 @@ mod tests {
     fn case(graders: Vec<GraderSpec>) -> EvalCase {
         EvalCase {
             id: "c".into(),
-            prompt: "p".into(),
+            prompt: Some("p".into()),
+            prompts: Vec::new(),
             timeout_secs: 10,
             isolation: crate::Isolation::Empty,
             graders,

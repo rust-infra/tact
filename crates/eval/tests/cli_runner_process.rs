@@ -25,7 +25,8 @@ fn case_with_binary(dir: &Path, script: &str) -> (EvalCase, PathBuf) {
     // removes flakiness; it does not weaken the assertion.
     let case = EvalCase {
         id: format!("process-{}", uuid::Uuid::new_v4()),
-        prompt: "p".into(),
+        prompt: Some("p".into()),
+        prompts: Vec::new(),
         timeout_secs: 2,
         isolation: Isolation::Empty,
         graders: Vec::new(),
@@ -117,4 +118,68 @@ async fn a_grandchild_holding_the_pipe_does_not_hang_the_timeout() {
         Some(RunFailure::Timeout { .. })
     ));
     let _ = std::fs::remove_dir_all(&outcome.work_dir);
+}
+
+/// A multi-turn case must resume one session, not start N unrelated ones.
+///
+/// The stand-in binary records its argv and prints a session id, so the test can
+/// see both: that the first call had no `--session`, and that every later call
+/// named the id the first one printed.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_multi_turn_case_resumes_the_session_its_first_turn_wrote() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("args.log");
+    let script = format!(
+        "#!/bin/sh\n\
+         echo \"$@\" >> {log}\n\
+         case \"$*\" in *--session*) ;; *) echo '[session id: sess-abc]' >&2 ;; esac\n\
+         echo '[turn] 1/500' >&2
+         echo answered\n",
+        log = log.display()
+    );
+    let binary = dir.path().join("fake-tact-ui");
+    std::fs::write(&binary, script).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let case = EvalCase {
+        id: format!("multi-{}", uuid::Uuid::new_v4()),
+        prompt: None,
+        prompts: vec!["first".into(), "second".into(), "third".into()],
+        timeout_secs: 20,
+        isolation: Isolation::Empty,
+        graders: Vec::new(),
+    };
+
+    let outcome = CliRunner::new(binary).run(&case, 1).await;
+
+    let calls: Vec<String> = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    assert_eq!(calls.len(), 3, "one process per turn: {calls:?}");
+    assert!(
+        !calls[0].contains("--session"),
+        "the first turn opens the session: {}",
+        calls[0]
+    );
+    for call in &calls[1..] {
+        assert!(
+            call.contains("--session sess-abc"),
+            "a later turn must resume the first turn's session: {call}"
+        );
+    }
+    assert_eq!(
+        outcome.artifact.answer, "answered",
+        "the answer is the last turn's output, not an earlier turn's"
+    );
+    assert_eq!(
+        outcome.artifact.turns,
+        Some(3),
+        "each process reports one turn, so the case's count is the sum"
+    );
 }

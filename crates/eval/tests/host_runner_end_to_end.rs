@@ -81,6 +81,30 @@ command = "true"
     .unwrap();
 }
 
+/// A two-turn case, so the same session has to carry the context.
+fn write_multi_turn_case(suite_dir: &std::path::Path, name: &str, prompts: &[&str]) {
+    let prompts = prompts
+        .iter()
+        .map(|prompt| format!("{prompt:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    std::fs::write(
+        suite_dir.join(format!("{name}.toml")),
+        format!(
+            r#"
+prompts = [{prompts}]
+timeout_secs = 60
+
+[[graders]]
+kind = "command"
+name = "ran"
+command = "true"
+"#
+        ),
+    )
+    .unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_host_run_reports_the_answer_stop_reason_usage_and_verdict() {
     let server = MockServer::start().await;
@@ -153,6 +177,7 @@ protocol = "chat_completions"
     write_case(&suite_dir, "answers", "please answer");
     write_case(&suite_dir, "silent", "say nothing");
     write_case_with_timeout(&suite_dir, "slow", "reply slowly", 1);
+    write_multi_turn_case(&suite_dir, "multi", &["please answer", "and again"]);
     let suite = EvalSuite::load(&suite_dir).unwrap();
 
     let run = run_suite(&suite, &HostRunner::new(options), 1)
@@ -225,6 +250,28 @@ protocol = "chat_completions"
         !slow.verdict().is_pass(),
         "a run the harness stopped cannot pass: {:?}",
         slow.verdict()
+    );
+
+    // A multi-turn case runs every prompt against one session, and the report
+    // prices and counts the whole conversation rather than only its last turn.
+    let multi = run
+        .outcomes
+        .iter()
+        .find(|outcome| outcome.case_id == "multi")
+        .expect("multi case ran");
+    assert!(
+        multi.failure.is_none(),
+        "both turns must complete: {:?}",
+        multi.failure
+    );
+    assert_eq!(
+        multi.turns,
+        Some(2),
+        "two prompts are two model calls on one session"
+    );
+    assert_eq!(
+        multi.tokens.prompt, 22,
+        "both turns' prompt tokens are counted (2 x 11)"
     );
 
     let _ = std::fs::remove_dir_all(&suite_dir);

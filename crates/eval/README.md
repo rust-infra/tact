@@ -79,6 +79,31 @@ A case names a prompt and what decides it. It does not name a model or a
 permission mode: those are process-global in Tact, so the run sets them once
 (see [Two runners](#two-runners)).
 
+### Multi-turn cases
+
+`prompts` sends several prompts to one session, in order, and grades the final
+state:
+
+```toml
+prompts = [
+  "Create notes.txt containing exactly: draft one",
+  "Now change notes.txt so its content is exactly: final two",
+]
+```
+
+Each prompt after the first resumes the session the previous one wrote, which is
+what makes this a conversation rather than N runs sharing a directory:
+"change the file you just wrote" only means something if the context carried.
+`timeout_secs` is one budget for the whole case, not one per turn, so a
+three-turn case with `timeout_secs = 240` is four minutes of work.
+
+The answer graded is the last turn's text and the files are whatever the last
+turn left. A case that must judge an intermediate turn belongs in its own case.
+
+A case declares `prompt` **or** `prompts`, never both: two spellings of the same
+thing is a question the loader should not have to answer. A blank turn inside
+`prompts` is refused and named by index.
+
 Five graders:
 
 - `command` runs a shell command in the case directory; exit status 0 passes.

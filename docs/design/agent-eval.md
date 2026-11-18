@@ -357,6 +357,29 @@ subset: comparing it against a full run is `incomparable`, not a regression. An
 unknown id is an error, because a typo that selects no cases looks exactly like a
 suite that passed everything at no cost.
 
+**A case can be a conversation.** `prompts` sends several turns to one session
+and grades where it ended up. A one-prompt case is the common case and stays
+spelled `prompt = "..."`; `prompt` became `Option<String>` and empty `prompts` is
+skipped at serialization, so the fingerprint of every existing case is byte for
+byte what it was. Without that, every recorded baseline would have become
+`incomparable` overnight for a change no suite made.
+
+`timeout_secs` is one budget for the whole case rather than one per turn: a
+three-turn case with a two-minute budget means two minutes of work, and giving
+each turn its own budget would make a conversation's cost grow with its length
+in a way the case file does not say.
+
+Both runners implement it the way their process model allows. The CLI runner
+spawns `tact-ui headless` once per turn, passes `--session` for every turn after
+the first, and sums the per-process turn counters, because each process restarts
+its own. The host runner loops `agent_loop_detailed` on one agent, so the
+context is literally the same object; one observer pump serves the whole case
+because the channel belongs to the agent, not to a turn.
+
+A turn that produced no answer ends the conversation. Sending the next prompt
+into a session whose last turn was empty would grade the wrong failure — the
+second turn's error instead of the first turn's empty answer.
+
 `report_meta.harness_version` is recorded for attribution and deliberately not a
 comparability condition: a version bump is usually the thing a nightly gate is
 measuring.

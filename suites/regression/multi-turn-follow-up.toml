@@ -1,0 +1,27 @@
+# A conversation, not two runs: the second prompt says "the file you just
+# created", which is only answerable if the session carried the first turn.
+prompts = [
+  """
+Create a file named notes.txt in the current directory.
+Write exactly this content: draft one
+""",
+  """
+Now change notes.txt so its content is exactly: final two
+Do not create a new file; edit the one you just made.
+""",
+]
+timeout_secs = 240
+
+[[graders]]
+kind = "files"
+name = "edited-the-first-turn-file"
+
+[[graders.assertions]]
+kind = "contains"
+path = "notes.txt"
+text = "final two"
+
+[[graders.assertions]]
+kind = "matches"
+path = "notes.txt"
+pattern = "^final two\\s*$"

@@ -123,55 +123,109 @@ impl Runner for CliRunner {
             }
         };
 
-        let mut command = Command::new(&self.binary);
-        command
-            .args(self.options.to_flags())
-            .arg("--notifications=false")
-            .arg("headless")
-            .arg(&case.prompt)
-            .current_dir(&work_dir);
+        // One budget for the whole case, not one per turn. A three-turn case
+        // with `timeout_secs = 120` means two minutes of work, not six; giving
+        // each turn its own budget would make a conversation's cost grow with
+        // its length in a way the case file does not say.
+        let deadline = Instant::now() + Duration::from_secs(case.timeout_secs);
+        let mut sessions: Option<String> = None;
 
-        let outcome = match crate::process::run_child(
-            command,
-            Duration::from_secs(case.timeout_secs),
-        )
-        .await
-        {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                artifact.failure = Some(RunFailure::startup(error.to_string()));
-                artifact.duration_ms = crate::runner::elapsed_ms(start);
-                return RunOutcome { artifact, work_dir };
+        for (index, prompt) in case.turns().into_iter().enumerate() {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                artifact.failure = Some(RunFailure::Timeout {
+                    limit_secs: case.timeout_secs,
+                });
+                break;
+            };
+
+            let mut command = Command::new(&self.binary);
+            command
+                .args(self.options.to_flags())
+                .arg("--notifications=false");
+            // Every turn after the first resumes the session the previous one
+            // wrote, which is what makes a multi-turn case a conversation
+            // rather than N unrelated runs sharing a directory.
+            if let Some(session) = &sessions {
+                command.arg("--session").arg(session);
             }
-        };
+            command.arg("headless").arg(prompt).current_dir(&work_dir);
 
-        let stderr_lines: Vec<String> = outcome.stderr.lines().map(str::to_string).collect();
-        artifact.session_id = parse_session_id(&stderr_lines);
-        artifact.tools = parse_tools(&stderr_lines);
-        artifact.tokens = parse_tokens(&stderr_lines);
-        artifact.turns = parse_turns(&stderr_lines);
-        artifact.answer = outcome.stdout.trim_end().to_string();
+            let outcome = match crate::process::run_child(command, remaining).await {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    artifact.failure = Some(RunFailure::startup(error.to_string()));
+                    break;
+                }
+            };
+
+            let stderr_lines: Vec<String> = outcome.stderr.lines().map(str::to_string).collect();
+            // The first turn names the session; later turns print the id they
+            // resumed, so any of them can supply it.
+            sessions = parse_session_id(&stderr_lines).or(sessions);
+            artifact.tools.extend(parse_tools(&stderr_lines));
+            merge_tokens(&mut artifact.tokens, parse_tokens(&stderr_lines));
+            // The turn counter restarts inside each process, so the case's turn
+            // count is the sum, not the last turn's number.
+            artifact.turns = match (artifact.turns, parse_turns(&stderr_lines)) {
+                (Some(total), Some(one)) => Some(total + one),
+                (None, one) => one,
+                (total, None) => total,
+            };
+            artifact.answer = outcome.stdout.trim_end().to_string();
+
+            if outcome.timed_out() {
+                artifact.failure = Some(RunFailure::Timeout {
+                    limit_secs: case.timeout_secs,
+                });
+                break;
+            }
+
+            let stop = parse_stop(&stderr_lines, outcome.end);
+            // A later turn's verdict replaces an earlier one: the case is
+            // judged on where it ended up.
+            artifact.stop = stop;
+
+            if !outcome.succeeded() {
+                artifact.failure = Some(RunFailure::harness(format!(
+                    "tact-ui ended {:?} on turn {}: {}",
+                    outcome.end,
+                    index + 1,
+                    tail(&outcome.stderr)
+                )));
+                break;
+            }
+
+            // A turn that produced no answer ends the conversation. Running the
+            // next prompt into a session whose last turn was empty would grade
+            // the wrong failure.
+            if stop == Some(StopView::EmptyTurn) {
+                break;
+            }
+        }
+
+        artifact.session_id = sessions;
         artifact.duration_ms = crate::runner::elapsed_ms(start);
-
-        if outcome.timed_out() {
-            artifact.failure = Some(RunFailure::Timeout {
-                limit_secs: case.timeout_secs,
-            });
-            return RunOutcome { artifact, work_dir };
-        }
-
-        artifact.stop = parse_stop(&stderr_lines, outcome.end);
-
-        if !outcome.succeeded() {
-            artifact.failure = Some(RunFailure::harness(format!(
-                "tact-ui ended {:?}: {}",
-                outcome.end,
-                tail(&outcome.stderr)
-            )));
-        }
 
         RunOutcome { artifact, work_dir }
     }
+}
+
+/// Add one turn's usage to the case's running totals.
+///
+/// `parse_tokens` returns `None` for a count the log did not carry, and a later
+/// turn that does carry it must not turn the earlier unknown into a zero:
+/// presence is sticky, absence never is.
+fn merge_tokens(total: &mut TokenTotals, one: TokenTotals) {
+    total.prompt += one.prompt;
+    total.completion += one.completion;
+    total.cache_hit = match (total.cache_hit, one.cache_hit) {
+        (Some(sum), Some(turn)) => Some(sum + turn),
+        (sum, turn) => sum.or(turn),
+    };
+    total.reasoning = match (total.reasoning, one.reasoning) {
+        (Some(sum), Some(turn)) => Some(sum + turn),
+        (sum, turn) => sum.or(turn),
+    };
 }
 
 /// `[session id: <id>]`, printed by headless on stderr at teardown.

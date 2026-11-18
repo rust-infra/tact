@@ -524,9 +524,9 @@ headless 会把每个需要工具的用例都判成失败。因此
 <h2 id="2-用例">2. 用例</h2>
 <p>用例是可版本化的数据，每个用例一个 <code>*.toml</code>。</p>
 <p>仓库当前有两套小套件。<code>suites/smoke</code> 保留两个结构冒烟
-case，<code>suites/regression</code> 有六个行为回归 case，覆盖
-answer、file、command、fixture 读取与编辑。两者都用同一套
-<code>EvalCase</code> 格式，不引入第二套 runner 或判分语言。</p>
+case，<code>suites/regression</code> 有七个行为回归 case，覆盖
+answer、file、command、fixture 读取与编辑，以及一条多轮会话用例。
+两者都用同一套 <code>EvalCase</code> 格式，不引入第二套 runner 或判分语言。</p>
 <pre><code class="language-toml">prompt = &quot;Create hello.txt containing exactly: hello eval&quot;
 timeout_secs = 180
 
@@ -556,11 +556,15 @@ text = &quot;hello eval&quot;</code></pre>
 </tr>
 <tr>
 <td><code>prompt</code></td>
-<td>用户会给 Agent 的那句话</td>
+<td>用户会给 Agent 的那句话（单轮用例）</td>
+</tr>
+<tr>
+<td><code>prompts</code></td>
+<td>多轮用例：按顺序发给同一个会话的几句话</td>
 </tr>
 <tr>
 <td><code>timeout_secs</code></td>
-<td>整次尝试的墙钟预算，默认 300</td>
+<td>整次尝试的墙钟预算，默认 300；多轮是整段会话共享一份，不是每轮一份</td>
 </tr>
 <tr>
 <td><code>isolation</code></td>
@@ -572,6 +576,23 @@ text = &quot;hello eval&quot;</code></pre>
 </tr>
 </tbody>
 </table>
+<p><code>prompt</code> 与 <code>prompts</code> 二选一，不能同时出现，
+也不能都不出现：同一个意思的两种写法会让加载器不得不替用例决定跑哪个；
+都不出现则是一个什么都没跑的用例，它会去判一个空答案，看起来像模型失败，
+其实是用例坏了。<code>prompts</code> 里某一轮为空会按序号报错。</p>
+<p>多轮用例才是会话回归的载体。"改掉你刚才写的那个文件"、
+"总结一下你做过什么"、以及必须跨多轮才触发的压缩场景，
+用单 prompt 都写不出来——而主循环真正出问题的地方正在这里。
+第一轮之后每一轮都接着上一轮写出的会话（CLI 路径传
+<code>--session</code>；host 路径是同一个 <code>Agent</code> 上再跑一次循环），
+所以上下文确实被带过去了。<code>timeout_secs</code> 是整段会话的预算。
+判分仍然只看最终状态：答案是最后一轮的文字，文件是最后一轮留下的样子。
+某一轮如果没产出任何回答，会话到此结束——把下一句送进一个上一轮为空的会话，
+判到的会是第二个错误而不是第一个错误。</p>
+<p>单轮用例的指纹没有因为这次改动而变：<code>prompt</code> 变成
+<code>Option&lt;String&gt;</code> 后序列化仍是 <code>"prompt":"..."</code>，
+空的 <code>prompts</code> 不进哈希。否则所有已记录的 baseline
+会在一夜之间变成 <code>incomparable</code>，而套件其实什么都没改。</p>
 <p><code>EvalCase</code> 用 <code>deny_unknown_fields</code>。
 把 <code>timeout_secs</code> 拼成 <code>timeout_sec</code> 会让加载失败，
 而不是悄悄退回默认值——一个本想限制慢用例的预算，若静默失效，
@@ -1367,10 +1388,10 @@ href="./03_chapter_memory_zh.html">memory</a>、<a
 href="./05_chapter_compact_zh.html">压缩</a>分阶段扩套件</td>
 </tr>
 <tr>
-<td>用例只有一个 prompt</td>
-<td><code>EvalCase.prompt</code> 是单个字符串，多轮续跑、上下文保持、
-恢复类回归写不出来</td>
-<td>改成 <code>prompts: Vec&lt;String&gt;</code>，单元素即当前语义</td>
+<td>多轮用例只判最终状态</td>
+<td><code>prompts</code> 已经能表达会话，但判分器只看最后一轮的答案与文件；
+中间某一轮的产物无法单独断言</td>
+<td>需要时再加 transcript 判分器（比文件判分器不稳定得多，不急着做）</td>
 </tr>
 <tr>
 <td>没有人工校准集</td>

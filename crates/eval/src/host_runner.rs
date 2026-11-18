@@ -164,7 +164,10 @@ impl Runner for HostRunner {
             return RunOutcome { artifact, work_dir };
         }
 
-        let prompt = tact_host::user_message::build_user_message(&case.prompt, &work_dir).await;
+        // One pump for the whole case: the observer channel belongs to the
+        // agent, not to a turn, so a second turn's events arrive on the same
+        // receiver.
+        //
         // The pump stops on this signal, not on the channel closing.
         // `background_run` hands a clone of the observer sender to a detached
         // task with no time limit, so waiting for `recv` to return `None` would
@@ -178,38 +181,68 @@ impl Runner for HostRunner {
         // work dir that grading is about to read, and skips the loop's own
         // interruption hooks.
         let cancel = agent.cancel_handle();
+        // One budget for the whole case, not one per turn: a three-turn case
+        // with `timeout_secs = 120` means two minutes of work, not six.
+        let deadline = Instant::now() + Duration::from_secs(case.timeout_secs);
         let mut budget_expired = false;
-        let result = {
-            let mut run = Box::pin(agent.agent_loop_detailed(Some(prompt)));
-            tokio::select! {
-                result = &mut run => Some(result),
-                _ = tokio::time::sleep(Duration::from_secs(case.timeout_secs)) => {
-                    budget_expired = true;
-                    cancel.cancel();
-                    // The loop checks the cancel flag at its own boundaries; a
-                    // tool that ignores it is bounded by its own timeout, so
-                    // this grace is a backstop rather than a second budget.
-                    tokio::time::timeout(Duration::from_secs(30), &mut run).await.ok()
+        let mut turns_taken = 0u32;
+
+        for (index, turn) in case.turns().into_iter().enumerate() {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                budget_expired = true;
+                break;
+            };
+            let prompt = tact_host::user_message::build_user_message(turn, &work_dir).await;
+
+            let result = {
+                let mut run = Box::pin(agent.agent_loop_detailed(Some(prompt)));
+                tokio::select! {
+                    result = &mut run => Some(result),
+                    _ = tokio::time::sleep(remaining) => {
+                        budget_expired = true;
+                        cancel.cancel();
+                        // The loop checks the cancel flag at its own boundaries;
+                        // a tool that ignores it is bounded by its own timeout,
+                        // so this grace is a backstop rather than a second
+                        // budget.
+                        tokio::time::timeout(Duration::from_secs(30), &mut run).await.ok()
+                    }
                 }
+            };
+
+            match result {
+                Some(Ok(outcome)) => {
+                    turns_taken += outcome.turns;
+                    artifact.stop = Some(StopView::from(outcome.stop));
+                    // A turn that produced no answer ends the conversation:
+                    // sending the next prompt into a session whose last turn was
+                    // empty would grade the wrong failure.
+                    if outcome.stop == tact::AgentLoopStop::EmptyTurn {
+                        break;
+                    }
+                }
+                Some(Err(error)) => {
+                    artifact.failure =
+                        Some(RunFailure::harness(format!("turn {}: {error}", index + 1)));
+                    break;
+                }
+                // The grace window expired after cancellation: the run never
+                // returned, so there is no outcome to report.
+                None => break,
             }
-        };
+
+            if budget_expired {
+                break;
+            }
+        }
+
+        // `None` when the harness stopped the case before any turn finished,
+        // which is the same "no turn was taken" the single-prompt path reported.
+        artifact.turns = (turns_taken > 0).then_some(turns_taken);
 
         agent.detach_event_observers();
         let _ = pump_shutdown_tx.send(());
         let (tools, tokens) = pump.await.unwrap_or_default();
-
-        match result {
-            Some(Ok(outcome)) => {
-                artifact.stop = Some(StopView::from(outcome.stop));
-                artifact.turns = Some(outcome.turns);
-            }
-            Some(Err(error)) => {
-                artifact.failure = Some(RunFailure::harness(error.to_string()));
-            }
-            // The grace window expired after cancellation: the run never
-            // returned, so there is no outcome to report.
-            None => {}
-        }
 
         // A run this harness stopped is not a run the agent finished. The
         // cooperative cancel usually returns `RunStop::Cancelled`, which would

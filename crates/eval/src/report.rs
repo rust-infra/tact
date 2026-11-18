@@ -590,17 +590,54 @@ mod tests {
     fn the_fingerprint_changes_when_a_prompt_changes() {
         let base = EvalCase {
             id: "a".into(),
-            prompt: "one".into(),
+            prompt: Some("one".into()),
+            prompts: Vec::new(),
             timeout_secs: 1,
             isolation: crate::Isolation::Empty,
             graders: Vec::new(),
         };
         let mut edited = base.clone();
-        edited.prompt = "two".into();
+        edited.prompt = Some("two".into());
 
         assert_ne!(
             suite_fingerprint(std::slice::from_ref(&base)),
             suite_fingerprint(&[edited])
+        );
+    }
+
+    #[test]
+    fn the_fingerprint_covers_a_second_turn() {
+        // A turn added to a conversation changes what the case decides, so a
+        // comparison must not treat the short and long versions as one suite.
+        let one_turn = EvalCase {
+            id: "a".into(),
+            prompt: None,
+            prompts: vec!["first".into()],
+            timeout_secs: 1,
+            isolation: crate::Isolation::Empty,
+            graders: Vec::new(),
+        };
+        let mut two_turns = one_turn.clone();
+        two_turns.prompts.push("second".into());
+
+        assert_ne!(
+            suite_fingerprint(std::slice::from_ref(&one_turn)),
+            suite_fingerprint(&[two_turns])
+        );
+    }
+
+    #[test]
+    fn a_single_prompt_case_keeps_the_fingerprint_it_had_before_turns_existed() {
+        // `prompt` became `Option<String>` only so `prompts` could exist. If
+        // that changed the serialized form, every recorded baseline would become
+        // incomparable overnight, for no reason the suite made.
+        let legacy: EvalCase = toml::from_str("prompt = \"hello\"\n").unwrap();
+        let encoded = serde_json::to_string(&legacy).unwrap();
+
+        assert!(encoded.contains("\"prompt\":\"hello\""), "{encoded}");
+        assert!(
+            !encoded.contains("prompts"),
+            "an empty turn list must not appear in the hashed form: {encoded}"
         );
     }
 
@@ -610,7 +647,8 @@ mod tests {
         // comparison even though id and prompt are untouched.
         let base = EvalCase {
             id: "a".into(),
-            prompt: "one".into(),
+            prompt: Some("one".into()),
+            prompts: Vec::new(),
             timeout_secs: 1,
             isolation: crate::Isolation::Empty,
             graders: Vec::new(),
