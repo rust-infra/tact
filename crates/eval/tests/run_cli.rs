@@ -124,3 +124,87 @@ fn zero_attempts_is_refused_instead_of_silently_becoming_one() {
         stderr(&output)
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn a_run_where_nothing_could_be_judged_is_not_a_success() {
+    // A missing binary makes every attempt a startup failure, so no verdict
+    // exists. Exiting 0 there is the shape of a silently dead gate.
+    let dir = tempfile::tempdir().unwrap();
+    let suite = suite(dir.path());
+    let missing = dir.path().join("does-not-exist");
+
+    let output = tact_eval(&[
+        "run",
+        suite.to_str().unwrap(),
+        "--runner",
+        "cli",
+        "--binary",
+        missing.to_str().unwrap(),
+    ]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(4),
+        "expected the no-verdict exit; stderr was:\n{}",
+        stderr(&output)
+    );
+    assert!(
+        stderr(&output).contains("no attempt reached a verdict"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_decisive_failure_still_exits_zero_without_strict() {
+    // The complement of the test above: a run that judged and failed is a
+    // measurement, and `--strict` is what turns that into a non-zero exit.
+    // Without this, a broken `if` could make every failing suite look like a
+    // harness error.
+    let dir = tempfile::tempdir().unwrap();
+    let suite = suite(dir.path());
+    let binary = fake_binary(
+        dir.path(),
+        "fake-tact-ui",
+        "#!/bin/sh\necho nothing useful\n",
+    );
+
+    let output = tact_eval(&[
+        "run",
+        suite.to_str().unwrap(),
+        "--runner",
+        "cli",
+        "--binary",
+        binary.to_str().unwrap(),
+    ]);
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stderr(&output).contains("fail 1"), "{}", stderr(&output));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_case_id_that_would_escape_the_work_root_fails_validation() {
+    // `validate` is the check CI runs on every pull request, so it is the
+    // right place to refuse an id that would aim the run's cleanup outside the
+    // scratch directory.
+    let dir = tempfile::tempdir().unwrap();
+    let suite = dir.path().join("suite");
+    std::fs::create_dir_all(&suite).unwrap();
+    std::fs::write(
+        suite.join("escaping.toml"),
+        "id = \"../../victim\"\nprompt = \"p\"\n",
+    )
+    .unwrap();
+
+    let output = tact_eval(&["validate", suite.to_str().unwrap()]);
+
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("single path component"),
+        "{}",
+        stderr(&output)
+    );
+}

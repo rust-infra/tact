@@ -144,6 +144,16 @@ impl CaseSummary {
         let decisive = self.passes + self.failures;
         (decisive > 0).then(|| f64::from(self.passes) / f64::from(decisive))
     }
+
+    /// At least one attempt passed: `pass@k` for this case.
+    pub fn passed_any(&self) -> bool {
+        self.passes > 0
+    }
+
+    /// Every attempt passed: the strict reading, and the one a gate uses.
+    pub fn passed_all(&self) -> bool {
+        self.failures == 0 && self.inconclusive == 0
+    }
 }
 
 impl EvalReport {
@@ -182,7 +192,7 @@ impl EvalReport {
     pub fn cases_passing_any(&self) -> usize {
         self.summaries()
             .iter()
-            .filter(|summary| summary.passes > 0)
+            .filter(|summary| summary.passed_any())
             .count()
     }
 
@@ -191,8 +201,21 @@ impl EvalReport {
     pub fn cases_passing_all(&self) -> usize {
         self.summaries()
             .iter()
-            .filter(|summary| summary.failures == 0 && summary.inconclusive == 0)
+            .filter(|summary| summary.passed_all())
             .count()
+    }
+
+    /// Attempts that produced a decision, pass or fail.
+    ///
+    /// A run with none of these did not evaluate anything: every attempt was a
+    /// timeout, a missing binary, or a grader that could not run. That is a
+    /// harness failure, and a `0` exit code would report it as a suite that
+    /// merely failed nothing.
+    pub fn decisive_attempts(&self) -> u32 {
+        self.summaries()
+            .iter()
+            .map(|summary| summary.passes + summary.failures)
+            .sum()
     }
 
     pub fn to_json(&self) -> serde_json::Result<String> {

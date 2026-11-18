@@ -213,6 +213,19 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
     if args.strict && report.cases_passing_all() < report.summaries().len() {
         std::process::exit(1);
     }
+    // A run where nothing could be judged did not measure the agent. Exiting 0
+    // would let a missing binary, an expired key, or a suite of hung graders
+    // read as a green suite — the exact shape of a silently dead gate. `--strict`
+    // already fails here; this makes the plain run fail too, without changing
+    // what `--strict` means (every attempt of every case passing).
+    if report.decisive_attempts() == 0 {
+        eprintln!(
+            "tact-eval: no attempt reached a verdict ({} attempt(s), all inconclusive); \
+             check the runner's binary, provider, and the graders' commands",
+            report.outcomes.len()
+        );
+        std::process::exit(4);
+    }
     Ok(())
 }
 
