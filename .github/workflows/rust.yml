@@ -147,6 +147,12 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-test-
+      # No model and no API key: this catches a malformed case, a moved
+      # fixture, or an invalid grader regex before the paid suite can run.
+      - name: Validate eval suites (no model)
+        run: |
+          cargo run -p tact_eval -- validate suites/smoke
+          cargo run -p tact_eval -- validate suites/regression
       - name: Run full workspace tests
         # `--workspace`: `default-members` otherwise narrows this to tact-ui.
         run: cargo test --workspace --verbose

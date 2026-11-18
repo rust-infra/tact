@@ -36,6 +36,10 @@ This is the part CI can run on every pull request:
 cargo run -p tact_eval -- validate suites/smoke
 ```
 
+It prints the case count and `suite=<fingerprint>`. That is the same fingerprint
+a run records in `ReportMeta` and prints as `suite=`, so a baseline and a
+candidate can be checked against each other before either is compared.
+
 ## A case
 
 ```toml
@@ -124,11 +128,63 @@ HOME=$(mktemp -d) cargo run -p tact_eval -- run suites/smoke --runner cli ...
 
 ## Comparing two runs
 
-`ReportMeta` records the runner, its identity (model, endpoint, permission
-mode), the attempt count,
-and a fingerprint over the whole case set: every case's prompt, timeout,
-isolation, and graders. A changed grader or timeout changes the fingerprint, so
-a comparison cannot silently mix two different suites.
+A comparison answers whether a candidate run got worse than an accepted
+baseline. Both inputs are full `EvalReport` JSON documents, the same shape
+`run` writes:
+
+```bash
+cargo run -p tact_eval -- run suites/smoke ... \
+  --json-out target/eval/baseline.json
+cargo run -p tact_eval -- run suites/smoke ... \
+  --json-out target/eval/candidate.json
+
+cargo run -p tact_eval -- compare \
+  target/eval/baseline.json target/eval/candidate.json \
+  --json-out target/eval/comparison.json
+```
+
+The baseline is a previously accepted report, not a separate compact schema
+and not a file of thresholds. It already carries every case's attempt counts
+plus the runner, identity, attempt count, and suite fingerprint, so the
+comparison derives its deltas from the same evidence a reviewer can inspect.
+Accepting a baseline is a human choice about which artifact CI points at.
+
+The comparison prints a text summary to stderr and writes JSON to stdout, or
+to `--json-out` instead. Its status and exit code are:
+
+| status | meaning | exit |
+|---|---|---|
+| `pass` | Comparable, and no case has more failed attempts than baseline | 0 |
+| `regression` | Comparable, and at least one case has more failed attempts | 1 |
+| `inconclusive` | Comparable, no regression, but a candidate attempt was inconclusive | 3 |
+| `incomparable` | The reports do not describe the same conditions, or baseline is inconclusive | 2 |
+
+Precedence is `incomparable`, then `regression`, then `inconclusive`, then
+`pass`. An improvement in one case does not cancel a regression in another.
+Exit 2 also covers a report that cannot be read or parsed.
+
+An `incomparable` result emits no per-case deltas, even when some cases could
+be compared in isolation: a partial comparison would put a trustworthy number
+on a run that was not actually comparable. Conditions checked are report
+schema, suite fingerprint, attempts per case, runner, permission mode, model,
+endpoint, and the ordered case set. `inconclusive` attempts are not failures;
+they are reported separately and fail the gate with exit 3. A baseline that
+itself contains an inconclusive attempt has an unknown verdict, so comparing
+against it is `incomparable`, not a pass.
+
+There are no numeric threshold flags. A case regresses when its failure count
+rises, and a noisy candidate lands in `inconclusive` rather than being averaged
+into a pass. A percentage tolerance needs a calibrated noise model, which the
+first iteration does not claim to have. `--strict` is still a separate, single
+run gate: it requires every case to pass every attempt and does not read a
+baseline.
+
+`ReportMeta` fingerprints the whole case set: every case's declared prompt,
+timeout, isolation, and graders, plus the contents of every `Copy` fixture.
+Fixture paths are hashed relative to the suite root and files by sorted
+relative path, so the same suite fingerprints the same from any working
+directory. Editing a fixture changes the fingerprint: the fixture is part of
+what the case tests, so a comparison cannot silently mix two different inputs.
 
 `identity.model` and `identity.base_url` are `null` when the runner could not
 observe them, which is the case for a CLI run driven entirely by a `--config`

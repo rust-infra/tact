@@ -16,6 +16,7 @@
 
 mod case;
 mod cli_runner;
+mod compare;
 mod grader;
 mod host_runner;
 mod options;
@@ -26,6 +27,11 @@ mod suite;
 
 pub use case::{EvalCase, FileAssertion, GraderSpec, Isolation, TextAssertion};
 pub use cli_runner::{CliRunner, default_cli_binary};
+pub use compare::{
+    COMPARISON_SCHEMA_VERSION, CaseComparisonStatus, CaseCounts, CaseDelta, ComparisonReason,
+    ComparisonReasonKind, ComparisonReport, ComparisonStatus, ReportHeader, compare_reports,
+    comparison_exit_code,
+};
 pub use grader::{Grade, Verdict, grade};
 pub use host_runner::HostRunner;
 pub use options::{PermissionMode, RunOptions};
@@ -52,6 +58,7 @@ pub async fn run_suite(
     let attempts = attempts.max(1);
     let started_at = chrono::Utc::now().to_rfc3339();
     let identity = runner.identity();
+    let suite_fingerprint = suite.fingerprint()?;
     let mut outcomes = Vec::with_capacity(suite.cases().len() * attempts as usize);
 
     for case in suite.cases() {
@@ -80,7 +87,7 @@ pub async fn run_suite(
             runner: runner.kind(),
             identity,
             attempts,
-            suite_fingerprint: suite_fingerprint(suite.declared_cases()),
+            suite_fingerprint,
             started_at,
             finished_at: chrono::Utc::now().to_rfc3339(),
         },

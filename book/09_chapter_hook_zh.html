@@ -1347,6 +1347,12 @@ priority 字段可设。</td>
 fork，因此这两个变体会不可达。词表是 <code>startup</code> /
 <code>resume</code> / <code>compact</code>——Tact 真正区分的那三个。</td>
 </tr>
+<tr>
+<td>无 hook 策略评测</td>
+<td>PreToolUse / PostToolUse / SessionStart 的 block、
+additionalContext 和 trust 行为没有 eval case；策略变化不会进入
+suite baseline。见<a href="./29_chapter_eval_zh.html">第 29 章</a>。</td>
+</tr>
 </tbody>
 </table>
 <p>| <code>bypass_trust</code> | Codex 用来「不经审核直接运行

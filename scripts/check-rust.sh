@@ -54,6 +54,10 @@ scripts/check-package.sh
 echo "==> cargo fmt -- --check"
 cargo fmt -- --check
 
+echo "==> eval suite validation (no model)"
+cargo run -p tact_eval -- validate suites/smoke
+cargo run -p tact_eval -- validate suites/regression
+
 # `--workspace` is explicit because the root manifest sets `default-members` to
 # the shippable binaries only. Without it this gate silently stops covering
 # `desktop`, `desktop_core`, `tui`, and the `agent_*` crates: a dead function in

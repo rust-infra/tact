@@ -1,0 +1,21 @@
+prompt = """
+Read seed.txt in the current directory and reply with only the release token
+from the line that starts with "release-token:".
+"""
+timeout_secs = 120
+
+[isolation]
+kind = "copy"
+fixture = "fixtures/reading"
+
+[[graders]]
+kind = "answer"
+name = "fixture-reading"
+
+[[graders.assertions]]
+kind = "contains"
+text = "ember-42"
+
+[[graders.assertions]]
+kind = "matches"
+pattern = "ember-[0-9]+"

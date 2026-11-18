@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::case::EvalCase;
 use crate::grader::{Grade, Verdict};
@@ -248,20 +249,28 @@ impl EvalReport {
     }
 }
 
-/// A stable fingerprint over the case set.
+/// A stable fingerprint over the declared case set alone.
 ///
 /// Hashes the whole case, not just its id and prompt. A tightened grader, a
 /// changed pattern, a different isolation mode, or a shorter timeout all change
 /// what the suite decides, so all of them must change the fingerprint; otherwise
 /// two reports look comparable while grading different things.
-/// Callers pass the cases as *written*, before `EvalSuite::load` resolves a
-/// relative fixture to an absolute path. Hashing the resolved form would make
-/// the same suite fingerprint differently depending on the working directory
-/// it was loaded from, which is exactly the comparison this guards.
+///
+/// This helper does not include fixture contents; [`crate::EvalSuite::fingerprint`]
+/// does, and is what reports record. It remains public for callers that only
+/// want the declared-case portion of the identity.
 pub fn suite_fingerprint(cases: &[EvalCase]) -> String {
-    use sha2::{Digest, Sha256};
-
     let mut hasher = Sha256::new();
+    hash_declared_cases(&mut hasher, cases);
+    finish_fingerprint(hasher)
+}
+
+/// The declared-case half of the suite fingerprint.
+///
+/// Kept separate so [`crate::EvalSuite::fingerprint`] can continue the same
+/// hash with fixture contents, and so a suite with no Copy fixtures keeps the
+/// declared-only fingerprint.
+pub(crate) fn hash_declared_cases(hasher: &mut Sha256, cases: &[EvalCase]) {
     for case in cases {
         // `EvalCase` is `Serialize` and its fields are the whole definition, so
         // the serialized form is the canonical tuple. A field added later is
@@ -276,6 +285,9 @@ pub fn suite_fingerprint(cases: &[EvalCase]) -> String {
         hasher.update((encoded.len() as u64).to_le_bytes());
         hasher.update(encoded);
     }
+}
+
+pub(crate) fn finish_fingerprint(hasher: Sha256) -> String {
     format!("{:x}", hasher.finalize())[..16].to_string()
 }
 

@@ -829,6 +829,10 @@ manager、装配工具集；headless / 交互两个前端共用同一份</td>
 <td>目录不可读时静默</td>
 <td><code>load_all</code> 的补建索引失败被忽略，提示词退回空块</td>
 </tr>
+<tr>
+<td>无 memory 专项评测</td>
+<td>现有回归套件不验证 memory 写入、跨轮召回或索引恢复；这些行为仍靠单测。后续把 memory case 纳入<a href="./29_chapter_eval_zh.html">第 29 章</a>的回归套件与 baseline。</td>
+</tr>
 </tbody>
 </table>
 <hr />

@@ -1,0 +1,165 @@
+name: Agent eval
+
+# The nightly model gate. The smoke and regression suites are validated on every
+# PR without a key; this workflow is the only place they actually reach a model.
+#
+# No baseline is committed: a real report needs a full model run and a known
+# environment identity. Supply one for a manual run with the required
+# `baseline-path` input, or point the repository variable `EVAL_BASELINE_PATH`
+# at a checked-in file for the schedule. Without a baseline the candidate is
+# uploaded and comparison is skipped; the workflow never writes a new baseline.
+
+on:
+  schedule:
+    # Nightly, 01:00 Asia/Shanghai — GitHub cron is UTC only.
+    - cron: "0 17 * * *"
+  workflow_dispatch:
+    inputs:
+      baseline-path:
+        description: "Path to a baseline report JSON to compare against."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-eval
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  eval:
+    name: Nightly regression suite
+    runs-on: ubuntu-latest
+    # PROVIDER/MODEL/API_KEY/BASE_URL are environment secrets. Without this
+    # declaration they resolve to empty strings, and the only symptom is the
+    # "is not set" guard below.
+    environment: tact-ui
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsqlite3-dev libasound2-dev pkg-config clang libclang-dev
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-agent-eval-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-agent-eval-
+
+      - name: Build tact-ui and tact-eval
+        run: cargo build --release -p tact-ui -p tact_eval
+
+      # Same shape as scheduled-review.yml: `protocol` has no CLI flag, so the
+      # provider needs a config file. The explicit provider/model/base-url flags
+      # on the eval run below are what make the report's identity comparable.
+      - name: Write the provider config
+        env:
+          PROVIDER: ${{ secrets.PROVIDER }}
+          MODEL: ${{ secrets.MODEL }}
+          API_KEY: ${{ secrets.API_KEY }}
+          BASE_URL: ${{ secrets.BASE_URL }}
+        run: |
+          set -euo pipefail
+          for name in PROVIDER MODEL API_KEY BASE_URL; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::secret $name is empty — check it exists in the 'tact-ui' environment and that this job declares it"
+              exit 1
+            fi
+          done
+          mkdir -p "$HOME/.tact"
+          {
+            printf '[llm]\n'
+            printf 'provider = "%s"\n' "$PROVIDER"
+            printf '\n'
+            printf '[llm.providers.%s]\n' "$PROVIDER"
+            printf 'api_key = "%s"\n' "$API_KEY"
+            printf 'base_url = "%s"\n' "$BASE_URL"
+            printf 'protocol = "chat_completions"\n'
+            printf 'model = "%s"\n' "$MODEL"
+          } > "$HOME/.tact/config.toml"
+          echo "provider config written for $PROVIDER/$MODEL"
+
+      - name: Validate the regression suite (no model)
+        run: ./target/release/tact-eval validate suites/regression
+
+      - name: Run the regression suite
+        env:
+          PROVIDER: ${{ secrets.PROVIDER }}
+          MODEL: ${{ secrets.MODEL }}
+          BASE_URL: ${{ secrets.BASE_URL }}
+        run: |
+          set -euo pipefail
+          ./target/release/tact-eval run suites/regression \
+            --runner cli \
+            --binary "$PWD/target/release/tact-ui" \
+            --config "$HOME/.tact/config.toml" \
+            --provider "$PROVIDER" \
+            --model "$MODEL" \
+            --base-url "$BASE_URL" \
+            --attempts 3 \
+            --json-out candidate.json
+
+      - name: Locate the baseline
+        if: always()
+        id: baseline
+        env:
+          BASELINE: ${{ inputs.baseline-path || vars.EVAL_BASELINE_PATH }}
+        run: |
+          set -euo pipefail
+          if [ -n "${BASELINE:-}" ] && [ -f "$BASELINE" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "path=$BASELINE" >> "$GITHUB_OUTPUT"
+            echo "baseline: $BASELINE"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "Comparison skipped: no baseline file was supplied."
+          fi
+
+      - name: Compare against the baseline
+        if: ${{ !cancelled() && success() && steps.baseline.outputs.available == 'true' }}
+        env:
+          BASELINE: ${{ steps.baseline.outputs.path }}
+        run: |
+          set -uo pipefail
+          status=0
+          ./target/release/tact-eval compare "$BASELINE" candidate.json \
+            --json-out comparison.json > /dev/null 2> comparison.txt || status=$?
+          cat comparison.txt
+          {
+            echo ""
+            echo "## Eval comparison"
+            echo '```'
+            cat comparison.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - name: Note skipped comparison
+        if: ${{ !cancelled() && (failure() || steps.baseline.outputs.available != 'true') }}
+        run: |
+          echo "Comparison skipped: the run failed or no baseline file was supplied."
+
+      - name: Upload the candidate report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-eval-${{ github.run_id }}
+          path: |
+            candidate.json
+            comparison.json
+          if-no-files-found: ignore
+          retention-days: 30

@@ -1,0 +1,17 @@
+prompt = "Reply with exactly one word: ready"
+timeout_secs = 120
+
+[[graders]]
+kind = "answer"
+name = "answer-grading"
+
+[[graders.assertions]]
+kind = "contains"
+text = "ready"
+
+[[graders.assertions]]
+kind = "not_contains"
+text = "sorry"
+
+[[graders.assertions]]
+kind = "non_empty"

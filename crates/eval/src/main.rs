@@ -1,10 +1,12 @@
 //! `tact-eval`: run a suite and print a report.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use anyhow::Context;
 use clap::{Parser, Subcommand};
 use tact_eval::{
-    CliRunner, EvalSuite, HostRunner, PermissionMode, RunOptions, Runner, RunnerKind, run_suite,
+    CliRunner, EvalReport, EvalSuite, HostRunner, PermissionMode, RunOptions, Runner, RunnerKind,
+    compare_reports, comparison_exit_code, run_suite,
 };
 
 #[derive(Parser, Debug)]
@@ -20,6 +22,16 @@ enum Command {
     Run(RunArgs),
     /// Check that every case parses and validates, without calling a model
     Validate { suite: PathBuf },
+    /// Compare two evaluation report JSON files
+    Compare {
+        /// Baseline report JSON
+        baseline: PathBuf,
+        /// Candidate report JSON
+        candidate: PathBuf,
+        /// Write the comparison JSON here instead of stdout
+        #[arg(long)]
+        json_out: Option<PathBuf>,
+    },
 }
 
 fn parse_runner(value: &str) -> Result<RunnerKind, String> {
@@ -92,7 +104,49 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Run(args) => run(args).await,
         Command::Validate { suite } => validate(&suite),
+        Command::Compare {
+            baseline,
+            candidate,
+            json_out,
+        } => {
+            let code = match compare(&baseline, &candidate, json_out.as_deref()) {
+                Ok(code) => code,
+                Err(error) => {
+                    eprintln!("tact-eval compare: {error:#}");
+                    2
+                }
+            };
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
     }
+}
+
+fn load_report(path: &Path) -> anyhow::Result<EvalReport> {
+    let bytes =
+        std::fs::read(path).with_context(|| format!("cannot read report {}", path.display()))?;
+    serde_json::from_slice(&bytes)
+        .with_context(|| format!("cannot parse report {}", path.display()))
+}
+
+/// Compare two reports, write the result, and return the mapped exit code.
+fn compare(baseline: &Path, candidate: &Path, json_out: Option<&Path>) -> anyhow::Result<i32> {
+    let baseline = load_report(baseline)?;
+    let candidate = load_report(candidate)?;
+    let comparison = compare_reports(&baseline, &candidate);
+    let json =
+        serde_json::to_string_pretty(&comparison).context("cannot encode comparison as JSON")?;
+
+    eprintln!("{}", comparison.to_text());
+    match json_out {
+        Some(path) => std::fs::write(path, format!("{json}\n"))
+            .with_context(|| format!("cannot write comparison {}", path.display()))?,
+        None => println!("{json}"),
+    }
+
+    Ok(comparison_exit_code(comparison.status))
 }
 
 /// Parse and validate every case, then report how many there are.
@@ -102,7 +156,9 @@ async fn main() -> anyhow::Result<()> {
 /// here instead of halfway through a paid run.
 fn validate(dir: &std::path::Path) -> anyhow::Result<()> {
     let suite = EvalSuite::load(dir)?;
+    let fingerprint = suite.fingerprint()?;
     println!("{} case(s) valid in {}", suite.cases().len(), dir.display());
+    println!("suite={fingerprint}");
     Ok(())
 }
 

@@ -1,0 +1,28 @@
+prompt = """
+Create a file named summary.txt containing exactly this content:
+three steps
+
+Then reply with one sentence that names summary.txt.
+"""
+timeout_secs = 120
+
+[[graders]]
+kind = "answer"
+name = "names-the-file"
+
+[[graders.assertions]]
+kind = "contains"
+text = "summary.txt"
+
+[[graders]]
+kind = "files"
+name = "wrote-the-file"
+
+[[graders.assertions]]
+kind = "exists"
+path = "summary.txt"
+
+[[graders.assertions]]
+kind = "contains"
+path = "summary.txt"
+text = "three steps"

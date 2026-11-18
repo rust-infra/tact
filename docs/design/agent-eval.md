@@ -67,7 +67,9 @@ imports.
 
 Library callers get `run_suite(&suite, &runner, attempts)` back as an
 `EvalReport`, with `summaries()`, `cases_passing_any()` for pass@k and
-`cases_passing_all()` for the regression gate.
+`cases_passing_all()` for the strict gate. `compare_reports(&baseline,
+&candidate)` returns a `ComparisonReport`, and `comparison_exit_code` maps its
+status to the process contract.
 
 ## Shape
 
@@ -158,13 +160,69 @@ timeout rather than graded.
 `ReportMeta` embeds the `RunIdentity` rather than copying its three fields, so a
 field added to what a runner reports cannot be forgotten at the report. The
 suite fingerprint hashes the cases *as written*, before a relative fixture
-resolves, so the same suite fingerprints the same from any working directory.
+resolves, plus every `Copy` fixture's relative path and file bytes. The
+declared form keeps the identity independent of the working directory; the
+fixture bytes keep an edited input from hiding behind an unchanged case file.
 
 Isolation is one directory per attempt, under `$TMPDIR/tact-eval/<case>/<uuid>`,
 deleted after grading. Not a git worktree: each attempt gets its own
 `.tact/tact.db` and session id, so neither the lock nor the database is shared,
 and a worktree would carry the repository's own `.tact/` state into a file
 comparison.
+
+## Comparison
+
+Executing a suite and deciding whether a candidate is worse are separate
+operations, and the second must not pay the cost of the first.
+
+`run` touches the model, the filesystem, and process-global config, and emits
+an `EvalReport`. `compare` reads two reports and is pure: no model, no suite
+load, no working directory. That split makes the gate cheap enough to rerun on
+stored CI artifacts, lets comparison policy change without another paid run,
+and makes a verdict reproducible from the exact bytes a reviewer can inspect.
+The comparison cannot itself introduce model variance.
+
+The baseline is a full, previously accepted `EvalReport`, not a compact
+baseline schema. A second format would duplicate the per-case counts and
+`ReportMeta` the report already has, and the duplicate would drift. The
+comparison also needs the full header: runner, identity, attempts, case set,
+and suite fingerprint are precisely what decide whether two reports may be
+compared at all. Which report is accepted is a human decision about the
+artifact CI is pointed at; there is no `--accept` flag, because the tool cannot
+know that a run is a good baseline.
+
+`compare` produces one of four statuses, in this precedence:
+
+| status | condition | exit |
+|---|---|---|
+| `incomparable` | Any comparability condition differs, or baseline has an inconclusive attempt | 2 |
+| `regression` | Comparable, and at least one case has more failed attempts | 1 |
+| `inconclusive` | Comparable, no regression, and a candidate attempt is inconclusive | 3 |
+| `pass` | Comparable, and no case has more failed attempts | 0 |
+
+The comparison fails closed. Any mismatch in report schema, suite fingerprint,
+attempt count, runner, permission mode, model, endpoint, or the ordered case
+set yields `incomparable` and emits no case deltas, even when some cases could
+be compared in isolation. A partial comparison would put a trustworthy-looking
+number on a run that was not comparable, which is worse than no number.
+
+A baseline that contains an inconclusive attempt has an unknown verdict, so it
+is `incomparable` rather than a pass. That is the same three-state rule as a
+single case, lifted to the baseline: "we could not tell" must not become
+"it works". A candidate's inconclusive attempt is different: the comparison
+remains meaningful, but the result is `inconclusive` (exit 3), not `pass`.
+Callers that cannot tolerate a flaky result get a non-zero exit instead of a
+silently greened gate.
+
+There are no numeric threshold flags in the first iteration. A case regresses
+when its failure count rises, which is an ordinal fact visible in both reports.
+A percentage tolerance would encode a noise model that has not been
+calibrated; choosing one now would either hide real regressions or turn model
+variance into a red build. Until a suite has enough recorded runs to measure
+its own noise, `inconclusive` carries the uncertainty explicitly. `--strict`
+remains a separate, absolute gate: it requires every case to pass every
+attempt in one run and does not read a baseline. The two answer different
+questions, so merging them would make both less clear.
 
 ## Alternatives considered
 
@@ -227,10 +285,12 @@ runner, and remove the stderr parsers entirely. It is the one change to product
 code this design would most benefit from, and it is deliberately out of scope
 here.
 
-Is `cases_passing_all` the right regression gate, or should `--strict` compare
-against a recorded baseline instead of requiring 100%? The current flag fails on
-any case that does not pass every attempt, which is correct for a small curated
-suite and too strict for one that measures a noisy model.
+Is a per-case failure-count increase the right regression policy? It is
+transparent and needs no threshold, but at one attempt a single flake is a
+regression. A calibrated tolerance could be added later, after a suite has
+enough runs to measure its noise. For now the absence of a numeric threshold
+flag is deliberate, and `--strict` stays a separate absolute gate rather than a
+flag on `compare`.
 
 The `Answer` grader is substring and regex only. An LLM judge needs calibration
 against a suite before it earns a place, and calibrating it against itself is
@@ -246,6 +306,7 @@ break the common case of a developer running their own suites locally.
 
 ## Next implementation step
 
-Record a baseline report for a suite that exercises the tool set (not just
-answer text), then wire `tact-eval run ... --strict` into a nightly workflow with
-the report uploaded as an artifact.
+Record the first accepted baseline for a suite that exercises the tool set (not
+just answer text), then wire `tact-eval run` plus `tact-eval compare` into a
+nightly workflow with both reports uploaded as artifacts. Keep `--strict` for
+the small curated suites where "every attempt passed" is the contract.

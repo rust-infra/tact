@@ -7,11 +7,15 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use sha2::{Digest, Sha256};
 
 use crate::case::{EvalCase, Isolation};
 
 #[derive(Debug, Clone)]
 pub struct EvalSuite {
+    /// The suite directory, canonicalized so a fixture path can be made
+    /// relative to it regardless of how the caller spelled the suite path.
+    root: PathBuf,
     cases: Vec<EvalCase>,
     /// The cases exactly as written, before a relative fixture was resolved to
     /// an absolute path. The fingerprint hashes this form so the same suite
@@ -27,10 +31,13 @@ impl EvalSuite {
     /// later would make a case depend on the process's working directory.
     pub fn load(dir: impl AsRef<Path>) -> Result<Self> {
         let dir = dir.as_ref();
+        let root = dir
+            .canonicalize()
+            .with_context(|| format!("cannot read suite dir {}", dir.display()))?;
         let mut cases = Vec::new();
         let mut declared_cases = Vec::new();
-        for entry in std::fs::read_dir(dir)
-            .with_context(|| format!("cannot read suite dir {}", dir.display()))?
+        for entry in std::fs::read_dir(&root)
+            .with_context(|| format!("cannot read suite dir {}", root.display()))?
         {
             let path = entry?.path();
             if path.extension().is_none_or(|ext| ext != "toml") {
@@ -38,12 +45,12 @@ impl EvalSuite {
             }
             let mut case = EvalCase::load(&path)?;
             let declared = case.clone();
-            resolve_fixture(&mut case, dir, &path)?;
+            resolve_fixture(&mut case, &root, &path)?;
             cases.push(case);
             declared_cases.push(declared);
         }
         if cases.is_empty() {
-            anyhow::bail!("no *.toml cases in {}", dir.display());
+            anyhow::bail!("no *.toml cases in {}", root.display());
         }
         cases.sort_by(|a, b| a.id.cmp(&b.id));
         declared_cases.sort_by(|a, b| a.id.cmp(&b.id));
@@ -56,6 +63,7 @@ impl EvalSuite {
         }
 
         Ok(Self {
+            root,
             cases,
             declared: declared_cases,
         })
@@ -69,6 +77,105 @@ impl EvalSuite {
     pub fn declared_cases(&self) -> &[EvalCase] {
         &self.declared
     }
+
+    /// Identity of the suite: its declared cases plus every Copy fixture's
+    /// file contents.
+    ///
+    /// Fixture paths are hashed relative to the suite root, and their contents
+    /// by sorted relative path, so the same suite has one identity whether it
+    /// was loaded through a relative or an absolute path.
+    pub fn fingerprint(&self) -> Result<String> {
+        let mut hasher = Sha256::new();
+        crate::report::hash_declared_cases(&mut hasher, &self.declared);
+
+        for (declared, loaded) in self.declared.iter().zip(&self.cases) {
+            let (Isolation::Copy { .. }, Isolation::Copy { fixture }) =
+                (&declared.isolation, &loaded.isolation)
+            else {
+                continue;
+            };
+
+            let fixture_path = fixture
+                .canonicalize()
+                .with_context(|| format!("cannot resolve fixture {}", fixture.display()))?;
+            let relative_fixture = relative_to(&self.root, &fixture_path);
+            hash_path(&mut hasher, &relative_fixture);
+
+            let mut files = Vec::new();
+            for entry in walkdir::WalkDir::new(&fixture_path).follow_links(false) {
+                let entry = entry.with_context(|| {
+                    format!("cannot inspect fixture {}", fixture_path.display())
+                })?;
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                let relative = entry.path().strip_prefix(&fixture_path).with_context(|| {
+                    format!(
+                        "fixture entry {} is outside its root",
+                        entry.path().display()
+                    )
+                })?;
+                files.push((normalized_path(relative), entry.path().to_path_buf()));
+            }
+            files.sort_by(|left, right| left.0.cmp(&right.0));
+
+            hasher.update((files.len() as u64).to_le_bytes());
+            for (relative, path) in files {
+                let bytes = std::fs::read(&path)
+                    .with_context(|| format!("cannot read fixture file {}", path.display()))?;
+                hasher.update((relative.len() as u64).to_le_bytes());
+                hasher.update(relative.as_bytes());
+                hasher.update((bytes.len() as u64).to_le_bytes());
+                hasher.update(bytes);
+            }
+        }
+
+        Ok(crate::report::finish_fingerprint(hasher))
+    }
+}
+
+fn hash_path(hasher: &mut Sha256, path: &Path) {
+    let path = normalized_path(path);
+    hasher.update((path.len() as u64).to_le_bytes());
+    hasher.update(path.as_bytes());
+}
+
+fn normalized_path(path: &Path) -> String {
+    use std::path::Component;
+
+    let parts: Vec<String> = path
+        .components()
+        .filter_map(|component| match component {
+            Component::CurDir => None,
+            Component::ParentDir => Some("..".into()),
+            Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+            Component::RootDir | Component::Prefix(_) => None,
+        })
+        .collect();
+    if parts.is_empty() {
+        ".".into()
+    } else {
+        parts.join("/")
+    }
+}
+
+fn relative_to(root: &Path, target: &Path) -> PathBuf {
+    let root: Vec<_> = root.components().collect();
+    let target: Vec<_> = target.components().collect();
+    let common = root
+        .iter()
+        .zip(&target)
+        .take_while(|(left, right)| left == right)
+        .count();
+
+    let mut relative = PathBuf::new();
+    for _ in common..root.len() {
+        relative.push("..");
+    }
+    for component in &target[common..] {
+        relative.push(component.as_os_str());
+    }
+    relative
 }
 
 /// Resolve a relative fixture against the suite directory and check it exists.
@@ -132,6 +239,22 @@ fn copy_tree(from: &Path, to: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn write_copy_suite(dir: &Path, prompt: &str) -> PathBuf {
+        let fixture = dir.join("fixtures/seed");
+        std::fs::create_dir_all(fixture.join("nested")).unwrap();
+        std::fs::write(fixture.join("seed.txt"), "seed").unwrap();
+        std::fs::write(fixture.join("nested/other.txt"), "other").unwrap();
+        std::fs::write(
+            dir.join("copied.toml"),
+            format!(
+                "id = \"copied\"\nprompt = \"{prompt}\"\n\
+                 [isolation]\nkind = \"copy\"\nfixture = \"fixtures/seed\"\n"
+            ),
+        )
+        .unwrap();
+        fixture
+    }
 
     #[test]
     fn cases_load_sorted_and_reject_duplicates() {
@@ -205,6 +328,53 @@ mod tests {
             &suite.cases()[0].isolation,
             Isolation::Copy { fixture } if fixture.is_absolute()
         ));
+    }
+
+    #[test]
+    fn a_declared_case_change_changes_the_suite_fingerprint() {
+        let suite_dir = tempfile::tempdir().unwrap();
+        write_copy_suite(suite_dir.path(), "one");
+        let before = EvalSuite::load(suite_dir.path())
+            .unwrap()
+            .fingerprint()
+            .unwrap();
+
+        write_copy_suite(suite_dir.path(), "two");
+        let after = EvalSuite::load(suite_dir.path())
+            .unwrap()
+            .fingerprint()
+            .unwrap();
+
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn fixture_bytes_change_the_suite_fingerprint() {
+        let suite_dir = tempfile::tempdir().unwrap();
+        let fixture = write_copy_suite(suite_dir.path(), "one");
+        let suite = EvalSuite::load(suite_dir.path()).unwrap();
+        let before = suite.fingerprint().unwrap();
+
+        std::fs::write(fixture.join("nested/other.txt"), "changed").unwrap();
+        let after = suite.fingerprint().unwrap();
+
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn a_suite_fingerprints_the_same_through_relative_and_absolute_paths() {
+        let cwd = std::env::current_dir().unwrap();
+        let suite_dir = tempfile::tempdir_in(&cwd).unwrap();
+        write_copy_suite(suite_dir.path(), "one");
+
+        let relative = suite_dir.path().strip_prefix(&cwd).unwrap();
+        let from_relative = EvalSuite::load(relative).unwrap().fingerprint().unwrap();
+        let from_absolute = EvalSuite::load(suite_dir.path().canonicalize().unwrap())
+            .unwrap()
+            .fingerprint()
+            .unwrap();
+
+        assert_eq!(from_relative, from_absolute);
     }
 
     #[test]

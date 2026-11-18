@@ -1,0 +1,10 @@
+prompt = """
+Create a file named pass.txt in the current directory. Its only content must be
+the word: green
+"""
+timeout_secs = 120
+
+[[graders]]
+kind = "command"
+name = "command-grading"
+command = "test -f pass.txt && grep -qx green pass.txt"

@@ -1086,6 +1086,12 @@ handle，后台子代理一起停止而非成为孤儿。（headless
 <td><code>get_llm_client()</code> — worker 无 model
 覆盖（<code>subagent</code> 配置块除外）</td>
 </tr>
+<tr>
+<td>无 subagent 评测场景</td>
+<td>回归套件不覆盖 spawn、工具集收窄、取消、worktree
+隔离和父级失败传播；子代理行为仍靠单测与实战记录。见<a
+href="./29_chapter_eval_zh.html">第 29 章</a>。</td>
+</tr>
 </tbody>
 </table>
 <hr />
