@@ -73,6 +73,55 @@ impl EvalSuite {
         &self.cases
     }
 
+    /// Select a subset of cases by id, for iterating on one case.
+    ///
+    /// Both the run set and the declared set are filtered, so the subset
+    /// fingerprints as the subset. Comparing it against a full run therefore
+    /// fails the suite-fingerprint check and reads as `incomparable` rather than
+    /// as a regression — a filtered run is not evidence about the whole suite,
+    /// and the gate says so instead of guessing.
+    ///
+    /// An id that matches nothing is an error, not an empty run: a typo would
+    /// otherwise look like a suite that passed everything at no cost.
+    pub fn select(&self, ids: &[String]) -> anyhow::Result<Self> {
+        if ids.is_empty() {
+            return Ok(self.clone());
+        }
+        let mut missing: Vec<&str> = ids
+            .iter()
+            .map(String::as_str)
+            .filter(|id| !self.cases.iter().any(|case| case.id == *id))
+            .collect();
+        if !missing.is_empty() {
+            missing.sort_unstable();
+            let known: Vec<&str> = self.cases.iter().map(|case| case.id.as_str()).collect();
+            anyhow::bail!(
+                "no case named {}; this suite has {known:?}",
+                missing
+                    .iter()
+                    .map(|id| format!("{id:?}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+
+        Ok(Self {
+            root: self.root.clone(),
+            cases: self
+                .cases
+                .iter()
+                .filter(|case| ids.contains(&case.id))
+                .cloned()
+                .collect(),
+            declared: self
+                .declared
+                .iter()
+                .filter(|case| ids.contains(&case.id))
+                .cloned()
+                .collect(),
+        })
+    }
+
     /// The cases as written, for the fingerprint.
     pub fn declared_cases(&self) -> &[EvalCase] {
         &self.declared

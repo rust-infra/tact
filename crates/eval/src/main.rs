@@ -51,6 +51,14 @@ struct RunArgs {
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
     attempts: u32,
 
+    /// Run only the cases with these ids. Repeatable.
+    ///
+    /// For iterating on one case without paying for the whole suite. A filtered
+    /// report fingerprints the subset, so it cannot be compared against a full
+    /// run without saying so.
+    #[arg(long = "filter", value_name = "ID")]
+    filters: Vec<String>,
+
     /// Write the JSON report here instead of stdout
     #[arg(long)]
     json_out: Option<PathBuf>,
@@ -184,7 +192,7 @@ fn validate(dir: &std::path::Path) -> anyhow::Result<()> {
 }
 
 async fn run(args: RunArgs) -> anyhow::Result<()> {
-    let suite = EvalSuite::load(&args.suite)?;
+    let suite = EvalSuite::load(&args.suite)?.select(&args.filters)?;
     let options = args.options.run_options();
 
     let runner: Box<dyn Runner> = match args.runner {

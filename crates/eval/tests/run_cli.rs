@@ -208,3 +208,31 @@ fn a_case_id_that_would_escape_the_work_root_fails_validation() {
         stderr(&output)
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn a_filter_that_matches_nothing_fails_instead_of_running_nothing() {
+    // A typo would otherwise look like a suite that passed everything at no
+    // cost, which is the most expensive way to be wrong.
+    let dir = tempfile::tempdir().unwrap();
+    let suite = suite(dir.path());
+    let binary = fake_binary(dir.path(), "fake-tact-ui", "#!/bin/sh\necho ready\n");
+
+    let output = tact_eval(&[
+        "run",
+        suite.to_str().unwrap(),
+        "--runner",
+        "cli",
+        "--binary",
+        binary.to_str().unwrap(),
+        "--filter",
+        "no-such-case",
+    ]);
+
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("no case named"),
+        "{}",
+        stderr(&output)
+    );
+}
