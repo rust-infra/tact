@@ -41,6 +41,7 @@ fn report(attempts: u32, suite_fingerprint: &str, verdicts: &[Verdict]) -> EvalR
             },
             attempts,
             suite_fingerprint: suite_fingerprint.into(),
+            harness_version: Some("2.0.6".into()),
             started_at: "2026-11-18T00:00:00Z".into(),
             finished_at: "2026-11-18T00:00:01Z".into(),
         },

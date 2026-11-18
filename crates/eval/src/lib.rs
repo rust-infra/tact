@@ -95,6 +95,7 @@ pub async fn run_suite(
             identity,
             attempts,
             suite_fingerprint,
+            harness_version: Some(env!("CARGO_PKG_VERSION").to_string()),
             started_at,
             finished_at: chrono::Utc::now().to_rfc3339(),
         },

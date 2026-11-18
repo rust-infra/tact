@@ -116,6 +116,10 @@ pub struct ReportHeader {
     pub identity: RunIdentity,
     pub attempts: u32,
     pub suite_fingerprint: String,
+    /// Recorded for attribution, and deliberately not a comparability
+    /// condition: a version bump is what a nightly gate is usually measuring.
+    #[serde(default)]
+    pub harness_version: Option<String>,
     pub started_at: String,
     pub finished_at: String,
 }
@@ -129,6 +133,7 @@ impl From<&EvalReport> for ReportHeader {
             identity: report.meta.identity.clone(),
             attempts: report.meta.attempts,
             suite_fingerprint: report.meta.suite_fingerprint.clone(),
+            harness_version: report.meta.harness_version.clone(),
             started_at: report.meta.started_at.clone(),
             finished_at: report.meta.finished_at.clone(),
         }
@@ -641,6 +646,7 @@ mod tests {
                 },
                 attempts,
                 suite_fingerprint: "fp".into(),
+                harness_version: Some("2.0.6".into()),
                 started_at: "s".into(),
                 finished_at: "f".into(),
             },
@@ -1097,6 +1103,25 @@ mod tests {
         assert!(text.contains("failure_increase"), "{text}");
         assert!(text.contains("case a: regressed"), "{text}");
         assert!(text.contains("failures 0->1"), "{text}");
+    }
+
+    #[test]
+    fn a_version_bump_does_not_make_two_runs_incomparable() {
+        // The whole point of a nightly gate is comparing two commits, so the
+        // recorded harness version must stay out of the comparability rules.
+        // It is there for attribution, not for gating.
+        let baseline = case_report("a", &[pass()]);
+        let mut candidate = baseline.clone();
+        candidate.meta.harness_version = Some("9.9.9".into());
+
+        let comparison = compare_reports(&baseline, &candidate);
+
+        assert_eq!(comparison.status, ComparisonStatus::Pass);
+        assert_eq!(
+            comparison.candidate.harness_version.as_deref(),
+            Some("9.9.9"),
+            "the comparison still records which build the candidate was"
+        );
     }
 
     #[test]

@@ -25,6 +25,24 @@ pub struct ReportMeta {
     /// Stable hash of the case set, so a changed suite is visible without
     /// diffing two JSON files by eye.
     pub suite_fingerprint: String,
+    /// The harness version that produced this report.
+    ///
+    /// Recorded, not compared. A nightly gate exists to compare two commits, so
+    /// making a version change incomparable would disable it exactly when it
+    /// matters. What this buys is attribution after the fact: a report from last
+    /// month can be told apart from today's when a model alias silently changed
+    /// weights, which the schema version alone cannot say.
+    ///
+    /// One field rather than one per crate: the workspace pins `tact`, `tact-ui`,
+    /// and `tact_eval` to a single version, so two numbers would always be the
+    /// same number. The exception is the CLI runner's `--binary`, which may be a
+    /// release build this harness did not produce; the report cannot see that
+    /// binary's version, and the README says so.
+    ///
+    /// `#[serde(default)]` so a report written before this field existed still
+    /// parses; it simply records `None`.
+    #[serde(default)]
+    pub harness_version: Option<String>,
     pub started_at: String,
     pub finished_at: String,
 }
@@ -456,6 +474,7 @@ mod tests {
                 },
                 attempts: 2,
                 suite_fingerprint: "fp".into(),
+                harness_version: Some("2.0.6".into()),
                 started_at: "s".into(),
                 finished_at: "f".into(),
             },
