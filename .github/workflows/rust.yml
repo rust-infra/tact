@@ -6,6 +6,14 @@ on:
   pull_request:
     branches: [ "main" ]
 
+# A second push to the same PR cancels the first run. The desktop jobs take 15
+# to 22 minutes, so without this a review round queued three of them at once and
+# the newest result waited behind superseded ones. `main` is never cancelled:
+# a merge to it always finishes, because that is the run a rollback reads.
+concurrency:
+  group: rust-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   # The dev profile enables incremental compilation for local edit-build loops.
@@ -14,6 +22,76 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
+  # Decides whether the desktop job has anything to check.
+  #
+  # A separate job rather than a workflow-level `paths:` filter, because that
+  # filter skips *every* job: a PR touching only `crates/eval` would have run no
+  # CI at all. It runs on every event, `main` included, so it is never skipped:
+  # a job that `needs` a skipped job is itself skipped.
+  paths:
+    name: Desktop paths
+    runs-on: ubuntu-latest
+    outputs:
+      desktop: ${{ steps.filter.outputs.desktop }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Did any desktop dependency change?
+        id: filter
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # A merge to `main` always runs the desktop job: it is what ships, and
+          # a merge that skipped these tests is the commit a rollback reads.
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "desktop=true" >> "$GITHUB_OUTPUT"
+            echo "not a pull request: the desktop job runs"
+            exit 0
+          fi
+
+          # The workspace half of `cargo tree -p tact-desktop`. Every crate here
+          # is one `tact_desktop_core` or `tact-desktop` compiles, so a change
+          # to any of them can break the desktop build even though no desktop
+          # file moved. Adding a dependency to a desktop crate means adding its
+          # path here.
+          paths=(
+            crates/desktop crates/desktop_core crates/catalog
+            crates/tact crates/tact_host crates/tact_llm crates/protocol
+            crates/agent_api crates/agent_core crates/tool_refactor_macros
+            Cargo.toml Cargo.lock rust-toolchain.toml .cargo/config.toml
+            scripts/check-desktop-deps.sh scripts/check-rust.sh
+            .github/workflows/rust.yml
+          )
+          # `git diff` rather than a third-party paths-filter action: this
+          # workflow otherwise uses only `actions/*` and `dtolnay/*`, and the
+          # job that decides whether the desktop tests run is a poor place to
+          # start trusting a new action.
+          #
+          # Three dots, not two. `pull_request.base.sha` is the tip of the base
+          # branch, not the merge base, so a two-dot diff would report *main's*
+          # own commits as this PR's changes once main moved ahead — turning the
+          # filter into "always true" for any long-lived branch and quietly
+          # undoing the saving. `A...B` is the diff from `merge-base(A, B)` to
+          # B, which is exactly "what this PR changed".
+          # `--no-renames` because rename detection prints only the destination
+          # path: a desktop file moved out of `crates/desktop*` would otherwise
+          # look like an unrelated addition and skip the job that would notice
+          # the removal.
+          changed="$(git diff --no-renames --name-only "$BASE_SHA...$HEAD_SHA")"
+          hit=false
+          for path in "${paths[@]}"; do
+            if printf '%s\n' "$changed" | grep -qE "^${path//./\\.}(/|$)"; then
+              echo "desktop dependency changed: $path"
+              hit=true
+            fi
+          done
+          echo "desktop=$hit" >> "$GITHUB_OUTPUT"
+
   kernel-deps:
     name: Kernel dependency boundaries
     runs-on: ubuntu-latest
@@ -159,6 +237,22 @@ jobs:
 
   desktop:
     name: Desktop (${{ matrix.os }})
+    # Skipped on pull requests that touch nothing a desktop target compiles.
+    # `main` is asked and told "yes" by the `paths` job, so a merge always runs
+    # these tests.
+    #
+    # The list the `paths` job checks is the workspace half of
+    # `cargo tree -p tact-desktop`: `tact_desktop_core` depends on `tact`,
+    # `tact_host`, `tact_llm`, `tact_protocol`, `tact_agent_api`, and
+    # `tact_agent_core`, so a change to any of those can break the desktop build
+    # even though no desktop file moved.
+    #
+    # `ci:full` forces the job on a PR that looks unrelated to it.
+    if: >-
+      needs.paths.outputs.desktop == 'true' ||
+      (github.event_name == 'pull_request' &&
+      contains(github.event.pull_request.labels.*.name, 'ci:full'))
+    needs: paths
     strategy:
       fail-fast: false
       matrix:
