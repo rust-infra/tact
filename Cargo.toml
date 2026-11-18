@@ -63,6 +63,7 @@ eventsource-stream = "0.2"
 futures-util = "0.3"
 httpdate = "1"
 flate2 = "1"
+filetime = "=0.2.29"
 globset = "0.4"
 git2 = { version = "0.20", features = ["vendored-libgit2", "vendored-openssl"] }
 libc = "0.2"

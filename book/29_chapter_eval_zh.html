@@ -612,8 +612,11 @@ fixture 是否存在要等 <code>EvalSuite::load</code>，
 <p>启动 <code>tact-ui headless</code>，读它写入的三样东西：
 stdout 上的最终答案、stderr 上的每行一个事件、退出码。
 它能对 release 二进制或容器工作，这正是 CI 需要的形状。</p>
-<p>它读不到的字段留 <code>None</code>：缓存命中 token、推理 token、
-工具参数摘要。日志行里没有这些字段，所以是 unknown，不是 0。</p>
+<p>它从日志里读轮次数，并只在日志能证明时推断停止原因：
+<code>EmptyTurn</code>、<code>BlockedByHook</code>、<code>MaxTurns</code>，
+以及干净退出且有答案时的 <code>Completed</code>。其他停止原因、
+缓存命中 token、推理 token 与工具参数摘要读不到时留 <code>None</code>：
+日志行里没有这些字段，所以是 unknown，不是 0。</p>
 <h3 id="两边的证据必须同名同义">两边的证据必须同名同义</h3>
 <p>两个 runner 产出同一个 <code>RunArtifact</code>，
 过同一批判分器，因此同一套件在两条路径上得分方式一致。

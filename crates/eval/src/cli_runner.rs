@@ -5,10 +5,12 @@
 //! scheduled-review workflow already uses.
 //!
 //! What it can see: the final answer on stdout, one line per event on stderr,
-//! and the exit status. What it cannot: the typed stop reason and turn count,
-//! which never cross the process boundary. Those are reported as unknown rather
-//! than guessed, so a suite mixing both runners cannot average a guess into its
-//! numbers.
+//! and the exit status. From that log it reads the turn count and infers a few
+//! stop reasons: `EmptyTurn`, `BlockedByHook`, `MaxTurns`, and `Completed` for
+//! a clean exit with an answer. Other typed stops are reported as unknown
+//! rather than guessed; cache-hit and reasoning tokens never cross the process
+//! boundary. Unknown fields stay `None`, so a suite mixing both runners cannot
+//! average a guess into its numbers.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};

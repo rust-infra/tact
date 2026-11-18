@@ -43,7 +43,7 @@ struct RunArgs {
     #[arg(long)]
     json_out: Option<PathBuf>,
 
-    /// Exit non-zero when any case fails every attempt
+    /// Exit non-zero unless every case passes every attempt
     #[arg(long)]
     strict: bool,
 

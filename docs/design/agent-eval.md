@@ -200,9 +200,12 @@ nothing, rather than inventing a tool name from an error message.
 
 ## Tradeoffs accepted
 
-We accept that the CLI runner cannot report a stop reason or turn count in
-exchange for working against a release binary or a container. The two fields are
-`Option`, so this is visible in every report rather than silently zero.
+We accept that the CLI runner reports only what the headless log exposes: a
+turn count and the stop reasons it can infer (`EmptyTurn`, `BlockedByHook`,
+`MaxTurns`, and `Completed` for a clean exit with an answer). It works against a
+release binary or a container in exchange for that limited view. Other stop
+reasons stay `None`, so this is visible in every report rather than silently
+zero.
 
 We accept that `HostRunner` re-implements session open and teardown in exchange
 for the typed outcome. The duplication is about forty lines and its boundary is
