@@ -202,10 +202,17 @@ fn resolve_fixture(case: &mut EvalCase, suite_dir: &Path, case_path: &Path) -> R
 ///
 /// Fixtures arrive absolute: `EvalSuite::load` resolves them, so this does not
 /// depend on the process's working directory.
+///
+/// The case id is a *name*, never a path: it is reduced to one path component
+/// here, because the run deletes this directory when grading finishes. An id of
+/// `".."` (from a case file named `...toml`, whose stem is `..`) or one built by
+/// a library caller with a separator would otherwise aim that deletion outside
+/// the scratch root. Sanitizing is the guarantee; `EvalCase::validate_shape`
+/// reports the same mistake at load, where it can name the file.
 pub(crate) fn prepare_work_dir(case: &EvalCase) -> Result<PathBuf> {
     let dir = std::env::temp_dir()
         .join("tact-eval")
-        .join(&case.id)
+        .join(work_dir_component(&case.id))
         .join(uuid::Uuid::new_v4().to_string());
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("cannot create work dir {}", dir.display()))?;
@@ -214,6 +221,41 @@ pub(crate) fn prepare_work_dir(case: &EvalCase) -> Result<PathBuf> {
         copy_tree(fixture, &dir)?;
     }
     Ok(dir)
+}
+
+/// Reduce a case id to one safe directory component.
+///
+/// Anything that is not an alphanumeric, `-`, `_`, or `.` becomes `_`, and a
+/// component that is `.` or `..` becomes `_`.
+///
+/// When the reduction changed anything, a short hash of the original id is
+/// appended. Without it `a/b` and `a_b` would share a directory, and an orphan
+/// left behind by a crashed run would no longer say which case it came from.
+/// With it the mapping is still not injective in theory, but a collision now
+/// needs two ids that agree on both the sanitized form and the hash.
+fn work_dir_component(id: &str) -> String {
+    let original = id.trim();
+    let mut component: String = original
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if component.is_empty() || component == "." || component == ".." {
+        component = "_".into();
+    }
+    if component != original {
+        let digest = Sha256::digest(original.as_bytes());
+        component.push('-');
+        component.push_str(&format!("{digest:x}")[..8]);
+    }
+    // A bound keeps one long id from pushing the path past a filesystem limit.
+    component.truncate(72);
+    component
 }
 
 fn copy_tree(from: &Path, to: &Path) -> Result<()> {

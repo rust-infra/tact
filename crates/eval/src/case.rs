@@ -84,11 +84,45 @@ impl EvalCase {
         if self.prompt.trim().is_empty() {
             anyhow::bail!("{}: prompt is empty", path.display());
         }
+        self.validate_id(path)?;
         if self.timeout_secs == 0 {
             anyhow::bail!("{}: timeout_secs must be positive", path.display());
         }
         for grader in &self.graders {
             grader.validate(path)?;
+        }
+        Ok(())
+    }
+
+    /// `id` becomes a directory name under the work root, so it is a path.
+    ///
+    /// `prepare_work_dir` joins it onto `$TMPDIR/tact-eval`, and the run then
+    /// deletes that directory. An `id` of `"../../victim"` or an absolute path
+    /// would therefore point the run's `remove_dir_all` outside the scratch
+    /// root, at a directory the case does not own.
+    ///
+    /// `prepare_work_dir` also refuses to let the id escape, so this check is
+    /// the message rather than the guarantee: it names the case file and the
+    /// offending id instead of silently renaming the directory. The guarantee
+    /// has to live where the path is built, because an `EvalCase` can also be
+    /// constructed by a library caller instead of loaded.
+    fn validate_id(&self, path: &Path) -> Result<()> {
+        let id = self.id.trim();
+        if id.is_empty() {
+            return Ok(());
+        }
+        let offending = Path::new(id)
+            .components()
+            .find(|component| !matches!(component, std::path::Component::Normal(_)))
+            .is_some()
+            || id.contains('/')
+            || id.contains('\\');
+        if offending {
+            anyhow::bail!(
+                "{}: id {id:?} must be a single path component (no separators, no `..`, not absolute), \
+                 because it names the case's work directory",
+                path.display()
+            );
         }
         Ok(())
     }
@@ -240,6 +274,37 @@ mod tests {
         let error = EvalCase::load(&path).unwrap_err().to_string();
 
         assert!(error.contains("prompt is empty"), "{error}");
+    }
+
+    #[test]
+    fn an_id_that_would_escape_the_work_root_is_rejected_at_load_time() {
+        // The id names a directory the run later deletes. `../victim` would aim
+        // that deletion at a directory the case does not own, so it must not
+        // reach a runner at all.
+        for id in ["../victim", "/tmp/absolute", "a/b", "..", "."] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("escaping.toml");
+            std::fs::write(&path, format!("id = {id:?}\nprompt = \"x\"\n")).unwrap();
+
+            let error = EvalCase::load(&path).unwrap_err().to_string();
+
+            assert!(
+                error.contains("single path component"),
+                "id {id:?} was accepted: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_plain_id_is_still_accepted() {
+        // The rule must not reject the ids a suite actually uses.
+        for id in ["write-a-file", "case_1", "case.v2"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("plain.toml");
+            std::fs::write(&path, format!("id = {id:?}\nprompt = \"x\"\n")).unwrap();
+
+            assert_eq!(EvalCase::load(&path).unwrap().id, id);
+        }
     }
 
     #[test]
