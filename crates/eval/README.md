@@ -114,7 +114,10 @@ Five graders:
   case's `timeout_secs` makes the attempt inconclusive, not failed. It is POSIX
   `sh -c`, so a case that needs another shell must name it.
 - `files` asserts on the case directory: `exists`, `absent`, `contains`,
-  `matches`.
+  `matches`. A file the run did not write fails the assertion. A file it did
+  write that this process cannot read (non-UTF-8 bytes, a permission that
+  changed, a directory) makes the attempt inconclusive instead: that is the
+  harness failing to look, not the agent writing the wrong bytes.
 - `answer` asserts on the final assistant text: `contains`, `not_contains`,
   `matches`, `non_empty`.
 - `json` reads one JSON file the run wrote (`path`) and asserts by a dotted path

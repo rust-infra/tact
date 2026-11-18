@@ -117,8 +117,15 @@ async fn run_command(
 
 fn check_files(work_dir: &Path, assertions: &[FileAssertion]) -> Verdict {
     for assertion in assertions {
-        if let Some(reason) = check_one(work_dir, assertion) {
-            return Verdict::Fail { reason };
+        match check_one(work_dir, assertion) {
+            Ok(None) => {}
+            Ok(Some(reason)) => return Verdict::Fail { reason },
+            // The file exists but this process cannot read it: non-UTF-8 bytes,
+            // a permission that changed under us, a directory where a file was
+            // expected. "Cannot read it" is not "the agent wrote the wrong
+            // thing", and this module's whole premise is that the two must not
+            // be conflated.
+            Err(reason) => return Verdict::Inconclusive { reason },
         }
     }
     Verdict::Pass
@@ -310,8 +317,16 @@ fn json_at<'a>(value: &'a serde_json::Value, path: &[PathStep]) -> Option<&'a se
 fn check_json(work_dir: &Path, file: &Path, assertions: &[JsonAssertion]) -> Verdict {
     let text = match std::fs::read_to_string(work_dir.join(file)) {
         Ok(text) => text,
-        Err(error) => {
+        // Not writing the file is the agent's outcome to own.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Verdict::Fail {
+                reason: format!("{} is missing", file.display()),
+            };
+        }
+        // Writing something this process cannot read is not: a non-UTF-8 or
+        // binary artifact is a legitimate output that this grader cannot judge.
+        Err(error) => {
+            return Verdict::Inconclusive {
                 reason: format!("cannot read {}: {error}", file.display()),
             };
         }
@@ -400,8 +415,19 @@ fn check_json(work_dir: &Path, file: &Path, assertions: &[JsonAssertion]) -> Ver
     Verdict::Pass
 }
 
-fn check_one(work_dir: &Path, assertion: &FileAssertion) -> Option<String> {
-    match assertion {
+/// `Ok(None)` for a satisfied assertion, `Ok(Some(reason))` for a decided
+/// failure, `Err(reason)` when the harness could not look.
+fn check_one(work_dir: &Path, assertion: &FileAssertion) -> Result<Option<String>, String> {
+    // A missing file is a decision: the case asked for a file and the run did
+    // not leave one. A file that exists and cannot be read is not — that is
+    // this process failing to look, so it travels as `Err` and becomes
+    // inconclusive.
+    let content = |path: &Path| match std::fs::read_to_string(work_dir.join(path)) {
+        Ok(content) => Ok(Some(content)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("cannot read {}: {error}", path.display())),
+    };
+    Ok(match assertion {
         FileAssertion::Exists { path } => {
             (!work_dir.join(path).exists()).then(|| format!("{} is missing", path.display()))
         }
@@ -409,27 +435,26 @@ fn check_one(work_dir: &Path, assertion: &FileAssertion) -> Option<String> {
             .join(path)
             .exists()
             .then(|| format!("{} should not exist", path.display())),
-        FileAssertion::Contains { path, text } => {
-            let read = match std::fs::read_to_string(work_dir.join(path)) {
-                Ok(content) => content,
-                Err(error) => return Some(format!("cannot read {}: {error}", path.display())),
-            };
-            (!read.contains(text.as_str()))
-                .then(|| format!("{} does not contain {text:?}", path.display()))
-        }
+        FileAssertion::Contains { path, text } => match content(path)? {
+            None => Some(format!("{} is missing", path.display())),
+            Some(read) => (!read.contains(text.as_str()))
+                .then(|| format!("{} does not contain {text:?}", path.display())),
+        },
         FileAssertion::Matches { path, pattern } => {
-            let read = match std::fs::read_to_string(work_dir.join(path)) {
-                Ok(content) => content,
-                Err(error) => return Some(format!("cannot read {}: {error}", path.display())),
+            let Some(read) = content(path)? else {
+                return Ok(Some(format!("{} is missing", path.display())));
             };
             let regex = match regex::Regex::new(pattern) {
                 Ok(regex) => regex,
-                Err(error) => return Some(format!("bad pattern {pattern:?}: {error}")),
+                // A pattern that cannot compile is a broken case, and load
+                // already rejects it. Reaching it means a library caller built
+                // the case, so there is no decision to make about the agent.
+                Err(error) => return Err(format!("bad pattern {pattern:?}: {error}")),
             };
             (!regex.is_match(&read))
                 .then(|| format!("{} does not match /{pattern}/", path.display()))
         }
-    }
+    })
 }
 
 fn tail(text: &str) -> String {
@@ -803,9 +828,63 @@ mod tests {
         )
         .await;
 
-        assert!(!grades[0].verdict.is_pass());
         match &grades[0].verdict {
-            Verdict::Fail { reason } => assert!(reason.contains("cannot read"), "{reason}"),
+            // Not writing the file is the agent's outcome, so it decides the case.
+            Verdict::Fail { reason } => assert!(reason.contains("is missing"), "{reason}"),
+            other => panic!("expected failure, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_file_the_grader_cannot_read_is_inconclusive_not_a_failure() {
+        // A binary or non-UTF-8 artifact is a legitimate thing for the agent to
+        // write. "This process cannot read it" is not "the agent wrote the
+        // wrong bytes", and counting it as a failure would make a correct run
+        // look like a regression.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("out.bin"), [0xff, 0xfe, 0x00, 0x01]).unwrap();
+
+        let grades = grade(
+            &case(vec![GraderSpec::Files {
+                name: "files".into(),
+                assertions: vec![FileAssertion::Contains {
+                    path: std::path::PathBuf::from("out.bin"),
+                    text: "x".into(),
+                }],
+            }]),
+            dir.path(),
+            &artifact(),
+        )
+        .await;
+
+        assert!(
+            matches!(grades[0].verdict, Verdict::Inconclusive { .. }),
+            "expected inconclusive, got {:?}",
+            grades[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_file_still_fails_a_file_assertion() {
+        // The complement: a file the case asked for and the run did not leave is
+        // a decision, not an unreadable artifact.
+        let dir = tempfile::tempdir().unwrap();
+
+        let grades = grade(
+            &case(vec![GraderSpec::Files {
+                name: "files".into(),
+                assertions: vec![FileAssertion::Contains {
+                    path: std::path::PathBuf::from("absent.txt"),
+                    text: "x".into(),
+                }],
+            }]),
+            dir.path(),
+            &artifact(),
+        )
+        .await;
+
+        match &grades[0].verdict {
+            Verdict::Fail { reason } => assert!(reason.contains("is missing"), "{reason}"),
             other => panic!("expected failure, got {other:?}"),
         }
     }
