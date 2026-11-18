@@ -136,6 +136,81 @@ pub struct CaseSummary {
     pub failures: u32,
     pub inconclusive: u32,
     pub attempts: u32,
+    /// What the attempts cost. Reported, never gated: see [`CaseCost`].
+    pub cost: CaseCost,
+}
+
+/// What one case's attempts cost, as a median so one outlier does not set it.
+///
+/// A passing suite whose token spend doubled is a real regression that an
+/// unchanged pass rate hides; a single noisy attempt is not. So the median
+/// travels with the report and the comparison, and it moves no verdict: a
+/// numeric threshold here would need a calibrated noise model, which this
+/// harness does not claim to have.
+///
+/// `tokens` is prompt plus completion. Cache-hit and reasoning counts are
+/// recorded on the attempt, but only the host runner can see them, so a total
+/// including them would not be comparable across runners.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CaseCost {
+    pub attempts: u32,
+    /// Median prompt+completion tokens per attempt. `None` when no attempt
+    /// reported usage, which is different from a measured zero.
+    pub median_tokens: Option<u64>,
+    /// Median wall clock per attempt.
+    pub median_duration_ms: u64,
+    /// Every attempt's prompt+completion tokens added up, so a per-attempt
+    /// median cannot hide a suite whose cost moved into a second attempt.
+    pub total_tokens: u64,
+}
+
+impl CaseCost {
+    /// Aggregate the attempts of one case.
+    ///
+    /// Called from [`EvalReport::summaries`], which already has every outcome
+    /// for the case, so there is no running fold to keep consistent.
+    fn from_attempts(attempts: impl Iterator<Item = (u64, u64)>) -> Self {
+        let mut count = 0u32;
+        let mut total_tokens = 0u64;
+        let mut durations: Vec<u64> = Vec::new();
+        let mut tokens: Vec<u64> = Vec::new();
+        for (attempt_tokens, duration_ms) in attempts {
+            count += 1;
+            total_tokens += attempt_tokens;
+            durations.push(duration_ms);
+            // A zero is a runner that reported no usage for that attempt, not a
+            // measured zero, so it does not get to pull the median down. If
+            // every attempt reports zero, usage really was absent everywhere and
+            // the median stays `None`.
+            if attempt_tokens > 0 {
+                tokens.push(attempt_tokens);
+            }
+        }
+        tokens.sort_unstable();
+        durations.sort_unstable();
+        Self {
+            attempts: count,
+            median_tokens: median(&tokens),
+            median_duration_ms: median(&durations).unwrap_or(0),
+            total_tokens,
+        }
+    }
+}
+
+/// The middle sample, averaging the two middle ones for an even count.
+///
+/// The averaging is `a/2 + b/2 + (a%2 + b%2)/2` rather than `(a + b) / 2` so a
+/// pair near `u64::MAX` cannot overflow while averaging.
+fn median(sorted: &[u64]) -> Option<u64> {
+    match sorted.len() {
+        0 => None,
+        len if !len.is_multiple_of(2) => Some(sorted[len / 2]),
+        len => {
+            let lower = sorted[len / 2 - 1];
+            let upper = sorted[len / 2];
+            Some(lower / 2 + upper / 2 + (lower % 2 + upper % 2) / 2)
+        }
+    }
 }
 
 impl CaseSummary {
@@ -166,25 +241,42 @@ impl EvalReport {
     }
 
     pub fn summaries(&self) -> Vec<CaseSummary> {
-        let mut by_case: BTreeMap<&str, CaseSummary> = BTreeMap::new();
+        // Group first, fold second: a median needs every attempt's cost at
+        // once, so a running total would have to be re-derived anyway.
+        let mut outcomes_by_case: BTreeMap<&str, Vec<&CaseOutcome>> = BTreeMap::new();
         for outcome in &self.outcomes {
-            let summary = by_case
+            outcomes_by_case
                 .entry(outcome.case_id.as_str())
-                .or_insert_with(|| CaseSummary {
-                    case_id: outcome.case_id.clone(),
+                .or_default()
+                .push(outcome);
+        }
+
+        outcomes_by_case
+            .into_iter()
+            .map(|(case_id, outcomes)| {
+                let mut summary = CaseSummary {
+                    case_id: case_id.to_string(),
                     passes: 0,
                     failures: 0,
                     inconclusive: 0,
                     attempts: 0,
-                });
-            summary.attempts += 1;
-            match outcome.verdict() {
-                Verdict::Pass => summary.passes += 1,
-                Verdict::Fail { .. } => summary.failures += 1,
-                Verdict::Inconclusive { .. } => summary.inconclusive += 1,
-            }
-        }
-        by_case.into_values().collect()
+                    cost: CaseCost::from_attempts(
+                        outcomes
+                            .iter()
+                            .map(|outcome| (outcome.tokens.total(), outcome.duration_ms)),
+                    ),
+                };
+                for outcome in &outcomes {
+                    summary.attempts += 1;
+                    match outcome.verdict() {
+                        Verdict::Pass => summary.passes += 1,
+                        Verdict::Fail { .. } => summary.failures += 1,
+                        Verdict::Inconclusive { .. } => summary.inconclusive += 1,
+                    }
+                }
+                summary
+            })
+            .collect()
     }
 
     /// Cases where at least one attempt passed. This is `pass@k` with attempts
@@ -243,30 +335,44 @@ impl EvalReport {
         let _ = writeln!(out, "suite={}", self.meta.suite_fingerprint);
         let _ = writeln!(out);
 
-        for summary in self.summaries() {
+        // One fold for the table and both totals. `summaries` sorts a median
+        // per case, so calling it four times would do that work four times.
+        let summaries = self.summaries();
+        for summary in &summaries {
             let rate = summary
                 .pass_rate()
                 .map(|rate| format!("{:.0}%", rate * 100.0))
                 .unwrap_or_else(|| "n/a".into());
             let _ = writeln!(
                 out,
-                "{:<32} pass {}/{} ({}), fail {}, unknown {}",
+                "{:<32} pass {}/{} ({}), fail {}, unknown {}, {} tok/attempt, {}ms",
                 summary.case_id,
                 summary.passes,
                 summary.attempts,
                 rate,
                 summary.failures,
-                summary.inconclusive
+                summary.inconclusive,
+                summary
+                    .cost
+                    .median_tokens
+                    .map_or_else(|| "unset".to_string(), |value| value.to_string()),
+                summary.cost.median_duration_ms
             );
         }
 
+        let any = summaries
+            .iter()
+            .filter(|summary| summary.passed_any())
+            .count();
+        let all = summaries
+            .iter()
+            .filter(|summary| summary.passed_all())
+            .count();
         let _ = writeln!(
             out,
-            "\ncases passing any attempt: {}/{}\ncases passing every attempt: {}/{}",
-            self.cases_passing_any(),
-            self.summaries().len(),
-            self.cases_passing_all(),
-            self.summaries().len()
+            "\ncases passing any attempt: {any}/{}\ncases passing every attempt: {all}/{}",
+            summaries.len(),
+            summaries.len()
         );
         out
     }
@@ -502,5 +608,104 @@ mod tests {
             command: "true".into(),
         }];
         assert_ne!(baseline, suite_fingerprint(&[graded]));
+    }
+
+    /// An outcome with explicit cost, so a median test does not depend on the
+    /// default `TokenTotals`.
+    fn costing(case_id: &str, attempt: u32, tokens: (u64, u64), duration_ms: u64) -> CaseOutcome {
+        let mut outcome = outcome(case_id, attempt, Verdict::Pass);
+        outcome.tokens = TokenTotals {
+            prompt: tokens.0,
+            completion: tokens.1,
+            ..Default::default()
+        };
+        outcome.duration_ms = duration_ms;
+        outcome
+    }
+
+    #[test]
+    fn a_case_cost_is_the_median_of_its_attempts() {
+        // Median, not mean: one runaway attempt must not become the case's
+        // number, and the number a reviewer reads should be the typical one.
+        let report = report(vec![
+            costing("a", 1, (100, 10), 1_000),
+            costing("a", 2, (9_000, 900), 90_000),
+            costing("a", 3, (120, 20), 1_200),
+        ]);
+
+        let cost = &report.summaries()[0].cost;
+
+        assert_eq!(cost.attempts, 3);
+        assert_eq!(cost.median_tokens, Some(140), "the typical attempt");
+        assert_eq!(cost.median_duration_ms, 1_200);
+        assert_eq!(cost.total_tokens, 100 + 10 + 9_000 + 900 + 120 + 20);
+    }
+
+    #[test]
+    fn a_case_that_reported_no_usage_has_no_median_rather_than_zero() {
+        // "This runner cannot see token counts" is not "the run cost nothing".
+        // A zero would average into a suite cost as a measured value.
+        let report = report(vec![costing("a", 1, (0, 0), 5)]);
+
+        let cost = &report.summaries()[0].cost;
+
+        assert_eq!(cost.median_tokens, None);
+        assert_eq!(cost.total_tokens, 0);
+        assert_eq!(cost.median_duration_ms, 5, "duration is still measured");
+    }
+
+    #[test]
+    fn an_even_attempt_count_averages_the_two_middle_attempts() {
+        let report = report(vec![
+            costing("a", 1, (10, 0), 10),
+            costing("a", 2, (20, 0), 20),
+            costing("a", 3, (30, 0), 30),
+            costing("a", 4, (100, 0), 100),
+        ]);
+
+        let cost = &report.summaries()[0].cost;
+
+        assert_eq!(cost.median_tokens, Some(25));
+        assert_eq!(cost.median_duration_ms, 25);
+    }
+
+    #[test]
+    fn a_run_whose_every_attempt_was_inconclusive_has_no_decisive_attempt() {
+        // This is what separates "the suite failed" from "the suite never
+        // ran": the CLI turns it into a non-zero exit, because a missing
+        // binary must not read as a clean run.
+        let report = report(vec![
+            outcome(
+                "a",
+                1,
+                Verdict::Inconclusive {
+                    reason: "startup failed".into(),
+                },
+            ),
+            outcome(
+                "b",
+                1,
+                Verdict::Inconclusive {
+                    reason: "startup failed".into(),
+                },
+            ),
+        ]);
+
+        assert_eq!(report.decisive_attempts(), 0);
+    }
+
+    #[test]
+    fn a_decisive_failure_still_counts_as_evidence() {
+        // A failing attempt measured something: it is not the same as a
+        // harness that could not run, and the exit code must differ.
+        let report = report(vec![outcome(
+            "a",
+            1,
+            Verdict::Fail {
+                reason: "no file".into(),
+            },
+        )]);
+
+        assert_eq!(report.decisive_attempts(), 1);
     }
 }

@@ -36,7 +36,8 @@ pub use grader::{Grade, Verdict, grade};
 pub use host_runner::HostRunner;
 pub use options::{PermissionMode, RunOptions};
 pub use report::{
-    CaseOutcome, CaseSummary, EvalReport, REPORT_SCHEMA_VERSION, ReportMeta, suite_fingerprint,
+    CaseCost, CaseOutcome, CaseSummary, EvalReport, REPORT_SCHEMA_VERSION, ReportMeta,
+    suite_fingerprint,
 };
 pub use runner::{
     RunArtifact, RunFailure, RunIdentity, RunOutcome, Runner, RunnerKind, StopView, TokenTotals,

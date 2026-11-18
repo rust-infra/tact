@@ -11,7 +11,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::report::{CaseSummary, REPORT_SCHEMA_VERSION};
-use crate::{EvalReport, RunIdentity, RunnerKind};
+use crate::{CaseCost, EvalReport, RunIdentity, RunnerKind};
 
 pub const COMPARISON_SCHEMA_VERSION: u32 = 1;
 
@@ -154,6 +154,8 @@ pub struct CaseDelta {
     pub passes_delta: i64,
     pub failures_delta: i64,
     pub inconclusive_delta: i64,
+    pub baseline_cost: CaseCost,
+    pub candidate_cost: CaseCost,
 }
 
 /// A mismatch or a case-level explanation attached to the comparison.
@@ -175,6 +177,10 @@ pub struct ComparisonReport {
     pub candidate_case_count: usize,
     pub baseline_counts: CaseCounts,
     pub candidate_counts: CaseCounts,
+    /// Suite-level cost on each side, for the run-by-run number a reviewer
+    /// reads first.
+    pub baseline_cost: CaseCost,
+    pub candidate_cost: CaseCost,
     pub cases: Vec<CaseDelta>,
     pub reasons: Vec<ComparisonReason>,
 }
@@ -213,11 +219,27 @@ impl ComparisonReport {
             self.candidate_counts.failures,
             self.candidate_counts.inconclusive
         );
+        // Cost is reported, never gated. Its own lines so a script parsing the
+        // stable `counts:` labels is unaffected.
+        let _ = writeln!(
+            out,
+            "cost: baseline tokens={} per-case-median={} median-ms={}",
+            self.baseline_cost.total_tokens,
+            optional_count(self.baseline_cost.median_tokens),
+            self.baseline_cost.median_duration_ms
+        );
+        let _ = writeln!(
+            out,
+            "      candidate tokens={} per-case-median={} median-ms={}",
+            self.candidate_cost.total_tokens,
+            optional_count(self.candidate_cost.median_tokens),
+            self.candidate_cost.median_duration_ms
+        );
 
         for case in &self.cases {
             let _ = writeln!(
                 out,
-                "case {}: {} passes {}->{} ({:+}), failures {}->{} ({:+}), inconclusive {}->{} ({:+})",
+                "case {}: {} passes {}->{} ({:+}), failures {}->{} ({:+}), inconclusive {}->{} ({:+}), tokens {}->{} total, {}->{}ms median",
                 case.case_id,
                 case.status,
                 case.baseline.passes,
@@ -228,7 +250,11 @@ impl ComparisonReport {
                 case.failures_delta,
                 case.baseline.inconclusive,
                 case.candidate.inconclusive,
-                case.inconclusive_delta
+                case.inconclusive_delta,
+                optional_count(case.baseline_cost.median_tokens),
+                optional_count(case.candidate_cost.median_tokens),
+                case.baseline_cost.median_duration_ms,
+                case.candidate_cost.median_duration_ms
             );
         }
 
@@ -247,6 +273,11 @@ impl ComparisonReport {
 
         out
     }
+}
+
+/// A count that the runner may not have measured, spelled `unset` when absent.
+fn optional_count(value: Option<u64>) -> String {
+    value.map_or_else(|| "unset".into(), |value| value.to_string())
 }
 
 fn header_text(header: &ReportHeader) -> String {
@@ -424,6 +455,8 @@ pub fn compare_reports(baseline: &EvalReport, candidate: &EvalReport) -> Compari
                 inconclusive_delta: delta(candidate_case.inconclusive, baseline_case.inconclusive),
                 baseline: baseline_case_counts,
                 candidate: candidate_case_counts,
+                baseline_cost: baseline_case.cost.clone(),
+                candidate_cost: candidate_case.cost.clone(),
             });
         }
     }
@@ -453,9 +486,31 @@ pub fn compare_reports(baseline: &EvalReport, candidate: &EvalReport) -> Compari
         candidate_case_count: candidate_summaries.len(),
         baseline_counts,
         candidate_counts,
+        baseline_cost: suite_cost(&baseline_summaries),
+        candidate_cost: suite_cost(&candidate_summaries),
         cases,
         reasons,
     }
+}
+
+/// Suite-level cost: the cases' medians added up, plus their token totals.
+///
+/// Summing medians rather than re-medianing every attempt keeps the suite
+/// number a sum of case costs, which is what a reader adds up on the per-case
+/// lines above it.
+fn suite_cost(summaries: &[CaseSummary]) -> CaseCost {
+    let mut cost = CaseCost::default();
+    for summary in summaries {
+        cost.attempts += summary.cost.attempts;
+        cost.total_tokens += summary.cost.total_tokens;
+        cost.median_tokens = match (cost.median_tokens, summary.cost.median_tokens) {
+            (Some(total), Some(case)) => Some(total + case),
+            (Some(total), None) => Some(total),
+            (None, case) => case,
+        };
+        cost.median_duration_ms += summary.cost.median_duration_ms;
+    }
+    cost
 }
 
 /// The process exit code corresponding to a comparison result.
@@ -1042,5 +1097,59 @@ mod tests {
         assert!(text.contains("failure_increase"), "{text}");
         assert!(text.contains("case a: regressed"), "{text}");
         assert!(text.contains("failures 0->1"), "{text}");
+    }
+
+    #[test]
+    fn cost_moves_no_status_but_is_reported() {
+        // A suite that passes while spending twice the tokens is a real
+        // regression a pass-rate gate hides. It is recorded, and it stays a
+        // `pass`: a numeric threshold here would redden the build on a noisy
+        // model.
+        let baseline = case_report("a", &[pass()]);
+        let mut candidate = baseline.clone();
+        for outcome in &mut candidate.outcomes {
+            outcome.tokens = TokenTotals {
+                prompt: 10_000,
+                completion: 1_000,
+                ..Default::default()
+            };
+            outcome.duration_ms = 5_000;
+        }
+
+        let comparison = compare_reports(&baseline, &candidate);
+
+        assert_eq!(comparison.status, ComparisonStatus::Pass);
+        assert_eq!(comparison.baseline_cost.total_tokens, 0);
+        assert_eq!(comparison.candidate_cost.total_tokens, 11_000);
+        assert_eq!(
+            comparison.cases[0].candidate_cost.median_tokens,
+            Some(11_000)
+        );
+        assert!(
+            comparison.to_text().contains("cost: baseline tokens=0"),
+            "{}",
+            comparison.to_text()
+        );
+    }
+
+    #[test]
+    fn suite_cost_adds_up_the_case_medians() {
+        let baseline = case_report("a", &[pass()]);
+        let mut two_cases = baseline.clone();
+        two_cases.outcomes.push({
+            let mut second = baseline.outcomes[0].clone();
+            second.case_id = "b".into();
+            second.tokens = TokenTotals {
+                prompt: 100,
+                completion: 0,
+                ..Default::default()
+            };
+            second
+        });
+
+        let comparison = compare_reports(&baseline, &two_cases);
+
+        assert_eq!(comparison.candidate_cost.median_tokens, Some(100));
+        assert_eq!(comparison.candidate_cost.total_tokens, 100);
     }
 }

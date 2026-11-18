@@ -58,6 +58,17 @@ pub struct TokenTotals {
     pub reasoning: Option<u64>,
 }
 
+impl TokenTotals {
+    /// Prompt plus completion: the counts both runners see.
+    ///
+    /// Cache-hit and reasoning are excluded on purpose. They are [`Option`]s
+    /// that only the host runner fills, so a total including them would make
+    /// two runners' costs incomparable — the one comparison this number is for.
+    pub fn total(&self) -> u64 {
+        self.prompt.saturating_add(self.completion)
+    }
+}
+
 /// Everything one attempt produced, described the same way by both runners.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunArtifact {

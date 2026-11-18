@@ -183,6 +183,20 @@ protocol = "chat_completions"
     );
     assert_eq!(answered.turns, Some(1), "one model call is one turn");
 
+    // The summary carries the cost the attempt reported, so the table and the
+    // comparison can price a suite without re-reading every outcome.
+    let summary = run
+        .summaries()
+        .into_iter()
+        .find(|summary| summary.case_id == "answers")
+        .expect("the answers case has a summary");
+    assert_eq!(
+        summary.cost.median_tokens,
+        Some(14),
+        "prompt+completion for the one attempt"
+    );
+    assert_eq!(summary.cost.total_tokens, 14);
+
     let silent = run
         .outcomes
         .iter()
