@@ -13,7 +13,9 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::case::{EvalCase, FileAssertion, GraderSpec, TextAssertion};
+use crate::case::{
+    EvalCase, FileAssertion, GraderSpec, JsonAssertion, TextAssertion, ToolAssertion,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "verdict", rename_all = "snake_case")]
@@ -62,6 +64,12 @@ pub async fn grade(case: &EvalCase, work_dir: &Path, artifact: &crate::RunArtifa
             }
             GraderSpec::Files { assertions, .. } => check_files(work_dir, assertions),
             GraderSpec::Answer { assertions, .. } => check_answer(&artifact.answer, assertions),
+            GraderSpec::Tools { assertions, .. } => check_tools(&artifact.tools, assertions),
+            GraderSpec::Json {
+                path: file,
+                assertions,
+                ..
+            } => check_json(work_dir, file, assertions),
         };
         grades.push(Grade {
             grader: spec.name().to_string(),
@@ -133,6 +141,257 @@ fn check_answer(answer: &str, assertions: &[TextAssertion]) -> Verdict {
                 .trim()
                 .is_empty()
                 .then(|| "the answer is empty".to_string()),
+        };
+        if let Some(reason) = reason {
+            return Verdict::Fail { reason };
+        }
+    }
+    Verdict::Pass
+}
+
+/// Assert on the tool calls, by name only.
+///
+/// A record whose name is `None` is a line the CLI runner could not attribute
+/// to a tool (a bare `[tool failed]`). It stays in the artifact as evidence but
+/// matches no assertion by name — claiming a tool ran when the log did not say
+/// which one would be the same guess the runners refuse to make elsewhere.
+///
+/// Unattributed records also make some assertions undecidable, and those return
+/// [`Verdict::Inconclusive`] rather than a pass. "Never called `bash`" cannot be
+/// proven while a failure line might have been `bash`; "the run started with
+/// `read`" cannot be proven when no call could be named. A silent pass there
+/// would let a CLI run satisfy a tool-selection assertion on a guess, which is
+/// exactly the failure mode this grader exists to catch.
+fn check_tools(tools: &[crate::ToolRecord], assertions: &[ToolAssertion]) -> Verdict {
+    let named: Vec<&str> = tools
+        .iter()
+        .filter_map(|tool| tool.name.as_deref())
+        .collect();
+    let unattributed = tools.len() - named.len();
+    let cannot_say = |what: &str| Verdict::Inconclusive {
+        reason: format!(
+            "{what}: {unattributed} tool record(s) named no tool, so this cannot be decided"
+        ),
+    };
+
+    for assertion in assertions {
+        let violation = match assertion {
+            // Needing a call: finding it proves the assertion, missing it proves
+            // nothing while an unattributed record could be it.
+            ToolAssertion::Tool { tool } => {
+                if named.contains(&tool.as_str()) {
+                    None
+                } else if unattributed > 0 {
+                    return cannot_say(&format!("the run may have called {tool}"));
+                } else {
+                    Some(format!("the run never called {tool}"))
+                }
+            }
+            // Needing an absence: finding the call is a proven violation,
+            // whether or not other records were unattributed.
+            ToolAssertion::NoTool { tool } => {
+                if named.contains(&tool.as_str()) {
+                    Some(format!("the run should not call {tool}"))
+                } else if unattributed > 0 {
+                    return cannot_say(&format!("the run may have called {tool}"));
+                } else {
+                    None
+                }
+            }
+            // Order matters, so only the first record can decide it. An
+            // unattributed first record leaves it unknown.
+            ToolAssertion::FirstTool { tool } => match tools.first() {
+                Some(crate::ToolRecord {
+                    name: Some(first), ..
+                }) if first == tool => None,
+                Some(crate::ToolRecord { name: None, .. }) => {
+                    return cannot_say("the run's first tool call");
+                }
+                Some(crate::ToolRecord {
+                    name: Some(first), ..
+                }) => Some(format!("the run started with {first}, not {tool}")),
+                None => Some("the run called no tool".to_string()),
+            },
+            // An upper bound: exceeding it is proven, staying under it is not
+            // while unattributed calls could add more.
+            ToolAssertion::AtMost { tool, max } => {
+                let count = named.iter().filter(|name| **name == tool.as_str()).count();
+                if count > *max as usize {
+                    Some(format!(
+                        "the run called {tool} {count} time(s), at most {max} allowed"
+                    ))
+                } else if unattributed > 0 {
+                    return cannot_say(&format!("the run may have called {tool} more"));
+                } else {
+                    None
+                }
+            }
+        };
+        if let Some(reason) = violation {
+            return Verdict::Fail { reason };
+        }
+    }
+    Verdict::Pass
+}
+
+/// One step of a dotted JSON path: a key, or an array index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PathStep {
+    Key(String),
+    Index(usize),
+}
+
+/// Parse `a.b[0].c` into steps.
+///
+/// Kept deliberately small: keys separated by dots, indices in brackets. The
+/// error text names the position, because a test file's path is checked once at
+/// load time and a vague message there costs more than the parser does.
+pub(crate) fn parse_json_path(path: &str) -> Result<Vec<PathStep>, String> {
+    let mut steps = Vec::new();
+    let mut key = String::new();
+    let mut rest = path.chars().peekable();
+
+    while let Some(character) = rest.next() {
+        match character {
+            '.' => {
+                if key.is_empty() {
+                    // A dot after `]` is just the separator back to keys;
+                    // only a leading or doubled dot has no step to separate.
+                    if matches!(steps.last(), Some(PathStep::Index(_))) {
+                        continue;
+                    }
+                    return Err("empty key (a leading or doubled `.`)".into());
+                }
+                steps.push(PathStep::Key(std::mem::take(&mut key)));
+            }
+            '[' => {
+                if !key.is_empty() {
+                    steps.push(PathStep::Key(std::mem::take(&mut key)));
+                }
+                let mut digits = String::new();
+                loop {
+                    match rest.next() {
+                        Some(']') => break,
+                        Some(digit) => digits.push(digit),
+                        None => return Err("unclosed `[`".into()),
+                    }
+                }
+                let index = digits
+                    .parse::<usize>()
+                    .map_err(|_| format!("{digits:?} is not an array index"))?;
+                steps.push(PathStep::Index(index));
+            }
+            ']' => return Err("unexpected `]`".into()),
+            other => key.push(other),
+        }
+    }
+    if !key.is_empty() {
+        steps.push(PathStep::Key(key));
+    } else if path.ends_with('.') {
+        // `a.` and `a[0].` would otherwise parse as "the path so far", which
+        // hides a typo behind a path that looks intentional.
+        return Err("trailing `.`".into());
+    }
+    Ok(steps)
+}
+
+/// Walk `value` down `path`. `None` when any step is missing.
+fn json_at<'a>(value: &'a serde_json::Value, path: &[PathStep]) -> Option<&'a serde_json::Value> {
+    let mut current = value;
+    for step in path {
+        current = match step {
+            PathStep::Key(key) => current.get(key)?,
+            PathStep::Index(index) => current.get(*index)?,
+        };
+    }
+    Some(current)
+}
+
+fn check_json(work_dir: &Path, file: &Path, assertions: &[JsonAssertion]) -> Verdict {
+    let text = match std::fs::read_to_string(work_dir.join(file)) {
+        Ok(text) => text,
+        Err(error) => {
+            return Verdict::Fail {
+                reason: format!("cannot read {}: {error}", file.display()),
+            };
+        }
+    };
+    let document: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(document) => document,
+        Err(error) => {
+            return Verdict::Fail {
+                reason: format!("{} is not valid JSON: {error}", file.display()),
+            };
+        }
+    };
+
+    for assertion in assertions {
+        let path = match assertion {
+            JsonAssertion::Present { path }
+            | JsonAssertion::Absent { path }
+            | JsonAssertion::Equals { path, .. }
+            | JsonAssertion::Contains { path, .. }
+            | JsonAssertion::Len { path, .. } => path,
+        };
+        let steps = match parse_json_path(path) {
+            Ok(steps) => steps,
+            Err(error) => {
+                // Load rejects this, so reaching it means a library caller
+                // built the case. Undecidable, not a verdict about the agent.
+                return Verdict::Inconclusive {
+                    reason: format!("invalid JSON path {path:?}: {error}"),
+                };
+            }
+        };
+        let found = json_at(&document, &steps);
+
+        // `Absent` is the one assertion that reads a missing value as a pass.
+        // Everything else needs to find something first, and says so when it
+        // does not, instead of reporting a shape mismatch on nothing.
+        if let JsonAssertion::Absent { path } = assertion {
+            if found.is_some() {
+                return Verdict::Fail {
+                    reason: format!("{} should not have {path:?}", file.display()),
+                };
+            }
+            continue;
+        }
+        let Some(value) = found else {
+            return Verdict::Fail {
+                reason: format!("{} has no value at {path:?}", file.display()),
+            };
+        };
+        let reason = match assertion {
+            JsonAssertion::Present { .. } => None,
+            // Handled above, before this match.
+            JsonAssertion::Absent { .. } => None,
+            JsonAssertion::Equals { path, value: want } => (value != want)
+                .then(|| format!("{} at {path:?} is {value}, expected {want}", file.display())),
+            JsonAssertion::Contains { path, text } => match value.as_str() {
+                Some(actual) => (!actual.contains(text.as_str())).then(|| {
+                    format!(
+                        "{} at {path:?} is {actual:?}, not containing {text:?}",
+                        file.display()
+                    )
+                }),
+                None => Some(format!(
+                    "{} at {path:?} is {value}, not a string",
+                    file.display()
+                )),
+            },
+            JsonAssertion::Len { path, len } => match value.as_array() {
+                Some(items) => (items.len() != *len).then(|| {
+                    format!(
+                        "{} at {path:?} has {} items, expected {len}",
+                        file.display(),
+                        items.len()
+                    )
+                }),
+                None => Some(format!(
+                    "{} at {path:?} is {value}, not an array",
+                    file.display()
+                )),
+            },
         };
         if let Some(reason) = reason {
             return Verdict::Fail { reason };
@@ -346,5 +605,241 @@ mod tests {
         .await;
         assert_eq!(grades.len(), 1, "only the declared grader is graded");
         assert!(grades[0].verdict.is_pass());
+    }
+
+    /// One recorded tool call, by name.
+    fn tool(name: &str) -> crate::ToolRecord {
+        crate::ToolRecord {
+            name: Some(name.into()),
+            args: None,
+            status: crate::ToolStatus::Succeeded,
+            duration_ms: Some(1),
+            message: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_tools_grader_reads_the_calls_the_run_made() {
+        // The whole reason this grader exists: a file and answer grader both
+        // pass whether the agent used `read` or `bash cat`.
+        let dir = tempfile::tempdir().unwrap();
+        let mut artifact = artifact();
+        artifact.tools = vec![tool("read"), tool("edit")];
+
+        let grades = grade(
+            &case(vec![GraderSpec::Tools {
+                name: "used-read".into(),
+                assertions: vec![
+                    ToolAssertion::Tool {
+                        tool: "read".into(),
+                    },
+                    ToolAssertion::NoTool {
+                        tool: "bash".into(),
+                    },
+                    ToolAssertion::FirstTool {
+                        tool: "read".into(),
+                    },
+                    ToolAssertion::AtMost {
+                        tool: "edit".into(),
+                        max: 1,
+                    },
+                ],
+            }]),
+            dir.path(),
+            &artifact,
+        )
+        .await;
+
+        assert!(grades[0].verdict.is_pass(), "{:?}", grades[0]);
+    }
+
+    #[tokio::test]
+    async fn a_tools_grader_names_what_the_run_did_instead() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut artifact = artifact();
+        artifact.tools = vec![tool("bash")];
+
+        let grades = grade(
+            &case(vec![GraderSpec::Tools {
+                name: "used-read".into(),
+                assertions: vec![ToolAssertion::Tool {
+                    tool: "read".into(),
+                }],
+            }]),
+            dir.path(),
+            &artifact,
+        )
+        .await;
+
+        match &grades[0].verdict {
+            Verdict::Fail { reason } => assert!(reason.contains("never called read"), "{reason}"),
+            other => panic!("expected failure, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unattributed_tool_record_satisfies_no_assertion() {
+        // The CLI runner cannot name the tool behind a bare `[tool failed]`
+        // line, and records `None` rather than guessing. A `None` must not be
+        // read as "some tool ran", or a suite could pass on a guess.
+        let dir = tempfile::tempdir().unwrap();
+        let mut artifact = artifact();
+        artifact.tools = vec![crate::ToolRecord {
+            name: None,
+            args: None,
+            status: crate::ToolStatus::Failed,
+            duration_ms: None,
+            message: Some("provider activity failed".into()),
+        }];
+
+        let grades = grade(
+            &case(vec![GraderSpec::Tools {
+                name: "any-tool".into(),
+                assertions: vec![ToolAssertion::FirstTool {
+                    tool: "read".into(),
+                }],
+            }]),
+            dir.path(),
+            &artifact,
+        )
+        .await;
+
+        assert!(
+            !grades[0].verdict.is_pass(),
+            "an unattributed record passed a named assertion: {:?}",
+            grades[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_json_grader_reads_a_document_by_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("out.json"),
+            r#"{"status":"ok","items":[{"id":1},{"id":2}],"meta":{"count":2}}"#,
+        )
+        .unwrap();
+
+        let grades = grade(
+            &case(vec![GraderSpec::Json {
+                name: "shape".into(),
+                path: std::path::PathBuf::from("out.json"),
+                assertions: vec![
+                    JsonAssertion::Present {
+                        path: "status".into(),
+                    },
+                    JsonAssertion::Equals {
+                        path: "status".into(),
+                        value: serde_json::json!("ok"),
+                    },
+                    JsonAssertion::Len {
+                        path: "items".into(),
+                        len: 2,
+                    },
+                    JsonAssertion::Equals {
+                        path: "items[1].id".into(),
+                        value: serde_json::json!(2),
+                    },
+                    JsonAssertion::Contains {
+                        path: "status".into(),
+                        text: "o".into(),
+                    },
+                    JsonAssertion::Absent {
+                        path: "error".into(),
+                    },
+                ],
+            }]),
+            dir.path(),
+            &artifact(),
+        )
+        .await;
+
+        assert!(grades[0].verdict.is_pass(), "{:?}", grades[0]);
+    }
+
+    #[tokio::test]
+    async fn a_json_grader_names_the_path_and_the_expected_value() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("out.json"), r#"{"status":"broken"}"#).unwrap();
+
+        let grades = grade(
+            &case(vec![GraderSpec::Json {
+                name: "shape".into(),
+                path: std::path::PathBuf::from("out.json"),
+                assertions: vec![JsonAssertion::Equals {
+                    path: "status".into(),
+                    value: serde_json::json!("ok"),
+                }],
+            }]),
+            dir.path(),
+            &artifact(),
+        )
+        .await;
+
+        match &grades[0].verdict {
+            Verdict::Fail { reason } => {
+                assert!(reason.contains("\"status\""), "{reason}");
+                assert!(reason.contains("expected"), "{reason}");
+            }
+            other => panic!("expected failure, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_json_grader_fails_a_missing_file_rather_than_passing_on_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let grades = grade(
+            &case(vec![GraderSpec::Json {
+                name: "shape".into(),
+                path: std::path::PathBuf::from("absent.json"),
+                assertions: vec![JsonAssertion::Present {
+                    path: "status".into(),
+                }],
+            }]),
+            dir.path(),
+            &artifact(),
+        )
+        .await;
+
+        assert!(!grades[0].verdict.is_pass());
+        match &grades[0].verdict {
+            Verdict::Fail { reason } => assert!(reason.contains("cannot read"), "{reason}"),
+            other => panic!("expected failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_json_path_parses_keys_and_indices() {
+        assert_eq!(
+            parse_json_path("items[1].id").unwrap(),
+            vec![
+                PathStep::Key("items".into()),
+                PathStep::Index(1),
+                PathStep::Key("id".into()),
+            ]
+        );
+        assert_eq!(
+            parse_json_path("").unwrap(),
+            Vec::new(),
+            "the document root"
+        );
+        assert!(parse_json_path("a..b").is_err(), "a doubled dot is a typo");
+        assert!(parse_json_path("a[").is_err(), "an unclosed bracket");
+        assert!(parse_json_path("a[x]").is_err(), "a non-numeric index");
+        assert!(parse_json_path("a.").is_err(), "a trailing dot");
+        assert!(
+            parse_json_path("a[0].").is_err(),
+            "a trailing dot after an index"
+        );
+        assert_eq!(
+            parse_json_path("a[0][1]").unwrap(),
+            vec![
+                PathStep::Key("a".into()),
+                PathStep::Index(0),
+                PathStep::Index(1),
+            ],
+            "nested indices"
+        );
     }
 }

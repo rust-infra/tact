@@ -152,33 +152,63 @@ pub enum GraderSpec {
         name: String,
         assertions: Vec<TextAssertion>,
     },
+    /// Assert on a JSON file the run wrote.
+    ///
+    /// A structured output is what an agent case most often produces, and the
+    /// only way to check one was `matches` with a regex over the raw text —
+    /// brittle under key order and whitespace, and unreadable when it fails.
+    Json {
+        name: String,
+        /// The JSON file to read, relative to the case workdir.
+        path: PathBuf,
+        assertions: Vec<JsonAssertion>,
+    },
+    /// Assert on the tool calls the run made, in order.
+    ///
+    /// The other three graders cannot see this. "Use `read` rather than `bash
+    /// cat`", "call `grep` at most once", "never write before reading" are all
+    /// tool-selection regressions a file or answer grader reports as a pass.
+    ///
+    /// It reads names only, never arguments: a finished-step log line carries
+    /// the step message, not the argument summary, so the CLI runner cannot see
+    /// arguments and a grader that required them would be host-only by
+    /// accident.
+    Tools {
+        name: String,
+        assertions: Vec<ToolAssertion>,
+    },
 }
 
 impl GraderSpec {
     pub fn name(&self) -> &str {
         match self {
-            Self::Command { name, .. } | Self::Files { name, .. } | Self::Answer { name, .. } => {
-                name
-            }
+            Self::Command { name, .. }
+            | Self::Files { name, .. }
+            | Self::Answer { name, .. }
+            | Self::Json { name, .. }
+            | Self::Tools { name, .. } => name,
         }
     }
 
-    fn validate(&self, path: &Path) -> Result<()> {
+    fn validate(&self, case_path: &Path) -> Result<()> {
         match self {
             Self::Command { name, command } => {
                 if name.trim().is_empty() {
-                    anyhow::bail!("{}: grader name is empty", path.display());
+                    anyhow::bail!("{}: grader name is empty", case_path.display());
                 }
                 if command.trim().is_empty() {
-                    anyhow::bail!("{}: grader {name} has an empty command", path.display());
+                    anyhow::bail!(
+                        "{}: grader {name} has an empty command",
+                        case_path.display()
+                    );
                 }
             }
             Self::Files { name, assertions } => {
                 if name.trim().is_empty() {
-                    anyhow::bail!("{}: grader name is empty", path.display());
+                    anyhow::bail!("{}: grader name is empty", case_path.display());
                 }
                 if assertions.is_empty() {
-                    anyhow::bail!("{}: grader {name} asserts nothing", path.display());
+                    anyhow::bail!("{}: grader {name} asserts nothing", case_path.display());
                 }
                 for assertion in assertions {
                     if let FileAssertion::Matches {
@@ -186,21 +216,71 @@ impl GraderSpec {
                         path: file,
                     } = assertion
                     {
-                        check_pattern(path, name, &file.display().to_string(), pattern)?;
+                        check_pattern(case_path, name, &file.display().to_string(), pattern)?;
                     }
                 }
             }
             Self::Answer { name, assertions } => {
                 if name.trim().is_empty() {
-                    anyhow::bail!("{}: grader name is empty", path.display());
+                    anyhow::bail!("{}: grader name is empty", case_path.display());
                 }
                 if assertions.is_empty() {
-                    anyhow::bail!("{}: grader {name} asserts nothing", path.display());
+                    anyhow::bail!("{}: grader {name} asserts nothing", case_path.display());
                 }
                 for assertion in assertions {
                     if let TextAssertion::Matches { pattern } = assertion {
-                        check_pattern(path, name, "the answer", pattern)?;
+                        check_pattern(case_path, name, "the answer", pattern)?;
                     }
+                }
+            }
+            Self::Tools { name, assertions } => {
+                if name.trim().is_empty() {
+                    anyhow::bail!("{}: grader name is empty", case_path.display());
+                }
+                if assertions.is_empty() {
+                    anyhow::bail!("{}: grader {name} asserts nothing", case_path.display());
+                }
+                for assertion in assertions {
+                    if let ToolAssertion::Tool { tool }
+                    | ToolAssertion::NoTool { tool }
+                    | ToolAssertion::FirstTool { tool }
+                    | ToolAssertion::AtMost { tool, .. } = assertion
+                        && tool.trim().is_empty()
+                    {
+                        anyhow::bail!("{}: grader {name} names an empty tool", case_path.display());
+                    }
+                }
+            }
+            Self::Json {
+                name,
+                path: file,
+                assertions,
+            } => {
+                if name.trim().is_empty() {
+                    anyhow::bail!("{}: grader name is empty", case_path.display());
+                }
+                if file.as_os_str().is_empty() {
+                    anyhow::bail!("{}: grader {name} names no file", case_path.display());
+                }
+                if assertions.is_empty() {
+                    anyhow::bail!("{}: grader {name} asserts nothing", case_path.display());
+                }
+                // A malformed path would otherwise fail every attempt at run
+                // time, where it reads as "the agent wrote the wrong shape".
+                for assertion in assertions {
+                    let json_path = match assertion {
+                        JsonAssertion::Present { path }
+                        | JsonAssertion::Absent { path }
+                        | JsonAssertion::Equals { path, .. }
+                        | JsonAssertion::Contains { path, .. }
+                        | JsonAssertion::Len { path, .. } => path,
+                    };
+                    crate::grader::parse_json_path(json_path).map_err(|error| {
+                        anyhow::anyhow!(
+                            "{}: grader {name} has an invalid JSON path {json_path:?}: {error}",
+                            case_path.display()
+                        )
+                    })?;
                 }
             }
         }
@@ -246,6 +326,51 @@ pub enum FileAssertion {
     Absent { path: PathBuf },
     Contains { path: PathBuf, text: String },
     Matches { path: PathBuf, pattern: String },
+}
+
+/// One assertion about a JSON file, addressed by a dotted path.
+///
+/// The path is `a.b[0].c`-style: keys separated by dots, array indices in
+/// brackets. It is a subset on purpose — no wildcards, no filters — because a
+/// query language in a test file is another thing to learn and to get wrong.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum JsonAssertion {
+    /// The path exists. `path` is empty for the document root.
+    Present { path: String },
+    /// The path does not exist.
+    Absent { path: String },
+    /// The value at `path` equals this JSON literal.
+    Equals {
+        path: String,
+        value: serde_json::Value,
+    },
+    /// The value at `path` is a string containing `text`.
+    Contains { path: String, text: String },
+    /// The value at `path` is an array with this length.
+    Len { path: String, len: usize },
+}
+
+/// One assertion about the run's tool calls.
+///
+/// Every variant names a tool, because a runner that cannot attribute a line to
+/// a tool records `None` (a bare `[tool failed]` in the headless log). An
+/// unattributed record therefore matches no assertion and can only ever fail
+/// one, which is the honest reading: nothing shows which tool ran.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ToolAssertion {
+    /// The tool was called at least once.
+    Tool { tool: String },
+    /// The tool was never called.
+    NoTool { tool: String },
+    /// The first tool call was this one.
+    ///
+    /// For "read before write": `kind = "first_tool", tool = "read"` says the
+    /// run started by reading rather than by overwriting.
+    FirstTool { tool: String },
+    /// The tool was called at most `max` times. A budget on wasted turns.
+    AtMost { tool: String, max: u32 },
 }
 
 #[cfg(test)]
