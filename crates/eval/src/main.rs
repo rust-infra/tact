@@ -48,7 +48,7 @@ struct RunArgs {
     runner: RunnerKind,
 
     /// Attempts per case; pass@k uses this as k
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
     attempts: u32,
 
     /// Write the JSON report here instead of stdout
@@ -141,12 +141,33 @@ fn compare(baseline: &Path, candidate: &Path, json_out: Option<&Path>) -> anyhow
 
     eprintln!("{}", comparison.to_text());
     match json_out {
-        Some(path) => std::fs::write(path, format!("{json}\n"))
+        Some(path) => write_json(path, &json)
             .with_context(|| format!("cannot write comparison {}", path.display()))?,
         None => println!("{json}"),
     }
 
     Ok(comparison_exit_code(comparison.status))
+}
+
+/// Write a JSON artifact, creating the parent directory when it is missing.
+///
+/// Every documented example writes to `target/eval/...`, and a fresh checkout
+/// has no `target/eval`. Refusing there would fail the one command the README
+/// tells a new user to run, after the work (and for a model run, the spend) is
+/// already done. Creating the directory is the smaller surprise.
+///
+/// A path with no parent at all (`report.json`) writes into the current
+/// directory, which is why the create is conditional.
+fn write_json(path: &Path, json: &str) -> anyhow::Result<()> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("cannot create directory {}", parent.display()))?;
+    }
+    std::fs::write(path, format!("{json}\n"))
+        .with_context(|| format!("cannot write file {}", path.display()))
 }
 
 /// Parse and validate every case, then report how many there are.
@@ -184,7 +205,8 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
     eprintln!("{}", report.to_text());
 
     match args.json_out {
-        Some(path) => std::fs::write(&path, report.to_json()?)?,
+        Some(path) => write_json(&path, &report.to_json()?)
+            .with_context(|| format!("cannot write report {}", path.display()))?,
         None => println!("{}", report.to_json()?),
     }
 

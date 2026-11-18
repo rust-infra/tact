@@ -55,7 +55,13 @@ pub async fn run_suite(
     runner: &dyn Runner,
     attempts: u32,
 ) -> anyhow::Result<EvalReport> {
-    let attempts = attempts.max(1);
+    // Not clamped. `0` would produce a report with no outcomes, which reads as
+    // "every case passed nothing" and compares as an empty suite; the CLI
+    // rejects the flag, and a library caller gets the same refusal instead of a
+    // silently different run.
+    if attempts == 0 {
+        anyhow::bail!("attempts must be at least 1");
+    }
     let started_at = chrono::Utc::now().to_rfc3339();
     let identity = runner.identity();
     let suite_fingerprint = suite.fingerprint()?;
