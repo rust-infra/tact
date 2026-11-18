@@ -564,7 +564,7 @@ text = &quot;hello eval&quot;</code></pre>
 </tr>
 <tr>
 <td><code>timeout_secs</code></td>
-<td>整次尝试的墙钟预算，默认 300；多轮是整段会话共享一份，不是每轮一份</td>
+<td>整次尝试的墙钟预算，默认 300，上限 86400（一天）；多轮是整段会话共享一份，不是每轮一份。它也用作 <code>command</code> 判分器的预算</td>
 </tr>
 <tr>
 <td><code>isolation</code></td>

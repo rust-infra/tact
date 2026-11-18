@@ -183,3 +183,35 @@ async fn a_multi_turn_case_resumes_the_session_its_first_turn_wrote() {
         "each process reports one turn, so the case's count is the sum"
     );
 }
+
+/// A library caller can build a case the loader would have refused.
+///
+/// `timeout_secs` past the platform's `Instant` range panics on `now() + d`.
+/// The loader rejects it, but this path does not go through the loader, so the
+/// runner has to survive it: one malformed case must not take the suite down.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_timeout_past_the_instant_range_fails_the_case_instead_of_panicking() {
+    let dir = tempfile::tempdir().unwrap();
+    let binary = dir.path().join("fake-tact-ui");
+    std::fs::write(&binary, "#!/bin/sh\necho done\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let case = EvalCase {
+        id: format!("overflow-{}", uuid::Uuid::new_v4()),
+        prompt: Some("p".into()),
+        prompts: Vec::new(),
+        timeout_secs: u64::MAX,
+        isolation: Isolation::Empty,
+        graders: Vec::new(),
+    };
+
+    let outcome = CliRunner::new(binary).run(&case, 1).await;
+
+    assert_eq!(
+        outcome.artifact.answer, "done",
+        "the run still happened; the deadline was clamped rather than panicking"
+    );
+}

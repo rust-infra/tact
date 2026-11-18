@@ -95,7 +95,10 @@ Each prompt after the first resumes the session the previous one wrote, which is
 what makes this a conversation rather than N runs sharing a directory:
 "change the file you just wrote" only means something if the context carried.
 `timeout_secs` is one budget for the whole case, not one per turn, so a
-three-turn case with `timeout_secs = 240` is four minutes of work.
+three-turn case with `timeout_secs = 240` is four minutes of work. The ceiling is
+`86400` (a day): both runners compute a deadline as `Instant::now() + budget`,
+and a larger value overflows that addition and panics, so the loader refuses it.
+The same `timeout_secs` also bounds a `command` grader.
 
 The answer graded is the last turn's text and the files are whatever the last
 turn left. A case that must judge an intermediate turn belongs in its own case.

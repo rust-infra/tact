@@ -74,6 +74,16 @@ fn default_timeout_secs() -> u64 {
     300
 }
 
+/// The largest wall-clock budget a case may declare, in seconds.
+///
+/// A day. Nothing a suite does takes longer, and the ceiling is load-bearing:
+/// both runners compute a deadline as `Instant::now() + Duration`, which panics
+/// when the value overflows that platform's `Instant`. `timeout_secs =
+/// 9223372036854775807` parses and used to validate, then took the process down
+/// before the first turn — a case file crashing the harness instead of failing
+/// the case.
+pub const MAX_TIMEOUT_SECS: u64 = 86_400;
+
 fn default_isolation() -> Isolation {
     Isolation::Empty
 }
@@ -122,6 +132,13 @@ impl EvalCase {
         self.validate_id(path)?;
         if self.timeout_secs == 0 {
             anyhow::bail!("{}: timeout_secs must be positive", path.display());
+        }
+        if self.timeout_secs > MAX_TIMEOUT_SECS {
+            anyhow::bail!(
+                "{}: timeout_secs {} exceeds the {MAX_TIMEOUT_SECS}s limit",
+                path.display(),
+                self.timeout_secs
+            );
         }
         for grader in &self.graders {
             grader.validate(path)?;
@@ -556,6 +573,42 @@ mod tests {
         let error = EvalCase::load(&path).unwrap_err().to_string();
 
         assert!(error.contains("prompts[1]"), "{error}");
+    }
+
+    #[test]
+    fn a_timeout_that_would_overflow_the_deadline_is_refused_at_load_time() {
+        // `timeout_secs = i64::MAX` parses, and both runners compute
+        // `Instant::now() + Duration::from_secs(..)`. That addition panics on
+        // overflow, so a case file used to take the whole suite down before its
+        // first turn instead of failing the case.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("huge.toml");
+        std::fs::write(
+            &path,
+            format!("prompt = \"p\"\ntimeout_secs = {}\n", i64::MAX),
+        )
+        .unwrap();
+
+        let error = EvalCase::load(&path).unwrap_err().to_string();
+
+        assert!(error.contains("exceeds"), "{error}");
+        assert!(error.contains(&MAX_TIMEOUT_SECS.to_string()), "{error}");
+    }
+
+    #[test]
+    fn the_largest_allowed_timeout_still_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("max.toml");
+        std::fs::write(
+            &path,
+            format!("prompt = \"p\"\ntimeout_secs = {MAX_TIMEOUT_SECS}\n"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            EvalCase::load(&path).unwrap().timeout_secs,
+            MAX_TIMEOUT_SECS
+        );
     }
 
     #[test]

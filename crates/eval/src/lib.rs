@@ -25,7 +25,7 @@ mod report;
 mod runner;
 mod suite;
 
-pub use case::{EvalCase, FileAssertion, GraderSpec, Isolation, TextAssertion};
+pub use case::{EvalCase, FileAssertion, GraderSpec, Isolation, MAX_TIMEOUT_SECS, TextAssertion};
 pub use cli_runner::{CliRunner, default_cli_binary};
 pub use compare::{
     COMPARISON_SCHEMA_VERSION, CaseComparisonStatus, CaseCounts, CaseDelta, ComparisonReason,

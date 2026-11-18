@@ -183,7 +183,14 @@ impl Runner for HostRunner {
         let cancel = agent.cancel_handle();
         // One budget for the whole case, not one per turn: a three-turn case
         // with `timeout_secs = 120` means two minutes of work, not six.
-        let deadline = Instant::now() + Duration::from_secs(case.timeout_secs);
+        // `checked_add` and not `+`: a library caller can build an `EvalCase`
+        // whose `timeout_secs` overflows this platform's `Instant`, and
+        // `validate_shape` is not on that path. Overflowing here would panic
+        // the whole suite over one malformed case; clamping to "no deadline
+        // soon" lets that case fail on its own terms instead.
+        let now = Instant::now();
+        let budget = Duration::from_secs(case.timeout_secs.min(crate::case::MAX_TIMEOUT_SECS));
+        let deadline = now.checked_add(budget).unwrap_or(now);
         let mut budget_expired = false;
         let mut turns_taken = 0u32;
 
