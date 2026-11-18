@@ -502,6 +502,28 @@ pub fn init_from_args(args: &CliArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Resolve the configuration these arguments describe, without installing it.
+///
+/// The eval harness's CLI runner spawns `tact-ui`, so it never sees the settings
+/// the child resolves; it knows only the flags it passed. A run driven by
+/// `--config` therefore recorded `model: null`, and [`crate::RunIdentity`] made
+/// two such runs incomparable — the doc's advice was to check the config files
+/// by hand.
+///
+/// This applies the *same* resolution the child will apply, read-only, so the
+/// report can name the model and endpoint the run actually used. It does not
+/// install anything: a library caller that already called [`init_from_args`]
+/// keeps its global settings untouched.
+///
+/// The result is what the arguments *resolve to*, which is what `tact-ui` will
+/// agree with unless it is a different build with different defaults. The
+/// recorded value is therefore still "as resolved by this harness", and the
+/// identity check stays the authority on whether two reports are comparable.
+pub fn resolve_without_installing(args: &CliArgs) -> anyhow::Result<types::ResolvedConfig> {
+    let (toml_cfg, config_path) = load::load_toml_config(args.config.as_ref())?;
+    resolve::resolve_config(args, &toml_cfg, config_path)
+}
+
 /// Convenience: initialize config and return CLI args.
 /// Call this at the very start of `main()`.
 pub fn init() -> anyhow::Result<CliArgs> {

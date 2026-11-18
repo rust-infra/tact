@@ -73,12 +73,24 @@ impl Runner for CliRunner {
     }
 
     fn identity(&self) -> crate::runner::RunIdentity {
-        // The options are what this runner was told to pass. A `--config` file
-        // can override them inside the child, which this process never reads,
-        // so an unset option stays absent rather than being invented.
+        // The child applies the same precedence this process can resolve
+        // read-only, so a `--config`-only run names the model it really used
+        // instead of leaving both fields absent — which made every such report
+        // `incomparable` to every other, including a rerun of itself.
+        //
+        // Falling back to the flags when resolution fails keeps a broken config
+        // file from turning an identity into an error at report time: the child
+        // will fail on it anyway, and the run's own failure records that.
+        let resolved = tact::config::resolve_without_installing(&self.options.to_cli_args()).ok();
         crate::runner::RunIdentity {
-            model: self.options.model.clone(),
-            base_url: self.options.base_url.clone(),
+            model: resolved
+                .as_ref()
+                .map(|settings| settings.agent.model.clone())
+                .or_else(|| self.options.model.clone()),
+            base_url: resolved
+                .as_ref()
+                .map(|settings| settings.llm.base_url.clone())
+                .or_else(|| self.options.base_url.clone()),
             permission_mode: self.options.permission_mode,
         }
     }
@@ -461,5 +473,55 @@ mod tests {
     #[test]
     fn a_missing_exit_status_concludes_nothing() {
         assert_eq!(parse_stop(&[], ChildEnd::TimedOut), None);
+    }
+
+    #[test]
+    fn a_config_only_run_records_the_model_and_endpoint_it_resolved() {
+        // Without this, every `--config`-driven run recorded `model: null`, and
+        // two runs of the same suite under the same config compared as
+        // `incomparable` — including a rerun of a baseline against itself.
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("tact.toml");
+        std::fs::write(
+            &config,
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+base_url = "http://127.0.0.1:9999/v1"
+protocol = "chat_completions"
+model = "eval-model"
+"#,
+        )
+        .unwrap();
+
+        let runner = CliRunner::new("tact-ui").with_options(crate::RunOptions {
+            config: Some(config),
+            ..Default::default()
+        });
+        let identity = runner.identity();
+
+        assert_eq!(identity.model.as_deref(), Some("eval-model"));
+        assert_eq!(
+            identity.base_url.as_deref(),
+            Some("http://127.0.0.1:9999/v1")
+        );
+    }
+
+    #[test]
+    fn an_unreadable_config_does_not_invent_an_identity() {
+        // The child will fail on the same file; the report must stay honest
+        // rather than claim a model it never resolved.
+        let runner = CliRunner::new("tact-ui").with_options(crate::RunOptions {
+            config: Some(std::path::PathBuf::from("/nonexistent/tact.toml")),
+            ..Default::default()
+        });
+
+        let identity = runner.identity();
+
+        assert_eq!(identity.model, None);
+        assert_eq!(identity.base_url, None);
     }
 }
