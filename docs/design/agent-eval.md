@@ -304,9 +304,67 @@ suite that must be hermetic needs `HOME` pointed at a scratch directory; this is
 documented rather than enforced, because doing it inside the harness would
 break the common case of a developer running their own suites locally.
 
+## Hardening pass (2026-11-18)
+
+A second pass closed the gaps a first run found, in priority order. Each is a
+decision worth keeping.
+
+**The case id is a name, not a path.** It becomes a directory under
+`$TMPDIR/tact-eval`, and the run deletes that directory, so `id = "../victim"`
+aimed the deletion at a directory the case does not own. `EvalCase::validate_shape`
+now refuses anything but a single path component, and `prepare_work_dir` reduces
+the id to one component anyway — the second is the guarantee, because a library
+caller can build an `EvalCase` without loading it. The reduction appends a short
+hash when it changed anything, so `a/b` and `a_b` keep separate directories and a
+leftover directory stays attributable.
+
+**A run that judged nothing is not a green run.** `run` used to exit 0 whether
+the suite passed or every attempt was a startup failure, so a missing binary or
+an expired key read as a successful suite. `EvalReport::decisive_attempts` counts
+attempts that reached a pass or a fail; zero of them exits 4 with a message
+naming the likely causes. `--strict` keeps its meaning, and a decisive failure
+still exits 0 without it.
+
+**`--json-out` creates its parent.** Every documented example writes
+`target/eval/...`, which a fresh checkout does not have. Failing there happened
+after the model run was already paid for. `--attempts 0` is now refused by clap
+rather than clamped to 1, because a report claiming one attempt when the caller
+asked for none is a lie about what ran.
+
+**Cost is compared, and moves no verdict.** `CaseOutcome` already recorded tokens
+and duration, and `compare` ignored both, so "pass rate unchanged, tokens
+doubled" was invisible. `CaseCost` (a median per case, summed per suite) now
+travels through `CaseSummary`, the report's table, and the comparison. It gates
+nothing: a numeric threshold needs a calibrated noise model, which this harness
+still does not claim to have.
+
+**Graders for what the agent did, not only what it left.** `json` reads a
+document by dotted path, because regex over structured output is brittle and
+unreadable when it fails. `tools` asserts on the calls by name — `tool`,
+`no_tool`, `first_tool`, `at_most` — which is the only way "use `read`, not
+`bash cat`" becomes a case. A record the runner could not attribute to a tool
+satisfies no assertion, and makes `no_tool`/`at_most` inconclusive rather than
+passing them: an unattributed call could be the one they forbid.
+
+**A `--config`-only CLI run is comparable again.** The CLI runner never saw the
+settings its child resolved, so `model` was `null` and two runs of one config
+compared as `incomparable`. `tact::config::resolve_without_installing` applies
+the same resolution read-only, and the runner records what it resolves. It does
+not install, so a library caller's global settings are untouched.
+
+**`--filter ID`** runs a subset for iterating, and the subset fingerprints as the
+subset: comparing it against a full run is `incomparable`, not a regression. An
+unknown id is an error, because a typo that selects no cases looks exactly like a
+suite that passed everything at no cost.
+
+`report_meta.harness_version` is recorded for attribution and deliberately not a
+comparability condition: a version bump is usually the thing a nightly gate is
+measuring.
+
 ## Next implementation step
 
 Record the first accepted baseline for a suite that exercises the tool set (not
-just answer text), then wire `tact-eval run` plus `tact-eval compare` into a
-nightly workflow with both reports uploaded as artifacts. Keep `--strict` for
-the small curated suites where "every attempt passed" is the contract.
+just answer text), now that `tools` and `json` graders can express it, then wire
+`tact-eval run` plus `tact-eval compare` into a nightly workflow with both
+reports uploaded as artifacts. Keep `--strict` for the small curated suites where
+"every attempt passed" is the contract.

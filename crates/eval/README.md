@@ -17,8 +17,27 @@ cargo run -p tact_eval -- run suites/smoke --config path/to/tact.toml
 ```
 
 The report goes to stderr as a table and to stdout as JSON. `--json-out FILE`
-moves the JSON to a file, and `--attempts N` runs each case N times, which is
-the `pass@k` denominator.
+moves the JSON to a file, creating its parent directory when it is missing, and
+`--attempts N` runs each case N times, which is the `pass@k` denominator. `N`
+must be at least 1.
+
+The table prints each case's median tokens per attempt and median duration. They
+are reported, never gated: a suite that passes while spending twice the tokens
+is a real regression, but turning that into a non-zero exit would need a
+calibrated noise model this harness does not claim to have.
+
+`run`'s exit code:
+
+| status | meaning | exit |
+|---|---|---|
+| success | The run finished and something was judged | 0 |
+| `--strict` failed | A case did not pass every attempt | 1 |
+| no verdict | No attempt reached a pass or a fail — a missing binary, an expired key, every grader hung. The run measured nothing, so it is not a green suite | 4 |
+| refused or broken | Bad flags, an unreadable suite, an unwritable `--json-out` | non-zero from the error |
+
+Without `--strict`, a case that failed still exits 0: it was measured, and
+failing is the measurement. That is why CI gates on `--strict` or `compare`, not
+on the plain exit code of `run`.
 
 `--strict` exits non-zero unless every case passed every attempt. A case with one
 failed or inconclusive attempt disqualifies the run, so with `--attempts 3` a
@@ -60,22 +79,64 @@ A case names a prompt and what decides it. It does not name a model or a
 permission mode: those are process-global in Tact, so the run sets them once
 (see [Two runners](#two-runners)).
 
-Three graders:
+Five graders:
 
 - `command` runs a shell command in the case directory; exit status 0 passes.
   Its output is kept and quoted when it fails. A command that exceeds the
-  case's `timeout_secs` makes the attempt inconclusive, not failed.
+  case's `timeout_secs` makes the attempt inconclusive, not failed. It is POSIX
+  `sh -c`, so a case that needs another shell must name it.
 - `files` asserts on the case directory: `exists`, `absent`, `contains`,
   `matches`.
 - `answer` asserts on the final assistant text: `contains`, `not_contains`,
   `matches`, `non_empty`.
+- `json` reads one JSON file the run wrote (`path`) and asserts by a dotted path
+  such as `items[1].id`: `present`, `absent`, `equals`, `contains`, `len`. A path
+  that cannot parse fails at load, so it never reads as "the agent wrote the
+  wrong shape".
+- `tools` asserts on the calls the run made, by name: `tool` (called at least
+  once), `no_tool`, `first_tool` (the run started with it), `at_most` (a call
+  budget). It is how "use `read`, not `bash cat`" becomes a checkable case,
+  which is something the other four cannot see.
+
+A tool record the runner could not attribute to a tool (a bare `[tool failed]`
+line in the headless log) matches no assertion. It makes `no_tool` and `at_most`
+inconclusive rather than passing them, because an unattributed call could be the
+one they forbid.
+
+```toml
+[[graders]]
+kind = "tools"
+name = "reads-before-writing"
+
+[[graders.assertions]]
+kind = "first_tool"
+tool = "read"
+
+[[graders.assertions]]
+kind = "at_most"
+tool = "edit_file"
+max = 3
+```
 
 A case with no graders grades as inconclusive rather than passing. A run that
 produced no answer (`EmptyTurn`) also cannot pass unless the case declares an
 `answer` grader, because nothing then shows the request was answered.
 
-`id` defaults to the file name. Unknown keys are rejected, and a pattern that
-does not compile fails at load, so a broken case never looks like a failed run.
+`id` defaults to the file name. It must be a single path component: it names the
+case's work directory, which the run deletes, so a `..` or a separator is
+refused at load. Unknown keys are rejected, and a pattern that does not compile
+fails at load, so a broken case never looks like a failed run.
+
+## Running part of a suite
+
+`--filter ID` (repeatable) runs only the named cases. A filtered run
+fingerprints the subset, so comparing it against a full run is `incomparable`
+rather than a regression. An id that matches nothing is an error, not an empty
+run: a typo would otherwise look like a suite that passed everything at no cost.
+
+```bash
+cargo run -p tact_eval -- run suites/regression --filter fixture-editing
+```
 
 ## Two runners
 
@@ -186,7 +247,22 @@ relative path, so the same suite fingerprints the same from any working
 directory. Editing a fixture changes the fingerprint: the fixture is part of
 what the case tests, so a comparison cannot silently mix two different inputs.
 
-`identity.model` and `identity.base_url` are `null` when the runner could not
-observe them, which is the case for a CLI run driven entirely by a `--config`
-file. Two runs whose fields are both `null` are not thereby comparable; check
-the config files yourself.
+Cost is compared under the same rule: reported, never gated. The comparison
+prices each case as a median (so one runaway attempt does not set it) and adds
+the medians up per suite; a candidate that spends more while passing the same
+reads as `pass` with a bigger number beside it. That is deliberate. A token
+budget that reddens the build belongs here only after a suite has enough
+recorded runs to say what its own noise is.
+
+`ReportMeta.harness_version` records the build that produced the report. It is
+recorded, not compared: a version bump is usually what a nightly gate is
+measuring, so gating on it would disable the gate exactly when it matters. A
+CLI run against a release binary this harness did not build records the
+harness's own version, not that binary's.
+
+`identity.model` and `identity.base_url` are `null` only when neither the flags
+nor the resolved configuration name them. A CLI run driven by `--config` reads
+that file the same way the child will and records the model and endpoint it
+resolves, so two runs of one config are comparable. A config that cannot be read
+is recorded as `null` and the run fails on its own: the report never invents an
+identity.

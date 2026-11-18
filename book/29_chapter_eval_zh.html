@@ -478,6 +478,7 @@
 <li class="toc-l2"><a href="#7-%E9%9A%94%E7%A6%BB%E4%B8%8E%E6%88%90%E6%9C%AC" title="7. 隔离与成本"><span class="toc-label">7. 隔离与成本</span></a></li>
 <li class="toc-l2"><a href="#8-%E6%8A%A5%E5%91%8A%E4%B8%8E%E5%8F%AF%E6%AF%94%E6%80%A7" title="8. 报告与可比性"><span class="toc-label">8. 报告与可比性</span></a></li>
 <li class="toc-l2"><a href="#9-%E5%91%BD%E4%BB%A4%E8%A1%8C" title="9. 命令行"><span class="toc-label">9. 命令行</span></a></li>
+<li class="toc-l3"><a href="#run-%E7%9A%84%E9%80%80%E5%87%BA%E7%A0%81" title="run 的退出码"><span class="toc-label">run 的退出码</span></a></li>
 <li class="toc-l2"><a href="#10-%E4%B8%8D%E6%98%AF%E5%AF%86%E9%97%AD%E7%9A%84" title="10. 不是密闭的"><span class="toc-label">10. 不是密闭的</span></a></li>
 <li class="toc-l2"><a href="#11-%E5%BD%93%E5%89%8D%E9%99%90%E5%88%B6" title="11. 当前限制"><span class="toc-label">11. 当前限制</span></a></li>
 <li class="toc-l2"><a href="#12-%E4%B8%8E%E7%8E%B0%E6%9C%89%E9%A2%86%E5%9F%9F%E7%9A%84%E5%85%B3%E7%B3%BB" title="12. 与现有领域的关系"><span class="toc-label">12. 与现有领域的关系</span></a></li>
@@ -607,8 +608,28 @@ fixture 是否存在要等 <code>EvalSuite::load</code>，
 <td><code>answer</code></td>
 <td><code>contains</code>、<code>not_contains</code>、<code>matches</code>、<code>non_empty</code></td>
 </tr>
+<tr>
+<td><code>json</code></td>
+<td>读一个 JSON 文件（<code>path</code>），按 <code>items[1].id</code>
+这类点路径断言：<code>present</code>、<code>absent</code>、<code>equals</code>、<code>contains</code>、<code>len</code></td>
+</tr>
+<tr>
+<td><code>tools</code></td>
+<td>按名字断言工具调用：<code>tool</code>、<code>no_tool</code>、<code>first_tool</code>、<code>at_most</code></td>
+</tr>
 </tbody>
 </table>
+<p><code>json</code> 存在是因为用 <code>matches</code> 正则去判结构化输出，
+一遇键序或空白就脆，失败信息也不可读；路径写错在加载期就报错，
+不会伪装成"模型写错了形状"。</p>
+<p><code>tools</code> 存在是因为另外四类判分器都看不见"用了什么工具"。
+"用 <code>read</code> 而不是 <code>bash cat</code>"、"最多调一次 <code>grep</code>"
+这类工具选择回归，文件和回答判分器都会判通过。
+它只读名字，不读参数：CLI 日志里 finished-step 行没有参数摘要。</p>
+<p>runner 无法归属到某个工具的记录（headless 日志里裸的
+<code>[tool failed]</code> 行）不满足任何断言，并且会让
+<code>no_tool</code> 与 <code>at_most</code> 判 <code>Inconclusive</code>
+而不是通过——那条无法归属的调用可能正是它们禁止的那个。</p>
 <h3 id="verdict-是三态">Verdict 是三态</h3>
 <pre><code class="language-rust">enum Verdict {
     Pass,
@@ -1185,9 +1206,17 @@ prompt、超时、隔离声明、判分器——并逐个哈希 <code>Copy</code
 不能把两个不同套件的结果放在一起比较。路径相对套件根目录、文件按路径排序，
 使同一套件在任何工作目录下指纹一致。<code>tact-eval validate</code>
 也打印同一指纹（<code>suite=...</code>），可在付费运行前核对两边是否同一套件。</p>
-<p><code>identity.model</code> 为 <code>null</code> 表示 runner 看不到，
-典型情况是完全由 <code>--config</code> 驱动的 CLI 运行。
-两个都为 <code>null</code> 的运行并不因此可比，配置要自己核对。</p>
+<p><code>identity.model</code> 为 <code>null</code> 表示 flag 和解析出的配置
+都没给出它。完全由 <code>--config</code> 驱动的 CLI 运行会按子进程同样的规则
+读那个文件，并记录解析出的模型与 endpoint，所以同一份配置的两次运行现在可比。
+配置文件读不了时仍记 <code>null</code>，而运行本身会失败——报告不编造身份。</p>
+<p>成本也进报告，但不参与门禁。<code>CaseCost</code> 给每个 case 一份
+token 与时长中位数（一次异常尝试不会决定整条数字），套件级再相加。
+"通过率不变、token 翻倍"是真实回归，可退出码不该因此变红：
+一个数值阈值需要先校准噪声模型，这套 harness 目前不声称有。</p>
+<p><code>ReportMeta.harness_version</code> 记录产出这份报告的构建版本，
+只记录、不比较：夜间门禁通常就是在比两个版本，
+把它做成可比性条件会在最需要门禁时把门禁关掉。</p>
 <p>上面的输出来自 <code>suites/smoke</code>，用于展示报告格式。
 <code>suites/regression</code> 的报告形状相同，只是 case 数更多；
 两套套件都由 <code>validate</code> 在付费运行前校验。</p>
@@ -1225,7 +1254,47 @@ baseline 更差；两者不要混用。</p>
 运行 <code>suites/regression</code>，在提供 baseline 时再调用
 <code>compare</code>，并上传 candidate 与 comparison 产物。</p>
 <p>相对 <code>--config</code> 与 <code>--binary</code> 都会在构造时规范化为绝对路径，
-因为每次尝试都在用例自己的目录里启动子进程。</p>
+因为每次尝试都在用例自己的目录里启动子进程。
+<code>--json-out</code> 的父目录不存在时会自动创建：文档里每个例子都写
+<code>target/eval/...</code>，而新检出的仓库没有这个目录。</p>
+<h3 id="run-的退出码">run 的退出码</h3>
+<table>
+<thead>
+<tr>
+<th>情况</th>
+<th>退出码</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>跑完，且至少一个尝试判出了通过或失败</td>
+<td>0</td>
+</tr>
+<tr>
+<td><code>--strict</code> 且有 case 没做到"每次尝试都通过"</td>
+<td>1</td>
+</tr>
+<tr>
+<td>没有任何尝试判出结论（二进制缺失、key 过期、判分命令全挂）</td>
+<td>4</td>
+</tr>
+<tr>
+<td>参数错误、套件读不了、<code>--json-out</code> 写不了</td>
+<td>非零</td>
+</tr>
+</tbody>
+</table>
+<p>没有 <code>--strict</code> 时，失败的 case 仍然退 0：它是被测到了，
+失败就是测量结果。所以 CI 应该按 <code>--strict</code> 或
+<code>compare</code> 判，而不是按 <code>run</code> 的裸退出码判。
+反过来，一次什么都没测成的运行退 4，否则"缺二进制"会和
+"套件全绿"长得一模一样。</p>
+<p><code>--attempts 0</code> 被 clap 直接拒绝，不再被静默改成 1：
+报告声称跑了一次而调用方要的是零次，是在谎报跑过什么。</p>
+<p><code>--filter ID</code>（可重复）只跑指定 case，用于迭代单个用例。
+被过滤的套件按子集计算指纹，所以拿它和完整运行比较是
+<code>incomparable</code> 而不是回归。名字不存在会直接报错——
+否则打错字看起来就像"什么都没花就全过了"。</p>
 <hr />
 <h2 id="10-不是密闭的">10. 不是密闭的</h2>
 <p>一次尝试会继承操作者的 <code>$HOME</code>：
@@ -1286,8 +1355,9 @@ baseline 更差；两者不要混用。</p>
 </tr>
 <tr>
 <td>回归套件仍然很小</td>
-<td><code>suites/regression</code> 只有 6 个 case，且没有多轮、工具轨迹、
-MCP、hook、subagent、memory、compaction 场景</td>
+<td><code>suites/regression</code> 只有 6 个 case，且没有多轮、MCP、hook、
+subagent、memory、compaction 场景（工具轨迹现在可以用 <code>tools</code>
+判分器表达，但还没有这类 case）</td>
 <td>按<a href="./18_chapter_agent_loop_zh.html">主循环</a>、<a
 href="./07_chapter_tool_zh.html">工具</a>、<a
 href="./08_chapter_mcp_zh.html">MCP</a>、<a
@@ -1295,6 +1365,12 @@ href="./09_chapter_hook_zh.html">hooks</a>、<a
 href="./12_chapter_subagent_zh.html">子代理</a>、<a
 href="./03_chapter_memory_zh.html">memory</a>、<a
 href="./05_chapter_compact_zh.html">压缩</a>分阶段扩套件</td>
+</tr>
+<tr>
+<td>用例只有一个 prompt</td>
+<td><code>EvalCase.prompt</code> 是单个字符串，多轮续跑、上下文保持、
+恢复类回归写不出来</td>
+<td>改成 <code>prompts: Vec&lt;String&gt;</code>，单元素即当前语义</td>
 </tr>
 <tr>
 <td>没有人工校准集</td>
