@@ -195,6 +195,10 @@ derives the runs from the log itself: two blocks belong together when the second
 starts exactly where the first ends, so a gap row or a thinking card breaks the
 run and membership can never go stale.
 
+A run of calls that sits beside a thinking card is not the largest fold unit:
+see [§6.6.1 Activity Regions](#661-activity-regions-thinking--calls) for the
+row that counts both halves.
+
 A folded run is **one logical row**, not a run of zero-height rows. Its members
 are left out of `visible_indices` and `phys_to_logical_cache` entirely. Giving
 them zero height instead would repeat the same visual start for two rows, so
@@ -219,16 +223,79 @@ The summary reports one wall-clock total for the run, computed as the **union**
 of the members' spans rather than the sum of their durations: tools in one turn
 run concurrently by wave, so four parallel one-second calls took one second.
 
+### 6.6.1 Activity Regions (thinking + calls)
+
+A turn that thinks, then runs three commands, then thinks again used to cost
+two card rows **plus** the run's summary row, even though every one of those
+rows described the same stretch of work. The desktop transcript has always
+folded them together (`ProcessGroup` in `crates/desktop/src/ui/process.rs`);
+`activity_region` is the log-side equivalent.
+
+A *region* is a maximal run of adjacent thinking cards and tool blocks, derived
+exactly like a tool run: the next member must start where the previous one ends,
+so a gap row or any other block kind breaks it. Only **finished** cards are
+members — a live card's rows still change.
+
+Adjacency is necessary but not sufficient: a region must also stay inside one
+turn. The log is where a turn ends, so the host fills
+`LogScroll::turn_boundary_rows` (the `TaskComplete` separator and a user
+message's leading gap) during frame preparation, and
+`activity_region::regions_bounded` ends a region at any boundary row between two
+would-be members. Without that set, two turns whose members happened to land on
+touching rows would fold into one summary — the boundary rows are what makes the
+guarantee structural rather than a coincidence of spacing.
+
+Two fold units, kept apart on purpose:
+
+| Region contents | Folded by | Summary line |
+|---|---|---|
+| calls only | `tool_group` | `3 tools · 📖 Read ×2 · $ Bash · 1.2s` |
+| at least one card and one call | `activity_region` | `1 thought · 2 tools · 1 failed · Read ×2 · 0.9s` |
+
+A tool-only region is left to `tool_group` because that summary names each call.
+A region's `N tools` could not, and the reader would lose the only place the
+tool labels were stated.
+
+The default is the same shape as a run's: a region with a live member never
+folds, a reader's explicit choice wins, otherwise a foldable mixed region folds.
+Fold state keys on the region's first member's `block_id`/`tool_id`, never on
+`phys_idx`. The reader's choice lives in `ToolState::folded_regions` /
+`unfolded_regions` — a separate key space from a tool run's, so one cannot
+shadow the other.
+
+Expanding a region gives the members their rows back. The calls inside it are
+still their own tool run, so they keep the run's summary: a region answers "how
+much of this turn was work", a run answers "which calls ran".
+
+Failures survive folding: the summary counts them (`1 failed`) and paints the
+row in the error colour with `⚠`.
+
+Every word in a summary comes from `Messages` (`fold_tools`, `fold_tools_one`,
+`fold_failed`, `fold_thoughts`, `fold_thoughts_one`, `fold_sep`,
+`fold_repeat`), so `/lang` rewrites the row in place. The parts are separate keys
+rather than one template because each has its own singular form and its own
+natural order: Chinese does not pluralize, so `1 个工具` and `3 个工具` share a
+template, while English needs `1 tool` and `3 tools`. The tool label and the `×`
+glyph are not localized — they name the call itself — but which side of the label
+the count sits on is a language decision, which is why `fold_repeat` holds both:
+`"{} ×{}"`.
+
 #### Folding and unfolding the same run
 
 Both affordances have to work in both directions, and each is where the run
 *is* rather than where it was.
 
-`z` takes the **first run with a row in the viewport**, not the run under the
-viewport's top row. In a real log that top row is prose or a blank separator, so
-a rule keyed on it found no run and the key silently did nothing; it also broke
-the second press, because expanding a run moves its summary row off the top.
-Scanning the visible rows makes one key do one run wherever the reader is.
+`z` takes the **first foldable run or mixed region with a row in the
+viewport**, not the one under the viewport's top row. In a real log that top row
+is prose or a blank separator, so a rule keyed on it found nothing and the key
+silently did nothing; it also broke the second press, because expanding a fold
+moves its summary row off the top. Scanning the visible rows makes one key do
+one fold wherever the reader is.
+
+A mixed region wins over a tool run that starts at the same row: it is the
+larger unit, and folding it is what a turn that thought and then ran commands
+asked for. A tool-only region is never returned to the region path — its run
+owns that row and keeps the per-tool summary.
 
 A click on the folded summary flips it. While the run is expanded that summary
 row does not exist, so the **first member's title row** takes the control: it is

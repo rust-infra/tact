@@ -526,6 +526,31 @@ pub struct Messages {
     pub hook_context_more_tmpl: &'static str, // "… {} more lines · {}" / "… 还有 {} 行 · {}"
     /// Names a plugin hook's progress line: `▎ ⌁ {label} · <source> · …`.
     pub hook_status_label: &'static str, // "hook" / "hook"
+
+    // ---- Fold summaries (tool runs and activity regions) ----
+    //
+    // A folded run reads `5 tools · 2 failed · Read ×3 · Bash`; a folded
+    // activity region prefixes a thought count: `2 thoughts · 5 tools · …`.
+    // The pieces are separate keys rather than one template because each has
+    // its own singular form and its own natural order per language — Japanese
+    // and Chinese do not pluralize, and a language may want the failure count
+    // before or after the tool count.
+    /// `"{} tools"` — the tool count that opens a run's line.
+    pub fold_tools: &'static str,
+    /// Singular of [`Self::fold_tools`].
+    pub fold_tools_one: &'static str,
+    /// `"{} failed"` — how many calls ended without succeeding. Appended right
+    /// after the tool count so a fold can never hide a failure behind the
+    /// labels.
+    pub fold_failed: &'static str,
+    /// `"{} thoughts"` — a region's thinking-card count, prepended.
+    pub fold_thoughts: &'static str,
+    /// Singular of [`Self::fold_thoughts`].
+    pub fold_thoughts_one: &'static str,
+    /// Separator between two summary parts (`" · "`).
+    pub fold_sep: &'static str,
+    /// `"{} ×{}"` — a repeated tool label and how many times it ran.
+    pub fold_repeat: &'static str,
 }
 
 impl Messages {
@@ -887,6 +912,13 @@ impl Messages {
             hook_context_label: "hook context",
             hook_context_more_tmpl: "… {} more lines · {}",
             hook_status_label: "hook",
+            fold_tools: "{} tools",
+            fold_tools_one: "{} tool",
+            fold_failed: "{} failed",
+            fold_thoughts: "{} thoughts",
+            fold_thoughts_one: "{} thought",
+            fold_sep: " · ",
+            fold_repeat: "{} ×{}",
         }
     }
 
@@ -1234,6 +1266,13 @@ impl Messages {
             hook_context_label: "hook 上下文",
             hook_context_more_tmpl: "… 还有 {} 行 · {}",
             hook_status_label: "hook",
+            fold_tools: "{} 个工具",
+            fold_tools_one: "{} 个工具",
+            fold_failed: "{} 个失败",
+            fold_thoughts: "{} 段思考",
+            fold_thoughts_one: "{} 段思考",
+            fold_sep: " · ",
+            fold_repeat: "{} ×{}",
         }
     }
 }

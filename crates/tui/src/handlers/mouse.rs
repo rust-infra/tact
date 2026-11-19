@@ -1864,6 +1864,22 @@ mod tests {
         panic!("{needle:?} is not drawn");
     }
 
+    /// Open the first activity region in the log, so its members draw again.
+    ///
+    /// A region that mixes a thinking card with a call folds by default; a test
+    /// that needs to see the members has to open it the way the reader would.
+    fn unfold_activity_region(app: &mut App) {
+        let regions = agent_tui_kit::state::activity_region::regions(
+            &app.thinking().state().blocks,
+            &app.tools().blocks,
+        );
+        let region = regions
+            .into_iter()
+            .find(|region| region.mixes_thinking_and_tools())
+            .expect("a mixed activity region");
+        assert!(app.toggle_region(region), "the region must be foldable");
+    }
+
     /// Does the legacy double-click path open the collapsed block's popup?
     fn double_click_opens(app: &mut App, column: u16, row: u16) -> bool {
         app.tools_mut().popup = None;
@@ -2081,6 +2097,13 @@ mod tests {
                 .finished(),
         );
         app.append_markdown("# Target Card\n");
+
+        // The card and the call beside it are one activity region now, so they
+        // start folded into a single summary row. This test is about selecting
+        // *across* the two cards, so open the region first: a hidden card has
+        // no row to start the drag on.
+        let _ = render_main_area_terminal(&mut app, 100, 60);
+        unfold_activity_region(&mut app);
 
         let terminal = render_main_area_terminal(&mut app, 100, 60);
         let buf = terminal.backend().buffer().clone();

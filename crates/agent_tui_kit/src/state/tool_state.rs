@@ -38,6 +38,15 @@ pub struct ToolState {
     /// how many *logical* rows exist without changing how many physical rows
     /// there are. This counter is what tells them the mapping moved.
     pub fold_rev: u64,
+    /// Activity regions the reader folded, keyed by the region's first member's
+    /// `block_id`/`tool_id` — see [`super::activity_region`].
+    ///
+    /// Separate from [`Self::folded`] because a region's default is decided by
+    /// a different rule (it must mix a card and a call), and one key space
+    /// shared by both would let a tool run's key shadow a region's.
+    pub folded_regions: std::collections::BTreeSet<String>,
+    /// Activity regions the reader opened, overriding the default.
+    pub unfolded_regions: std::collections::BTreeSet<String>,
     /// Popup preview state for file write/read content.
     pub popup: Option<DiffPopup>,
     /// Subagent conversations, keyed by the parent `spawn_subagent` tool id.

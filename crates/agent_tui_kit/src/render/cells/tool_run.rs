@@ -49,6 +49,12 @@ pub struct ToolRunCell {
     /// The run's stable identity, so a click on the summary row can name what
     /// it is toggling.
     identity: String,
+    /// The locale the summary line is composed with.
+    ///
+    /// `Messages` is `Copy` (every field is `&'static str`), so the cell owns
+    /// its copy rather than borrowing the frame's — the cell outlives the
+    /// borrow that built it.
+    msgs: Messages,
 }
 
 impl ToolRunCell {
@@ -64,7 +70,7 @@ impl ToolRunCell {
         elapsed: Option<std::time::Duration>,
         folded: bool,
         theme: &Theme,
-        _msgs: &Messages,
+        msgs: &Messages,
     ) -> Self {
         Self {
             members,
@@ -78,6 +84,7 @@ impl ToolRunCell {
             error: theme.error,
             muted: theme.muted,
             identity: String::new(),
+            msgs: *msgs,
         }
     }
 
@@ -103,7 +110,7 @@ impl ToolRunCell {
             .iter()
             .map(|(phase, title)| (*phase, title.as_str()))
             .collect();
-        let summary = tool_group::summarize(&members, self.elapsed);
+        let summary = tool_group::summarize(&members, self.elapsed, &self.msgs);
         // A failure keeps its color after folding: `⚠` plus the error hue is
         // what tells the reader that one of these calls went wrong, without
         // making them count the tool labels.

@@ -1263,9 +1263,12 @@ fn assert_blank(rows: &[String], index: usize, why: &str) {
 /// A tool block and a thinking card are one region of work, not two blocks: the
 /// card's status row sits directly under the tool's meta row.
 ///
-/// A blank row here would break the tool run apart — `tool_group::runs` treats a
-/// gap as the end of a run — and would push a call away from the reasoning that
-/// explains it.
+/// A blank row here would break the region apart — both `tool_group::runs` and
+/// `activity_region::regions` treat a gap as the end of a region — and would
+/// push a call away from the reasoning that explains it.
+///
+/// The region folds by default, so the test opens it: the spacing rule is about
+/// the expanded arrangement, which is what the reader sees after one click.
 #[test]
 fn a_thinking_card_butts_against_the_tool_block_above_it() {
     let mut app = make_app();
@@ -1288,6 +1291,16 @@ fn a_thinking_card_butts_against_the_tool_block_above_it() {
         "Working tree clean.\n".into(),
     )));
     app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+
+    // One activity region, folded by default: open it so the members draw.
+    let _ = rendered_rows(&mut app, 100, 24);
+    let regions =
+        agent_tui_kit::state::activity_region::regions(&app.thinking().blocks, &app.tools().blocks);
+    let region = regions
+        .into_iter()
+        .find(|region| region.mixes_thinking_and_tools())
+        .expect("the card and the call are one region");
+    assert!(app.toggle_region(region), "the region must open");
 
     let rows = rendered_rows(&mut app, 100, 24);
 

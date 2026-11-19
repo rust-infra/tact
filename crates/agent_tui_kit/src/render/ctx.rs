@@ -43,6 +43,18 @@ pub struct RenderCtx<'a> {
     pub mermaid_blocks: &'a [MermaidBlock],
     pub tools: &'a ToolState,
     pub thinking: &'a ThinkingState,
+    /// Physical log rows that end a turn.
+    ///
+    /// An activity region folds cards and calls together, and two turns must
+    /// never share one summary. The rows that end a turn (the trailing
+    /// separator, a user message's leading gap) belong to the log, which the
+    /// kit does not own — so the host lists them here, and the fold rules ask
+    /// this set instead of guessing from adjacency alone.
+    ///
+    /// A set rather than a predicate: `RenderCtx` is a struct of borrows, and a
+    /// closure created per frame would have nowhere to live. The host rebuilds
+    /// it only when the log changes.
+    pub turn_boundary_rows: &'a std::collections::BTreeSet<usize>,
     pub stream: &'a StreamState,
     pub mouse: &'a MouseState,
     pub skills_data: &'a [SkillEntry],

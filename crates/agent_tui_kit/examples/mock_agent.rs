@@ -258,6 +258,7 @@ impl MockShell {
                     mermaid_blocks: &[],
                     tools: &self.tools,
                     thinking: &self.thinking,
+                    turn_boundary_rows: &self.log_scroll.turn_boundary_rows,
                     stream: &self.stream,
                     mouse: &MouseState::default(),
                     skills_data: &[],

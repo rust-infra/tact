@@ -1,5 +1,14 @@
 use ratatui::{text::Line, widgets::ScrollbarState};
 
+/// What `z` flips: a mixed activity region or a tool-only run.
+///
+/// The two live in different state modules (a region counts cards, a run counts
+/// calls), so the caller has to know which one it got before it can toggle.
+enum FoldTarget {
+    Region(agent_tui_kit::state::activity_region::ActivityRegion),
+    Run(String),
+}
+
 use crate::{
     render::{
         render_md::{format_table_lines, render_markdown_tui},
@@ -53,38 +62,62 @@ impl App {
             .log_indent()
     }
 
-    /// Fold or unfold the first tool run the reader can see.
+    /// Fold or unfold the first foldable run or activity region the reader can
+    /// see.
     ///
-    /// Not the run under the viewport's top row: in a real log that row is
-    /// usually prose or a blank separator, so a rule keyed on it finds no run at
-    /// all and `z` silently does nothing. Scanning the visible rows for the
-    /// first run makes the key work wherever the reader has scrolled to, and it
-    /// is what makes an expanded run foldable again — expanding moves the
-    /// summary row off the top, so the old rule lost the run the moment it was
-    /// unfolded.
+    /// Not the fold under the viewport's top row: in a real log that row is
+    /// usually prose or a blank separator, so a rule keyed on it finds nothing
+    /// at all and `z` silently does nothing. Scanning the visible rows makes the
+    /// key work wherever the reader has scrolled to, and it is what makes an
+    /// expanded fold foldable again — expanding moves the summary row off the
+    /// top, so a rule keyed on the top row loses the fold the moment it opens.
     ///
-    /// Returns true when a run was actually flipped, so a caller can tell "there
-    /// is no run in view" from "the reader just folded something".
+    /// A mixed activity region (cards + calls) wins over a tool run at the same
+    /// row: it is the larger unit, and folding it is what the reader expected
+    /// from a turn that thought and then ran commands.
+    ///
+    /// Returns true when something was actually flipped, so a caller can tell
+    /// "there is no fold in view" from "the reader just folded something".
     pub(crate) fn toggle_fold_in_view(&mut self) -> bool {
-        let Some(run_id) = self.first_run_in_view() else {
-            return false;
-        };
-        self.toggle_fold_by_run_id(&run_id)
+        match self.first_fold_in_view() {
+            Some(FoldTarget::Region(region)) => self.toggle_region(region),
+            Some(FoldTarget::Run(run_id)) => self.toggle_fold_by_run_id(&run_id),
+            None => false,
+        }
     }
 
-    /// The identity of the first run that has any row inside the viewport.
+    /// Whether a physical log row ends a turn.
     ///
-    /// Run membership is exclusive and ordered, so the first match while
-    /// scanning down is both the topmost run and the only one to flip: `z` means
-    /// one run, and a key that folded two would be a different verb.
+    /// Two things end a turn on screen: the trailing separator `TaskComplete`
+    /// appends, and the blank row a user message opens with. Both occupy a row
+    /// of their own, so both already break adjacency — but `activity_region`
+    /// reads rows, not turns, and a turn end that left no row would let two
+    /// turns fuse into one summary. Handing the answer in keeps the rule honest
+    /// about what the guarantee rests on.
+    pub(crate) fn is_turn_boundary_row(&self, phys: usize) -> bool {
+        self.log_scroll.turn_boundary_rows.contains(&phys)
+    }
+
+    /// Every activity region of this log, with this log's turn boundaries.
+    pub(crate) fn activity_regions(
+        &self,
+    ) -> Vec<agent_tui_kit::state::activity_region::ActivityRegion> {
+        self.tools()
+            .activity_regions_in_log(self.thinking().state(), |phys| {
+                self.is_turn_boundary_row(phys)
+            })
+    }
+
+    /// The first foldable fold that has any row inside the viewport.
     ///
-    /// Falls back to the whole log when nothing has been drawn yet. A key can
-    /// arrive before the first frame, and then the caches say nothing rather
-    /// than saying the viewport is empty: `visual_start` is empty and `offset`
-    /// still holds its `u16::MAX` sentinel, so both are treated as unknown.
-    fn first_run_in_view(&self) -> Option<String> {
-        let runs = agent_tui_kit::state::tool_group::runs(&self.tools().blocks);
-        if runs.is_empty() {
+    /// Returns the whole region rather than its key: the caller needs the
+    /// member rows to compensate the scroll, and re-deriving the region after
+    /// the borrow ends would let a frame land in between.
+    fn first_fold_in_view(&self) -> Option<FoldTarget> {
+        let blocks = &self.tools().blocks;
+        let regions = self.activity_regions();
+        let runs = agent_tui_kit::state::tool_group::runs(blocks);
+        if regions.is_empty() && runs.is_empty() {
             return None;
         }
         let (top_logical, bottom_logical) = if self.log_scroll.visual_start.is_empty() {
@@ -99,11 +132,23 @@ impl App {
         };
         (top_logical..bottom_logical).find_map(|logical| {
             let phys = self.visible_message_index(logical)?;
+            if let Some(index) =
+                agent_tui_kit::state::activity_region::region_at_phys(&regions, phys)
+            {
+                let region = &regions[index];
+                // Only a **mixed** region folds as a region; a tool-only one is
+                // folded by the tool run below, whose summary names each call.
+                // Returning it here would hand `toggle_region` a region whose
+                // own rule says "never folded", and `z` would do nothing.
+                if region.mixes_thinking_and_tools()
+                    && agent_tui_kit::state::activity_region::is_foldable(blocks, region)
+                {
+                    return Some(FoldTarget::Region(region.clone()));
+                }
+            }
             agent_tui_kit::state::tool_group::run_at_phys(&runs, phys)
-                .and_then(|index| {
-                    agent_tui_kit::state::tool_group::run_key(&self.tools().blocks, &runs[index])
-                })
-                .map(str::to_string)
+                .and_then(|index| agent_tui_kit::state::tool_group::run_key(blocks, &runs[index]))
+                .map(|key| FoldTarget::Run(key.to_string()))
         })
     }
 
@@ -153,6 +198,61 @@ impl App {
         // would ask for the repaint that shows it.
         self.dirty = true;
         true
+    }
+
+    /// Fold or unfold an activity region, keeping the reader's eye on the line
+    /// it was on.
+    ///
+    /// The region twin of [`Self::toggle_fold_by_run_id`]: same compensation,
+    /// same reason for it. A region's summary row takes over its first member's
+    /// row, so the lines that disappear are its span less that one.
+    ///
+    /// Takes the region by value because the caller already computed it while
+    /// it held the borrow of `thinking` and `tools` that produced it.
+    pub(crate) fn toggle_region(
+        &mut self,
+        region: agent_tui_kit::state::activity_region::ActivityRegion,
+    ) -> bool {
+        let viewport = self.log_viewport_top();
+        let (start, end) = (region.phys_idx, region.phys_idx + region.expanded_rows);
+        let folding = if agent_tui_kit::state::activity_region::is_folded(
+            &self.tools().blocks,
+            &region,
+            &self.tools().state().folded_regions,
+            &self.tools().state().unfolded_regions,
+        ) {
+            None
+        } else {
+            Some((
+                self.visual_line_of_phys(start),
+                self.visual_line_of_phys(end),
+            ))
+        };
+        if !self.tools_mut().toggle_region(&region) {
+            return false;
+        }
+        if let Some((Some(start), Some(end))) = folding
+            && end > start
+        {
+            let removed = end.saturating_sub(start).saturating_sub(1);
+            self.compensate_for_removed_rows(removed, end <= viewport);
+        }
+        self.dirty = true;
+        true
+    }
+
+    /// Fold or unfold the region whose stable identity is `region_id`.
+    pub(crate) fn toggle_region_by_id(&mut self, region_id: &str) -> bool {
+        let regions = agent_tui_kit::state::activity_region::regions(
+            &self.thinking().state().blocks,
+            &self.tools().blocks,
+        );
+        let Some(index) = agent_tui_kit::state::activity_region::region_by_key(&regions, region_id)
+        else {
+            return false;
+        };
+        let region = regions[index].clone();
+        self.toggle_region(region)
     }
 
     /// The visual line a physical log row starts on, from the last frame's
