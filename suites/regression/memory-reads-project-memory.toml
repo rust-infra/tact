@@ -1,0 +1,38 @@
+# Project memory lives in `.tact/memory` for a workdir that is not a git
+# checkout, so a copied fixture can seed it. The token is nowhere in the prompt
+# or the workspace: only `load_memory` can produce it.
+prompt = """
+Use the load_memory tool to read the memory named "deploy-token".
+Reply with only the release token it contains.
+"""
+timeout_secs = 180
+
+[isolation]
+kind = "copy"
+fixture = "fixtures/memory"
+
+[[graders]]
+kind = "answer"
+name = "recalled-the-token"
+
+[[graders.assertions]]
+kind = "contains"
+text = "amber-77"
+
+[[graders]]
+kind = "tools"
+name = "used-load-memory"
+
+[[graders.assertions]]
+kind = "tool_succeeded"
+tool = "load_memory"
+
+# The fixture file itself contains the token. Reading it directly would pass
+# the answer grader without exercising memory at all.
+[[graders.assertions]]
+kind = "no_tool"
+tool = "read_file"
+
+[[graders.assertions]]
+kind = "no_tool"
+tool = "bash"

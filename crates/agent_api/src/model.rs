@@ -342,15 +342,30 @@ where
     Ok(value.filter(|window| *window > 0))
 }
 
-/// Closed model error classes used for recovery decisions.
+/// Model error classes used for recovery decisions.
+///
+/// `#[non_exhaustive]`: this vocabulary grows with the providers it describes
+/// (authentication was the first addition), and an exhaustive public enum made
+/// every such addition a breaking change for every downstream `match`.
+/// Consumers must carry a fallback arm; the recommended treatment for an
+/// unknown class is the same as [`Permanent`](Self::Permanent) — do not retry
+/// it, and surface the message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ModelErrorKind {
     ContextOverflow,
     Transient,
     Permanent,
     Cancelled,
     Unsupported,
+    /// The provider rejected the credential: missing, expired, or invalid.
+    ///
+    /// Split out from `Permanent` because the fix is entirely different from a
+    /// malformed request — no amount of prompt or model editing helps, and the
+    /// user has to supply a working key. Also never retryable: retrying burns
+    /// quota against an endpoint that will keep answering 401/403.
+    Authentication,
 }
 
 /// Model adapter failure.
@@ -376,6 +391,31 @@ impl ModelError {
             ModelErrorKind::Unsupported,
             format!("{} is not supported", capability.into()),
         )
+    }
+
+    /// Whether resending the same request can plausibly succeed unchanged.
+    ///
+    /// Derived from [`ModelErrorKind`] rather than stored: the published
+    /// three-field shape stays intact, and a host that only has a `ModelError`
+    /// can still decide between "retry" and "tell the user what to change".
+    pub fn is_retryable(&self) -> bool {
+        self.kind == ModelErrorKind::Transient
+    }
+
+    /// A short class label, for hosts that render the kind themselves.
+    ///
+    /// Lives on `ModelError` rather than on the enum so adding a kind does not
+    /// force a new arm into this method's callers: unknown kinds fall back to
+    /// `"permanent"` through the `_` arm below.
+    pub fn class_label(&self) -> &'static str {
+        match self.kind {
+            ModelErrorKind::ContextOverflow => "context_overflow",
+            ModelErrorKind::Transient => "transient",
+            ModelErrorKind::Cancelled => "cancelled",
+            ModelErrorKind::Unsupported => "unsupported",
+            ModelErrorKind::Authentication => "authentication",
+            _ => "permanent",
+        }
     }
 }
 

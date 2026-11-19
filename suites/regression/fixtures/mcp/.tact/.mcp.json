@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "eval": {
+      "command": "python3",
+      "args": [
+        "-c",
+        "import sys, json\nfor line in sys.stdin:\n    msg = json.loads(line)\n    if 'id' not in msg:\n        continue\n    method = msg.get('method')\n    if method == 'initialize':\n        result = {'protocolVersion': msg.get('params', {}).get('protocolVersion', '2025-06-18'), 'capabilities': {'tools': {}}, 'serverInfo': {'name': 'eval', 'version': '1.0.0'}}\n    elif method == 'tools/list':\n        result = {'tools': [{'name': 'echo', 'description': 'Echo the text argument back.', 'inputSchema': {'type': 'object', 'properties': {'text': {'type': 'string'}}, 'required': ['text']}}]}\n    elif method == 'tools/call':\n        arguments = msg.get('params', {}).get('arguments') or {}\n        result = {'content': [{'type': 'text', 'text': 'echo:' + str(arguments.get('text', ''))}], 'isError': False}\n    else:\n        result = {}\n    sys.stdout.write(json.dumps({'jsonrpc': '2.0', 'id': msg['id'], 'result': result}) + '\\n')\n    sys.stdout.flush()"
+      ]
+    }
+  }
+}

@@ -1,0 +1,23 @@
+prompt = """
+In notes.md, change the line "status: draft" to "status: final".
+Leave every other line unchanged.
+"""
+timeout_secs = 120
+
+[isolation]
+kind = "copy"
+fixture = "fixtures/editing"
+
+[[graders]]
+kind = "files"
+name = "fixture-editing"
+
+[[graders.assertions]]
+kind = "contains"
+path = "notes.md"
+text = "status: final"
+
+[[graders.assertions]]
+kind = "matches"
+path = "notes.md"
+pattern = "^# Notes\\nowner: eval\\nstatus: final\\n?$"

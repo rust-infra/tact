@@ -1,0 +1,218 @@
+//! The CLI runner's process handling, against a stand-in binary.
+//!
+//! A real `tact-ui` is not needed to prove the two behaviours that matter: a
+//! hung child is reported as a timeout, and the timeout takes its whole process
+//! group with it. Both are tested with a shell script so the assertions do not
+//! depend on a built binary or a provider.
+
+#![cfg(feature = "agent-run")]
+#![allow(clippy::result_large_err)]
+
+use std::path::{Path, PathBuf};
+
+use tact_eval::{CliRunner, EvalCase, Isolation, RunFailure, Runner};
+
+fn case_with_binary(dir: &Path, script: &str) -> (EvalCase, PathBuf) {
+    let binary = dir.join("fake-tact-ui");
+    std::fs::write(&binary, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    // Two seconds, not one: the shell has to start and print its first line
+    // before the budget expires, and a loaded machine can take most of a
+    // second to do that. The scripts hang for thirty, so the margin only
+    // removes flakiness; it does not weaken the assertion.
+    let case = EvalCase {
+        id: format!("process-{}", uuid::Uuid::new_v4()),
+        prompt: Some("p".into()),
+        prompts: Vec::new(),
+        timeout_secs: 2,
+        isolation: Isolation::Empty,
+        graders: Vec::new(),
+    };
+    (case, binary)
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_hung_child_is_a_timeout_not_a_grade() {
+    let dir = tempfile::tempdir().unwrap();
+    // Prints a line then hangs, like a run wedged inside a tool.
+    let (case, binary) = case_with_binary(dir.path(), "#!/bin/sh\necho '[turn] 1' >&2\nsleep 30\n");
+
+    let outcome = CliRunner::new(binary).run(&case, 1).await;
+
+    assert_eq!(
+        outcome.artifact.failure,
+        Some(RunFailure::Timeout { limit_secs: 2 }),
+        "a run over its budget is a timeout"
+    );
+    assert_eq!(
+        outcome.artifact.turns,
+        Some(1),
+        "events before the timeout survive"
+    );
+    assert_eq!(outcome.artifact.answer, "", "a hung run produced no answer");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn the_timeout_kills_the_childs_whole_process_group() {
+    let dir = tempfile::tempdir().unwrap();
+    // The child starts a grandchild that outlives it unless the group is
+    // signalled, and records the grandchild's pid so the test can check.
+    let (case, binary) = case_with_binary(
+        dir.path(),
+        "#!/bin/sh\nsleep 300 &\necho \"$!\" > \"$PWD/grandchild.pid\"\nsleep 300\n",
+    );
+
+    let outcome = CliRunner::new(binary).run(&case, 1).await;
+    assert!(matches!(
+        outcome.artifact.failure,
+        Some(RunFailure::Timeout { .. })
+    ));
+
+    let pid_file = outcome.work_dir.join("grandchild.pid");
+    let pid: i32 = std::fs::read_to_string(&pid_file)
+        .expect("the child recorded its grandchild")
+        .trim()
+        .parse()
+        .unwrap();
+
+    // Signal 0 only checks liveness. A short grace period covers the kill
+    // being delivered and the process being reaped by init.
+    let mut alive = true;
+    for _ in 0..50 {
+        // SAFETY: `kill` with signal 0 performs the permission and existence
+        // check and sends nothing.
+        alive = unsafe { libc::kill(pid, 0) == 0 };
+        if !alive {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(!alive, "the grandchild {pid} must not survive the timeout");
+
+    let _ = std::fs::remove_dir_all(&outcome.work_dir);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_grandchild_holding_the_pipe_does_not_hang_the_timeout() {
+    let dir = tempfile::tempdir().unwrap();
+    // The grandchild inherits stderr, so the pipe stays open after the direct
+    // child is killed unless the whole group is signalled. Without the group
+    // kill, the reader would block on that pipe forever.
+    let (case, binary) = case_with_binary(dir.path(), "#!/bin/sh\nsleep 300 &\nsleep 300\n");
+
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        CliRunner::new(binary).run(&case, 1),
+    )
+    .await
+    .expect("the runner must return even while a grandchild holds the pipe");
+
+    assert!(matches!(
+        outcome.artifact.failure,
+        Some(RunFailure::Timeout { .. })
+    ));
+    let _ = std::fs::remove_dir_all(&outcome.work_dir);
+}
+
+/// A multi-turn case must resume one session, not start N unrelated ones.
+///
+/// The stand-in binary records its argv and prints a session id, so the test can
+/// see both: that the first call had no `--session`, and that every later call
+/// named the id the first one printed.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_multi_turn_case_resumes_the_session_its_first_turn_wrote() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("args.log");
+    let script = format!(
+        "#!/bin/sh\n\
+         echo \"$@\" >> {log}\n\
+         case \"$*\" in *--session*) ;; *) echo '[session id: sess-abc]' >&2 ;; esac\n\
+         echo '[turn] 1/500' >&2
+         echo answered\n",
+        log = log.display()
+    );
+    let binary = dir.path().join("fake-tact-ui");
+    std::fs::write(&binary, script).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let case = EvalCase {
+        id: format!("multi-{}", uuid::Uuid::new_v4()),
+        prompt: None,
+        prompts: vec!["first".into(), "second".into(), "third".into()],
+        timeout_secs: 20,
+        isolation: Isolation::Empty,
+        graders: Vec::new(),
+    };
+
+    let outcome = CliRunner::new(binary).run(&case, 1).await;
+
+    let calls: Vec<String> = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    assert_eq!(calls.len(), 3, "one process per turn: {calls:?}");
+    assert!(
+        !calls[0].contains("--session"),
+        "the first turn opens the session: {}",
+        calls[0]
+    );
+    for call in &calls[1..] {
+        assert!(
+            call.contains("--session sess-abc"),
+            "a later turn must resume the first turn's session: {call}"
+        );
+    }
+    assert_eq!(
+        outcome.artifact.answer, "answered",
+        "the answer is the last turn's output, not an earlier turn's"
+    );
+    assert_eq!(
+        outcome.artifact.turns,
+        Some(3),
+        "each process reports one turn, so the case's count is the sum"
+    );
+}
+
+/// A library caller can build a case the loader would have refused.
+///
+/// `timeout_secs` past the platform's `Instant` range panics on `now() + d`.
+/// The loader rejects it, but this path does not go through the loader, so the
+/// runner has to survive it: one malformed case must not take the suite down.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_timeout_past_the_instant_range_fails_the_case_instead_of_panicking() {
+    let dir = tempfile::tempdir().unwrap();
+    let binary = dir.path().join("fake-tact-ui");
+    std::fs::write(&binary, "#!/bin/sh\necho done\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let case = EvalCase {
+        id: format!("overflow-{}", uuid::Uuid::new_v4()),
+        prompt: Some("p".into()),
+        prompts: Vec::new(),
+        timeout_secs: u64::MAX,
+        isolation: Isolation::Empty,
+        graders: Vec::new(),
+    };
+
+    let outcome = CliRunner::new(binary).run(&case, 1).await;
+
+    assert_eq!(
+        outcome.artifact.answer, "done",
+        "the run still happened; the deadline was clamped rather than panicking"
+    );
+}

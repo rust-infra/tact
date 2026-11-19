@@ -1,0 +1,644 @@
+//! Running a case in process, through the same bootstrap the TUI and headless
+//! use.
+//!
+//! This path exists for the evidence the CLI cannot carry: `agent_loop_detailed`
+//! returns an [`AgentLoopOutcome`] with the real stop reason, turn count, and
+//! tool-call count. `AgentUpdate` drops all three, so a runner layered on
+//! `HostSession` would have to guess them from the log.
+//!
+//! It is not a replacement for the CLI path. It shares the process with the
+//! caller, so `tact::config::install` can run only once and every case in a run
+//! inherits that model and permission mode. A caller that needs a different
+//! configuration per case spawns `tact-eval` again with different flags.
+
+use std::collections::{BTreeMap, HashMap};
+use std::time::{Duration, Instant};
+
+use tact_host::{Frontend, Notices, SessionBuild, bootstrap_session};
+use tact_protocol::{AgentUpdate, StepResult, StepStatus, TokenUsageInfo, update_channel};
+
+use crate::case::EvalCase;
+use crate::runner::{
+    RunArtifact, RunFailure, RunOutcome, Runner, StopView, TokenTotals, ToolRecord, ToolStatus,
+};
+
+/// Runs cases in process, through the same bootstrap as the product frontends.
+#[derive(Debug)]
+pub struct HostRunner {
+    /// `--config`, `--provider`, `--model`, and `--permission-mode` are read
+    /// exactly as `tact-ui` reads them, so a suite is configured the same way
+    /// as a real session.
+    args: tact::config::CliArgs,
+}
+
+impl HostRunner {
+    /// The caller must have installed these settings first with
+    /// `tact::config::init_from_args`; a host run reads them from the process.
+    pub fn new(options: crate::options::RunOptions) -> Self {
+        Self {
+            args: options.to_cli_args(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Runner for HostRunner {
+    fn kind(&self) -> crate::runner::RunnerKind {
+        crate::runner::RunnerKind::Host
+    }
+
+    fn identity(&self) -> crate::runner::RunIdentity {
+        // The host path reads the installed settings, which are what the run
+        // actually uses, so this is the observed identity rather than the
+        // requested one.
+        match tact::config::try_settings() {
+            Some(settings) => crate::runner::RunIdentity {
+                model: Some(settings.agent.model),
+                base_url: Some(settings.llm.base_url),
+                permission_mode: settings.permission_mode,
+            },
+            // No installed settings means this run should have failed at
+            // startup; report the requested mode so the header is not blank.
+            None => crate::runner::RunIdentity {
+                model: None,
+                base_url: None,
+                permission_mode: self.args.permission_mode.unwrap_or_default(),
+            },
+        }
+    }
+
+    async fn run(&self, case: &EvalCase, attempt: u32) -> RunOutcome {
+        let start = Instant::now();
+        let mut artifact = RunArtifact {
+            case_id: case.id.clone(),
+            attempt,
+            session_id: None,
+            answer: String::new(),
+            tools: Vec::new(),
+            tokens: Default::default(),
+            duration_ms: 0,
+            stop: None,
+            failure: None,
+            turns: None,
+        };
+
+        let work_dir = match crate::suite::prepare_work_dir(case) {
+            Ok(dir) => dir,
+            Err(error) => {
+                artifact.failure = Some(RunFailure::harness(error.to_string()));
+                return RunOutcome {
+                    artifact,
+                    work_dir: std::env::temp_dir().join("tact-eval").join("unprepared"),
+                };
+            }
+        };
+
+        // A host run reads process-global settings. Saying so here beats a panic
+        // from `settings()` several frames down in bootstrap.
+        if tact::config::try_settings().is_none() {
+            artifact.failure = Some(RunFailure::startup(
+                "tact config is not installed; call tact::config::init_from_args first",
+            ));
+            return RunOutcome { artifact, work_dir };
+        }
+
+        let tact_path = tact::consts::TactPath::new(work_dir.clone());
+        let store = match tact::store::open_sqlite_session_store(&tact_path.session_db_path()).await
+        {
+            Ok(store) => store,
+            Err(error) => {
+                artifact.failure = Some(RunFailure::startup(error.to_string()));
+                return RunOutcome { artifact, work_dir };
+            }
+        };
+        let lock_registry = tact_host::SessionLockRegistry::new();
+        let (session_id, lock) =
+            match tact_host::open_session(&self.args, &tact_path, &store, &lock_registry).await {
+                Ok(opened) => opened,
+                Err(error) => {
+                    artifact.failure = Some(RunFailure::startup(error.to_string()));
+                    return RunOutcome { artifact, work_dir };
+                }
+            };
+        artifact.session_id = Some(session_id.clone());
+
+        let skill_registry = match tact::skill::shared_skill_registry(&work_dir) {
+            Ok(registry) => registry,
+            Err(error) => {
+                let _ = lock.release().await;
+                artifact.failure = Some(RunFailure::startup(error.to_string()));
+                return RunOutcome { artifact, work_dir };
+            }
+        };
+
+        let (tx, rx) = update_channel(1024);
+        let mut agent = match bootstrap_session(
+            &tact_path,
+            work_dir.clone(),
+            skill_registry,
+            store,
+            SessionBuild {
+                session_id: session_id.clone(),
+                frontend: Frontend::Observing(tx),
+                notices: Notices::Stderr,
+                extra_mcp_servers: Vec::new(),
+            },
+        )
+        .await
+        {
+            Ok(agent) => agent,
+            Err(error) => {
+                let _ = lock.release().await;
+                artifact.failure = Some(RunFailure::startup(error.to_string()));
+                return RunOutcome { artifact, work_dir };
+            }
+        };
+
+        if let Err(error) = agent.ensure_session().await {
+            // The bootstrap already started MCP servers. Releasing the lock
+            // without shutting them down would leave child processes behind
+            // for the whole suite, each holding the work dir that grading is
+            // about to read.
+            agent.shutdown_mcp().await;
+            let _ = lock.release().await;
+            artifact.failure = Some(RunFailure::startup(error.to_string()));
+            return RunOutcome { artifact, work_dir };
+        }
+
+        // One pump for the whole case: the observer channel belongs to the
+        // agent, not to a turn, so a second turn's events arrive on the same
+        // receiver.
+        //
+        // The pump stops on this signal, not on the channel closing.
+        // `background_run` hands a clone of the observer sender to a detached
+        // task with no time limit, so waiting for `recv` to return `None` would
+        // wait for that command, and a run with a background job would never
+        // report at all.
+        let (pump_shutdown_tx, pump_shutdown_rx) = tokio::sync::oneshot::channel();
+        let pump = tokio::spawn(drain_events(rx, pump_shutdown_rx));
+
+        // Cancel cooperatively rather than dropping the loop mid-tool. A
+        // dropped future leaves any tool task it spawned running against the
+        // work dir that grading is about to read, and skips the loop's own
+        // interruption hooks.
+        let cancel = agent.cancel_handle();
+        // One budget for the whole case, not one per turn: a three-turn case
+        // with `timeout_secs = 120` means two minutes of work, not six.
+        // `checked_add` and not `+`: a library caller can build an `EvalCase`
+        // whose `timeout_secs` overflows this platform's `Instant`, and
+        // `validate_shape` is not on that path. Overflowing here would panic
+        // the whole suite over one malformed case; clamping to "no deadline
+        // soon" lets that case fail on its own terms instead.
+        let now = Instant::now();
+        let budget = Duration::from_secs(case.timeout_secs.min(crate::case::MAX_TIMEOUT_SECS));
+        let deadline = now.checked_add(budget).unwrap_or(now);
+        let mut budget_expired = false;
+        let mut turns_taken = 0u32;
+        let mut final_answer = String::new();
+
+        for (index, turn) in case.turns().into_iter().enumerate() {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                budget_expired = true;
+                break;
+            };
+            let prompt = tact_host::user_message::build_user_message(turn, &work_dir).await;
+            let context_before = agent.context().len();
+
+            let result = {
+                let mut run = Box::pin(agent.agent_loop_detailed(Some(prompt)));
+                tokio::select! {
+                    result = &mut run => Some(result),
+                    _ = tokio::time::sleep(remaining) => {
+                        budget_expired = true;
+                        cancel.cancel();
+                        // The loop checks the cancel flag at its own boundaries;
+                        // a tool that ignores it is bounded by its own timeout,
+                        // so this grace is a backstop rather than a second
+                        // budget.
+                        tokio::time::timeout(Duration::from_secs(30), &mut run).await.ok()
+                    }
+                }
+            };
+
+            match result {
+                Some(Ok(outcome)) => {
+                    turns_taken += outcome.turns;
+                    artifact.stop = Some(StopView::from(outcome.stop));
+                    // The answer is this turn's text, not the last text in the
+                    // whole session: a silent final turn must not be graded on
+                    // a previous turn's answer.
+                    final_answer = last_assistant_text_since(agent.context(), context_before);
+                    // A turn that produced no answer ends the conversation:
+                    // sending the next prompt into a session whose last turn was
+                    // empty would grade the wrong failure.
+                    if outcome.stop == tact::AgentLoopStop::EmptyTurn {
+                        break;
+                    }
+                }
+                Some(Err(error)) => {
+                    artifact.failure =
+                        Some(RunFailure::harness(format!("turn {}: {error}", index + 1)));
+                    break;
+                }
+                // The grace window expired after cancellation: the run never
+                // returned, so there is no outcome to report.
+                None => break,
+            }
+
+            if budget_expired {
+                break;
+            }
+        }
+
+        // `None` when the harness stopped the case before any turn finished,
+        // which is the same "no turn was taken" the single-prompt path reported.
+        artifact.turns = (turns_taken > 0).then_some(turns_taken);
+
+        agent.detach_event_observers();
+        let _ = pump_shutdown_tx.send(());
+        let (tools, tokens) = pump.await.unwrap_or_default();
+
+        // A run this harness stopped is not a run the agent finished. The
+        // cooperative cancel usually returns `RunStop::Cancelled`, which would
+        // otherwise be graded on the files written before the bell; a case that
+        // wrote its output and then hung would pass. The stop and turn count
+        // stay in the artifact as evidence, and the attempt is inconclusive.
+        if budget_expired {
+            artifact.failure = Some(RunFailure::Timeout {
+                limit_secs: case.timeout_secs,
+            });
+        }
+
+        artifact.tools = tools;
+        artifact.tokens = tokens;
+        artifact.answer = final_answer;
+        artifact.duration_ms = crate::runner::elapsed_ms(start);
+
+        // Teardown is part of the run: a subagent left running would keep
+        // writing after the verdict.
+        agent
+            .tool_context
+            .subagent_manager
+            .cancel_all_and_persist()
+            .await;
+        let _ = agent.dispatch_session_end_hooks().await;
+        agent.shutdown_mcp().await;
+        let _ = lock.release().await;
+
+        RunOutcome { artifact, work_dir }
+    }
+}
+
+/// Accumulate what the observer channel carries until the run says it is over.
+///
+/// The shutdown signal, not the channel closing, is what ends the loop: a
+/// detached background task keeps a sender alive for as long as its command
+/// runs. Queued events are drained after the signal so the log does not lose
+/// the last thing the turn did.
+async fn drain_events(
+    mut rx: tact_protocol::UpdateReceiver,
+    shutdown: tokio::sync::oneshot::Receiver<()>,
+) -> (Vec<ToolRecord>, TokenTotals) {
+    // Keyed by invocation order: `StepFinished` arrives in completion order,
+    // and a parallel batch can finish out of order. The ledger and `first_tool`
+    // mean invocation order. The step index cannot key this map because it
+    // repeats across turns.
+    let mut tools = BTreeMap::new();
+    // `StepFailed` carries the invocation id and the error, but not the tool
+    // name. The `StepStarted` before it does, so remember it by id: without
+    // this a failed call is recorded as unattributed, and a `tools` grader can
+    // only call the case inconclusive.
+    let mut started = HashMap::new();
+    let mut next_seq = 0usize;
+    let mut tokens = TokenTotals::default();
+    let mut shutdown = shutdown;
+
+    loop {
+        let update = tokio::select! {
+            biased;
+            _ = &mut shutdown => break,
+            update = rx.recv() => update,
+        };
+        let Some(update) = update else {
+            break;
+        };
+        record(&mut tools, &mut started, &mut next_seq, &mut tokens, update);
+    }
+
+    while let Ok(update) = rx.try_recv() {
+        record(&mut tools, &mut started, &mut next_seq, &mut tokens, update);
+    }
+
+    (tools.into_values().collect(), tokens)
+}
+
+/// The last assistant message this turn added that carries text.
+///
+/// Walks back past tool-only assistant turns (their message has no text) and
+/// past synthetic `User` tool results the kernel appends on a cancel.
+fn last_assistant_text_since(messages: &[tact_llm::Message], from: usize) -> String {
+    messages
+        .get(from..)
+        .unwrap_or_default()
+        .iter()
+        .rev()
+        .filter(|message| matches!(message.role, tact_llm::Role::Assistant))
+        .map(|message| tact::extract_text(&message.content))
+        .find(|text| !text.trim().is_empty())
+        .unwrap_or_default()
+        .trim_end()
+        .to_string()
+}
+
+fn record(
+    tools: &mut BTreeMap<usize, ToolRecord>,
+    started: &mut HashMap<String, (usize, String, String)>,
+    next_seq: &mut usize,
+    tokens: &mut TokenTotals,
+    update: AgentUpdate,
+) {
+    match update {
+        AgentUpdate::StepStarted {
+            tool_id,
+            tool_name,
+            arg_summary,
+            ..
+        } => {
+            started.insert(tool_id, (*next_seq, tool_name, arg_summary));
+            *next_seq += 1;
+        }
+        AgentUpdate::StepFinished {
+            tool_id, result, ..
+        } => {
+            let seq = take_seq(started, &tool_id, next_seq);
+            tools.insert(seq, tool_record(&result));
+        }
+        // The event adapter emits `StepFailed` for every failed tool call and
+        // never a `StepFinished` with `Failed` status, so without this arm the
+        // host report would show no failures at all.
+        AgentUpdate::StepFailed { tool_id, error, .. } => {
+            let start = started.remove(&tool_id);
+            let seq = start.as_ref().map(|(seq, _, _)| *seq).unwrap_or_else(|| {
+                let seq = *next_seq;
+                *next_seq += 1;
+                seq
+            });
+            tools.insert(
+                seq,
+                ToolRecord {
+                    name: start.as_ref().map(|(_, name, _)| name.clone()),
+                    args: start.map(|(_, _, args)| args),
+                    status: ToolStatus::Failed,
+                    duration_ms: None,
+                    message: Some(error),
+                },
+            );
+        }
+        AgentUpdate::TokenUsage(usage) => add_usage(tokens, &usage),
+        _ => {}
+    }
+}
+
+fn take_seq(
+    started: &mut HashMap<String, (usize, String, String)>,
+    tool_id: &str,
+    next_seq: &mut usize,
+) -> usize {
+    started
+        .remove(tool_id)
+        .map(|(seq, _, _)| seq)
+        .unwrap_or_else(|| {
+            let seq = *next_seq;
+            *next_seq += 1;
+            seq
+        })
+}
+
+fn tool_record(result: &StepResult) -> ToolRecord {
+    ToolRecord {
+        name: Some(result.tool.clone()),
+        args: Some(result.arg_summary.clone()),
+        status: match result.status {
+            StepStatus::Success => ToolStatus::Succeeded,
+            StepStatus::Failed => ToolStatus::Failed,
+            StepStatus::Cancelled => ToolStatus::Cancelled,
+        },
+        duration_ms: result.duration_us.map(|micros| micros / 1_000),
+        message: Some(result.message.clone()),
+    }
+}
+
+/// Each usage event is one model call, so the totals accumulate rather than
+/// overwrite; a later event is not a running total.
+///
+/// Cache and reasoning counts are real here because this runner sees the typed
+/// `TokenUsage`, which the CLI path's log line does not carry.
+fn add_usage(totals: &mut TokenTotals, usage: &TokenUsageInfo) {
+    totals.prompt += u64::from(usage.prompt);
+    totals.completion += u64::from(usage.completion);
+    *totals.cache_hit.get_or_insert(0) += u64::from(usage.prompt_cache_hit_tokens);
+    *totals.reasoning.get_or_insert(0) += u64::from(usage.reasoning_tokens);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tact_protocol::ToolPresentationInfo;
+
+    fn result(tool: &str, status: StepStatus, micros: Option<u64>) -> StepResult {
+        StepResult {
+            tool: tool.into(),
+            arg_summary: "args".into(),
+            arg_full: None,
+            status,
+            message: String::new(),
+            detail: None,
+            duration_us: micros,
+            permission_label: None,
+            presentation: ToolPresentationInfo::generic("t"),
+        }
+    }
+
+    #[test]
+    fn tool_records_carry_status_and_milliseconds() {
+        let record = tool_record(&result("bash", StepStatus::Failed, Some(1_500_000)));
+        assert_eq!(record.name.as_deref(), Some("bash"));
+        assert_eq!(record.status, ToolStatus::Failed);
+        assert_eq!(record.duration_ms, Some(1500));
+    }
+
+    #[test]
+    fn a_failed_step_keeps_the_name_its_start_announced() {
+        let mut tools = BTreeMap::new();
+        let mut started = HashMap::new();
+        let mut next_seq = 0usize;
+        let mut tokens = TokenTotals::default();
+        record(
+            &mut tools,
+            &mut started,
+            &mut next_seq,
+            &mut tokens,
+            AgentUpdate::StepStarted {
+                idx: 0,
+                tool_id: "call-1".into(),
+                tool_name: "load_memory".into(),
+                arg_summary: r#"{"name":"deploy-token"}"#.into(),
+                arg_full: String::new(),
+                presentation: ToolPresentationInfo::generic("t"),
+            },
+        );
+        record(
+            &mut tools,
+            &mut started,
+            &mut next_seq,
+            &mut tokens,
+            AgentUpdate::StepFailed {
+                idx: 0,
+                run_id: None,
+                tool_id: "call-1".into(),
+                arg_summary: r#"{"name":"deploy-token"}"#.into(),
+                error: "no memories saved for this repository yet".into(),
+            },
+        );
+
+        assert_eq!(tools.len(), 1);
+        let record = tools.get(&0).expect("the failed step is recorded");
+        assert_eq!(record.name.as_deref(), Some("load_memory"));
+        assert_eq!(record.args.as_deref(), Some(r#"{"name":"deploy-token"}"#));
+        assert_eq!(record.status, ToolStatus::Failed);
+    }
+
+    #[test]
+    fn a_failure_with_no_matching_start_stays_unattributed() {
+        let mut tools = BTreeMap::new();
+        let mut started = HashMap::new();
+        let mut next_seq = 0usize;
+        let mut tokens = TokenTotals::default();
+        record(
+            &mut tools,
+            &mut started,
+            &mut next_seq,
+            &mut tokens,
+            AgentUpdate::StepFailed {
+                idx: 0,
+                run_id: None,
+                tool_id: "call-unknown".into(),
+                arg_summary: String::new(),
+                error: "boom".into(),
+            },
+        );
+
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools.get(&0).expect("the failure is recorded").name, None);
+    }
+
+    #[test]
+    fn a_step_index_that_repeats_across_turns_does_not_drop_a_call() {
+        // The step index restarts each turn; keying records by it made the
+        // second turn's call overwrite the first.
+        let mut tools = BTreeMap::new();
+        let mut started = HashMap::new();
+        let mut next_seq = 0usize;
+        let mut tokens = TokenTotals::default();
+        for (tool_id, tool) in [("call-1", "save_memory"), ("call-2", "load_memory")] {
+            record(
+                &mut tools,
+                &mut started,
+                &mut next_seq,
+                &mut tokens,
+                AgentUpdate::StepStarted {
+                    idx: 0,
+                    tool_id: tool_id.into(),
+                    tool_name: tool.into(),
+                    arg_summary: String::new(),
+                    arg_full: String::new(),
+                    presentation: ToolPresentationInfo::generic("t"),
+                },
+            );
+            record(
+                &mut tools,
+                &mut started,
+                &mut next_seq,
+                &mut tokens,
+                AgentUpdate::StepFinished {
+                    idx: 0,
+                    run_id: None,
+                    tool_id: tool_id.into(),
+                    result: result(tool, StepStatus::Success, None),
+                },
+            );
+        }
+
+        let names: Vec<_> = tools
+            .values()
+            .map(|record| record.name.as_deref())
+            .collect();
+        assert_eq!(names, vec![Some("save_memory"), Some("load_memory")]);
+    }
+
+    #[test]
+    fn a_silent_turn_is_not_graded_on_the_previous_turn() {
+        let messages = vec![
+            tact_llm::Message::new_text(tact_llm::Role::Assistant, "first answer".to_string()),
+            tact_llm::Message::new_text(tact_llm::Role::User, "next prompt".to_string()),
+            tact_llm::Message::new_text(tact_llm::Role::Assistant, String::new()),
+        ];
+
+        assert_eq!(
+            last_assistant_text_since(&messages, 2),
+            "",
+            "an empty final turn has no answer to grade"
+        );
+        assert_eq!(last_assistant_text_since(&messages, 0), "first answer");
+    }
+
+    /// The pump returns when told to, even while a sender is still alive.
+    ///
+    /// This is the hang that would make a run with a background command never
+    /// report: the detached task holds a sender clone with no time limit, so
+    /// the channel never closes.
+    #[tokio::test]
+    async fn the_pump_stops_on_the_shutdown_signal_with_a_live_sender() {
+        let (tx, rx) = tact_protocol::update_channel(16);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let pump = tokio::spawn(drain_events(rx, shutdown_rx));
+
+        // Stands in for the detached background task's reporter.
+        let _detached_sender = tx.clone();
+        shutdown_tx.send(()).unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), pump)
+            .await
+            .expect("the pump must return without the channel closing")
+            .expect("the pump must not panic");
+    }
+
+    #[tokio::test]
+    async fn usage_events_accumulate_rather_than_overwrite() {
+        let mut totals = TokenTotals::default();
+        add_usage(
+            &mut totals,
+            &TokenUsageInfo {
+                prompt: 10,
+                completion: 2,
+                total: 12,
+                prompt_cache_hit_tokens: 6,
+                prompt_cache_miss_tokens: 4,
+                reasoning_tokens: 1,
+            },
+        );
+        add_usage(
+            &mut totals,
+            &TokenUsageInfo {
+                prompt: 5,
+                completion: 3,
+                total: 8,
+                ..Default::default()
+            },
+        );
+        assert_eq!(totals.prompt, 15);
+        assert_eq!(totals.completion, 5);
+        assert_eq!(totals.cache_hit, Some(6));
+        assert_eq!(totals.reasoning, Some(1));
+    }
+}

@@ -1,0 +1,30 @@
+# A tool error is evidence, not a dead run. The second turn tells the model the
+# file it was asked to read really does not exist; the loop must continue and
+# finish the task instead of stopping on the first failed tool call.
+prompts = [
+  "Read missing.txt in the current directory.",
+  "You were right that it does not exist. Create it now with exactly: recovered",
+  "Reply with the content of missing.txt and nothing else.",
+]
+timeout_secs = 240
+
+[[graders]]
+kind = "files"
+name = "recovered-by-creating"
+
+[[graders.assertions]]
+kind = "exists"
+path = "missing.txt"
+
+[[graders.assertions]]
+kind = "matches"
+path = "missing.txt"
+pattern = "^recovered\\s*$"
+
+[[graders]]
+kind = "answer"
+name = "reported-the-recovered-content"
+
+[[graders.assertions]]
+kind = "contains"
+text = "recovered"

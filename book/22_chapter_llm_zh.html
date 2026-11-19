@@ -389,6 +389,9 @@
 <li class="toc-l2"><a href="#8-session-user_id" title="8. Session user_id"><span class="toc-label">8. Session user_id</span></a></li>
 <li class="toc-l2"><a href="#9-%E4%BD%99%E9%A2%9D%E6%9F%A5%E8%AF%A2" title="9. 余额查询"><span class="toc-label">9. 余额查询</span></a></li>
 <li class="toc-l2"><a href="#10-%E4%BB%A3%E7%A0%81%E5%9C%B0%E5%9B%BE" title="10. 代码地图"><span class="toc-label">10. 代码地图</span></a></li>
+<li class="toc-l2"><a href="#12-%E9%94%99%E8%AF%AF%E6%96%87%E6%9C%AC%E4%B8%BA%E4%BB%80%E4%B9%88%E6%97%A2%E8%84%B1%E6%95%8F%E5%8F%88%E5%8F%AF%E8%A1%8C%E5%8A%A8" title="12. 错误文本：既脱敏又可行动"><span class="toc-label">12. 错误文本：既脱敏又可行动</span></a></li>
+<li class="toc-l3"><a href="#%E8%AE%A4%E8%AF%81%E6%98%AF%E4%B8%80%E4%B8%AA%E7%8B%AC%E7%AB%8B%E7%9A%84%E9%94%99%E8%AF%AF%E7%B1%BB" title="认证是一个独立的错误类"><span class="toc-label">认证是一个独立的错误类</span></a></li>
+<li class="toc-l3"><a href="#runfailed-%E5%B8%A6%E4%B8%8A%E5%8E%9F%E5%9B%A0%E4%B8%8E%E6%98%AF%E5%90%A6%E5%8F%AF%E9%87%8D%E8%AF%95" title="RunFailed 带上原因与是否可重试"><span class="toc-label">RunFailed 带上原因与是否可重试</span></a></li>
 <li class="toc-l2"><a href="#11-%E5%BD%93%E5%89%8D%E7%BC%BA%E5%8F%A3" title="11. 当前缺口"><span class="toc-label">11. 当前缺口</span></a></li>
 <li class="toc-l3"><a href="#%E5%8D%8F%E8%AE%AE%E5%85%BC%E5%AE%B9%E7%BC%BA%E5%8F%A3%E5%86%85%E9%83%A8-anthropic-%E5%BD%A2--wire" title="协议兼容缺口（内部 Anthropic 形 → wire）"><span class="toc-label">协议兼容缺口（内部 Anthropic 形 → wire）</span></a></li>
 <li class="toc-l2"><a href="#%E7%9B%B8%E5%85%B3%E6%96%87%E6%A1%A3" title="相关文档"><span class="toc-label">相关文档</span></a></li>
@@ -1579,6 +1582,90 @@ hooks（<code>Standard</code> / <code>DeepSeek</code> /
 </tbody>
 </table>
 <hr />
+<h2 id="12-错误文本为什么既脱敏又可行动">12. 错误文本：既脱敏又可行动</h2>
+<p>稳定层从来不在错误里渲染请求体、响应体、原始 SSE 帧、tool
+arguments、凭据、authorization header 或 provider
+state（见 <a href="../docs/tact-llm-redaction.md"><code>docs/tact-llm-redaction.md</code></a>）。
+这份约束解释的是<strong>为什么</strong>会抹掉 provider 原文，而不是「把所有
+<code>Permanent</code> 一律抹成同一句」的理由。早先
+<code>builder.rs</code> 的 <code>stable_error</code> 按
+<code>ModelErrorKind</code> 无条件覆写 message，于是每一次永久性失败都变成
+<code>provider request failed</code>：用户既不知道原因，也没有可执行的下一步。
+现在分成两件事。</p>
+<table>
+<thead>
+<tr>
+<th>职责</th>
+<th>位置</th>
+<th>规则</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>降级为安全文案</td>
+<td><code>LlmError::user_message()</code>（<code>error.rs</code>）</td>
+<td>唯一降级点。<code>HttpError</code> 保留状态码与类别
+（<code>provider returned HTTP 401 (authentication failed)</code>），丢掉响应体、请求
+URL 与 header；<code>Serialization</code> / <code>Request</code> /
+<code>StreamParse</code> 给固定说明；<code>Auth</code> /
+<code>Unsupported</code> / <code>Mock</code> 这些 Tact 自撰文案原样通过</td>
+</tr>
+<tr>
+<td>边界整形</td>
+<td><code>Provider::stable_error</code>、<code>bounded_line</code>（<code>builder.rs</code>）</td>
+<td>不再替换文案，只把空白折叠为单行并封顶 400 字符，防止宿主日志被塞进整块文本</td>
+</tr>
+<tr>
+<td>分类与重试决策</td>
+<td><code>ModelError::is_retryable</code>、<code>LlmError::is_retryable</code></td>
+<td>只有 <code>Transient</code> 可重试；仍由 <code>kind</code> 决定，绝不读文案</td>
+</tr>
+<tr>
+<td>用户可读的建议</td>
+<td><code>tact::recovery::model_failure_advice</code></td>
+<td>产品层。用 <code>ModelErrorKind</code> 加
+<code>ProviderMetadata</code>（provider / model /
+<code>endpoint_host</code>）产出 <code>{ headline, action, retryable }</code></td>
+</tr>
+</tbody>
+</table>
+<p>两条边界值得单独记住：</p>
+<ul>
+<li><strong><code>endpoint_host()</code> 只给 host。</strong>
+自建代理常在路径里放 per-user key（<code>/v1/&lt;key&gt;/...</code>），把完整 URL
+写进用户可见的错误等于泄漏凭据。host 才是「打到了哪台机器」这个可行动信息。</li>
+<li><strong>诊断面（span）不变。</strong>
+<code>tact_llm.call</code> 仍携带 <code>provider</code> / <code>protocol</code> /
+<code>model</code> / <code>endpoint_host</code> / <code>status_class</code> /
+<code>error_kind</code> / <code>outcome</code>。分类进文案之后 span 的价值不变，
+只是用户不必先去开 <code>RUST_LOG</code> 才能知道发生了什么。</li>
+</ul>
+<h3 id="认证是一个独立的错误类">认证是一个独立的错误类</h3>
+<p><code>ModelErrorKind</code> 新增 <code>Authentication</code>，401/403 与「凭据根本解析不出来」
+（<code>LlmError::Auth</code>）都归入它。理由不是分类洁癖：这类失败的修法与
+<code>Permanent</code> 完全不同 —— 改 prompt、换模型都无用，用户必须换一把能用的
+key，而且重试只会继续烧配额。因此 <code>is_retryable()</code> 对它恒为
+<code>false</code>，<code>recovery::classify_model_error</code> 也映射到
+<code>FailureKind::Permanent</code>。</p>
+<p>代价是枚举不再闭环，所以两处调整：枚举标记
+<code>#[non_exhaustive]</code>（新 provider 以后还会加类别，否则每次都是 breaking
+change），并在 <code>ModelError</code> 上提供
+<code>class_label()</code> —— 下游要自己渲染类别时调它，未知值走
+<code>_</code> 兜底为 <code>"permanent"</code>，不需要每次升级改
+<code>match</code>。仓内唯一用旧三字段字面量构造 <code>ModelError</code>
+的地方（<code>runtime/baseline.rs</code> 的测试脚本）不受影响。</p>
+<h3 id="runfailed-带上原因与是否可重试">RunFailed 带上原因与是否可重试</h3>
+<p><code>AgentUpdate::RunFailed</code> 过去只有 <code>run_id</code>：kernel 明明算了
+<code>RuntimeErrorInfo</code>（<code>message</code> + <code>detail</code>），事件适配层却把它丢了，
+于是 TUI 日志知道原因、桌面横幅只知道「失败了」。现在事件携带
+<code>retryable</code> 与 <code>message: Option&lt;String&gt;</code>，
+<code>RuntimeErrorInfo</code> 也加 <code>#[serde(default)] retryable</code>
+（旧 producer 不发该字段时解成 <code>false</code>，方向安全：缺失不能变成「假装可重试」）。</p>
+<p>两个消费端的写法有明确优先级：文本优先用
+<code>AgentUpdate::Error</code>（driver 渲染的、点名的用户文案），没有时退回 kernel 的
+<code>RunFailed</code> 文本；<code>retryable</code> 决定横幅是否画 Retry。
+transcript reducer 同时用这条信息写 <code>ErrorRow</code>，
+<code>retryable</code> 不再硬编码为 <code>true</code>。</p>
 <h2 id="11-当前缺口">11. 当前缺口</h2>
 <table>
 <thead>

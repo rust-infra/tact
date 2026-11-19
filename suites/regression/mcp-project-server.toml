@@ -1,0 +1,31 @@
+# MCP is a project-scoped capability: the server is declared in the copied
+# workspace's `.tact/.mcp.json`, so the case proves the project file is read
+# and that a declared tool is callable under its `mcp__<server>__<tool>` name.
+# The server is inline Python: a relative script path would depend on the
+# runner's process directory, which differs between host and CLI.
+prompt = """
+This workspace declares an MCP server named "eval" with a tool named "echo".
+Call that tool (its full tool name is mcp__eval__echo) with the argument
+text = "ping-42", then reply with exactly the text the tool returned.
+"""
+timeout_secs = 180
+
+[isolation]
+kind = "copy"
+fixture = "fixtures/mcp"
+
+[[graders]]
+kind = "answer"
+name = "echoed-through-mcp"
+
+[[graders.assertions]]
+kind = "contains"
+text = "echo:ping-42"
+
+[[graders]]
+kind = "tools"
+name = "called-the-mcp-tool"
+
+[[graders.assertions]]
+kind = "tool_succeeded"
+tool = "mcp__eval__echo"

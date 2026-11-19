@@ -210,6 +210,14 @@ pub struct RuntimeErrorInfo {
     pub phase: RunPhase,
     pub message: String,
     pub detail: Option<String>,
+    /// Whether resending the same work could plausibly succeed.
+    ///
+    /// Carried alongside the text because a host has to *offer* a retry or not:
+    /// a banner whose button says Retry after a 401 is worse than no button.
+    /// Defaults to `false` on the wire, so an older producer cannot accidentally
+    /// advertise a retry that will fail again.
+    #[serde(default)]
+    pub retryable: bool,
 }
 
 impl RuntimeErrorInfo {
@@ -218,7 +226,18 @@ impl RuntimeErrorInfo {
             phase,
             message: message.into(),
             detail: None,
+            retryable: false,
         }
+    }
+
+    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    pub fn with_retryable(mut self, retryable: bool) -> Self {
+        self.retryable = retryable;
+        self
     }
 }
 
@@ -260,5 +279,32 @@ mod tests {
         let clone = token.clone();
         token.cancel();
         assert!(clone.is_cancelled());
+    }
+
+    /// An older producer's payload has no `retryable`. It must still decode,
+    /// and it must decode as "do not offer a retry" — the safe direction: a
+    /// missing field cannot advertise an attempt that would fail again.
+    #[test]
+    fn error_info_without_retryable_decodes_as_not_retryable() {
+        let payload = serde_json::json!({
+            "phase": "stream",
+            "message": "model call failed",
+            "detail": null
+        });
+        let info: RuntimeErrorInfo =
+            serde_json::from_value(payload).expect("older payloads must keep decoding");
+        assert!(!info.retryable);
+        assert_eq!(info.message, "model call failed");
+    }
+
+    #[test]
+    fn error_info_round_trips_the_retry_flag() {
+        let info = RuntimeErrorInfo::new(RunPhase::Stream, "unreachable")
+            .with_detail("check the network")
+            .with_retryable(true);
+        let decoded: RuntimeErrorInfo =
+            serde_json::from_value(serde_json::to_value(&info).unwrap()).unwrap();
+        assert_eq!(decoded, info);
+        assert!(decoded.retryable);
     }
 }

@@ -1,0 +1,30 @@
+# Reading before writing is a tool-selection contract, not an answer contract:
+# a run that overwrites service.toml blind can still pass a file grader when it
+# happens to guess the content. `first_tool` is what makes the order visible.
+prompt = """
+Start by reading service.toml with the read_file tool.
+Then change only the port value from 8080 to 9090.
+Leave every other line exactly as it is.
+"""
+timeout_secs = 180
+
+[isolation]
+kind = "copy"
+fixture = "fixtures/tools"
+
+[[graders]]
+kind = "tools"
+name = "read-before-write"
+
+[[graders.assertions]]
+kind = "first_tool"
+tool = "read_file"
+
+[[graders]]
+kind = "files"
+name = "only-the-port-changed"
+
+[[graders.assertions]]
+kind = "matches"
+path = "service.toml"
+pattern = '^# Service configuration\.\nhost = "127\.0\.0\.1"\nport = 9090\nlog_level = "info"\nretries = 3\n?$'

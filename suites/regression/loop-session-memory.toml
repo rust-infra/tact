@@ -1,0 +1,59 @@
+# The fact exists only in the conversation. It is never written to a file, a
+# memory, or a background job, and the second turn forbids every tool that
+# could carry it. A fresh session per turn cannot answer, so this case fails
+# when history or `--session` resume breaks.
+prompts = [
+  """
+Remember this number for my next message: 314159265.
+Do not write it to a file, do not save it to memory, and do not run any tool.
+""",
+  """
+What number did I ask you to remember? Reply with the number only.
+Do not use any tool.
+""",
+]
+timeout_secs = 180
+
+[[graders]]
+kind = "answer"
+name = "recalled-the-number"
+
+[[graders.assertions]]
+kind = "contains"
+text = "314159265"
+
+[[graders]]
+kind = "tools"
+name = "no-persistence"
+
+[[graders.assertions]]
+kind = "no_tool"
+tool = "bash"
+
+[[graders.assertions]]
+kind = "no_tool"
+tool = "read_file"
+
+[[graders.assertions]]
+kind = "no_tool"
+tool = "write_file"
+
+[[graders.assertions]]
+kind = "no_tool"
+tool = "edit_file"
+
+[[graders.assertions]]
+kind = "no_tool"
+tool = "save_memory"
+
+[[graders.assertions]]
+kind = "no_tool"
+tool = "load_memory"
+
+[[graders.assertions]]
+kind = "no_tool"
+tool = "background_run"
+
+[[graders.assertions]]
+kind = "no_tool"
+tool = "spawn_subagent"

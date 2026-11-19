@@ -1,0 +1,52 @@
+# Save and read back in one session: this is the round trip a persistent
+# memory is for. The file grader also pins where the write landed, so a tool
+# that "saves" only into the transcript fails even if the model repeats itself.
+#
+# The fact is deliberately mundane. A credential-shaped value in the prompt
+# makes a safety-trained model refuse to persist it, which measures the
+# refusal policy rather than memory.
+prompts = [
+  """
+Save a persistent memory using save_memory with name "eval-secret",
+type "project", description "eval fixture note", and content
+"release codename: cobalt-9". Then reply: saved
+""",
+  """
+Use load_memory to read the memory named "eval-secret" and reply with only the
+release codename.
+""",
+]
+timeout_secs = 240
+
+[[graders]]
+kind = "answer"
+name = "recalled-what-it-saved"
+
+[[graders.assertions]]
+kind = "contains"
+text = "cobalt-9"
+
+[[graders]]
+kind = "files"
+name = "memory-landed-on-disk"
+
+[[graders.assertions]]
+kind = "exists"
+path = ".tact/memory/eval-secret.md"
+
+[[graders.assertions]]
+kind = "contains"
+path = ".tact/memory/eval-secret.md"
+text = "cobalt-9"
+
+[[graders]]
+kind = "tools"
+name = "save-then-load"
+
+[[graders.assertions]]
+kind = "tool_succeeded"
+tool = "save_memory"
+
+[[graders.assertions]]
+kind = "tool_succeeded"
+tool = "load_memory"

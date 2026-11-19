@@ -1,0 +1,71 @@
+# What this pins: the `compact` tool call is dispatched, the loop survives it,
+# and the next turn can still answer with the facts in context. The case forbids
+# every tool that could persist them (memory, files, shell), so the answer has
+# to come from the conversation rather than from a stash the model created.
+#
+# What it cannot pin: whether the summarizer kept the facts. `RunArtifact`
+# carries no compaction field and `tact-ui headless` prints no compaction line,
+# so a compaction that silently no-ops — or writes a lossy summary while the
+# original context is still there — produces the same verdict as a correct one.
+# Treat this as a wiring case, not as summary-quality coverage.
+#
+# The local `compact` tool is not exposed on OpenAI Responses models, which use
+# the native `/responses/compact` endpoint instead; run this case with a
+# provider that keeps the local tool in the list.
+prompts = [
+  """
+Remember these three facts for later: alpha=17, beta=42, gamma=99.
+Then call the compact tool with focus "alpha beta gamma".
+Use no other tool: do not save them to memory, do not write a file, and do not
+run a shell command.
+""",
+  """
+Without calling any tool, reply with the values of alpha, beta and gamma.
+""",
+]
+timeout_secs = 300
+
+[[graders]]
+kind = "answer"
+name = "context-survived-the-compact-call"
+
+[[graders.assertions]]
+kind = "matches"
+pattern = "(?s)17.*42.*99"
+
+[[graders]]
+kind = "tools"
+name = "dispatched-the-compact-call"
+
+[[graders.assertions]]
+kind = "tool_succeeded"
+tool = "compact"
+
+# Persisting the facts would let a compaction that lost them still answer.
+[[graders.assertions]]
+kind = "no_tool"
+tool = "save_memory"
+
+[[graders.assertions]]
+kind = "no_tool"
+tool = "load_memory"
+
+[[graders.assertions]]
+kind = "no_tool"
+tool = "write_file"
+
+[[graders.assertions]]
+kind = "no_tool"
+tool = "edit_file"
+
+[[graders.assertions]]
+kind = "no_tool"
+tool = "bash"
+
+[[graders.assertions]]
+kind = "no_tool"
+tool = "background_run"
+
+[[graders.assertions]]
+kind = "no_tool"
+tool = "spawn_subagent"

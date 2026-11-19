@@ -1647,6 +1647,10 @@ system prompt 得知当前没有 Goal</td>
 <td>测试覆盖不均</td>
 <td>核心 router 有测；并非每个工具模块都有集成测试</td>
 </tr>
+<tr>
+<td>无工具调用轨迹判分</td>
+<td><code>RunArtifact.tools</code> 已记录名称、状态、耗时和消息，但 grader 还不能断言调用序列；工具误调用、漏调用和参数错误仍是评测空白。见<a href="./29_chapter_eval_zh.html">第 29 章</a>。</td>
+</tr>
 </tbody>
 </table>
 <p>工具并行调度自身的缺口（输入畸形退化、无并发上限、<code>bash</code>

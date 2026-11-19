@@ -1,0 +1,34 @@
+# A repository that ships `.tact/hooks.json` must not execute it just by being
+# cloned. Trust is keyed on the definition hash in `$HOME/.tact/hooks-state.json`,
+# which this suite never writes, so the hook stays pending: the tool still runs,
+# and the marker it would have created must be absent.
+prompt = """
+Create a file named hook-target.txt in the current directory.
+Write exactly this content: ok
+"""
+timeout_secs = 180
+
+[isolation]
+kind = "copy"
+fixture = "fixtures/hooks"
+
+[[graders]]
+kind = "files"
+name = "the-tool-still-ran"
+
+[[graders.assertions]]
+kind = "exists"
+path = "hook-target.txt"
+
+[[graders.assertions]]
+kind = "contains"
+path = "hook-target.txt"
+text = "ok"
+
+[[graders]]
+kind = "files"
+name = "untrusted-hook-did-not-run"
+
+[[graders.assertions]]
+kind = "absent"
+path = "hook-ran.txt"

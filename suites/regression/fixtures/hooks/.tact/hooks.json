@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "write_file|edit_file|bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "touch hook-ran.txt",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -22,6 +22,13 @@ Stable facade and vocabulary:
 - `ProviderKind`, `ChatDialect`, `ChatCompletionsDialect`
 - `tact_agent_api` model contract re-exports
 
+`ModelErrorKind` is `#[non_exhaustive]`: the vocabulary grows with the
+providers it describes, and an exhaustive public enum made every addition a
+breaking change for downstream `match` expressions. Consumers need a fallback
+arm; the recommended treatment is the same as `Permanent` (do not retry). For
+the class label itself, call `ModelError::class_label()` — it maps unknown
+kinds to `"permanent"`, so a new kind does not force an edit at the call site.
+
 Compatibility-only names are compiled out of a stable build. The executable
 baseline is `crates/tact_llm/tests/public_api.rs` plus `tests/ui/stable-*.rs`;
 run it with:

@@ -35,6 +35,14 @@ pub(crate) fn key_cell_step(viewport_height: usize) -> usize {
     (viewport_height / 2).max(1)
 }
 
+/// Wheel step inside the trajectory page: one record per notch.
+///
+/// Not a line count. The page has a cursor, not a free-scrolling column: `j`
+/// moves one record, and a wheel that moved three lines would have to either
+/// move the selection three records or leave the cursor behind the viewport.
+/// One notch per record keeps both in step and matches the list popups.
+pub(crate) const TRAJECTORY_WHEEL_STEP: usize = 1;
+
 impl App {
     /// The viewport's first visible visual line, resolved from the persisted
     /// caches of the last render (`usize::MAX` sentinel → true bottom).

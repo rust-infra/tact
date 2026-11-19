@@ -1,0 +1,411 @@
+# Agent evaluation: design
+
+## Problem
+
+There was no way to measure the Tact agent. A change to the system prompt, the
+tool set, or the compaction policy could be argued about but not scored, and
+CI could only ask whether the code compiled. The goal is a repeatable suite of
+cases that produces comparable numbers, plus a shape an external evaluation
+platform can drive without linking Rust.
+
+Three facts in the existing system make the shape non-obvious.
+
+`tact_protocol::AgentUpdate` is `Debug + Clone` only. It is not serializable,
+and its `RunFinished { run_id }` drops the outcome. `tact::AgentLoopStop` is
+deliberately serialization-free, because it was built for the Goal runner
+inside the process. So the stop reason, the turn count, and the tool-call count
+exist only while the process that ran the agent is alive.
+
+`tact::config::install` installs process-global settings exactly once. Model,
+endpoint, and permission mode therefore belong to the run, not to a case.
+
+`tact-ui headless` cannot answer a permission prompt, so it can only run in
+`auto` or `plan`. Its stderr log truncates every field to 240 characters.
+
+## Usage
+
+A maintainer writes cases as data, with no Rust per case.
+
+```toml
+# suites/smoke/write-a-file.toml
+prompt = "Create a file named hello.txt containing exactly: hello eval"
+timeout_secs = 180
+
+[[graders]]
+kind = "files"
+name = "hello-file"
+
+[[graders.assertions]]
+kind = "contains"
+path = "hello.txt"
+text = "hello eval"
+```
+
+Then runs the suite and reads the report.
+
+```bash
+cargo run -p tact_eval -- run suites/smoke \
+  --runner cli --binary ./target/debug/tact-ui \
+  --provider openai --model gpt-test --base-url http://127.0.0.1:8080/v1 \
+  --json-out target/eval/smoke.json
+```
+
+```
+runner=cli model=gpt-test endpoint=http://127.0.0.1:8080/v1 mode=auto attempts=1
+suite=e0250aa21eb6c8c9
+
+answer-only                      pass 1/1 (100%), fail 0, unknown 0
+write-a-file                     pass 1/1 (100%), fail 0, unknown 0
+
+cases passing any attempt: 2/2
+cases passing every attempt: 2/2
+```
+
+An external platform does the same thing through the binary only: `run`,
+`--json-out`, and read `ReportMeta` plus the outcomes. No linking, no private
+imports.
+
+Library callers get `run_suite(&suite, &runner, attempts)` back as an
+`EvalReport`, with `summaries()`, `cases_passing_any()` for pass@k and
+`cases_passing_all()` for the strict gate. `compare_reports(&baseline,
+&candidate)` returns a `ComparisonReport`, and `comparison_exit_code` maps its
+status to the process contract.
+
+## Shape
+
+One crate, `crates/eval` (package `tact_eval`, binary `tact-eval`). It joins
+workspace `members` but not `default-members`, and
+`scripts/check-packaging.py` now fails the build if any other crate depends on
+it. That fence is the whole boundary: the harness depends on the product, and
+nothing in the product can reach back.
+
+The data shape comes first.
+
+```rust
+struct EvalCase {                    // TOML, deny_unknown_fields
+    id: String,                      // defaults to the file stem
+    prompt: String,
+    timeout_secs: u64,
+    isolation: Isolation,            // Copy { fixture } | Empty
+    graders: Vec<GraderSpec>,
+}
+
+enum GraderSpec {                    // closed set, serde snake_case
+    Command { name, command },       // exit 0 passes
+    Files { name, assertions },      // exists/absent/contains/matches
+    Answer { name, assertions },     // contains/not_contains/matches/non_empty
+}
+
+enum Verdict { Pass, Fail { reason }, Inconclusive { reason } }
+```
+
+`Verdict` has three states, not two. A grader that cannot reach a decision, a
+case with no graders, and a crashed run are all `Inconclusive`, which the report
+counts separately. Conflating "we could not tell" with "it did not work" turns a
+broken harness into a fake regression, and the opposite conflation turns an
+untested case into a pass.
+
+`RunArtifact` is what both runners produce.
+
+```rust
+struct RunArtifact {
+    case_id: String,
+    attempt: u32,
+    session_id: Option<String>,
+    answer: String,
+    tools: Vec<ToolRecord>,
+    tokens: TokenTotals,
+    duration_ms: u64,
+    stop: Option<StopView>,     // None when the runner cannot see it
+    turns: Option<u32>,         // same
+    failure: Option<RunFailure>,
+}
+```
+
+The two `Option`s are the load-bearing decision. A runner layered on
+`HostSession` would have had to guess the stop reason from the log, and a guess
+in a field that averages into a suite's numbers is worse than an admission.
+`None` prints as unknown; it is never a zero.
+
+`Runner` has three methods: `kind`, `identity`, and `run`. `identity` returns the
+model, endpoint, and permission mode *the runner knows it used*, as `Option`s,
+because the CLI runner can be told to read a config file that it never parses.
+A report that filled those with a placeholder would compare equal to a run under
+a different model.
+
+`HostRunner` calls `bootstrap_session` directly rather than going through
+`HostSession`. That is deliberate duplication: `HostSession` exposes
+`AgentUpdate`, which loses the outcome, and the typed stop reason is the reason
+this runner exists. `HostRunner` gets it from `agent_loop_detailed`.
+
+`CliRunner` spawns `tact-ui headless` and reads the documented stderr contract
+from `headless_log.rs`. Its parsers are pure functions over `&[String]` so they
+are testable without a process, and every one of them was checked against a real
+binary run.
+
+The event pump in `HostRunner` stops on a `oneshot` signal, not on the channel
+closing. `headless.rs` documents why: `background_run` hands a clone of the
+observer sender to a detached task with no time limit, so waiting for the
+channel to close waits for that command, and a run with a background job would
+never report at all.
+
+The fold in `CaseOutcome::verdict` is the one place that decides an attempt.
+A recorded `RunFailure` outranks every grader, because whatever a grader saw of
+a half-finished attempt describes the harness, not the agent. An `EmptyTurn`
+needs an `answer` grader to pass: its file graders may be right, but nothing
+shows the request was answered. A run the harness itself stopped, including one
+that returned `RunStop::Cancelled` after the budget fired, is recorded as a
+timeout rather than graded.
+
+`ReportMeta` embeds the `RunIdentity` rather than copying its three fields, so a
+field added to what a runner reports cannot be forgotten at the report. The
+suite fingerprint hashes the cases *as written*, before a relative fixture
+resolves, plus every `Copy` fixture's relative path and file bytes. The
+declared form keeps the identity independent of the working directory; the
+fixture bytes keep an edited input from hiding behind an unchanged case file.
+
+Isolation is one directory per attempt, under `$TMPDIR/tact-eval/<case>/<uuid>`,
+deleted after grading. Not a git worktree: each attempt gets its own
+`.tact/tact.db` and session id, so neither the lock nor the database is shared,
+and a worktree would carry the repository's own `.tact/` state into a file
+comparison.
+
+## Comparison
+
+Executing a suite and deciding whether a candidate is worse are separate
+operations, and the second must not pay the cost of the first.
+
+`run` touches the model, the filesystem, and process-global config, and emits
+an `EvalReport`. `compare` reads two reports and is pure: no model, no suite
+load, no working directory. That split makes the gate cheap enough to rerun on
+stored CI artifacts, lets comparison policy change without another paid run,
+and makes a verdict reproducible from the exact bytes a reviewer can inspect.
+The comparison cannot itself introduce model variance.
+
+The baseline is a full, previously accepted `EvalReport`, not a compact
+baseline schema. A second format would duplicate the per-case counts and
+`ReportMeta` the report already has, and the duplicate would drift. The
+comparison also needs the full header: runner, identity, attempts, case set,
+and suite fingerprint are precisely what decide whether two reports may be
+compared at all. Which report is accepted is a human decision about the
+artifact CI is pointed at; there is no `--accept` flag, because the tool cannot
+know that a run is a good baseline.
+
+`compare` produces one of four statuses, in this precedence:
+
+| status | condition | exit |
+|---|---|---|
+| `incomparable` | Any comparability condition differs, or baseline has an inconclusive attempt | 2 |
+| `regression` | Comparable, and at least one case has more failed attempts | 1 |
+| `inconclusive` | Comparable, no regression, and a candidate attempt is inconclusive | 3 |
+| `pass` | Comparable, and no case has more failed attempts | 0 |
+
+The comparison fails closed. Any mismatch in report schema, suite fingerprint,
+attempt count, runner, permission mode, model, endpoint, or the ordered case
+set yields `incomparable` and emits no case deltas, even when some cases could
+be compared in isolation. A partial comparison would put a trustworthy-looking
+number on a run that was not comparable, which is worse than no number.
+
+A baseline that contains an inconclusive attempt has an unknown verdict, so it
+is `incomparable` rather than a pass. That is the same three-state rule as a
+single case, lifted to the baseline: "we could not tell" must not become
+"it works". A candidate's inconclusive attempt is different: the comparison
+remains meaningful, but the result is `inconclusive` (exit 3), not `pass`.
+Callers that cannot tolerate a flaky result get a non-zero exit instead of a
+silently greened gate.
+
+There are no numeric threshold flags in the first iteration. A case regresses
+when its failure count rises, which is an ordinal fact visible in both reports.
+A percentage tolerance would encode a noise model that has not been
+calibrated; choosing one now would either hide real regressions or turn model
+variance into a red build. Until a suite has enough recorded runs to measure
+its own noise, `inconclusive` carries the uncertainty explicitly. `--strict`
+remains a separate, absolute gate: it requires every case to pass every
+attempt in one run and does not read a baseline. The two answer different
+questions, so merging them would make both less clear.
+
+## Alternatives considered
+
+**Add an `eval` subcommand to `tact-ui`.** Rejected: it puts suite runners and
+graders inside the shipped binary, and the eval crate would then be a product
+dependency rather than the reverse. The packaging fence exists to keep that
+direction.
+
+**Make `AgentUpdate` serializable and use it as the evidence format.** Rejected:
+`AgentUpdate` carries no outcome by design, so serializing it would still lose
+the stop reason, and it would add a serde obligation to every protocol variant
+for the sake of a tool outside the product.
+
+**Use the SQLite session database as the only evidence, for both runners.**
+Rejected as the sole source: `token_usages` writes zeroes for absent values, so
+"unknown" and "zero" become indistinguishable, and a report built on it cannot
+tell them apart. It is still what `session_id` names, but the work dir holding
+that database is deleted after grading, so the id is a label rather than a
+handle. Keeping the directory would be a `--keep-work-dir` flag, worth adding
+when something needs to re-open a run.
+
+**Run cases concurrently.** Rejected for now. Each concurrent case would need
+its own process-global config, which the in-process runner cannot have.
+`run_suite` iterates sequentially and the README says the parallelism belongs
+one level up, in a caller that starts several `tact-eval` processes.
+
+**Move the headless log grammar into `tact_protocol`, with a formatter and a
+parser side by side.** Rejected for now, on scope. It is the right fix for the
+hand-synced format, and it would let the CLI runner report cache and reasoning
+tokens. It changes product code, so it is its own change with its own tests. The
+interim parser is written so a line it cannot attribute stays attributed to
+nothing, rather than inventing a tool name from an error message.
+
+## Tradeoffs accepted
+
+We accept that the CLI runner reports only what the headless log exposes: a
+turn count and the stop reasons it can infer (`EmptyTurn`, `BlockedByHook`,
+`MaxTurns`, and `Completed` for a clean exit with an answer). It works against a
+release binary or a container in exchange for that limited view. Other stop
+reasons stay `None`, so this is visible in every report rather than silently
+zero.
+
+We accept that `HostRunner` re-implements session open and teardown in exchange
+for the typed outcome. The duplication is about forty lines and its boundary is
+one function.
+
+We accept that the stderr parsers mirror `headless_log.rs` formats by hand, in
+exchange for not adding a machine-readable mode to the product binary. Each
+parser has a test built from a real log line, and the parser that matters most
+(`parse_stop`) treats anything it does not recognise as unknown.
+
+We accept that a suite cannot vary model or permission mode per case, in
+exchange for both runners reading the same run-level configuration.
+
+## Open questions and risks
+
+Should `headless` gain a `--events ndjson` flag that writes `AgentEvent` to a
+file? That would let the CLI runner report the same typed fields as the host
+runner, and remove the stderr parsers entirely. It is the one change to product
+code this design would most benefit from, and it is deliberately out of scope
+here.
+
+Is a per-case failure-count increase the right regression policy? It is
+transparent and needs no threshold, but at one attempt a single flake is a
+regression. A calibrated tolerance could be added later, after a suite has
+enough runs to measure its noise. For now the absence of a numeric threshold
+flag is deliberate, and `--strict` stays a separate absolute gate rather than a
+flag on `compare`.
+
+The `Answer` grader is substring and regex only. An LLM judge needs calibration
+against a suite before it earns a place, and calibrating it against itself is
+circular. It belongs here after there is a suite with known-good verdicts.
+
+A run inherits the operator's `$HOME`: `~/.tact/config.toml`, `hooks.json`,
+`skills/`, the plugin cache, and the per-repository memory directory under
+`~/.tact/projects/`. Hooks and user memory can therefore change what a case
+does. The `--config` flag pins the model configuration but not the rest. A
+suite that must be hermetic needs `HOME` pointed at a scratch directory; this is
+documented rather than enforced, because doing it inside the harness would
+break the common case of a developer running their own suites locally.
+
+## Hardening pass (2026-11-18)
+
+A second pass closed the gaps a first run found, in priority order. Each is a
+decision worth keeping.
+
+**The case id is a name, not a path.** It becomes a directory under
+`$TMPDIR/tact-eval`, and the run deletes that directory, so `id = "../victim"`
+aimed the deletion at a directory the case does not own. `EvalCase::validate_shape`
+now refuses anything but a single path component, and `prepare_work_dir` reduces
+the id to one component anyway — the second is the guarantee, because a library
+caller can build an `EvalCase` without loading it. The reduction appends a short
+hash when it changed anything, so `a/b` and `a_b` keep separate directories and a
+leftover directory stays attributable.
+
+**A run that judged nothing is not a green run.** `run` used to exit 0 whether
+the suite passed or every attempt was a startup failure, so a missing binary or
+an expired key read as a successful suite. `EvalReport::decisive_attempts` counts
+attempts that reached a pass or a fail; zero of them exits 4 with a message
+naming the likely causes. `--strict` keeps its meaning, and a decisive failure
+still exits 0 without it.
+
+**`--json-out` creates its parent.** Every documented example writes
+`target/eval/...`, which a fresh checkout does not have. Failing there happened
+after the model run was already paid for. `--attempts 0` is now refused by clap
+rather than clamped to 1, because a report claiming one attempt when the caller
+asked for none is a lie about what ran.
+
+**Cost is compared, and moves no verdict.** `CaseOutcome` already recorded tokens
+and duration, and `compare` ignored both, so "pass rate unchanged, tokens
+doubled" was invisible. `CaseCost` (a median per case, summed per suite) now
+travels through `CaseSummary`, the report's table, and the comparison. It gates
+nothing: a numeric threshold needs a calibrated noise model, which this harness
+still does not claim to have.
+
+**Graders for what the agent did, not only what it left.** `json` reads a
+document by dotted path, because regex over structured output is brittle and
+unreadable when it fails. `tools` asserts on the calls by name — `tool`,
+`no_tool`, `first_tool`, `at_most` — which is the only way "use `read`, not
+`bash cat`" becomes a case. A record the runner could not attribute to a tool
+satisfies no assertion, and makes `no_tool`/`at_most` inconclusive rather than
+passing them: an unattributed call could be the one they forbid. The host
+runner narrows that gap by pairing `StepStarted` and `StepFailed` on the
+invocation id, so a failed call keeps the name it announced; the headless log
+still has to carry a name on the line itself.
+
+**A `--config`-only CLI run is comparable again.** The CLI runner never saw the
+settings its child resolved, so `model` was `null` and two runs of one config
+compared as `incomparable`. `tact::config::resolve_without_installing` applies
+the same resolution read-only, and the runner records what it resolves. It does
+not install, so a library caller's global settings are untouched.
+
+**`--filter ID`** runs a subset for iterating, and the subset fingerprints as the
+subset: comparing it against a full run is `incomparable`, not a regression. An
+unknown id is an error, because a typo that selects no cases looks exactly like a
+suite that passed everything at no cost.
+
+**A case can be a conversation.** `prompts` sends several turns to one session
+and grades where it ended up. A one-prompt case is the common case and stays
+spelled `prompt = "..."`; `prompt` became `Option<String>` and empty `prompts` is
+skipped at serialization, so the fingerprint of every existing case is byte for
+byte what it was. Without that, every recorded baseline would have become
+`incomparable` overnight for a change no suite made.
+
+`timeout_secs` is one budget for the whole case rather than one per turn: a
+three-turn case with a two-minute budget means two minutes of work, and giving
+each turn its own budget would make a conversation's cost grow with its length
+in a way the case file does not say.
+
+Both runners implement it the way their process model allows. The CLI runner
+spawns `tact-ui headless` once per turn, passes `--session` for every turn after
+the first, and sums the per-process turn counters, because each process restarts
+its own. The host runner loops `agent_loop_detailed` on one agent, so the
+context is literally the same object; one observer pump serves the whole case
+because the channel belongs to the agent, not to a turn.
+
+A turn that produced no answer ends the conversation. Sending the next prompt
+into a session whose last turn was empty would grade the wrong failure — the
+second turn's error instead of the first turn's empty answer.
+
+`report_meta.harness_version` is recorded for attribution and deliberately not a
+comparability condition: a version bump is usually the thing a nightly gate is
+measuring.
+
+## Next implementation step
+
+Record the first accepted baseline for a suite that exercises the tool set (not
+just answer text), now that `tools` and `json` graders can express it, then wire
+`tact-eval run` plus `tact-eval compare` into a nightly workflow with both
+reports uploaded as artifacts. Keep `--strict` for the small curated suites where
+"every attempt passed" is the contract.
+
+The regression suite now grows in stages, one capability per file prefix:
+`loop-` (history and recovery), `tool-` (selection and surgical edits), `mcp-`
+(project `.tact/.mcp.json`), `hook-` (unreviewed hooks stay pending),
+`subagent-`, `memory-`, and `compact-`. Each stage is data only — cases and
+fixtures — so a new capability is added without changing the harness. Two of
+them read process-global state that a case cannot vary: hook trust lives in
+`~/.tact/hooks-state.json`, and `auto_memory_directory` can move memory out of
+the work directory. The cases pin the defaults, and a hermetic run needs `HOME`
+pointed at a scratch directory.
+
+`compact-` is a wiring case, not summary-quality coverage: `RunArtifact` has no
+compaction field and the headless log prints no compaction line, so a no-op
+compaction looks the same as a correct one. Summary quality becomes testable
+only after the artifact carries the compaction outcome for both runners.

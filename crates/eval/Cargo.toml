@@ -1,0 +1,48 @@
+[package]
+name = "tact_eval"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Repeatable evaluation harness for the Tact agent"
+repository = "https://github.com/rust-infra/tact"
+
+[lib]
+name = "tact_eval"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tact-eval"
+path = "src/main.rs"
+
+[features]
+default = ["agent-run"]
+# The `run` verb: the host and CLI runners, and the config plumbing they share.
+# `validate` and `compare` read TOML and report JSON, so building without this
+# feature keeps the whole agent stack (`tact`, `tact_host`, `tact_llm` — and
+# their sqlite, TLS and provider clients) out of the binary.
+agent-run = ["dep:tact", "dep:tact_host", "dep:tact_llm"]
+
+[dependencies]
+tact = { version = "2.0.0", path = "../tact", optional = true }
+tact_host = { version = "2.0.0", path = "../tact_host", optional = true }
+tact_llm = { version = "2.0.0", path = "../tact_llm", default-features = false, features = ["legacy-tact"], optional = true }
+tact_protocol = { version = "2.0.0", path = "../protocol" }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true }
+libc = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true, features = ["fs", "io-util", "process", "sync", "time", "macros", "rt-multi-thread"] }
+toml = { workspace = true }
+uuid = { workspace = true }
+walkdir = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6"

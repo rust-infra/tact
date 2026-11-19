@@ -9,7 +9,9 @@ or tracing.
 | --- | --- | --- |
 | Stable call span | `crates/tact_llm/src/telemetry.rs` | provider, protocol, model, endpoint host, timing, usage counts, error class |
 | HTTP status classification | `crates/tact_llm/src/transport.rs` | status and `HttpErrorClass`; bounded body is dropped after classification |
-| Stable errors | `crates/tact_llm/src/builder.rs` | fixed category text from `ModelErrorKind` |
+| Stable errors | `crates/tact_llm/src/error.rs` | `LlmError::user_message`: HTTP status plus class, or a fixed sentence per variant; never a body, request URL, or header |
+| Stable error bound | `crates/tact_llm/src/builder.rs` | `bounded_line` flattens to one line and caps at 400 chars; it does not substitute a category label |
+| Endpoint in diagnostics | `crates/tact_llm/src/metadata.rs` | `endpoint_host` only — host and non-default port, never the path |
 | Compatibility HTTP errors | `crates/tact_llm/src/error.rs` | status, `HttpErrorClass`, retry delay |
 | Product request capture | `crates/agent_api/src/model.rs` | `request_body` is rendered as `<redacted>` |
 | Product usage capture | `crates/agent_api/src/usage.rs` | `request_body` is rendered as `<redacted>` |

@@ -1670,6 +1670,10 @@ baseline / effective-window 算法）</td>
 <td>Stub 阈值固定</td>
 <td>12 / 120 / 30k 是编译期常量</td>
 </tr>
+<tr>
+<td>无 compaction 专项评测</td>
+<td>现有 case 都是短会话，不会可靠触发 micro/full compaction；阈值、摘要质量、失败回退和前缀缓存影响没有 baseline。后续在<a href="./29_chapter_eval_zh.html">第 29 章</a>的套件中增加长上下文 case。</td>
+</tr>
 </tbody>
 </table>
 <h3 id="111-micro-compact-已知问题">11.1 Micro Compact 已知问题</h3>

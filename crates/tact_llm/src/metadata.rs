@@ -69,6 +69,26 @@ impl ProviderMetadata {
         &self.endpoint
     }
 
+    /// Authority of the configured endpoint: host, plus a non-default port.
+    ///
+    /// Deliberately not the whole URL. A self-hosted proxy commonly carries a
+    /// per-user path (`/v1/<key>/...`), so a diagnostic that echoed the path
+    /// would put a credential in a user-visible error. The host is what
+    /// distinguishes "my gateway" from "the vendor", which is the part a user
+    /// acts on.
+    pub fn endpoint_host(&self) -> String {
+        let Ok(url) = url::Url::parse(self.endpoint.as_str()) else {
+            return String::new();
+        };
+        let Some(host) = url.host_str() else {
+            return String::new();
+        };
+        match url.port() {
+            Some(port) => format!("{host}:{port}"),
+            None => host.to_string(),
+        }
+    }
+
     pub fn capabilities(&self) -> &ModelCapabilities {
         &self.capabilities
     }

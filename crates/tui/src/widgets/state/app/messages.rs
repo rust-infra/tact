@@ -238,8 +238,10 @@ impl App {
 
     /// Load persisted session messages into the Log area.
     /// Converts stored `Message` objects into display cells or lines.
-    /// Only `Text` blocks are rendered; `Thinking`, `ToolUse`, `ToolResult`,
-    /// and `Image` blocks are skipped.
+    /// Only `Text` blocks are rendered as cells; `Thinking`, `ToolUse`,
+    /// `ToolResult`, and `Image` blocks are skipped by the log. The trajectory
+    /// ledger restores those separately (`App::restore_trajectory`), from the
+    /// agent-shaped transcript that still carries each result's status.
     pub(crate) fn load_history(&mut self, messages: Vec<Message>) {
         for msg in messages {
             let blocks: Vec<&ContentBlock> = match &msg.content {

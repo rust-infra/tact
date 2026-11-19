@@ -58,6 +58,14 @@ def main() -> int:
             for dependency, spec in manifest.get(table, {}).items():
                 if not isinstance(spec, dict):
                     continue
+                # The eval harness depends on the product, never the reverse: a
+                # product crate that pulled it in would ship suite runners and
+                # graders inside the agent.
+                if dependency == "tact_eval" and name != "tact_eval":
+                    errors.append(
+                        f"{path.relative_to(ROOT)}: {table}.{dependency} makes a product "
+                        "crate depend on the eval harness"
+                    )
                 if "path" in spec and "version" not in spec:
                     errors.append(
                         f"{path.relative_to(ROOT)}: {table}.{dependency} has no version"

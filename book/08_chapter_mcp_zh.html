@@ -1976,6 +1976,10 @@ Tact 没有对应的轴</td>
 <td><code>mcp.json</code> 的值是字面量。凭据走
 <code>env_vars</code>——那是显式白名单，而不是模板引擎</td>
 </tr>
+<tr>
+<td><strong>无 MCP 评测场景</strong></td>
+<td>回归套件不启动 MCP server，也不断言工具发现、命名、调用和通知刷新；MCP 回归仍靠单元/集成测试。后续应加隔离 fixture server 与 tool-trace 判分。见<a href="./29_chapter_eval_zh.html">第 29 章</a>。</td>
+</tr>
 </tbody>
 </table>
 <hr />

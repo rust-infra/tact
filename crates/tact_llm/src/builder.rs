@@ -456,10 +456,19 @@ impl Provider {
         request: ModelRequest,
         cursor: Option<&ModelCursor>,
     ) -> Result<(CreateMessageParams, Option<ProviderConversationState>), ModelError> {
+        // Validation messages are Tact's own text and carry no provider
+        // payload, so they name the actual mismatch: these are the failures a
+        // user can fix (wrong model, a stale cursor), and a category label
+        // would leave them with nothing to change.
         if request.model != self.inner.metadata.model() {
             return Err(ModelError::new(
                 ModelErrorKind::Permanent,
-                "request model does not match the built provider model",
+                format!(
+                    "request model '{}' does not match the provider's configured model '{}'; \
+                     switch the model (/model) or rebuild the provider",
+                    request.model,
+                    self.inner.metadata.model()
+                ),
             ));
         }
         if request.max_output_tokens == 0
@@ -467,19 +476,24 @@ impl Provider {
         {
             return Err(ModelError::new(
                 ModelErrorKind::Permanent,
-                "request max_output_tokens is outside the built limit",
+                format!(
+                    "request max_output_tokens {} is outside the provider limit (1..={}); \
+                     lower max_tokens or raise limits.max_output_tokens",
+                    request.max_output_tokens,
+                    self.inner.spec.limits.max_output_tokens()
+                ),
             ));
         }
-        if self
-            .inner
-            .metadata
-            .capabilities()
-            .known_context_window()
-            .is_some_and(|window| request.max_output_tokens as usize >= window)
+        if let Some(window) = self.inner.metadata.capabilities().known_context_window()
+            && request.max_output_tokens as usize >= window
         {
             return Err(ModelError::new(
                 ModelErrorKind::Permanent,
-                "request max_output_tokens exceeds the known context window",
+                format!(
+                    "request max_output_tokens {} does not fit the provider's {window} token \
+                     context window; lower max_tokens or choose a larger-context model",
+                    request.max_output_tokens
+                ),
             ));
         }
         let state = match (self.inner.metadata.protocol(), cursor) {
@@ -489,19 +503,28 @@ impl Provider {
                 if inner.provider != "openai_responses" {
                     return Err(ModelError::new(
                         ModelErrorKind::Permanent,
-                        "cursor provider does not match the Responses protocol",
+                        "the saved conversation state belongs to a different protocol; \
+                         start a new session",
                     ));
                 }
                 let endpoint = Endpoint::parse(&inner.base_url).map_err(|error| {
                     ModelError::new(
                         ModelErrorKind::Permanent,
-                        format!("invalid provider cursor endpoint: {error}"),
+                        format!(
+                            "the saved conversation state carries an unparsable endpoint \
+                             ({error}); start a new session"
+                        ),
                     )
                 })?;
                 if endpoint != *self.inner.metadata.endpoint() {
                     return Err(ModelError::new(
                         ModelErrorKind::Permanent,
-                        "cursor endpoint does not match the built provider",
+                        format!(
+                            "the saved conversation state belongs to {}, but this provider \
+                             points at {}; start a new session or switch base_url back",
+                            endpoint.as_str(),
+                            self.inner.metadata.endpoint().as_str()
+                        ),
                     ));
                 }
                 Some(state)
@@ -510,7 +533,8 @@ impl Provider {
             (_, Some(_)) => {
                 return Err(ModelError::new(
                     ModelErrorKind::Permanent,
-                    "this provider does not accept a provider cursor",
+                    "this provider protocol does not accept saved conversation state; \
+                     start a new session",
                 ));
             }
             (_, None) => None,
@@ -523,17 +547,35 @@ impl Provider {
         response.request_body = None;
     }
 
-    fn stable_error(mut error: ModelError) -> ModelError {
-        error.message = match error.kind {
-            ModelErrorKind::ContextOverflow => "model context overflow",
-            ModelErrorKind::Transient => "provider temporarily unavailable",
-            ModelErrorKind::Permanent => "provider request failed",
-            ModelErrorKind::Cancelled => "model call cancelled",
-            ModelErrorKind::Unsupported => "provider operation unsupported",
-        }
-        .to_string();
+    /// Bound and flatten a message on its way to a host.
+    ///
+    /// The message is already body-free by construction: it comes from
+    /// [`tact_llm::LlmError::user_message`] or from this crate's own
+    /// validation. This therefore does not substitute a category label —
+    /// doing that is what turned every permanent failure into the same
+    /// "provider request failed" line, which told a user nothing and left
+    /// nothing to act on. It only guarantees the value is a single bounded
+    /// line, so a caller cannot be handed an unbounded or multi-line blob.
+    fn stable_error(error: ModelError) -> ModelError {
+        let mut error = error;
+        error.message = bounded_line(&error.message);
         error
     }
+}
+
+/// Collapse whitespace (including newlines) and cap the length.
+///
+/// A provider body is never the input anymore, but a host may still log this
+/// line, so it must not be able to smuggle in a block of text.
+fn bounded_line(message: &str) -> String {
+    const MAX_CHARS: usize = 400;
+    let collapsed = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() <= MAX_CHARS {
+        return collapsed;
+    }
+    let mut truncated: String = collapsed.chars().take(MAX_CHARS).collect();
+    truncated.push('…');
+    truncated
 }
 
 /// Records an abandoned live stream, so a dispatched call that never reaches
@@ -837,6 +879,54 @@ mod telemetry_tests {
             }],
             Some(StopReason::EndTurn),
         )
+    }
+
+    /// A user-facing message must survive the trip through the stable layer
+    /// with its provider diagnostics intact, and without the request URL.
+    #[cfg(feature = "openai-chat")]
+    #[tokio::test]
+    async fn a_provider_http_failure_names_the_status_but_not_the_url() {
+        let provider = provider(MockClient::with_responder(|_request, _index| {
+            Err(crate::error::LlmError::HttpError {
+                status: 401,
+                class: crate::error::HttpErrorClass::Authentication,
+                retry_after: None,
+            })
+        }));
+        let error = provider
+            .complete(request(), None, CancelToken::new())
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind, ModelErrorKind::Authentication);
+        assert!(!error.is_retryable());
+        assert!(error.message.contains("401"), "{}", error.message);
+        assert!(
+            error.message.contains("authentication"),
+            "{}",
+            error.message
+        );
+        assert!(!error.message.contains("http://"), "{}", error.message);
+        assert!(!error.message.contains("https://"), "{}", error.message);
+    }
+
+    /// The regression this change exists for: every permanent failure used to
+    /// reach the host as the same five words.
+    #[cfg(feature = "openai-chat")]
+    #[tokio::test]
+    async fn a_permanent_failure_is_not_flattened_to_one_boilerplate_line() {
+        let provider = provider(MockClient::with_responder(|_request, _index| {
+            Err(crate::error::LlmError::HttpError {
+                status: 400,
+                class: crate::error::HttpErrorClass::Permanent,
+                retry_after: None,
+            })
+        }));
+        let error = provider
+            .complete(request(), None, CancelToken::new())
+            .await
+            .unwrap_err();
+        assert_ne!(error.message, "provider request failed");
+        assert!(error.message.contains("400"), "{}", error.message);
     }
 
     fn request() -> ModelRequest {
@@ -1250,6 +1340,10 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.kind, ModelErrorKind::Permanent);
+        // A validation failure is Tact's own text and names the actual fix, so
+        // the caller is not handed a category label with nothing to act on.
+        assert!(error.message.contains("/model"), "{}", error.message);
+        assert!(error.message.contains("other"), "{}", error.message);
     }
 
     #[cfg(feature = "anthropic")]

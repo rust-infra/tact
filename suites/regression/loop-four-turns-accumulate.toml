@@ -1,0 +1,40 @@
+# One conversation, four turns, each editing the state the last one left.
+# A loop that loses the workspace or the turn boundary produces the wrong file.
+# This does not prove history survives: every prompt can be answered from
+# ledger.txt. `loop-session-memory` is the case that pins conversation memory.
+prompts = [
+  """
+Create a file named ledger.txt in the current directory.
+Its only line must be: 1
+""",
+  """
+Append one line to ledger.txt. The new line must be: 2
+""",
+  """
+Append one line to ledger.txt. The new line must be: 3
+""",
+  """
+Read ledger.txt and reply with its lines in order, separated by spaces.
+""",
+]
+timeout_secs = 300
+
+[[graders]]
+kind = "files"
+name = "three-lines-in-order"
+
+[[graders.assertions]]
+kind = "matches"
+path = "ledger.txt"
+pattern = "^1\\n2\\n3\\n?$"
+
+[[graders]]
+kind = "answer"
+name = "reported-all-three"
+
+[[graders.assertions]]
+kind = "matches"
+pattern = "(?s)1.*2.*3"
+
+[[graders.assertions]]
+kind = "non_empty"

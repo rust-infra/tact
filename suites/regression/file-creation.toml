@@ -1,0 +1,23 @@
+prompt = """
+Create a file named hello.txt in the current directory.
+Write exactly this content: hello regression
+"""
+timeout_secs = 120
+
+[[graders]]
+kind = "files"
+name = "file-creation"
+
+[[graders.assertions]]
+kind = "exists"
+path = "hello.txt"
+
+[[graders.assertions]]
+kind = "contains"
+path = "hello.txt"
+text = "hello regression"
+
+[[graders.assertions]]
+kind = "matches"
+path = "hello.txt"
+pattern = "^hello regression\\s*$"

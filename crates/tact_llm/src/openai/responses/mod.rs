@@ -809,10 +809,11 @@ impl LlmClient for OpenAiResponsesAdapter {
         if let Some(key) = key {
             http_request = http_request.header(AUTHORIZATION, format!("Bearer {key}"));
         }
-        let response = http_request
-            .send()
-            .await
-            .map_err(|error| LlmError::Unsupported(format!("HTTP request failed: {error}")))?;
+        let response = http_request.send().await.map_err(|_| {
+            LlmError::Unsupported(
+                "HTTP request to POST /responses/compact failed (connection error)".into(),
+            )
+        })?;
         let status = response.status();
         // Compatible endpoints (e.g. custom OpenAI-compatible proxies) often
         // do not implement POST /responses/compact at all and answer 404
@@ -823,8 +824,7 @@ impl LlmClient for OpenAiResponsesAdapter {
         {
             return Err(LlmError::Unsupported(format!(
                 "endpoint does not support POST /responses/compact (HTTP {status}): \
-                 native Responses compaction is not implemented by base URL {}",
-                self.base_url
+                 native Responses compaction is not implemented by this endpoint"
             )));
         }
         if !status.is_success() {
@@ -837,10 +837,11 @@ impl LlmClient for OpenAiResponsesAdapter {
                 retry_after,
             });
         }
-        let body_bytes = response
-            .bytes()
-            .await
-            .map_err(|error| LlmError::Unsupported(format!("HTTP request failed: {error}")))?;
+        let body_bytes = response.bytes().await.map_err(|_| {
+            LlmError::Unsupported(
+                "HTTP request to POST /responses/compact failed (connection error)".into(),
+            )
+        })?;
         let resource: Value = serde_json::from_slice(&body_bytes).map_err(LlmError::from)?;
         let parsed = parse_compact_resource(resource)?;
         let state = ResponsesConversationState {
