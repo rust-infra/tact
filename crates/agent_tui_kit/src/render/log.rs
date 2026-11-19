@@ -98,6 +98,11 @@ pub enum OpenTarget {
     ToolRun {
         run_id: String,
     },
+    /// A folded activity region's summary row (thinking cards + tool calls).
+    /// Activating it toggles that region instead of opening a popup.
+    ActivityRegion {
+        region_id: String,
+    },
 }
 
 impl OpenTarget {
@@ -126,6 +131,13 @@ impl OpenTarget {
     pub fn tool_run(run_id: impl Into<String>) -> Self {
         Self::ToolRun {
             run_id: run_id.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn activity_region(region_id: impl Into<String>) -> Self {
+        Self::ActivityRegion {
+            region_id: region_id.into(),
         }
     }
 }
@@ -276,6 +288,35 @@ pub fn render_log_panel_pure(
             prev_category = Some(category);
         }
 
+        // A folded activity region paints one summary row where its first
+        // member sat, and its other rows are not in `visible_indices` at all.
+        // Checked before the tool run because a region that starts with a
+        // thinking card owns that row; a tool-only run never starts at a card.
+        if let Some(phys) = phys_idx
+            && let Some(cell) = ctx.tools.region_fold_summary(
+                ctx.thinking,
+                phys,
+                |phys: usize| ctx.turn_boundary_rows.contains(&phys),
+                ctx.theme,
+                &ctx.messages,
+            )
+        {
+            let identity = cell.identity().to_string();
+            if let Some((cell_area, _skip)) = renderer.cell_slice(
+                vs_cache[logical_i],
+                cell.height(inner.width) as usize,
+                inner,
+            ) {
+                open_actions.push(OpenAction::new(
+                    OpenTarget::activity_region(identity),
+                    cell_area,
+                ));
+            }
+            renderer.push(vs_cache[logical_i], cell);
+            logical_i += 1;
+            continue;
+        }
+
         // A folded run paints one summary row where its first member sat. Its
         // other rows are not in `visible_indices` at all, so they never reach
         // this loop.
@@ -423,7 +464,17 @@ pub fn render_log_panel_pure(
                     msgs,
                 )
                 .with_subagent_cancel(cancel_child_id.is_some())
-                .with_run_expanded_head(ctx.tools.expanded_run_head_at(phys_idx).is_some());
+                .with_run_expanded_head(
+                    ctx.tools.expanded_run_head_at(phys_idx).is_some()
+                        || ctx
+                            .tools
+                            .expanded_region_head_at(
+                                ctx.thinking,
+                                |phys: usize| ctx.turn_boundary_rows.contains(&phys),
+                                phys_idx,
+                            )
+                            .is_some(),
+                );
                 if let Some((cell_area, skip_lines)) =
                     renderer.cell_slice(vis_start, card_cell.height(inner.width) as usize, inner)
                 {
@@ -432,7 +483,21 @@ pub fn render_log_panel_pure(
                     // run was folded, so the same place on screen folds and
                     // unfolds. Registered only when the title row is actually
                     // drawn — a clipped head has no control to hit.
-                    if let Some(run_id) = ctx.tools.expanded_run_head_at(phys_idx)
+                    // An expanded fold's control is its first member's title
+                    // row: that is where the summary sat, so the same place on
+                    // screen folds and unfolds. A mixed region wins when both
+                    // start here, matching `first_fold_in_view`.
+                    if let Some(region_id) = ctx.tools.expanded_region_head_at(
+                        ctx.thinking,
+                        |phys: usize| ctx.turn_boundary_rows.contains(&phys),
+                        phys_idx,
+                    ) && let Some(rect) = card_cell.run_toggle_rect(cell_area, skip_lines)
+                    {
+                        open_actions.push(OpenAction::new(
+                            OpenTarget::activity_region(region_id),
+                            rect,
+                        ));
+                    } else if let Some(run_id) = ctx.tools.expanded_run_head_at(phys_idx)
                         && let Some(rect) = card_cell.run_toggle_rect(cell_area, skip_lines)
                     {
                         open_actions.push(OpenAction::new(OpenTarget::tool_run(run_id), rect));

@@ -2227,8 +2227,31 @@ viewport 钉在底部（render 中 clamp）。</p>
 <h3 id="614-可见性规则">6.14 可见性规则</h3>
 <p>Thinking、tool 与 code placeholder 行在 Phase 0 各自可见，使
 logical-to-physical 映射稳定。Phase 3 用单个 direct cell 替换 thinking
-或 tool 的 placeholder 范围；code 仍使用 overlay。Thinking 没有隐藏
-source 行，也没有 <code>is_message_visible</code> 折叠规则。</p>
+或 tool 的 placeholder 范围；code 仍使用 overlay。Thinking 自身没有
+隐藏 source 行，但它的 placeholder 行可以被外层折叠单位藏起来——
+见下面的活动区。</p>
+<p><strong>两级折叠单位。</strong> 相邻且已结束的 tool 调用合成一个
+<em>tool run</em>（<code>tool_group::runs</code>），摘要按工具名计数量：
+<code>3 tools · 📖 Read ×2 · $ Bash · 1.2s</code>。相邻的 <em>thinking 卡 +
+tool 块</em>合成一个更大的 <em>活动区</em>
+（<code>activity_region::regions</code>），摘要同时计两半：
+<code>1 thought · 2 tools · 1 failed · Read ×2 · 0.9s</code>。</p>
+<p>只有「同时含卡和调用」的区域走活动区折叠；纯 tool 区域仍交给
+<code>tool_group</code>，因为只有那份摘要会点名每个调用。两者默认都折叠，
+失败会计数并以 error 色绘制摘要行（<code>⚠</code>），所以折叠不会让错误更安静。
+折叠态以区域首个成员的 <code>block_id</code>/<code>tool_id</code> 为 key，
+不用 <code>phys_idx</code>；读者的显式选择存在
+<code>ToolState::folded_regions</code> / <code>unfolded_regions</code> 里，
+与 tool run 的 key 空间分开。<code>z</code> 取视口内第一个可折叠单位，
+混合区域优先于同起点的 tool run。</p>
+<p>展开区域只把成员行还给它们；区域里的调用仍是自己的 tool run，因此保留
+run 的摘要——区域回答「这一轮有多少工作」，run 回答「跑了哪些调用」。</p>
+<p>摘要的每个词都来自 <code>Messages</code>（<code>fold_tools</code> /
+<code>fold_tools_one</code> / <code>fold_failed</code> / <code>fold_thoughts</code> /
+<code>fold_thoughts_one</code> / <code>fold_sep</code> / <code>fold_repeat</code>），
+<code>/lang</code> 当场重写整行：英文 <code>1 tool</code> / <code>3 tools</code>，
+中文 <code>1 个工具</code> / <code>3 个工具</code>。工具标签与 <code>×</code>
+不翻译，但计数在标签哪一侧由模板决定。</p>
 <p><code>total_log_lines()</code> 跳过不可见 physical 索引，使 logical
 编号与用户所见对齐。</p>
 <h3 id="615-wrapscroll-与自动跟随">6.15 Wrap、scroll 与自动跟随</h3>

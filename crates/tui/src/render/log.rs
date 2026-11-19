@@ -66,8 +66,12 @@ pub(crate) fn render_log_panel_with_borders(
     // Fold decisions are copied out before `log_scroll` is borrowed mutably:
     // the two live in different fields of `App`, and the renderer cannot read
     // one while holding a `&mut` to the other.
-    let fold =
-        crate::render::fold::FoldLayout::capture(&app.tools().state().blocks, app.tools().state());
+    let fold = crate::render::fold::FoldLayout::capture(
+        &app.tools().state().blocks,
+        app.thinking().state(),
+        app.tools().state(),
+        |phys| app.log_scroll.turn_boundary_rows.contains(&phys),
+    );
     prepare_log_frame(
         &mut app.log_scroll,
         &app.log,
@@ -149,6 +153,15 @@ fn prepare_log_frame(
     let indices_stale = log_scroll.visible_indices_ver != log.items.len()
         || log_scroll.visible_indices_fold_rev != fold.rev;
     if indices_stale {
+        // The fold rules ask this once per row per frame; scanning `raw` for the
+        // turn separator each time would cost more than the rebuild.
+        log_scroll.turn_boundary_rows = (0..log.items.len())
+            .filter(|&phys| {
+                let item = &log.items[phys];
+                super::cells::separator::is_task_end_separator(&item.raw)
+                    || (item.raw.is_empty() && item.kind.is_user())
+            })
+            .collect();
         log_scroll.visible_indices.clear();
         log_scroll.phys_to_logical_cache.clear();
         log_scroll
@@ -313,11 +326,14 @@ fn prepare_log_frame(
             // matches what will be drawn.
             let wrapped_rows = wrapped.len();
             if let Some(&phys_idx) = log_scroll.visible_indices.get(logical_i)
-                && let Some(run) = fold.folded_run_at(phys_idx)
+                && let Some(rows) = fold.folded_rows_at(phys_idx)
             {
+                // A folded fold — a tool run or a mixed activity region — is one
+                // logical row whose summary cell paints over it. Reserving its
+                // height here keeps the prefix sum matching what will be drawn.
                 log_scroll
                     .visual_cache
-                    .extend(std::iter::repeat_n(Line::default(), run.folded_rows));
+                    .extend(std::iter::repeat_n(Line::default(), rows));
             } else {
                 let _ = wrapped_rows;
                 log_scroll.visual_cache.extend(wrapped);

@@ -175,6 +175,9 @@ impl App {
             mermaid_blocks: &self.mermaid_blocks,
             tools: self.tools().state(),
             thinking: self.thinking().state(),
+            // The log owns the turn boundaries; the kit only asks. Rebuilt
+            // with `visible_indices` in `prepare_log_frame`.
+            turn_boundary_rows: &self.log_scroll.turn_boundary_rows,
             stream: self.stream().state(),
             mouse: &self.mouse,
             skills_data: &self.skills_data,

@@ -375,6 +375,7 @@
 </div>
 <div class="toc-group">
 <ol class="toc-list">
+<li class="toc-l2"><a href="#2026-11-19--tui-thinking-%E4%B8%8E%E7%9B%B8%E9%82%BB-tool-%E5%90%88%E6%88%90%E4%B8%80%E4%B8%AA%E6%B4%BB%E5%8A%A8%E5%8C%BA%E6%8A%98%E5%8F%A0" title="2026-11-19 — TUI：thinking 与相邻 tool 合成一个活动区折叠"><span class="toc-label">2026-11-19 — TUI：thinking 与相邻 tool 合成一个活动区折叠</span></a></li>
 <li class="toc-l2"><a href="#2026-11-14--%E5%AD%90%E4%BB%A3%E7%90%86%E5%AE%9E%E6%97%B6%E8%BE%93%E5%87%BA%E5%8D%A1%E7%89%87%E7%9A%84%E9%A1%B5%E8%84%9A%E7%82%B9%E4%B8%8D%E5%8A%A8" title="2026-11-14 — 子代理实时输出卡片的页脚点不动"><span class="toc-label">2026-11-14 — 子代理实时输出卡片的页脚点不动</span></a></li>
 <li class="toc-l2"><a href="#2026-11-13--trajectory-%E5%9C%A8%E9%87%8D%E5%90%AF%E5%90%8E%E4%BB%8E%E4%BC%9A%E8%AF%9D%E8%AE%B0%E5%BD%95%E9%87%8D%E5%BB%BA" title="2026-11-13 — Trajectory 在重启后从会话记录重建"><span class="toc-label">2026-11-13 — Trajectory 在重启后从会话记录重建</span></a></li>
 <li class="toc-l2"><a href="#2026-11-13--trajectory-%E9%A1%B5%E6%94%AF%E6%8C%81%E9%BC%A0%E6%A0%87%E6%BB%9A%E8%BD%AE" title="2026-11-13 — Trajectory 页支持鼠标滚轮"><span class="toc-label">2026-11-13 — Trajectory 页支持鼠标滚轮</span></a></li>
@@ -827,6 +828,71 @@ bugfix日志</strong>，记录有用户可见或 API
 <a href="../ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> 和对应章节，
 更早的设计与实施记录保存在 Git 历史中。正文中出现的旧 spec / plan
 文件名只用于标识当时的修订，文件本身已删除。</p>
+<h2 id="2026-11-19--tui-thinking-与相邻-tool-合成一个活动区折叠">2026-11-19 — TUI：thinking 与相邻 tool 合成一个活动区折叠</h2>
+<p><strong>现象：</strong> 一轮「想一会儿 → 跑三条命令」在 TUI 里占两行摘要：
+<code>🧠 已思考 · ⏱ 1.5s | 12 行 · [打开]</code>，下面紧跟
+<code>⏵ 3 tools · Read ×2 · Bash · 1.2s</code>。两行说的是同一段工作，桌面端却早就
+把它们折成一条 <code>1 thought · 3 tools · …</code>。终端侧的折叠单位只有 tool
+run，thinking 卡永远自成一行。</p>
+<p><strong>根因：</strong><code>tool_group::runs</code> 的签名只吃
+<code>&amp;[ToolBlock]</code>，thinking 根本不可能成为成员；相邻判定是「后一块的
+<code>phys_idx</code> 等于前一块的 <code>phys_idx + visual_rows</code>」，thinking
+卡占着 placeholder 行，于是它必然把 run 切断——源码注释也是这么写的。两套状态
+（<code>ThinkingState</code> / <code>ToolState</code>）各有自己的折叠集合，
+<code>z</code> 只认 run，<code>t</code>/<code>[打开]</code> 只认卡。</p>
+<p><strong>决策：</strong> 新增第二级折叠单位——<em>活动区</em>
+（<code>state/activity_region.rs</code>）：一段连续的 thinking 卡 + tool 块，
+相邻规则与 run 完全一致（空行或别的块类型即断开）。只有「同时含卡和调用」的区域
+走这条路径；纯 tool 区域仍交给 <code>tool_group</code>，因为只有那份摘要会点名
+每个调用，区域只报 <code>N tools</code> 会丢掉唯一说清「跑了什么」的地方。
+摘要两半都计数（<code>1 thought · 2 tools · 1 failed · Read ×2 · 0.9s</code>），
+失败仍会计数并以 error 色 + <code>⚠</code> 绘制。</p>
+<p><strong>轮次边界：</strong> 相邻只是必要条件，不是充分条件——一个区域不能跨轮。
+日志里只有两处轮次证据：<code>TaskComplete</code> 追加的分隔行，以及用户消息开头
+的空行。两者都占独立物理行，本就断开相邻；但区域规则读的是行、不是轮次，于是把
+边界显式化：<code>prepare_log_frame</code> 把这两类行收进
+<code>LogScroll::turn_boundary_rows</code>，<code>regions_bounded</code> 在任意两个
+相邻候选成员之间遇到边界行就断开。没有这一步，两轮恰好落在相接行上的成员会被并成
+一条摘要——分隔行因此是结构性保证，而不是行距的巧合。</p>
+<p><strong>改后行为：</strong> 一轮带推理的调用只占一行摘要。默认折叠；读者
+<code>z</code>、点摘要行或点展开态首成员的标题行都能切换。折叠 key 取区域首个成员的
+<code>block_id</code>/<code>tool_id</code>，与 tool run 的 key 空间分开
+（<code>ToolState::folded_regions</code> / <code>unfolded_regions</code>）。
+展开区域只归还成员行；区域内的调用仍是自己的 tool run，保留 run 的摘要——区域
+回答「这一轮有多少工作」，run 回答「跑了哪些调用」。<code>z</code> 取视口内第一个
+可折叠单位，混合区域优先于同起点的 run。</p>
+<p><strong>多语言：</strong> 摘要里的每个词都走 <code>Messages</code>
+（<code>fold_tools</code> / <code>fold_tools_one</code> / <code>fold_failed</code>
+/ <code>fold_thoughts</code> / <code>fold_thoughts_one</code> /
+<code>fold_sep</code> / <code>fold_repeat</code>），<code>/lang</code> 当场重写整行。
+拆成多个 key 而不是一个整模板，是因为每块都有自己的单复数与语序：中文不区分复数，
+<code>1 个工具</code> 与 <code>3 个工具</code> 共用模板，英文要 <code>1 tool</code> /
+<code>3 tools</code>；工具标签与 <code>×</code> 字形不翻译（它们指认调用本身），
+但计数落在标签哪一侧是语言问题，所以 <code>fold_repeat</code> 同时持有两者：
+<code>"{} ×{}"</code>。<code>ToolRunCell</code> 与
+<code>ActivityRegionCell</code> 各持一份 <code>Messages</code>（该类型是
+<code>Copy</code>），摘要在建 cell 时按当前语言合成。</p>
+<p><strong>验证：</strong> <code>activity_region</code> 单测覆盖相邻、空行断开、
+live 不可折、纯 tool 区域让位、默认折叠与读者覆盖、摘要两半计数；
+<code>render::fold</code> 覆盖区域隐身行与只占一行；
+<code>the_summary_follows_the_locale</code> 钉住中英两版摘要的字面，
+<code>a_folded_region_summary_follows_the_language</code> 与
+<code>a_folded_tool_run_summary_follows_the_language</code> 在真实帧里验证
+<code>/lang</code> 后区域与 run 都改口；
+<code>adjacency_alone_does_not_fuse_two_turns</code> 断言「无边界则合并、有边界则
+分开」两侧，<code>two_turns_never_fold_into_one_summary</code> 用真实两轮
+（含 <code>TaskComplete</code>）确认边界集合被填充且分成两个区域；<code>tool_fold_tests</code>
+新增「想法+两次读折成一行」「展开恢复卡片与各自 run」「失败保留 ⚠」。原有
+<code>z</code>、点击展开头、跨卡拖选等用例先展开区域再断言。全量：
+<code>cargo test -p tui --lib</code> 835 通过，<code>-p agent_tui_kit</code> 545 通过，
+<code>scripts/check-rust.sh</code> 全绿。</p>
+<p><strong>Pointers：</strong>
+<code>crates/agent_tui_kit/src/state/activity_region.rs</code>、
+<code>crates/agent_tui_kit/src/render/cells/activity_region.rs</code>、
+<code>crates/agent_tui_kit/src/state/tool_group.rs</code>（<code>region_fold_summary</code>）、
+<code>crates/tui/src/render/fold.rs</code>、
+<code>crates/tui/src/widgets/state/app/visibility.rs</code>（<code>first_fold_in_view</code>、
+<code>toggle_region</code>）、<code>docs/tui_rendering.md</code> §6.6.1。</p>
 <h2 id="2026-11-14--子代理实时输出卡片的页脚点不动">2026-11-14 — 子代理实时输出卡片的页脚点不动</h2>
 <p><strong>现象：</strong> 子代理正在跑时，卡片页脚写着
 <code>Click for buffered output</code>，但点它没反应；只有点最左边几个字符才会进视图。</p>

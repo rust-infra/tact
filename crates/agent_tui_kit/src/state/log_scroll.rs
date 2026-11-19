@@ -64,6 +64,13 @@ pub struct LogScroll {
     /// this cache — a toggle would leave the old mapping and paint a stale
     /// frame.
     pub visible_indices_fold_rev: u64,
+    /// Physical rows that end a turn, rebuilt with the same invalidation key as
+    /// [`Self::visible_indices`].
+    ///
+    /// The fold rules need this to keep two turns out of one summary, and they
+    /// are asked once per row per frame, so the answer is computed when the log
+    /// changes rather than scanned out of `LogItem::raw` each time.
+    pub turn_boundary_rows: std::collections::BTreeSet<usize>,
     /// Visible index cache: logical line → physical msg index.
     pub visible_indices: Vec<usize>,
     /// physical → logical reverse mapping cache (uses Option for invisible lines).
@@ -80,6 +87,7 @@ impl LogScroll {
             state: ScrollbarState::new(0),
             height: 10,
             width: 80,
+            turn_boundary_rows: std::collections::BTreeSet::new(),
             visible_indices: Vec::new(),
             visual_start: Vec::new(),
             visual_cache: Vec::new(),
