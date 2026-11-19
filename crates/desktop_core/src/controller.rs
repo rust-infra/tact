@@ -2162,6 +2162,12 @@ impl DesktopActor {
                 let _ = self.config.save();
                 self.publish(false);
             }
+            // The desktop transcript always folds narration (ProcessGroup), so
+            // the TUI-only switch is accepted and does nothing here rather than
+            // silently dropping the verb.
+            CommandId::Builtin(tact_catalog::BuiltinCommand::FoldCommentary) => {
+                self.publish(false);
+            }
             CommandId::Builtin(tact_catalog::BuiltinCommand::ModelSubagent) => {
                 let _ = self
                     .events

@@ -30,6 +30,8 @@ use crate::{
 pub struct ActivityRegionCell {
     /// How many thinking cards the region holds.
     thoughts: usize,
+    /// How many narration runs the region swallowed. Read by `summary_line`.
+    notes: usize,
     /// Each tool member's phase and title, in display order.
     members: Vec<(ToolPhase, String)>,
     /// Rows the region occupies when every member draws itself.
@@ -56,9 +58,15 @@ impl ActivityRegionCell {
     /// as the region's tool members; `thoughts` is the card count;
     /// `elapsed` is the region's wall clock
     /// ([`activity_region::total_span`]).
+    ///
+    /// `thoughts` and `notes` are the two non-tool halves of the summary; the
+    /// tool half comes from `region` plus `titles`. The argument count is one
+    /// over the lint's limit and bundling them would only hide the same count.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         region: &ActivityRegion,
         thoughts: usize,
+        notes: usize,
         titles: Vec<(ToolPhase, String)>,
         elapsed: Option<std::time::Duration>,
         folded: bool,
@@ -67,6 +75,7 @@ impl ActivityRegionCell {
     ) -> Self {
         Self {
             thoughts,
+            notes,
             members: titles,
             expanded_rows: region.expanded_rows,
             folded_rows: region.folded_rows,
@@ -94,7 +103,13 @@ impl ActivityRegionCell {
             .iter()
             .map(|(phase, title)| (*phase, title.as_str()))
             .collect();
-        let summary = activity_region::summarize(self.thoughts, &titles, self.elapsed, &self.msgs);
+        let summary = activity_region::summarize_with_commentary(
+            self.thoughts,
+            self.notes,
+            &titles,
+            self.elapsed,
+            &self.msgs,
+        );
         // A failure keeps its colour after folding: `⚠` plus the error hue is
         // what tells the reader one of these calls went wrong without making
         // them count the labels.
@@ -198,6 +213,7 @@ mod tests {
         ActivityRegionCell::new(
             &region,
             1,
+            0,
             titles,
             Some(std::time::Duration::from_millis(1_200)),
             folded,
@@ -240,6 +256,7 @@ mod tests {
         let cell = ActivityRegionCell::new(
             &region,
             1,
+            0,
             vec![(ToolPhase::Failed, "1. $ Bash  false".to_string())],
             None,
             true,

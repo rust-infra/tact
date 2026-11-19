@@ -113,6 +113,49 @@ impl App {
         self.add_system_message(template.replace("{}", outcome));
     }
 
+    /// Flip whether mid-turn narration folds into the activity region, and say
+    /// so — `/fold-commentary`.
+    ///
+    /// Same shape as [`Self::toggle_hook_output`]: a boolean has no list to
+    /// pick from, so the one message carries both halves. The rows already in
+    /// the log are left alone — the fold reads the log fresh each frame, so a
+    /// flip *is* visible in them, without a rewind.
+    pub(crate) fn toggle_fold_commentary(&mut self) {
+        self.fold_commentary = !self.fold_commentary;
+        self.persist_fold_commentary_choice(self.fold_commentary);
+    }
+
+    /// Report the new state and the write — the same contract as
+    /// [`Self::persist_hook_output_choice`].
+    fn persist_fold_commentary_choice(&mut self, enabled: bool) {
+        let msgs = self.msgs();
+        let outcome = if !self.ui_config_available() {
+            msgs.fold_commentary_session_only
+        } else {
+            match tact::config::persist_fold_commentary(enabled) {
+                Ok(()) => msgs.fold_commentary_persisted,
+                Err(error) => {
+                    let message = msgs
+                        .fold_commentary_persist_failed_tmpl
+                        .replace("{}", &error.to_string());
+                    self.add_system_message(message);
+                    return;
+                }
+            }
+        };
+        let template = if enabled {
+            msgs.fold_commentary_folded_tmpl
+        } else {
+            msgs.fold_commentary_open_tmpl
+        };
+        self.add_system_message(template.replace("{}", outcome));
+    }
+
+    /// Adopt the configured `[ui] fold_commentary` at startup.
+    pub(crate) fn set_fold_commentary(&mut self, enabled: bool) {
+        self.fold_commentary = enabled;
+    }
+
     /// Adopt the configured `[ui] hook_output` at startup.
     pub(crate) fn set_hook_output(&mut self, enabled: bool) {
         self.hook_output = enabled;
@@ -178,6 +221,8 @@ impl App {
             // The log owns the turn boundaries; the kit only asks. Rebuilt
             // with `visible_indices` in `prepare_log_frame`.
             turn_boundary_rows: &self.log_scroll.turn_boundary_rows,
+            commentary_runs: &self.log_scroll.commentary_runs,
+            runs_covered_by_region: &self.log_scroll.runs_covered_by_region,
             stream: self.stream().state(),
             mouse: &self.mouse,
             skills_data: &self.skills_data,

@@ -623,6 +623,7 @@ fn thinking_popup_scroll_shows_later_lines() {
         summary: "reason-12".into(),
         cached_markdown: markdown,
         elapsed: Duration::from_millis(5),
+        span: None,
     });
     app.thinking_mut().popup = Some(ThinkingPopup {
         block_id: "test-thinking".into(),

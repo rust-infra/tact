@@ -95,6 +95,7 @@ async fn run_tui_host(
         language: tact::config::settings().ui.language.clone(),
         ui_config_path: tact::config::settings().config_path.clone(),
         hook_output: tact::config::settings().ui.hook_output,
+        fold_commentary: tact::config::settings().ui.fold_commentary,
         model_context_window: tact::config::settings().agent.model_context_window,
         model_name: tact::config::settings().agent.model.clone(),
         model_max_tokens: tact::config::settings().agent.max_tokens,

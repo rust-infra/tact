@@ -316,6 +316,24 @@ pub struct App {
     /// still take a physical index, and the log's indices are the key for
     /// selection, cards and scroll anchors.
     pub(crate) hook_output: bool,
+    /// Whether mid-turn assistant narration folds into the activity region.
+    ///
+    /// Seeded once at startup from `[ui] fold_commentary` (default `true`) and
+    /// flipped by `/fold-commentary`. **Display only**: the model's text is
+    /// unaffected, and the final answer is never folded — the switch decides
+    /// whether the "let me check that" lines *before* the tool calls share the
+    /// region's summary row.
+    ///
+    /// Off restores the old shape: narration keeps its own rows, so a reader can
+    /// watch the model think out loud between calls.
+    pub(crate) fold_commentary: bool,
+    /// First physical log row of the assistant message currently streaming.
+    ///
+    /// `MessageStarted` opens it and `MessageFinished` closes it; the range is
+    /// what that update turns into `LogItemKind::AssistantCommentary` when the
+    /// provider labelled the text as narration. `None` between messages, and
+    /// for hosts that never send the pair.
+    pub(crate) streaming_message_start: Option<usize>,
     /// Brief status bar notification (auto-clears after 3s).
     pub(crate) flash_msg: Option<(String, std::time::Instant)>,
     /// When the last copy landed; drives the popup footer's `✓ Copied` flash

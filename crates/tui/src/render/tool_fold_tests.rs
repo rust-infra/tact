@@ -599,12 +599,17 @@ fn opening_a_region_shows_the_card_and_every_call_again() {
         !text.contains("1 thought · 2 tools"),
         "the region summary is gone: {text}"
     );
-    // The calls inside the opened region are still their own tool run, so they
-    // keep the run's summary — the two fold units are separate by design: a
-    // region answers "how much of this turn was work", a run names the calls.
+    // The calls are inside the region, so they fold with it: opening the region
+    // must not leave a run summary lying across its own members. One stretch of
+    // work gets one summary — the region's — and opening it gives the members
+    // their rows back.
     assert!(
-        text.contains("2 tools") && text.contains("Read ×2"),
-        "the calls keep their own summary: {text}"
+        text.contains("a.rs") && text.contains("b.rs"),
+        "the calls show their own rows: {text}"
+    );
+    assert!(
+        !text.contains("2 tools"),
+        "a run inside a region does not draw a second summary: {text}"
     );
 }
 
@@ -875,4 +880,166 @@ fn a_folded_tool_run_summary_follows_the_language() {
         "the tool count is localized: {text}"
     );
     assert!(!glyphs.contains("3tools"), "{text}");
+}
+
+// ── Narration folding ([ui] fold_commentary) ─────────────────────────────
+
+/// A turn that narrates, calls a tool, then answers: the shape
+/// `fold_commentary` exists for.
+fn narration_then_tool_then_answer(app: &mut App) {
+    app.add_user_message("Check the tree.".into());
+    app.handle_agent_update(AgentUpdate::MessageStarted {
+        message_id: "m1".into(),
+    });
+    app.handle_agent_update(AgentUpdate::StreamChunk("Let me check that.\n\n".into()));
+    app.handle_agent_update(AgentUpdate::MessageFinished {
+        message_id: "m1".into(),
+        phase: Some(tact_protocol::MessagePhase::Commentary),
+    });
+    seed(app, 0, "r1", "read_file", "a.rs", StepStatus::Success);
+    app.handle_agent_update(AgentUpdate::MessageStarted {
+        message_id: "m2".into(),
+    });
+    app.handle_agent_update(AgentUpdate::StreamChunk("All clean.\n\n".into()));
+    app.handle_agent_update(AgentUpdate::MessageFinished {
+        message_id: "m2".into(),
+        phase: Some(tact_protocol::MessagePhase::FinalAnswer),
+    });
+}
+
+#[test]
+fn a_commentary_label_turns_the_rows_into_narration() {
+    use agent_tui_kit::state::LogItemKind;
+
+    let mut app = make_app();
+    narration_then_tool_then_answer(&mut app);
+
+    let narration: Vec<&str> = app
+        .log
+        .items
+        .iter()
+        .filter(|item| item.kind == LogItemKind::AssistantCommentary)
+        .map(|item| item.raw.as_str())
+        .collect();
+    assert!(
+        narration
+            .iter()
+            .any(|raw| raw.contains("Let me check that.")),
+        "the narrative text is marked: {narration:?}"
+    );
+    assert!(
+        app.log
+            .items
+            .iter()
+            .any(|item| item.kind == LogItemKind::AssistantMarkdown
+                && item.raw.contains("All clean.")),
+        "the final answer keeps its own kind"
+    );
+}
+
+#[test]
+fn narration_folds_with_the_call_and_the_answer_stays_visible() {
+    let mut app = make_app();
+    narration_then_tool_then_answer(&mut app);
+
+    let text = render_log_panel_text(&mut app, 100, 32);
+
+    assert!(
+        text.contains("All clean."),
+        "the answer is never folded: {text}"
+    );
+    assert!(
+        !text.contains("Let me check that."),
+        "narration is behind the summary: {text}"
+    );
+    assert!(
+        text.contains("note") || text.contains("tool"),
+        "the summary states what it hid: {text}"
+    );
+}
+
+#[test]
+fn the_switch_restores_narration_rows() {
+    let mut app = make_app();
+    narration_then_tool_then_answer(&mut app);
+    assert!(app.fold_commentary, "folded by default");
+
+    app.toggle_fold_commentary();
+    let text = render_log_panel_text(&mut app, 100, 32);
+
+    assert!(
+        text.contains("Let me check that."),
+        "off keeps every narration row: {text}"
+    );
+    assert!(text.contains("All clean."), "the answer too: {text}");
+}
+
+/// Text no provider labelled must not be folded on a guess.
+#[test]
+fn unlabelled_text_is_never_folded() {
+    let mut app = make_app();
+    app.add_user_message("Check the tree.".into());
+    app.handle_agent_update(AgentUpdate::MessageStarted {
+        message_id: "m1".into(),
+    });
+    app.handle_agent_update(AgentUpdate::StreamChunk("No phase here.\n\n".into()));
+    app.handle_agent_update(AgentUpdate::MessageFinished {
+        message_id: "m1".into(),
+        phase: None,
+    });
+    seed(&mut app, 0, "r1", "read_file", "a.rs", StepStatus::Success);
+
+    let text = render_log_panel_text(&mut app, 100, 32);
+    assert!(
+        text.contains("No phase here."),
+        "an unlabelled message keeps its rows: {text}"
+    );
+}
+
+/// A region's clock covers its thinking **and** its calls. Before, any region
+/// that held a tool dropped the card's time entirely — the summary reported the
+/// calls' union and the thought was invisible.
+#[test]
+fn a_folded_region_reporting_time_includes_the_thought() {
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StreamChunk("Looking.\n\n".into()));
+    // A thought that takes real time: the card's own clock.
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Started,
+    ));
+    std::thread::sleep(std::time::Duration::from_millis(40));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Delta("Consider the tree.\n".into()),
+    ));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Finished,
+    ));
+    seed(&mut app, 0, "r1", "read_file", "a.rs", StepStatus::Success);
+    seed(&mut app, 1, "r2", "read_file", "b.rs", StepStatus::Success);
+    app.handle_agent_update(AgentUpdate::StreamChunk("Done.\n\n".into()));
+
+    // The card carries a span now, so the region's total can see it.
+    let card_span = app.thinking().blocks[0]
+        .span
+        .expect("a live card keeps its clock");
+    assert!(
+        card_span.finished_at > card_span.started_at,
+        "the card's span is a real interval"
+    );
+
+    let _ = render_log_panel_text(&mut app, 100, 32);
+    let regions = app.activity_regions();
+    let region = &regions[0];
+    let total = agent_tui_kit::state::activity_region::total_span(
+        &app.thinking().blocks,
+        &app.tools().blocks,
+        region,
+    )
+    .expect("the region was timed");
+
+    let thought = card_span.finished_at.duration_since(card_span.started_at);
+    assert!(
+        total >= thought,
+        "the total must cover the thought's own span: total={total:?} thought={thought:?}"
+    );
 }

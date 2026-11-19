@@ -251,6 +251,7 @@ Two fold units, kept apart on purpose:
 |---|---|---|
 | calls only | `tool_group` | `3 tools · 📖 Read ×2 · $ Bash · 1.2s` |
 | at least one card and one call | `activity_region` | `1 thought · 2 tools · 1 failed · Read ×2 · 0.9s` |
+| narration beside either | `activity_region` | `1 note · 2 tools · Read ×2 · 0.9s` |
 
 A tool-only region is left to `tool_group` because that summary names each call.
 A region's `N tools` could not, and the reader would lose the only place the
@@ -269,6 +270,20 @@ much of this turn was work", a run answers "which calls ran".
 
 Failures survive folding: the summary counts them (`1 failed`) and paints the
 row in the error colour with `⚠`.
+
+The region's clock is the **union** of every member's span — cards and calls
+alike. Summing durations would count a thought and the call it overlapped twice,
+and would report four parallel one-second calls as four seconds. A member with
+no span (rebuilt from history) contributes nothing; when nothing is timed the
+total is `None` rather than a fabricated zero.
+
+Assistant narration (`LogItemKind::AssistantCommentary`) joins a region only
+when the provider labelled the message `Commentary`, and only when
+`[ui] fold_commentary` is on (default). That is the `Commentary` text the model
+writes *before* it calls a tool; the final answer and any unlabelled message
+keep their own rows, so a fold can never hide the answer.
+`/fold-commentary` flips the switch for the session and, when there is a config
+file, for the next one.
 
 Every word in a summary comes from `Messages` (`fold_tools`, `fold_tools_one`,
 `fold_failed`, `fold_thoughts`, `fold_thoughts_one`, `fold_sep`,

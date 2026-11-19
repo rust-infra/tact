@@ -861,6 +861,23 @@ run，thinking 卡永远自成一行。</p>
 展开区域只归还成员行；区域内的调用仍是自己的 tool run，保留 run 的摘要——区域
 回答「这一轮有多少工作」，run 回答「跑了哪些调用」。<code>z</code> 取视口内第一个
 可折叠单位，混合区域优先于同起点的 run。</p>
+<p><strong>助手叙述（<code>[ui] fold_commentary</code>，默认开）：</strong>
+桌面端一直把 Commentary 文本折进活动组，TUI 之前从不折叠 assistant 文本。
+现在 <code>MessageFinished</code> 带 <code>Commentary</code> 时，本轮起始行到结束行之间的
+<code>AssistantMarkdown</code> 行被重标为 <code>AssistantCommentary</code>
+（<code>App::label_streaming_message</code>），区域构建器再把连续的叙述行当成一类成员。
+只有 provider 明确标了 <code>Commentary</code> 的行会折——<code>FinalAnswer</code> 与
+<code>phase: None</code> 都保留自己的行，所以折叠永远吞不掉答案。
+<code>/fold-commentary</code> 切换本会话并写入配置（<code>ui.fold_commentary</code>），
+与 <code>/hook-output</code> 同一套「翻、写、报」形状。摘要因此多出一段计数：
+<code>1 note · 2 tools · Read ×2</code>。</p>
+<p><strong>时间统计修正：</strong><code>ThinkingBlock</code> 原来只存
+<code>elapsed</code>，没有墙钟起止，于是任何「思考 + 调用」的区域只要含 tool，
+思考的时间就被整个丢掉（<code>total_span</code> 有 tool 时只算 tool 的并集）。
+现在思考卡也带 <code>span</code>（<code>ToolSpan</code>，finalize 时由
+<code>started_at + elapsed</code> 落定），区域的耗时改为**所有成员 span 的并集**：
+重叠的思考与调用只算一次，串行的相加，没有 span 的成员贡献 0 而不是假的 0，
+全无时钟时返回 <code>None</code>。</p>
 <p><strong>多语言：</strong> 摘要里的每个词都走 <code>Messages</code>
 （<code>fold_tools</code> / <code>fold_tools_one</code> / <code>fold_failed</code>
 / <code>fold_thoughts</code> / <code>fold_thoughts_one</code> /

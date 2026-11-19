@@ -55,6 +55,17 @@ pub struct RenderCtx<'a> {
     /// closure created per frame would have nowhere to live. The host rebuilds
     /// it only when the log changes.
     pub turn_boundary_rows: &'a std::collections::BTreeSet<usize>,
+    /// Runs of `LogItemKind::AssistantCommentary` rows in the log.
+    ///
+    /// Empty when `[ui] fold_commentary` is off, which restores the old shape:
+    /// narration keeps its own rows instead of sharing a region's summary.
+    pub commentary_runs: &'a [crate::state::activity_region::CommentaryRun],
+    /// First rows of tool runs that a mixed activity region already stands for.
+    ///
+    /// Such a run must not also draw its own summary: one stretch of work gets
+    /// one summary, and an expanded region would otherwise leave the run's
+    /// summary lying across its members.
+    pub runs_covered_by_region: &'a std::collections::BTreeSet<usize>,
     pub stream: &'a StreamState,
     pub mouse: &'a MouseState,
     pub skills_data: &'a [SkillEntry],

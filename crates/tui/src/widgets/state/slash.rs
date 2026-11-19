@@ -127,6 +127,7 @@ mod tests {
             SlashCommand::Mcp => msgs.cmd_mcp,
             SlashCommand::Hooks => msgs.cmd_hooks,
             SlashCommand::HookOutput => msgs.cmd_hook_output,
+            SlashCommand::FoldCommentary => msgs.cmd_fold_commentary,
             SlashCommand::Balance => msgs.cmd_balance,
             SlashCommand::Lang => msgs.cmd_lang,
             SlashCommand::Stats => msgs.cmd_stats,

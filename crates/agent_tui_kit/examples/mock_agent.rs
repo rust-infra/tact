@@ -105,6 +105,7 @@ impl MockShell {
                             summary: active.content.lines().next().unwrap_or("").to_string(),
                             cached_markdown: vec![Line::from(active.content.clone())],
                             elapsed: std::time::Duration::from_millis(120),
+                            span: None,
                         });
                     }
                 }
@@ -259,6 +260,8 @@ impl MockShell {
                     tools: &self.tools,
                     thinking: &self.thinking,
                     turn_boundary_rows: &self.log_scroll.turn_boundary_rows,
+                    commentary_runs: &[],
+                    runs_covered_by_region: &std::collections::BTreeSet::new(),
                     stream: &self.stream,
                     mouse: &MouseState::default(),
                     skills_data: &[],

@@ -66,12 +66,73 @@ pub(crate) fn render_log_panel_with_borders(
     // Fold decisions are copied out before `log_scroll` is borrowed mutably:
     // the two live in different fields of `App`, and the renderer cannot read
     // one while holding a `&mut` to the other.
+    // The commentary runs are computed from the log rather than read off
+    // `log_scroll`: the cache is (re)built later in `prepare_log_frame`, so on
+    // the frame a message first gets labelled it would still be empty.
+    let commentary = app.commentary_runs();
     let fold = crate::render::fold::FoldLayout::capture(
         &app.tools().state().blocks,
         app.thinking().state(),
         app.tools().state(),
+        &commentary,
         |phys| app.log_scroll.turn_boundary_rows.contains(&phys),
     );
+    // Owned copies, taken before `log_scroll` is borrowed mutably: the
+    // commentary-run builder needs the card-occupied rows, which live on the
+    // tools and thinking components.
+    let tool_rows: Vec<(usize, usize)> = app
+        .tools()
+        .state()
+        .blocks
+        .iter()
+        .map(|b| (b.phys_idx, b.output.visual_rows(false).max(1)))
+        .chain(
+            app.tools()
+                .state()
+                .active
+                .iter()
+                .map(|a| (a.phys_idx, a.output.visual_rows(false).max(1))),
+        )
+        .collect();
+    let mut card_rows: Vec<(usize, usize)> = app
+        .thinking()
+        .state()
+        .blocks
+        .iter()
+        .map(|b| {
+            (
+                b.phys_idx,
+                crate::render::cells::thinking::COMPLETED_THINKING_ROWS,
+            )
+        })
+        .collect();
+    if let Some(active) = &app.thinking().state().active {
+        card_rows.push((
+            active.phys_idx,
+            crate::render::cells::thinking::thinking_visual_rows(active.body_line_count()),
+        ));
+    }
+    // Tool runs a mixed region already stands for, so their own summaries are
+    // not drawn on top of it.
+    let covered_runs: std::collections::BTreeSet<usize> = {
+        let regions = app.tools().activity_regions_with_commentary(
+            app.thinking().state(),
+            &commentary,
+            |phys| app.log_scroll.turn_boundary_rows.contains(&phys),
+        );
+        let runs = agent_tui_kit::state::tool_group::runs(&app.tools().state().blocks);
+        regions
+            .iter()
+            .filter(|region| region.folds_here())
+            .flat_map(|region| {
+                runs.iter().filter_map(|run| {
+                    (run.phys_idx > region.phys_idx
+                        && run.phys_idx < region.phys_idx + region.expanded_rows)
+                        .then_some(run.phys_idx)
+                })
+            })
+            .collect()
+    };
     prepare_log_frame(
         &mut app.log_scroll,
         &app.log,
@@ -83,6 +144,10 @@ pub(crate) fn render_log_panel_with_borders(
         borders,
         reserve,
         &fold,
+        app.fold_commentary,
+        &tool_rows,
+        &card_rows,
+        &covered_runs,
     );
     let ctx = app.render_ctx();
     let output = render_log_panel_pure(frame, area, &ctx, borders);
@@ -116,6 +181,10 @@ fn prepare_log_frame(
     borders: Borders,
     reserve: u16,
     fold: &crate::render::fold::FoldLayout,
+    fold_commentary: bool,
+    tool_rows: &[(usize, usize)],
+    card_rows: &[(usize, usize)],
+    covered_runs: &std::collections::BTreeSet<usize>,
 ) {
     let top = u16::from(borders.contains(Borders::TOP));
     let bottom = u16::from(borders.contains(Borders::BOTTOM));
@@ -155,6 +224,48 @@ fn prepare_log_frame(
     if indices_stale {
         // The fold rules ask this once per row per frame; scanning `raw` for the
         // turn separator each time would cost more than the rebuild.
+        // Cached for `RenderCtx`: the pure renderer asks once per row per frame,
+        // and the builder needs the card-owned rows that this pass already has.
+        log_scroll.commentary_runs = if !fold_commentary {
+            Vec::new()
+        } else {
+            use agent_tui_kit::state::{LogItemKind, activity_region::CommentaryRun};
+            let mut owned = std::collections::BTreeSet::new();
+            for &(phys, rows) in tool_rows.iter().chain(card_rows.iter()) {
+                owned.extend(phys..phys + rows);
+            }
+            let mut runs: Vec<CommentaryRun> = Vec::new();
+            let mut current: Option<CommentaryRun> = None;
+            for (phys, item) in log.items.iter().enumerate() {
+                match item.kind {
+                    LogItemKind::AssistantCommentary => match current.as_mut() {
+                        Some(run) => run.rows += 1,
+                        None => {
+                            current = Some(CommentaryRun {
+                                phys_idx: phys,
+                                rows: 1,
+                                identity: item.raw.clone(),
+                            })
+                        }
+                    },
+                    _ if item.raw.is_empty() && !owned.contains(&phys) => {
+                        if let Some(run) = current.as_mut() {
+                            run.rows += 1;
+                        }
+                    }
+                    _ => {
+                        if let Some(run) = current.take() {
+                            runs.push(run);
+                        }
+                    }
+                }
+            }
+            if let Some(run) = current {
+                runs.push(run);
+            }
+            runs
+        };
+        log_scroll.runs_covered_by_region = covered_runs.clone();
         log_scroll.turn_boundary_rows = (0..log.items.len())
             .filter(|&phys| {
                 let item = &log.items[phys];

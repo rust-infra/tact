@@ -383,6 +383,20 @@ pub fn persist_hook_output(enabled: bool) -> anyhow::Result<()> {
     persist::update_ui_hook_output_in_toml(path, enabled)
 }
 
+/// Persist `ui.fold_commentary` to the loaded config file.
+///
+/// Whether mid-turn assistant narration folds into the activity region. Same
+/// contract as [`persist_hook_output`]: no config file means session-only,
+/// reported as such by the caller.
+pub fn persist_fold_commentary(enabled: bool) -> anyhow::Result<()> {
+    let settings = settings();
+    let path = settings
+        .config_path
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("no config file to update (session-only fold change)"))?;
+    persist::update_ui_fold_commentary_in_toml(path, enabled)
+}
+
 /// Persist `[agent].skill_disable` to the loaded config file.
 ///
 /// `names` is the complete set the catalog excludes, not a delta: the writer
@@ -597,6 +611,7 @@ pub(crate) mod test_support {
                     jpeg_quality: super::types::VisionImageSettings::DEFAULT_JPEG_QUALITY,
                 },
                 hook_output: super::types::UiSettings::DEFAULT_HOOK_OUTPUT,
+                fold_commentary: true,
             },
             tools: super::types::ToolSettings {
                 bash_timeout_secs: super::types::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,

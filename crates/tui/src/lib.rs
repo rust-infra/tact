@@ -195,6 +195,9 @@ pub struct TuiConfig {
     /// Configured `[ui] hook_output`: whether the log draws hook-injected
     /// content. Display only — the agent injects it either way.
     pub hook_output: bool,
+    /// Configured `[ui] fold_commentary`: whether mid-turn assistant narration
+    /// folds into the activity region. Display only.
+    pub fold_commentary: bool,
     pub model_context_window: usize,
     /// Configured model name, shown in the bottom bar before the first LLM call.
     pub model_name: String,
@@ -235,6 +238,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         language,
         ui_config_path,
         hook_output,
+        fold_commentary,
         model_context_window,
         model_name,
         model_max_tokens,
@@ -286,6 +290,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     app.set_configured_language(&language);
     app.set_ui_config_path(ui_config_path);
     app.set_hook_output(hook_output);
+    app.set_fold_commentary(fold_commentary);
     app.set_pending_ui(pending_ui);
     app.skill_registry = skill_registry;
     app.session_store = Some(session_store);
