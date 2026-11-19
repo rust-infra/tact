@@ -856,6 +856,15 @@ run，thinking 卡永远自成一行。</p>
 <code>/fold-commentary</code> 切换本会话并写入配置（<code>ui.fold_commentary</code>），
 与 <code>/hook-output</code> 同一套「翻、写、报」形状。摘要因此多出一段计数：
 <code>1 note · 2 tools · Read ×2</code>。</p>
+<p><strong>缓冲尾巴也要折进去：</strong> 标签是在消息<strong>结束</strong>时才贴的，而流会把最后一段
+没写完的正文（末尾没有换行）一直留在 <code>stream.buffer</code> 里，等别的事件来冲。
+于是重标只能改已经落到 log 里的行——缓冲中的尾巴若等到 <code>ToolEvent::Started</code>
+才冲出来，就只能落成普通的 <code>AssistantMarkdown</code>，永远不参与折叠，表现正是
+「叙述单独一行悬在折叠区<strong>上方</strong>」。修复是 <code>MessageFinished</code> 先
+<code>flush_stream_pending()</code> 再 <code>label_streaming_message()</code>：行先落地，
+标签再覆盖整段。冲尾巴会一并关掉打开的思考卡，而
+<code>MessageFinished</code> 刻意不算思考区结束（否则一段推理会被切成多张卡），
+所以思考卡还开着时跳过这次 flush。</p>
 <p><strong>时间统计修正：</strong><code>ThinkingBlock</code> 原来只存
 <code>elapsed</code>，没有墙钟起止，于是任何「思考 + 调用」的区域只要含 tool，
 思考的时间就被整个丢掉（<code>total_span</code> 有 tool 时只算 tool 的并集）。

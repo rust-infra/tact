@@ -285,6 +285,15 @@ keep their own rows, so a fold can never hide the answer.
 `/fold-commentary` flips the switch for the session and, when there is a config
 file, for the next one.
 
+The label is applied when the message *finishes*, so `MessageFinished` first
+commits whatever the message still has buffered. The stream holds an
+unterminated last paragraph — text without its trailing blank line — until
+another event flushes it, and the relabel can only rewrite rows that already
+exist; a buffered tail would land afterwards as plain `AssistantMarkdown` and
+stay unfolded above the region instead of inside it. The flush is skipped while
+a thinking card is still open, because it would close the card and
+`MessageFinished` is deliberately not a thinking-region end.
+
 Every word in a summary comes from `Messages` (`fold_tools`, `fold_tools_one`,
 `fold_failed`, `fold_thoughts`, `fold_thoughts_one`, `fold_sep`,
 `fold_repeat`), so `/lang` rewrites the row in place. The parts are separate keys

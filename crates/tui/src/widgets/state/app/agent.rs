@@ -571,6 +571,22 @@ impl App {
                 self.streaming_message_start = Some(self.log.items.len());
             }
             AgentUpdate::MessageFinished { phase, .. } => {
+                // Commit the message's still-buffered tail **before**
+                // labelling it. The stream holds an unterminated last
+                // paragraph (`"text"` without its trailing blank line) in
+                // `stream.buffer` until something later flushes it, and the
+                // label below can only rewrite rows that already exist — a
+                // buffered tail used to land as plain `AssistantMarkdown`
+                // and never fold, which is the "narration sits above the
+                // folded run instead of inside it" shape of 2026-11-19.
+                //
+                // Skipped while a thinking card is still open: the flush
+                // closes the card, and `MessageFinished` is deliberately not a
+                // thinking-region end (see `ends_thinking_region`) — closing it
+                // here would cut one reasoning block into a card per message.
+                if self.thinking().active.is_none() {
+                    self.flush_stream_pending();
+                }
                 self.label_streaming_message(phase);
             }
             AgentUpdate::TasksChanged { tasks, reason } => {
