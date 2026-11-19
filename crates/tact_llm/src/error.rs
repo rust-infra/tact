@@ -103,8 +103,10 @@ impl LlmError {
     /// kept is the part that is metadata and that a user acts on — the HTTP
     /// status and its class. Variants whose text Tact authors itself
     /// (`Auth`, `Unsupported`, `Mock`) are passed through, because those
-    /// strings contain no provider payload and dropping them would leave the
-    /// user with nothing to fix.
+    /// strings are meant to contain no provider payload and dropping them
+    /// would leave the user with nothing to fix. A new `Unsupported` message
+    /// must not embed a request URL, a response body, or a transport error's
+    /// `Display`; those belong in the diagnostic path, not here.
     pub fn user_message(&self) -> String {
         match self {
             Self::HttpError { status, class, .. } => {

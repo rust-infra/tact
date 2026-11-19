@@ -24,5 +24,15 @@ kind = "tools"
 name = "used-load-memory"
 
 [[graders.assertions]]
-kind = "tool"
+kind = "tool_succeeded"
 tool = "load_memory"
+
+# The fixture file itself contains the token. Reading it directly would pass
+# the answer grader without exercising memory at all.
+[[graders.assertions]]
+kind = "no_tool"
+tool = "read_file"
+
+[[graders.assertions]]
+kind = "no_tool"
+tool = "bash"

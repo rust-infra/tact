@@ -39,3 +39,10 @@ tool = "write_file"
 [[graders.assertions]]
 kind = "no_tool"
 tool = "edit_file"
+
+# The seed file staying identical does not prove the run left the workspace
+# alone. Count the files it may have created.
+[[graders]]
+kind = "command"
+name = "no-new-files"
+command = "test \"$(find . -type f -not -path './.tact/*' -not -name seed.txt -not -name service.toml -not -name settings.ini | wc -l)\" -eq 0"

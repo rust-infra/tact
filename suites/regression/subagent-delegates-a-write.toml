@@ -1,6 +1,10 @@
 # The parent must delegate rather than do the write itself. The tool grader
 # proves `spawn_subagent` was called; the file grader proves the child actually
 # had a working workspace and wrote into it.
+#
+# The child's calls share the parent's artifact, so `no_tool write_file` cannot
+# prove the parent did not write the file. What is enforceable is that the
+# spawn itself succeeded.
 prompt = """
 Use the spawn_subagent tool exactly once. Give it a self-contained prompt that
 tells it to create a file named child.txt in the current directory containing
@@ -27,5 +31,5 @@ kind = "tools"
 name = "delegated-with-spawn-subagent"
 
 [[graders.assertions]]
-kind = "tool"
+kind = "tool_succeeded"
 tool = "spawn_subagent"

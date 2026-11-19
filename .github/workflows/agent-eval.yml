@@ -113,6 +113,32 @@ jobs:
             --attempts 3 \
             --json-out candidate.json
 
+      # A run where every case failed still exits 0 by design: without
+      # `--strict`, a decisive failure is a measurement, not a harness error.
+      # The nightly job must not call that green when no baseline is configured.
+      - name: Fail when no attempt passed
+        if: ${{ !cancelled() && success() }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import sys
+
+          report = json.load(open("candidate.json"))
+          passed = sum(
+              1
+              for outcome in report["outcomes"]
+              if outcome.get("failure") is None
+              and outcome["grades"]
+              and all(
+                  grade["verdict"]["verdict"] == "pass"
+                  for grade in outcome["grades"]
+              )
+          )
+          total = len(report["outcomes"])
+          print(f"{passed} passing attempt(s) out of {total}")
+          sys.exit(0 if passed else 1)
+          PY
+
       - name: Locate the baseline
         if: always()
         id: baseline

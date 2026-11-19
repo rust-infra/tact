@@ -621,6 +621,9 @@ text = &quot;hello eval&quot;</code></pre>
 判分仍然只看最终状态：答案是最后一轮的文字，文件是最后一轮留下的样子。
 某一轮如果没产出任何回答，会话到此结束——把下一句送进一个上一轮为空的会话，
 判到的会是第二个错误而不是第一个错误。</p>
+<p>文件状态的多轮只证明工作目录连续：下一轮可以重新读文件，失忆也能答对。
+历史本身由 <code>loop-session-memory</code> 证明：事实只存在于对话里，
+用例禁止所有能把它保存下来的工具。</p>
 <h3 id="回归套件的阶段">回归套件的阶段</h3>
 <p>套件按能力逐个阶段扩，文件名前缀就是阶段名。每个阶段只增加
 <code>.toml</code> 与 fixture，不改 runner 或判分语言。</p>
@@ -728,6 +731,8 @@ fixture 是否存在要等 <code>EvalSuite::load</code>，
 <p><code>tool</code> 只证明模型尝试过：一次失败的调用同样满足它。
 当工具的结果本身就是证据（例如 <code>load_memory</code> 必须真的读回内容）时，
 用 <code>tool_succeeded</code>，它要求至少一次调用成功。</p>
+<p><code>first_tool</code> 在 host runner 上按步骤序号还原调用顺序；
+CLI runner 只有 finished-step 日志，并行调用按完成顺序排列。</p>
 <p>runner 无法归属到某个工具的记录（headless 日志里裸的
 <code>[tool failed]</code> 行）不满足任何断言，并且会让
 <code>no_tool</code> 与 <code>at_most</code> 判 <code>Inconclusive</code>

@@ -386,6 +386,20 @@ impl App {
             {
                 continue;
             }
+            if message.role == AgentRole::User {
+                let label = match &message.origin {
+                    MessageOrigin::CompactionSummary => Some("compaction summary"),
+                    MessageOrigin::SubagentResult => Some("subagent result"),
+                    MessageOrigin::Continuation => Some("continuation"),
+                    _ => None,
+                };
+                if let Some(label) = label {
+                    let text = plain_text(&message.content);
+                    if !text.trim().is_empty() {
+                        self.trajectory.restore_context(label, &text);
+                    }
+                }
+            }
 
             match message.role {
                 AgentRole::User => {
@@ -414,7 +428,10 @@ impl App {
                             );
                         }
                     }
-                    if !prompt.trim().is_empty() {
+                    // Only a real prompt opens a turn. A synthetic user-role
+                    // message (a compaction handoff, a subagent result, a
+                    // continuation) is context, not something the user typed.
+                    if message.origin.is_user_turn() && !prompt.trim().is_empty() {
                         self.restore_trajectory_turn(&prompt);
                     }
                 }

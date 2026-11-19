@@ -11,7 +11,7 @@
 //! inherits that model and permission mode. A caller that needs a different
 //! configuration per case spawns `tact-eval` again with different flags.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
 
 use tact_host::{Frontend, Notices, SessionBuild, bootstrap_session};
@@ -194,6 +194,7 @@ impl Runner for HostRunner {
         let deadline = now.checked_add(budget).unwrap_or(now);
         let mut budget_expired = false;
         let mut turns_taken = 0u32;
+        let mut final_answer = String::new();
 
         for (index, turn) in case.turns().into_iter().enumerate() {
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
@@ -201,6 +202,7 @@ impl Runner for HostRunner {
                 break;
             };
             let prompt = tact_host::user_message::build_user_message(turn, &work_dir).await;
+            let context_before = agent.context().len();
 
             let result = {
                 let mut run = Box::pin(agent.agent_loop_detailed(Some(prompt)));
@@ -222,6 +224,10 @@ impl Runner for HostRunner {
                 Some(Ok(outcome)) => {
                     turns_taken += outcome.turns;
                     artifact.stop = Some(StopView::from(outcome.stop));
+                    // The answer is this turn's text, not the last text in the
+                    // whole session: a silent final turn must not be graded on
+                    // a previous turn's answer.
+                    final_answer = last_assistant_text_since(agent.context(), context_before);
                     // A turn that produced no answer ends the conversation:
                     // sending the next prompt into a session whose last turn was
                     // empty would grade the wrong failure.
@@ -265,11 +271,7 @@ impl Runner for HostRunner {
 
         artifact.tools = tools;
         artifact.tokens = tokens;
-        // The last *assistant* text, not the last message. A cancel mid-tools
-        // makes the kernel persist synthetic tool results as `User` messages,
-        // so the tail is a user block with no text and the run's actual answer
-        // sits one or more messages back.
-        artifact.answer = last_assistant_text(&agent);
+        artifact.answer = final_answer;
         artifact.duration_ms = crate::runner::elapsed_ms(start);
 
         // Teardown is part of the run: a subagent left running would keep
@@ -297,12 +299,17 @@ async fn drain_events(
     mut rx: tact_protocol::UpdateReceiver,
     shutdown: tokio::sync::oneshot::Receiver<()>,
 ) -> (Vec<ToolRecord>, TokenTotals) {
-    let mut tools = Vec::new();
+    // Keyed by invocation order: `StepFinished` arrives in completion order,
+    // and a parallel batch can finish out of order. The ledger and `first_tool`
+    // mean invocation order. The step index cannot key this map because it
+    // repeats across turns.
+    let mut tools = BTreeMap::new();
     // `StepFailed` carries the invocation id and the error, but not the tool
     // name. The `StepStarted` before it does, so remember it by id: without
     // this a failed call is recorded as unattributed, and a `tools` grader can
     // only call the case inconclusive.
     let mut started = HashMap::new();
+    let mut next_seq = 0usize;
     let mut tokens = TokenTotals::default();
     let mut shutdown = shutdown;
 
@@ -315,23 +322,24 @@ async fn drain_events(
         let Some(update) = update else {
             break;
         };
-        record(&mut tools, &mut started, &mut tokens, update);
+        record(&mut tools, &mut started, &mut next_seq, &mut tokens, update);
     }
 
     while let Ok(update) = rx.try_recv() {
-        record(&mut tools, &mut started, &mut tokens, update);
+        record(&mut tools, &mut started, &mut next_seq, &mut tokens, update);
     }
 
-    (tools, tokens)
+    (tools.into_values().collect(), tokens)
 }
 
-/// The last assistant message that carries text.
+/// The last assistant message this turn added that carries text.
 ///
 /// Walks back past tool-only assistant turns (their message has no text) and
 /// past synthetic `User` tool results the kernel appends on a cancel.
-fn last_assistant_text(agent: &tact::Agent) -> String {
-    agent
-        .context()
+fn last_assistant_text_since(messages: &[tact_llm::Message], from: usize) -> String {
+    messages
+        .get(from..)
+        .unwrap_or_default()
         .iter()
         .rev()
         .filter(|message| matches!(message.role, tact_llm::Role::Assistant))
@@ -343,8 +351,9 @@ fn last_assistant_text(agent: &tact::Agent) -> String {
 }
 
 fn record(
-    tools: &mut Vec<ToolRecord>,
-    started: &mut HashMap<String, (String, String)>,
+    tools: &mut BTreeMap<usize, ToolRecord>,
+    started: &mut HashMap<String, (usize, String, String)>,
+    next_seq: &mut usize,
     tokens: &mut TokenTotals,
     update: AgentUpdate,
 ) {
@@ -355,25 +364,54 @@ fn record(
             arg_summary,
             ..
         } => {
-            started.insert(tool_id, (tool_name, arg_summary));
+            started.insert(tool_id, (*next_seq, tool_name, arg_summary));
+            *next_seq += 1;
         }
-        AgentUpdate::StepFinished { result, .. } => tools.push(tool_record(&result)),
+        AgentUpdate::StepFinished {
+            tool_id, result, ..
+        } => {
+            let seq = take_seq(started, &tool_id, next_seq);
+            tools.insert(seq, tool_record(&result));
+        }
         // The event adapter emits `StepFailed` for every failed tool call and
         // never a `StepFinished` with `Failed` status, so without this arm the
         // host report would show no failures at all.
         AgentUpdate::StepFailed { tool_id, error, .. } => {
             let start = started.remove(&tool_id);
-            tools.push(ToolRecord {
-                name: start.as_ref().map(|(name, _)| name.clone()),
-                args: start.map(|(_, args)| args),
-                status: ToolStatus::Failed,
-                duration_ms: None,
-                message: Some(error),
+            let seq = start.as_ref().map(|(seq, _, _)| *seq).unwrap_or_else(|| {
+                let seq = *next_seq;
+                *next_seq += 1;
+                seq
             });
+            tools.insert(
+                seq,
+                ToolRecord {
+                    name: start.as_ref().map(|(_, name, _)| name.clone()),
+                    args: start.map(|(_, _, args)| args),
+                    status: ToolStatus::Failed,
+                    duration_ms: None,
+                    message: Some(error),
+                },
+            );
         }
         AgentUpdate::TokenUsage(usage) => add_usage(tokens, &usage),
         _ => {}
     }
+}
+
+fn take_seq(
+    started: &mut HashMap<String, (usize, String, String)>,
+    tool_id: &str,
+    next_seq: &mut usize,
+) -> usize {
+    started
+        .remove(tool_id)
+        .map(|(seq, _, _)| seq)
+        .unwrap_or_else(|| {
+            let seq = *next_seq;
+            *next_seq += 1;
+            seq
+        })
 }
 
 fn tool_record(result: &StepResult) -> ToolRecord {
@@ -431,12 +469,14 @@ mod tests {
 
     #[test]
     fn a_failed_step_keeps_the_name_its_start_announced() {
-        let mut tools = Vec::new();
+        let mut tools = BTreeMap::new();
         let mut started = HashMap::new();
+        let mut next_seq = 0usize;
         let mut tokens = TokenTotals::default();
         record(
             &mut tools,
             &mut started,
+            &mut next_seq,
             &mut tokens,
             AgentUpdate::StepStarted {
                 idx: 0,
@@ -450,6 +490,7 @@ mod tests {
         record(
             &mut tools,
             &mut started,
+            &mut next_seq,
             &mut tokens,
             AgentUpdate::StepFailed {
                 idx: 0,
@@ -461,19 +502,22 @@ mod tests {
         );
 
         assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].name.as_deref(), Some("load_memory"));
-        assert_eq!(tools[0].args.as_deref(), Some(r#"{"name":"deploy-token"}"#));
-        assert_eq!(tools[0].status, ToolStatus::Failed);
+        let record = tools.get(&0).expect("the failed step is recorded");
+        assert_eq!(record.name.as_deref(), Some("load_memory"));
+        assert_eq!(record.args.as_deref(), Some(r#"{"name":"deploy-token"}"#));
+        assert_eq!(record.status, ToolStatus::Failed);
     }
 
     #[test]
     fn a_failure_with_no_matching_start_stays_unattributed() {
-        let mut tools = Vec::new();
+        let mut tools = BTreeMap::new();
         let mut started = HashMap::new();
+        let mut next_seq = 0usize;
         let mut tokens = TokenTotals::default();
         record(
             &mut tools,
             &mut started,
+            &mut next_seq,
             &mut tokens,
             AgentUpdate::StepFailed {
                 idx: 0,
@@ -485,7 +529,67 @@ mod tests {
         );
 
         assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].name, None);
+        assert_eq!(tools.get(&0).expect("the failure is recorded").name, None);
+    }
+
+    #[test]
+    fn a_step_index_that_repeats_across_turns_does_not_drop_a_call() {
+        // The step index restarts each turn; keying records by it made the
+        // second turn's call overwrite the first.
+        let mut tools = BTreeMap::new();
+        let mut started = HashMap::new();
+        let mut next_seq = 0usize;
+        let mut tokens = TokenTotals::default();
+        for (tool_id, tool) in [("call-1", "save_memory"), ("call-2", "load_memory")] {
+            record(
+                &mut tools,
+                &mut started,
+                &mut next_seq,
+                &mut tokens,
+                AgentUpdate::StepStarted {
+                    idx: 0,
+                    tool_id: tool_id.into(),
+                    tool_name: tool.into(),
+                    arg_summary: String::new(),
+                    arg_full: String::new(),
+                    presentation: ToolPresentationInfo::generic("t"),
+                },
+            );
+            record(
+                &mut tools,
+                &mut started,
+                &mut next_seq,
+                &mut tokens,
+                AgentUpdate::StepFinished {
+                    idx: 0,
+                    run_id: None,
+                    tool_id: tool_id.into(),
+                    result: result(tool, StepStatus::Success, None),
+                },
+            );
+        }
+
+        let names: Vec<_> = tools
+            .values()
+            .map(|record| record.name.as_deref())
+            .collect();
+        assert_eq!(names, vec![Some("save_memory"), Some("load_memory")]);
+    }
+
+    #[test]
+    fn a_silent_turn_is_not_graded_on_the_previous_turn() {
+        let messages = vec![
+            tact_llm::Message::new_text(tact_llm::Role::Assistant, "first answer".to_string()),
+            tact_llm::Message::new_text(tact_llm::Role::User, "next prompt".to_string()),
+            tact_llm::Message::new_text(tact_llm::Role::Assistant, String::new()),
+        ];
+
+        assert_eq!(
+            last_assistant_text_since(&messages, 2),
+            "",
+            "an empty final turn has no answer to grade"
+        );
+        assert_eq!(last_assistant_text_since(&messages, 0), "first answer");
     }
 
     /// The pump returns when told to, even while a sender is still alive.

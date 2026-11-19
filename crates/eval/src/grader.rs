@@ -444,14 +444,20 @@ fn check_one(work_dir: &Path, assertion: &FileAssertion) -> Result<Option<String
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(format!("cannot read {}: {error}", path.display())),
     };
+    // `Path::exists()` folds a metadata error into `false`, which would pass
+    // `absent` and fail `exists` when the harness merely could not look.
+    let exists = |path: &Path| match std::fs::symlink_metadata(work_dir.join(path)) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("cannot stat {}: {error}", path.display())),
+    };
     Ok(match assertion {
         FileAssertion::Exists { path } => {
-            (!work_dir.join(path).exists()).then(|| format!("{} is missing", path.display()))
+            (!exists(path)?).then(|| format!("{} is missing", path.display()))
         }
-        FileAssertion::Absent { path } => work_dir
-            .join(path)
-            .exists()
-            .then(|| format!("{} should not exist", path.display())),
+        FileAssertion::Absent { path } => {
+            exists(path)?.then(|| format!("{} should not exist", path.display()))
+        }
         FileAssertion::Contains { path, text } => match content(path)? {
             None => Some(format!("{} is missing", path.display())),
             Some(read) => (!read.contains(text.as_str()))
@@ -1013,6 +1019,32 @@ mod tests {
             Verdict::Fail { reason } => assert!(reason.contains("is missing"), "{reason}"),
             other => panic!("expected failure, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn a_path_the_harness_cannot_stat_is_inconclusive() {
+        // A file below a regular file cannot be stat'd. That is this process
+        // failing to look, not proof the path is absent.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("regular"), "x").unwrap();
+
+        let grades = grade(
+            &case(vec![GraderSpec::Files {
+                name: "files".into(),
+                assertions: vec![FileAssertion::Absent {
+                    path: std::path::PathBuf::from("regular/child"),
+                }],
+            }]),
+            dir.path(),
+            &artifact(),
+        )
+        .await;
+
+        assert!(
+            matches!(grades[0].verdict, Verdict::Inconclusive { .. }),
+            "expected inconclusive, got {:?}",
+            grades[0]
+        );
     }
 
     #[test]

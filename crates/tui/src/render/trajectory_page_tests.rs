@@ -911,6 +911,49 @@ fn restored_injected_context_does_not_open_a_turn() {
     );
 }
 
+/// A compaction handoff is context, not a prompt: it must not open a turn.
+#[test]
+fn restored_compaction_summary_does_not_open_a_turn() {
+    use tact::{AgentContentBlock, AgentMessage, AgentRole, MessageOrigin};
+
+    let mut app = make_app();
+    let prompt = AgentMessage::new(
+        AgentRole::User,
+        MessageOrigin::User,
+        vec![AgentContentBlock::Text {
+            text: "real turn".into(),
+        }],
+    );
+    let summary = AgentMessage::new(
+        AgentRole::User,
+        MessageOrigin::CompactionSummary,
+        vec![AgentContentBlock::Text {
+            text: "handoff body".into(),
+        }],
+    );
+
+    app.restore_trajectory(&[prompt, summary]);
+
+    let context = app
+        .trajectory
+        .records()
+        .iter()
+        .find(|record| record.kind == TrajectoryKind::Context)
+        .expect("the handoff is recorded");
+    assert!(context.text.contains("handoff"), "{}", context.text);
+    let turns: Vec<u32> = app
+        .trajectory
+        .records()
+        .iter()
+        .map(|record| record.turn)
+        .collect();
+    assert_eq!(
+        turns,
+        vec![1, 1],
+        "the handoff belongs to the one real turn: {turns:?}"
+    );
+}
+
 /// The startup wiring: a saved session is read back and the ledger rebuilt.
 ///
 /// The tests above call `restore_trajectory` directly, which proves the mapping

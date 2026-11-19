@@ -27,5 +27,5 @@ kind = "tools"
 name = "called-the-mcp-tool"
 
 [[graders.assertions]]
-kind = "tool"
+kind = "tool_succeeded"
 tool = "mcp__eval__echo"

@@ -1,5 +1,6 @@
-# A conversation, not two runs: the second prompt says "the file you just
-# created", which is only answerable if the session carried the first turn.
+# Two turns against one workspace: the second edits the file the first made.
+# A fresh session could still find notes.txt, so this pins continuity of work,
+# not of history; `loop-session-memory` covers the latter.
 prompts = [
   """
 Create a file named notes.txt in the current directory.

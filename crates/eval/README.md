@@ -71,7 +71,7 @@ stage a case belongs to.
 
 | prefix | what it pins |
 |---|---|
-| `loop-` | turns that must share history, and recovery after a failed tool call |
+| `loop-` | a fact that lives only in the conversation, and recovery after a failed tool call |
 | `tool-` | tool selection and surgical edits (`first_tool`, `no_tool`) |
 | `mcp-` | a project `.tact/.mcp.json` server, called as `mcp__<server>__<tool>` |
 | `hook-` | a repository hook stays pending until reviewed, and never runs unseen |
@@ -161,6 +161,10 @@ A tool record the runner could not attribute to a tool (a bare `[tool failed]`
 line in the headless log) matches no assertion. It makes `no_tool` and `at_most`
 inconclusive rather than passing them, because an unattributed call could be the
 one they forbid.
+
+`first_tool` means invocation order on the host runner, which records each
+finished step by its step index. The CLI runner only sees finished-step log
+lines, so calls that ran in parallel are ordered there by completion.
 
 `HostRunner` does not have to guess: it pairs each `StepFailed` with the
 `StepStarted` carrying the same invocation id, so a failed call keeps the tool

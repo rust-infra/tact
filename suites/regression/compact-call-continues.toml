@@ -61,3 +61,11 @@ tool = "edit_file"
 [[graders.assertions]]
 kind = "no_tool"
 tool = "bash"
+
+[[graders.assertions]]
+kind = "no_tool"
+tool = "background_run"
+
+[[graders.assertions]]
+kind = "no_tool"
+tool = "spawn_subagent"

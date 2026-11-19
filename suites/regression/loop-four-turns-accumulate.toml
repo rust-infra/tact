@@ -1,6 +1,7 @@
-# One conversation, four turns, each depending on the last. A loop that drops
-# history fails at the second turn, and the file grader names which turn was
-# lost instead of only reporting a wrong final answer.
+# One conversation, four turns, each editing the state the last one left.
+# A loop that loses the workspace or the turn boundary produces the wrong file.
+# This does not prove history survives: every prompt can be answered from
+# ledger.txt. `loop-session-memory` is the case that pins conversation memory.
 prompts = [
   """
 Create a file named ledger.txt in the current directory.
