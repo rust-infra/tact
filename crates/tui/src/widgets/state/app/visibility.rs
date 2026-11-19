@@ -98,14 +98,88 @@ impl App {
         self.log_scroll.turn_boundary_rows.contains(&phys)
     }
 
+    /// Runs of narration rows in the log, or empty when the switch is off.
+    ///
+    /// Derived from `log.items` on every call rather than cached: the fold is
+    /// asked for every row of every frame, but a scan over the log is what
+    /// `fold.hides` already does, and a cache keyed on the row count would be
+    /// stale between a `Commentary` relabel and the next append.
+    pub(crate) fn commentary_runs(
+        &self,
+    ) -> Vec<agent_tui_kit::state::activity_region::CommentaryRun> {
+        use agent_tui_kit::state::{LogItemKind, activity_region::CommentaryRun};
+        if !self.fold_commentary {
+            return Vec::new();
+        }
+        // Rows a card owns are blank too, and they are **not** narration:
+        // absorbing one would make a run overlap a tool block or a card and the
+        // region builder would drop the whole stretch.
+        let mut owned = std::collections::BTreeSet::new();
+        for block in &self.tools().blocks {
+            let rows = block.output.visual_rows(false).max(1);
+            owned.extend(block.phys_idx..block.phys_idx + rows);
+        }
+        for active in &self.tools().active {
+            let rows = active.output.visual_rows(false).max(1);
+            owned.extend(active.phys_idx..active.phys_idx + rows);
+        }
+        for block in &self.thinking().blocks {
+            let rows = crate::render::cells::thinking::COMPLETED_THINKING_ROWS;
+            owned.extend(block.phys_idx..block.phys_idx + rows);
+        }
+        if let Some(active) = &self.thinking().state().active {
+            let rows =
+                crate::render::cells::thinking::thinking_visual_rows(active.body_line_count());
+            owned.extend(active.phys_idx..active.phys_idx + rows);
+        }
+
+        let mut runs: Vec<CommentaryRun> = Vec::new();
+        let mut current: Option<CommentaryRun> = None;
+        for (phys, item) in self.log.items.iter().enumerate() {
+            match item.kind {
+                LogItemKind::AssistantCommentary => match current.as_mut() {
+                    Some(run) => run.rows += 1,
+                    None => {
+                        current = Some(CommentaryRun {
+                            phys_idx: phys,
+                            rows: 1,
+                            // The row's text, not its index: a `phys_idx` is
+                            // rewritten by every insert above the run.
+                            identity: item.raw.clone(),
+                        });
+                    }
+                },
+                // A blank row inside narration is the paragraph break, not the
+                // end of the run — whatever kind the appender chose for it
+                // (`ensure_gap_before_tools` writes `SystemTool`).
+                _ if item.raw.is_empty() && !owned.contains(&phys) => {
+                    if let Some(run) = current.as_mut() {
+                        run.rows += 1;
+                    }
+                }
+                _ => {
+                    if let Some(run) = current.take() {
+                        runs.push(run);
+                    }
+                }
+            }
+        }
+        if let Some(run) = current {
+            runs.push(run);
+        }
+        runs
+    }
+
     /// Every activity region of this log, with this log's turn boundaries.
     pub(crate) fn activity_regions(
         &self,
     ) -> Vec<agent_tui_kit::state::activity_region::ActivityRegion> {
-        self.tools()
-            .activity_regions_in_log(self.thinking().state(), |phys| {
-                self.is_turn_boundary_row(phys)
-            })
+        let commentary = self.commentary_runs();
+        self.tools().activity_regions_with_commentary(
+            self.thinking().state(),
+            &commentary,
+            |phys| self.is_turn_boundary_row(phys),
+        )
     }
 
     /// The first foldable fold that has any row inside the viewport.
@@ -650,14 +724,21 @@ impl App {
         let new_rows = crate::render::cells::thinking::COMPLETED_THINKING_ROWS;
         self.resize_thinking_placeholder_rows(active.phys_idx, old_rows, new_rows);
         let elapsed = active.started_at.elapsed();
-        self.thinking_mut().blocks.push(ThinkingBlock::new(
-            active.block_id.clone(),
-            active.phys_idx,
-            active.content,
-            summary,
-            cached_markdown,
-            elapsed,
-        ));
+        let span = agent_tui_kit::state::ToolSpan {
+            started_at: active.started_at,
+            finished_at: active.started_at + elapsed,
+        };
+        self.thinking_mut().blocks.push(
+            ThinkingBlock::new(
+                active.block_id.clone(),
+                active.phys_idx,
+                active.content,
+                summary,
+                cached_markdown,
+                elapsed,
+            )
+            .with_span(span),
+        );
         // The ledger gets the same measurement: `ThinkingChunk::Finished` is a
         // bare marker, and this is the only place the wall clock still exists.
         self.trajectory.finish_thinking(elapsed);

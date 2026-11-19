@@ -358,6 +358,7 @@ pub struct Messages {
     pub cmd_mcp: &'static str,
     pub cmd_hooks: &'static str,
     pub cmd_hook_output: &'static str,
+    pub cmd_fold_commentary: &'static str,
     pub cmd_tasks_dag: &'static str,
     pub cmd_trajectory: &'static str,
     pub cmd_stats: &'static str,
@@ -458,6 +459,12 @@ pub struct Messages {
     pub hook_output_hidden_tmpl: &'static str,
     pub hook_output_persisted: &'static str,
     pub hook_output_session_only: &'static str,
+    /// `/fold-commentary` report — same two halves `/hook-output` carries.
+    pub fold_commentary_folded_tmpl: &'static str,
+    pub fold_commentary_open_tmpl: &'static str,
+    pub fold_commentary_persisted: &'static str,
+    pub fold_commentary_session_only: &'static str,
+    pub fold_commentary_persist_failed_tmpl: &'static str,
     pub hook_output_persist_failed_tmpl: &'static str,
     /// `/skill disable <name>` / `/skill enable <name>` report — the same two
     /// halves `/hook-output` carries: what the catalog now excludes, and
@@ -547,6 +554,13 @@ pub struct Messages {
     pub fold_thoughts: &'static str,
     /// Singular of [`Self::fold_thoughts`].
     pub fold_thoughts_one: &'static str,
+    /// `"{} notes"` — how many narration paragraphs a region swallowed.
+    ///
+    /// A folded region that hid assistant commentary has to say so: the reader
+    /// is looking at one row where a paragraph used to be.
+    pub fold_notes: &'static str,
+    /// Singular of [`Self::fold_notes`].
+    pub fold_notes_one: &'static str,
     /// Separator between two summary parts (`" · "`).
     pub fold_sep: &'static str,
     /// `"{} ×{}"` — a repeated tool label and how many times it ran.
@@ -786,6 +800,9 @@ impl Messages {
             cmd_mcp: tact_catalog::BuiltinCommand::Mcp.description().en,
             cmd_hooks: tact_catalog::BuiltinCommand::Hooks.description().en,
             cmd_hook_output: tact_catalog::BuiltinCommand::HookOutput.description().en,
+            cmd_fold_commentary: tact_catalog::BuiltinCommand::FoldCommentary
+                .description()
+                .en,
             cmd_tasks_dag: tact_catalog::BuiltinCommand::TasksDag.description().en,
             cmd_trajectory: tact_catalog::BuiltinCommand::Trajectory.description().en,
             cmd_stats: tact_catalog::BuiltinCommand::Stats.description().en,
@@ -863,9 +880,14 @@ impl Messages {
             lang_session_only_tmpl: "🌐 Language: {} (this session only)",
             hook_output_shown_tmpl: "👁 Hook output: shown in the log ({})",
             hook_output_hidden_tmpl: "🙈 Hook output: hidden from the log ({})",
+            fold_commentary_folded_tmpl: "▸ Narration: folded into one row ({})",
+            fold_commentary_open_tmpl: "▾ Narration: shown in full ({})",
             hook_output_persisted: "saved to config",
             hook_output_session_only: "this session only",
+            fold_commentary_persisted: "saved to config",
+            fold_commentary_session_only: "this session only",
             hook_output_persist_failed_tmpl: "✗ Failed to save hook output: {}",
+            fold_commentary_persist_failed_tmpl: "✗ Failed to save the narration fold: {}",
             skill_catalog_hidden_tmpl: "🚫 `{}` is hidden from the catalog ({})",
             skill_catalog_shown_tmpl: "✅ `{}` is back in the catalog ({})",
             skill_catalog_persisted: "saved to config",
@@ -917,6 +939,8 @@ impl Messages {
             fold_failed: "{} failed",
             fold_thoughts: "{} thoughts",
             fold_thoughts_one: "{} thought",
+            fold_notes: "{} notes",
+            fold_notes_one: "{} note",
             fold_sep: " · ",
             fold_repeat: "{} ×{}",
         }
@@ -1141,6 +1165,9 @@ impl Messages {
             cmd_mcp: tact_catalog::BuiltinCommand::Mcp.description().zh,
             cmd_hooks: tact_catalog::BuiltinCommand::Hooks.description().zh,
             cmd_hook_output: tact_catalog::BuiltinCommand::HookOutput.description().zh,
+            cmd_fold_commentary: tact_catalog::BuiltinCommand::FoldCommentary
+                .description()
+                .zh,
             cmd_tasks_dag: tact_catalog::BuiltinCommand::TasksDag.description().zh,
             cmd_trajectory: tact_catalog::BuiltinCommand::Trajectory.description().zh,
             cmd_stats: tact_catalog::BuiltinCommand::Stats.description().zh,
@@ -1217,10 +1244,15 @@ impl Messages {
             lang_persist_failed_tmpl: "✗ 保存语言失败: {}",
             lang_session_only_tmpl: "🌐 语言: {}（仅本次会话）",
             hook_output_shown_tmpl: "👁 hook 输出：在日志中显示（{}）",
+            fold_commentary_folded_tmpl: "▸ 助手叙述：折叠成一行（{}）",
+            fold_commentary_open_tmpl: "▾ 助手叙述：完整显示（{}）",
             hook_output_hidden_tmpl: "🙈 hook 输出：不在日志中显示（{}）",
             hook_output_persisted: "已写入配置",
             hook_output_session_only: "仅本次会话",
+            fold_commentary_persisted: "已保存到配置",
+            fold_commentary_session_only: "仅本次会话",
             hook_output_persist_failed_tmpl: "✗ 保存 hook 输出开关失败: {}",
+            fold_commentary_persist_failed_tmpl: "✗ 保存叙述折叠开关失败: {}",
             skill_catalog_hidden_tmpl: "🚫 `{}` 已从目录中隐藏（{}）",
             skill_catalog_shown_tmpl: "✅ `{}` 已回到目录中（{}）",
             skill_catalog_persisted: "已写入配置",
@@ -1271,6 +1303,8 @@ impl Messages {
             fold_failed: "{} 个失败",
             fold_thoughts: "{} 段思考",
             fold_thoughts_one: "{} 段思考",
+            fold_notes: "{} 段说明",
+            fold_notes_one: "{} 段说明",
             fold_sep: " · ",
             fold_repeat: "{} ×{}",
         }

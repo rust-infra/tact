@@ -71,6 +71,14 @@ pub struct LogScroll {
     /// are asked once per row per frame, so the answer is computed when the log
     /// changes rather than scanned out of `LogItem::raw` each time.
     pub turn_boundary_rows: std::collections::BTreeSet<usize>,
+    /// Runs of narration rows, rebuilt with the same invalidation key.
+    ///
+    /// Empty while `[ui] fold_commentary` is off — the host clears it there, so
+    /// the fold rules see "no narration" and behaviour matches the old shape.
+    pub commentary_runs: Vec<crate::state::activity_region::CommentaryRun>,
+    /// First rows of tool runs a mixed region already stands for; see
+    /// [`crate::render::ctx::RenderCtx::runs_covered_by_region`].
+    pub runs_covered_by_region: std::collections::BTreeSet<usize>,
     /// Visible index cache: logical line → physical msg index.
     pub visible_indices: Vec<usize>,
     /// physical → logical reverse mapping cache (uses Option for invisible lines).
@@ -88,6 +96,8 @@ impl LogScroll {
             height: 10,
             width: 80,
             turn_boundary_rows: std::collections::BTreeSet::new(),
+            commentary_runs: Vec::new(),
+            runs_covered_by_region: std::collections::BTreeSet::new(),
             visible_indices: Vec::new(),
             visual_start: Vec::new(),
             visual_cache: Vec::new(),

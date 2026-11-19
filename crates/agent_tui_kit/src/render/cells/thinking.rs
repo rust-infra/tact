@@ -422,6 +422,7 @@ mod tests {
             summary: "last".into(),
             cached_markdown: Vec::new(),
             elapsed: std::time::Duration::from_millis(1500),
+            span: None,
         };
         ThinkingCell::completed(&block, theme, msgs)
     }
@@ -459,6 +460,7 @@ mod tests {
             summary: "last".into(),
             cached_markdown: Vec::new(),
             elapsed: std::time::Duration::ZERO,
+            span: None,
         };
         let cell = ThinkingCell::completed(&block, &theme, &msgs);
         let text = render_text(&cell);
@@ -779,6 +781,7 @@ mod tests {
                 summary: "only line".into(),
                 cached_markdown: Vec::new(),
                 elapsed: std::time::Duration::from_millis(40),
+                span: None,
             };
             let cell = ThinkingCell::completed(&block, &theme, &msgs);
             let drawn: String = cell

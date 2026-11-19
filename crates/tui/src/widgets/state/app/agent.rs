@@ -563,6 +563,16 @@ impl App {
             // ToolTranscriptStream → ToolComponent (the popup's in-flight
             // assistant text); no shell-side effect either.
             AgentUpdate::ToolTranscriptStream { .. } => {}
+            // The assistant message pair brackets the rows this message will
+            // occupy, so a `Commentary` label can be applied to them after the
+            // fact: the stream appends rows before the provider says what they
+            // are.
+            AgentUpdate::MessageStarted { .. } => {
+                self.streaming_message_start = Some(self.log.items.len());
+            }
+            AgentUpdate::MessageFinished { phase, .. } => {
+                self.label_streaming_message(phase);
+            }
             AgentUpdate::TasksChanged { tasks, reason } => {
                 self.on_tasks_changed_tail(tasks, reason);
             }
@@ -579,8 +589,6 @@ impl App {
             | AgentUpdate::RunStarted { .. }
             | AgentUpdate::RunFinished { .. }
             | AgentUpdate::RunFailed { .. }
-            | AgentUpdate::MessageStarted { .. }
-            | AgentUpdate::MessageFinished { .. }
             | AgentUpdate::ToolMeta { .. }
             | AgentUpdate::StreamChunk(_)
             | AgentUpdate::SubagentsChanged { .. }
@@ -588,6 +596,43 @@ impl App {
             | AgentUpdate::SurfaceSnapshot { .. }
             | AgentUpdate::BackgroundTasksChanged { .. }
             | AgentUpdate::UiResponseRejected { .. } => {}
+        }
+    }
+
+    /// Re-label the rows a finished assistant message wrote.
+    ///
+    /// The stream appends rows as text arrives, before the provider says what
+    /// the text *is* — so the label has to be applied retroactively. Only
+    /// `Commentary` changes anything: `FinalAnswer` and `None` both leave the
+    /// rows as [`LogItemKind::AssistantMarkdown`], because a message that was
+    /// never labelled must not be folded away on a guess.
+    ///
+    /// Only prose rows are relabelled. A message can flush a code-card
+    /// placeholder, a table, or a gap row into the same range, and rewriting
+    /// those would change how they render.
+    fn label_streaming_message(&mut self, phase: Option<tact_protocol::MessagePhase>) {
+        let Some(start) = self.streaming_message_start.take() else {
+            return;
+        };
+        if phase != Some(tact_protocol::MessagePhase::Commentary) {
+            return;
+        }
+        let end = self.log.items.len();
+        if start >= end {
+            return;
+        }
+        let mut relabelled = false;
+        for item in self.log.items[start..end].iter_mut() {
+            if item.kind == agent_tui_kit::state::LogItemKind::AssistantMarkdown {
+                item.kind = agent_tui_kit::state::LogItemKind::AssistantCommentary;
+                relabelled = true;
+            }
+        }
+        // The kind decides the fold, and the fold keys the layout caches — so a
+        // relabel has to invalidate them the same way a fold toggle does.
+        if relabelled {
+            self.tools_mut().state_mut().fold_rev = self.tools().state().fold_rev.wrapping_add(1);
+            self.dirty = true;
         }
     }
 

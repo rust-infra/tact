@@ -259,7 +259,7 @@ pub fn render_log_panel_pure(
             let kind = ctx.log.items[phys].kind;
             let category = match kind {
                 LogItemKind::User => "user",
-                LogItemKind::AssistantMarkdown => "assistant",
+                LogItemKind::AssistantMarkdown | LogItemKind::AssistantCommentary => "assistant",
                 LogItemKind::SystemPlain(_)
                 | LogItemKind::SystemMarkdown
                 | LogItemKind::SystemTool
@@ -293,13 +293,23 @@ pub fn render_log_panel_pure(
         // Checked before the tool run because a region that starts with a
         // thinking card owns that row; a tool-only run never starts at a card.
         if let Some(phys) = phys_idx
-            && let Some(cell) = ctx.tools.region_fold_summary(
-                ctx.thinking,
-                phys,
-                |phys: usize| ctx.turn_boundary_rows.contains(&phys),
-                ctx.theme,
-                &ctx.messages,
-            )
+            && let Some(cell) = {
+                #[cfg(debug_assertions)]
+                if std::env::var_os("TACT_DEBUG_FOLD").is_some() {
+                    eprintln!(
+                        "region_fold_summary phys={phys} runs={}",
+                        ctx.commentary_runs.len()
+                    );
+                }
+                ctx.tools.region_fold_summary(
+                    ctx.thinking,
+                    ctx.commentary_runs,
+                    phys,
+                    |phys: usize| ctx.turn_boundary_rows.contains(&phys),
+                    ctx.theme,
+                    &ctx.messages,
+                )
+            }
         {
             let identity = cell.identity().to_string();
             if let Some((cell_area, _skip)) = renderer.cell_slice(
@@ -321,7 +331,12 @@ pub fn render_log_panel_pure(
         // other rows are not in `visible_indices` at all, so they never reach
         // this loop.
         if let Some(phys) = phys_idx
-            && let Some(cell) = ctx.tools.fold_summary(phys, ctx.theme, &ctx.messages)
+            && let Some(cell) = ctx.tools.fold_summary(
+                phys,
+                |run_phys| ctx.runs_covered_by_region.contains(&run_phys),
+                ctx.theme,
+                &ctx.messages,
+            )
         {
             let identity = cell.identity().to_string();
             if let Some((cell_area, _skip)) = renderer.cell_slice(

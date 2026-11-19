@@ -55,6 +55,9 @@ fn route_builtin(command: tact_catalog::BuiltinCommand, args: &CommandArguments)
         B::Mcp => route_mcp(args),
         B::Hooks => route_hooks(args),
         B::HookOutput => CommandRoute::Shell(CommandId::Builtin(command)),
+        // The desktop transcript folds narration unconditionally; the verb
+        // exists for the TUI, so the desktop answers it as a shell no-op.
+        B::FoldCommentary => CommandRoute::Shell(CommandId::Builtin(command)),
         B::Balance => CommandRoute::User(UserCommand::QueryBalance),
         B::Stats => CommandRoute::Surface(SurfaceQuery::Stats),
         B::TasksDag => CommandRoute::Shell(CommandId::Builtin(command)),

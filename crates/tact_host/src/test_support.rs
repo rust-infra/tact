@@ -64,6 +64,7 @@ fn default_test_config() -> tact::config::ResolvedConfig {
                 jpeg_quality: tact::config::VisionImageSettings::DEFAULT_JPEG_QUALITY,
             },
             hook_output: tact::config::UiSettings::DEFAULT_HOOK_OUTPUT,
+            fold_commentary: tact::config::UiSettings::DEFAULT_FOLD_COMMENTARY,
         },
         tools: tact::config::ToolSettings {
             bash_timeout_secs: tact::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,

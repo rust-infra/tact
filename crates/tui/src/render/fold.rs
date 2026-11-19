@@ -63,10 +63,28 @@ impl FoldLayout {
         blocks: &[ToolBlock],
         thinking: &ThinkingState,
         state: &ToolState,
+        commentary: &[activity_region::CommentaryRun],
         is_turn_boundary: impl Fn(usize) -> bool,
     ) -> Self {
+        // A run that sits **inside** a mixed region folds with that region: an
+        // independent run summary would paint a second row for a stretch the
+        // region already stands for, and the two row counts would disagree.
+        let regions_found = activity_region::regions_with_commentary(
+            &thinking.blocks,
+            blocks,
+            commentary,
+            &is_turn_boundary,
+        );
+        let covered = |phys: usize| {
+            regions_found.iter().any(|region| {
+                region.folds_here()
+                    && phys > region.phys_idx
+                    && phys < region.phys_idx + region.expanded_rows
+            })
+        };
         let folds = tool_group::runs(blocks)
             .into_iter()
+            .filter(|run| !covered(run.phys_idx))
             .map(|run| Fold {
                 phys_idx: run.phys_idx,
                 expanded_rows: run.expanded_rows,
@@ -76,7 +94,7 @@ impl FoldLayout {
                 region: None,
             })
             .collect();
-        let regions = activity_region::regions_bounded(&thinking.blocks, blocks, is_turn_boundary)
+        let regions: Vec<Fold> = regions_found
             .into_iter()
             .map(|region| Fold {
                 phys_idx: region.phys_idx,
@@ -92,6 +110,7 @@ impl FoldLayout {
                 region: Some(region),
             })
             .collect();
+
         Self {
             folds,
             regions,
@@ -214,6 +233,7 @@ mod tests {
             &blocks,
             &ThinkingState::default(),
             &ToolState::default(),
+            &[],
             |_| false,
         );
         assert!(layout.folded_run_at(1).is_some(), "the run starts folded");
@@ -230,7 +250,8 @@ mod tests {
             ..ToolState::default()
         };
         assert!(state.toggle_run_at(1));
-        let layout = FoldLayout::capture(&blocks, &ThinkingState::default(), &state, |_| false);
+        let layout =
+            FoldLayout::capture(&blocks, &ThinkingState::default(), &state, &[], |_| false);
         assert!(layout.folded_run_at(1).is_none());
         for phys in [1, 3, 5] {
             assert!(!layout.hides(phys), "{phys} must be visible again");
@@ -247,6 +268,7 @@ mod tests {
             &blocks,
             &ThinkingState::default(),
             &ToolState::default(),
+            &[],
             |_| false,
         );
         assert!(layout.folded_run_at(1).is_none());
@@ -265,6 +287,7 @@ mod tests {
             &blocks,
             &ThinkingState::default(),
             &ToolState::default(),
+            &[],
             |_| false,
         );
         assert!(layout.folded_run_at(1).is_some());
@@ -285,7 +308,7 @@ mod tests {
             blocks: vec![card("t1", 1)],
             ..Default::default()
         };
-        let layout = FoldLayout::capture(&blocks, &thinking, &ToolState::default(), |_| false);
+        let layout = FoldLayout::capture(&blocks, &thinking, &ToolState::default(), &[], |_| false);
         let region = layout
             .folded_region_at(1)
             .expect("a mixed region folds by default");
@@ -305,7 +328,7 @@ mod tests {
     fn a_tool_only_run_still_folds_through_the_tool_group() {
         let blocks = three_successful();
         let thinking = ThinkingState::default();
-        let layout = FoldLayout::capture(&blocks, &thinking, &ToolState::default(), |_| false);
+        let layout = FoldLayout::capture(&blocks, &thinking, &ToolState::default(), &[], |_| false);
         assert!(layout.folded_region_at(1).is_none());
         assert!(layout.folded_run_at(1).is_some());
     }
@@ -317,7 +340,7 @@ mod tests {
             blocks: vec![card("t1", 1)],
             ..Default::default()
         };
-        let layout = FoldLayout::capture(&blocks, &thinking, &ToolState::default(), |_| false);
+        let layout = FoldLayout::capture(&blocks, &thinking, &ToolState::default(), &[], |_| false);
         assert_eq!(
             layout.folded_rows_at(1),
             Some(1),

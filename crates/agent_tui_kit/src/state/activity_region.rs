@@ -36,7 +36,7 @@
 use std::time::Duration;
 
 use super::thinking::ThinkingBlock;
-use super::tool_group::{self, ToolRun};
+use super::tool_group;
 use super::tool_state::ToolBlock;
 
 /// Which source slice a member's index refers to.
@@ -46,6 +46,13 @@ pub enum RegionMemberKind {
     Thinking,
     /// `ToolState::blocks` — a finished call.
     Tool,
+    /// A run of adjacent `LogItemKind::AssistantCommentary` rows — assistant
+    /// text the provider labelled as mid-turn narration.
+    ///
+    /// Indexed into the caller's commentary-run slice, not into the log: the
+    /// fold rules already take member rows by index, and a run of prose rows is
+    /// one member however many rows it wraps into.
+    Commentary,
 }
 
 /// One member of an activity region.
@@ -105,6 +112,15 @@ impl ActivityRegion {
             .count()
     }
 
+    /// How many narration runs the region holds.
+    #[must_use]
+    pub fn commentary(&self) -> usize {
+        self.members
+            .iter()
+            .filter(|member| member.kind == RegionMemberKind::Commentary)
+            .count()
+    }
+
     /// Whether the region holds both a card and a call.
     ///
     /// Only a mixed region folds here; a region of tools only is left to
@@ -113,6 +129,37 @@ impl ActivityRegion {
     pub fn mixes_thinking_and_tools(&self) -> bool {
         self.thoughts() > 0 && self.tools() > 0
     }
+
+    /// Whether this region folds through [`super::activity_region`] at all.
+    ///
+    /// True when it holds a card and a call, or when it holds narration beside
+    /// either — the two shapes the desktop transcript folds and the log did
+    /// not. A region of calls alone stays with [`super::tool_group`], whose
+    /// summary names each call.
+    #[must_use]
+    pub fn folds_here(&self) -> bool {
+        self.mixes_thinking_and_tools()
+            || (self.commentary() > 0 && (self.tools() > 0 || self.thoughts() > 0))
+    }
+}
+
+/// One run of adjacent narration rows (`LogItemKind::AssistantCommentary`).
+///
+/// A run, not one member per row: a paragraph wraps to five log rows, and
+/// counting rows would say `5 paragraphs` for one. The host builds these from
+/// the log, because the kit does not own the log.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommentaryRun {
+    /// Physical row of the run's first row.
+    pub phys_idx: usize,
+    /// How many log rows the run covers. They are contiguous by construction.
+    pub rows: usize,
+    /// Stable identity for the fold key when a run heads a region.
+    ///
+    /// The log has no id per paragraph, so the host passes the run's first
+    /// row's text: it survives inserts above the run, where a `phys_idx`
+    /// would not.
+    pub identity: String,
 }
 
 /// Build the activity regions of one log.
@@ -141,7 +188,23 @@ pub fn regions_bounded(
     tools: &[ToolBlock],
     is_turn_boundary: impl Fn(usize) -> bool,
 ) -> Vec<ActivityRegion> {
-    let mut members: Vec<(RegionMember, &str)> = thinking
+    regions_with_commentary(thinking, tools, &[], is_turn_boundary)
+}
+
+/// [`regions_bounded`] with the log's narration runs included.
+///
+/// Narration is the half the desktop transcript folds and the log did not: the
+/// "let me check that" text a model writes *before* it calls a tool. Only runs
+/// the host already marked `AssistantCommentary` are included, which is what
+/// keeps a `FinalAnswer` — and text no provider labelled — out of the fold.
+#[must_use]
+pub fn regions_with_commentary(
+    thinking: &[ThinkingBlock],
+    tools: &[ToolBlock],
+    commentary: &[CommentaryRun],
+    is_turn_boundary: impl Fn(usize) -> bool,
+) -> Vec<ActivityRegion> {
+    let mut members: Vec<(RegionMember, String)> = thinking
         .iter()
         .enumerate()
         .map(|(index, block)| {
@@ -152,7 +215,7 @@ pub fn regions_bounded(
                     phys_idx: block.phys_idx,
                     rows: crate::render::cells::thinking::COMPLETED_THINKING_ROWS,
                 },
-                block.block_id.as_str(),
+                block.block_id.clone(),
             )
         })
         .chain(tools.iter().enumerate().map(|(index, block)| {
@@ -163,7 +226,18 @@ pub fn regions_bounded(
                     phys_idx: block.phys_idx,
                     rows: block.output.visual_rows(false),
                 },
-                block.tool_id.as_str(),
+                block.tool_id.clone(),
+            )
+        }))
+        .chain(commentary.iter().enumerate().map(|(index, run)| {
+            (
+                RegionMember {
+                    kind: RegionMemberKind::Commentary,
+                    index,
+                    phys_idx: run.phys_idx,
+                    rows: run.rows,
+                },
+                run.identity.clone(),
             )
         }))
         .collect();
@@ -201,7 +275,7 @@ pub fn regions_bounded(
                 phys_idx: first.phys_idx,
                 expanded_rows: next_phys - first.phys_idx,
                 folded_rows: 1,
-                key: members[start].1.to_string(),
+                key: members[start].1.clone(),
             });
         }
         start = end;
@@ -211,43 +285,53 @@ pub fn regions_bounded(
 
 /// Total wall clock a region occupied, or `None` when nothing in it was timed.
 ///
-/// A thinking card carries an elapsed duration, tool blocks carry spans. When
-/// both exist the spans decide, because a thought and the call it explains
-/// shared one stretch of wall clock and adding the card's duration to the span
-/// union would count part of it twice. A region of cards only has no spans, so
-/// its cards' durations are the only measurement there is.
+/// The **union** of every member's span — thoughts and calls alike — for the
+/// same reason [`super::tool_group::total_span`] unions a run's calls: a
+/// thought and the call it explains share one stretch of wall clock, and calls
+/// in a turn run concurrently by wave. Adding durations would report a thought
+/// that overlapped a call twice, and would report four parallel one-second
+/// calls as four seconds.
+///
+/// A member with no span (rebuilt from history) contributes nothing rather
+/// than a fabricated zero. When no member has one, the answer is `None` — a
+/// total that guessed would be a number the reader could not trust.
 #[must_use]
 pub fn total_span(
     thinking: &[ThinkingBlock],
     tools: &[ToolBlock],
     region: &ActivityRegion,
 ) -> Option<Duration> {
-    let tool_blocks: Vec<ToolBlock> = region
+    let mut spans: Vec<super::tool_state::ToolSpan> = region
         .members
         .iter()
-        .filter(|member| member.kind == RegionMemberKind::Tool)
-        .filter_map(|member| tools.get(member.index).cloned())
+        .filter_map(|member| match member.kind {
+            RegionMemberKind::Thinking => thinking.get(member.index)?.span,
+            RegionMemberKind::Tool => tools.get(member.index)?.span,
+            // Narration rows carry no clock of their own; the text arrived
+            // inside the stream that the span around it already covers.
+            RegionMemberKind::Commentary => None,
+        })
         .collect();
-    if tool_blocks.is_empty() {
-        let thoughts: Duration = region
-            .members
-            .iter()
-            .filter(|member| member.kind == RegionMemberKind::Thinking)
-            .filter_map(|member| thinking.get(member.index))
-            .map(|block| block.elapsed)
-            .sum();
-        return (!thoughts.is_zero()).then_some(thoughts);
+    if spans.is_empty() {
+        return None;
     }
-    // `tool_group::total_span` wants indices into its own slice. Build the run
-    // over exactly the tool members so a card between two calls cannot make
-    // them look non-adjacent.
-    let run = ToolRun {
-        members: (0..tool_blocks.len()).collect(),
-        phys_idx: 0,
-        expanded_rows: 0,
-        folded_rows: 0,
-    };
-    tool_group::total_span(&tool_blocks, &run)
+    spans.sort_by_key(|span| span.started_at);
+
+    let mut total = Duration::ZERO;
+    let mut current_start = spans[0].started_at;
+    let mut current_end = spans[0].finished_at;
+    for span in &spans[1..] {
+        if span.started_at <= current_end {
+            // Overlaps (or touches) the interval being accumulated.
+            current_end = current_end.max(span.finished_at);
+        } else {
+            total += current_end.saturating_duration_since(current_start);
+            current_start = span.started_at;
+            current_end = span.finished_at;
+        }
+    }
+    total += current_end.saturating_duration_since(current_start);
+    Some(total)
 }
 
 /// Whether a region can be folded yet.
@@ -263,6 +347,9 @@ pub fn is_foldable(tools: &[ToolBlock], region: &ActivityRegion) -> bool {
             RegionMemberKind::Tool => tools
                 .get(member.index)
                 .is_some_and(|block| !block.output.phase.is_live()),
+            // Narration rows are finished text: nothing in them can still be
+            // changing, so a run never keeps a region open on its own.
+            RegionMemberKind::Commentary => true,
         })
 }
 
@@ -280,7 +367,7 @@ pub fn is_folded(
     folded: &std::collections::BTreeSet<String>,
     unfolded: &std::collections::BTreeSet<String>,
 ) -> bool {
-    if !is_foldable(tools, region) || !region.mixes_thinking_and_tools() {
+    if !is_foldable(tools, region) || !region.folds_here() {
         return false;
     }
     if folded.contains(&region.key) {
@@ -329,27 +416,55 @@ pub fn summarize(
     elapsed: Option<Duration>,
     msgs: &crate::i18n::Messages,
 ) -> RegionSummary {
+    summarize_with_commentary(thoughts, 0, titles, elapsed, msgs)
+}
+
+/// [`summarize`] with the region's narration runs counted.
+///
+/// A folded region that swallowed narration has to say so: the reader is
+/// looking at one row where a paragraph used to be, and `1 note` is what tells
+/// them the model said something rather than only calling tools.
+#[must_use]
+pub fn summarize_with_commentary(
+    thoughts: usize,
+    notes: usize,
+    titles: &[(crate::widgets::tool_widget::ToolPhase, &str)],
+    elapsed: Option<Duration>,
+    msgs: &crate::i18n::Messages,
+) -> RegionSummary {
     let failures = titles
         .iter()
         .filter(|(phase, _)| phase.is_failure())
         .count();
     let mut text = String::new();
+    let push_part = |text: &mut String, part: String| {
+        if !text.is_empty() {
+            text.push_str(msgs.fold_sep);
+        }
+        text.push_str(&part);
+    };
     if thoughts > 0 {
         let tmpl = if thoughts == 1 {
             msgs.fold_thoughts_one
         } else {
             msgs.fold_thoughts
         };
-        text.push_str(&tmpl.replacen("{}", &thoughts.to_string(), 1));
+        push_part(&mut text, tmpl.replacen("{}", &thoughts.to_string(), 1));
+    }
+    if notes > 0 {
+        let tmpl = if notes == 1 {
+            msgs.fold_notes_one
+        } else {
+            msgs.fold_notes
+        };
+        push_part(&mut text, tmpl.replacen("{}", &notes.to_string(), 1));
     }
     if !titles.is_empty() {
-        if !text.is_empty() {
-            text.push_str(msgs.fold_sep);
-        }
         // The tool half owns the failure count and the per-tool labels, so a
         // mixed region cannot state them twice or in another order than a
         // tool-only run does.
-        text.push_str(&tool_group::tools_summary(titles, failures, msgs));
+        let part = tool_group::tools_summary(titles, failures, msgs);
+        push_part(&mut text, part);
     }
     RegionSummary {
         text,
@@ -556,6 +671,81 @@ mod tests {
             "the tool label and repeat glyph stay as they are: {}",
             chinese.text
         );
+    }
+
+    fn span(base: Instant, start_ms: u64, len_ms: u64) -> crate::state::ToolSpan {
+        let started_at = base + Duration::from_millis(start_ms);
+        crate::state::ToolSpan {
+            started_at,
+            finished_at: started_at + Duration::from_millis(len_ms),
+        }
+    }
+
+    /// A thought and a call that overlapped took the time of one, not two: the
+    /// card's duration must not be added on top of the call's span.
+    #[test]
+    fn a_thought_and_an_overlapping_call_count_once() {
+        let base = Instant::now();
+        let mut card = thinking("t1", 1);
+        card.span = Some(span(base, 0, 1_000));
+        let mut call = tool("a", 2, ToolPhase::Success);
+        call.span = Some(span(base, 500, 500));
+        let cards = [card];
+        let calls = [call];
+        let found = regions(&cards, &calls);
+        assert_eq!(
+            total_span(&cards, &calls, &found[0]),
+            Some(Duration::from_millis(1_000)),
+            "the union covers 0..1000, not 1000+500"
+        );
+    }
+
+    /// Sequential members add up.
+    #[test]
+    fn a_thought_then_a_call_add_up() {
+        let base = Instant::now();
+        let mut card = thinking("t1", 1);
+        card.span = Some(span(base, 0, 300));
+        let mut call = tool("a", 2, ToolPhase::Success);
+        call.span = Some(span(base, 300, 700));
+        let cards = [card];
+        let calls = [call];
+        let found = regions(&cards, &calls);
+        assert_eq!(
+            total_span(&cards, &calls, &found[0]),
+            Some(Duration::from_millis(1_000))
+        );
+    }
+
+    /// A card with no span contributes nothing rather than a fabricated zero —
+    /// the call's clock still answers the question.
+    #[test]
+    fn a_spanless_thought_does_not_shrink_a_measured_total() {
+        let base = Instant::now();
+        let card = thinking("t1", 1); // no span, only `elapsed`
+        let mut call = tool("a", 2, ToolPhase::Success);
+        call.span = Some(span(base, 0, 500));
+        let cards = [card];
+        let calls = [call];
+        let found = regions(&cards, &calls);
+        assert_eq!(
+            total_span(&cards, &calls, &found[0]),
+            Some(Duration::from_millis(500)),
+            "a card rebuilt from history contributes no clock"
+        );
+    }
+
+    /// Nothing timed at all reports nothing, not zero.
+    #[test]
+    fn a_region_with_no_clock_reports_none() {
+        let mut card = thinking("t1", 1);
+        card.span = None;
+        let mut call = tool("a", 2, ToolPhase::Success);
+        call.span = None;
+        let cards = [card];
+        let calls = [call];
+        let found = regions(&cards, &calls);
+        assert_eq!(total_span(&cards, &calls, &found[0]), None);
     }
 
     #[test]

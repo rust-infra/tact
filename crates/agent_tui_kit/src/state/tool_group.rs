@@ -331,9 +331,16 @@ impl ToolState {
     /// answered for **every** logical row on every frame. Checking the cheap
     /// case first keeps a fold from turning the render loop quadratic: `runs`
     /// walks every block, and the log redraws each line.
+    ///
+    /// `covers_run` answers "does a mixed activity region stand for this run?".
+    /// A run inside a region folds with that region — an independent summary
+    /// would paint a second row for a stretch the region already stands for,
+    /// and expanding one would leave the other's summary lying across its
+    /// members.
     pub fn fold_summary(
         &self,
         phys_idx: usize,
+        covers_run: impl Fn(usize) -> bool,
         theme: &crate::theme::Theme,
         msgs: &crate::i18n::Messages,
     ) -> Option<crate::render::cells::tool_run::ToolRunCell> {
@@ -341,9 +348,11 @@ impl ToolState {
             return None;
         }
         let found = runs(&self.blocks);
-        let run = found
-            .into_iter()
-            .find(|run| run.phys_idx == phys_idx && is_folded(&self.blocks, run, self))?;
+        let run = found.into_iter().find(|run| {
+            run.phys_idx == phys_idx
+                && is_folded(&self.blocks, run, self)
+                && !covers_run(run.phys_idx)
+        })?;
         let key = run_key(&self.blocks, &run)?.to_string();
         let members = run
             .members
@@ -494,9 +503,23 @@ impl ToolState {
         thinking: &crate::state::thinking::ThinkingState,
         is_turn_boundary: impl Fn(usize) -> bool,
     ) -> Vec<crate::state::activity_region::ActivityRegion> {
-        crate::state::activity_region::regions_bounded(
+        self.activity_regions_with_commentary(thinking, &[], is_turn_boundary)
+    }
+
+    /// [`Self::activity_regions_in_log`] with the log's narration runs.
+    ///
+    /// The host passes these when `[ui] fold_commentary` is on; an empty slice
+    /// gives the pre-switch shape, where narration kept its own rows.
+    pub fn activity_regions_with_commentary(
+        &self,
+        thinking: &crate::state::thinking::ThinkingState,
+        commentary: &[crate::state::activity_region::CommentaryRun],
+        is_turn_boundary: impl Fn(usize) -> bool,
+    ) -> Vec<crate::state::activity_region::ActivityRegion> {
+        crate::state::activity_region::regions_with_commentary(
             &thinking.blocks,
             &self.blocks,
+            commentary,
             is_turn_boundary,
         )
     }
@@ -513,20 +536,25 @@ impl ToolState {
     pub fn region_fold_summary(
         &self,
         thinking: &crate::state::thinking::ThinkingState,
+        commentary: &[crate::state::activity_region::CommentaryRun],
         phys_idx: usize,
         is_turn_boundary: impl Fn(usize) -> bool,
         theme: &crate::theme::Theme,
         msgs: &crate::i18n::Messages,
     ) -> Option<crate::render::cells::activity_region::ActivityRegionCell> {
+        // A region can start at a narration row, which is in neither `blocks`
+        // slice — so the cheap "nothing starts here" check has to include the
+        // commentary runs too, or a narration-headed region never gets drawn.
         if !self.blocks.iter().any(|block| block.phys_idx == phys_idx)
             && !thinking
                 .blocks
                 .iter()
                 .any(|block| block.phys_idx == phys_idx)
+            && !commentary.iter().any(|run| run.phys_idx == phys_idx)
         {
             return None;
         }
-        let found = self.activity_regions_in_log(thinking, is_turn_boundary);
+        let found = self.activity_regions_with_commentary(thinking, commentary, is_turn_boundary);
         let index = crate::state::activity_region::region_at_phys(&found, phys_idx)?;
         let region = &found[index];
         if region.phys_idx != phys_idx
@@ -539,7 +567,7 @@ impl ToolState {
         {
             return None;
         }
-        let titles = region
+        let titles: Vec<(crate::widgets::tool_widget::ToolPhase, String)> = region
             .members
             .iter()
             .filter(|member| member.kind == crate::state::activity_region::RegionMemberKind::Tool)
@@ -552,6 +580,7 @@ impl ToolState {
             crate::render::cells::activity_region::ActivityRegionCell::new(
                 region,
                 region.thoughts(),
+                region.commentary(),
                 titles,
                 elapsed,
                 true,

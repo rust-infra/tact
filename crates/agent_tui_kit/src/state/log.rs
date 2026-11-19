@@ -91,7 +91,18 @@ impl SystemMsgStyle {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LogItemKind {
     User,
+    /// The assistant's **terminal** answer for the turn — or text whose phase
+    /// the provider never labelled. Always drawn; never folded away.
     AssistantMarkdown,
+    /// Mid-turn narration: assistant text with a `Commentary` phase, i.e. text
+    /// the model wrote *before* the tool calls it then made.
+    ///
+    /// Same indent and styling as [`Self::AssistantMarkdown`]; the kind exists
+    /// so the activity-region fold can tell narration from the answer. Folding
+    /// it away is what the desktop transcript has always done, and it is what
+    /// keeps a turn's "let me check that" lines from separating the reader from
+    /// the answer that follows them.
+    AssistantCommentary,
     SystemPlain(SystemMsgStyle),
     SystemMarkdown,
     SystemTool,
@@ -122,9 +133,10 @@ impl LogItemKind {
     pub fn log_indent(self) -> u16 {
         match self {
             Self::User => 0,
-            Self::AssistantMarkdown | Self::SystemPlain(_) | Self::SystemMarkdown => {
-                LOG_THINKING_INDENT + 1
-            }
+            Self::AssistantMarkdown
+            | Self::AssistantCommentary
+            | Self::SystemPlain(_)
+            | Self::SystemMarkdown => LOG_THINKING_INDENT + 1,
             Self::SystemTool => LOG_TOOL_INDENT,
             Self::Thinking => LOG_THINKING_INDENT,
             Self::HookStatus(_) | Self::HookContext => LOG_TOOL_BLOCK_INDENT,
@@ -133,6 +145,11 @@ impl LogItemKind {
 
     pub fn is_user(self) -> bool {
         matches!(self, Self::User)
+    }
+
+    /// Whether this row is assistant prose — the answer or its narration.
+    pub fn is_assistant_prose(self) -> bool {
+        matches!(self, Self::AssistantMarkdown | Self::AssistantCommentary)
     }
 }
 

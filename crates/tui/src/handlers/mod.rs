@@ -431,6 +431,10 @@ fn run_command(app: &mut App, command: SlashCommand) -> CommandExecOutcome {
             app.toggle_hook_output();
             CommandExecOutcome::handled()
         }
+        C::FoldCommentary => {
+            app.toggle_fold_commentary();
+            CommandExecOutcome::handled()
+        }
         C::Cancel => {
             // Only cancel an in-flight task; Idle and Done have nothing to
             // abort. Queued (pending) messages are NOT touched — dropping

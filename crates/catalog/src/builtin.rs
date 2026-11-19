@@ -39,6 +39,8 @@ pub enum BuiltinCommand {
     Hooks,
     #[strum(serialize = "hook-output")]
     HookOutput,
+    #[strum(serialize = "fold-commentary")]
+    FoldCommentary,
     #[strum(serialize = "balance")]
     Balance,
     #[strum(serialize = "lang")]
@@ -154,6 +156,7 @@ impl BuiltinCommand {
         Self::Mcp,
         Self::Hooks,
         Self::HookOutput,
+        Self::FoldCommentary,
         Self::Balance,
         Self::Lang,
         Self::Stats,
@@ -248,6 +251,10 @@ impl BuiltinCommand {
                 "Query account balance (DeepSeek/Kimi)",
                 "查询账户余额 (DeepSeek/Kimi)",
             ),
+            Self::FoldCommentary => LocalizedText::new(
+                "Fold mid-turn assistant narration into one row",
+                "把回合中的助手叙述折叠成一行",
+            ),
             Self::Lang => LocalizedText::new("Toggle language (EN/中文)", "切换语言 (EN/中文)"),
             Self::Stats => LocalizedText::new("Show session statistics", "显示会话统计"),
             Self::TasksDag => LocalizedText::new("Show task dependency DAG", "显示任务依赖 DAG"),
@@ -283,6 +290,7 @@ impl BuiltinCommand {
             Self::Mcp => "mcp",
             Self::Hooks => "hooks",
             Self::HookOutput => "hook-output",
+            Self::FoldCommentary => "fold-commentary",
             Self::Balance => "balance",
             Self::Lang => "lang",
             Self::Stats => "stats",
