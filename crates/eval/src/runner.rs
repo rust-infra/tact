@@ -11,10 +11,12 @@
 //! prints it as unknown instead of a zero that would average into a suite's
 //! numbers as if it were measured.
 
+#[cfg(feature = "agent-run")]
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "agent-run")]
 pub use tact::AgentLoopStop;
 
 /// One tool call as the run saw it.
@@ -104,6 +106,7 @@ pub enum StopView {
     BlockedByHook,
 }
 
+#[cfg(feature = "agent-run")]
 impl From<AgentLoopStop> for StopView {
     fn from(stop: AgentLoopStop) -> Self {
         match stop {
@@ -233,6 +236,7 @@ pub trait Runner: Send + Sync {
 }
 
 /// Elapsed milliseconds, shared so both runners measure the same thing.
+#[cfg(feature = "agent-run")]
 pub(crate) fn elapsed_ms(start: std::time::Instant) -> u64 {
     let elapsed: Duration = start.elapsed();
     u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
@@ -242,6 +246,7 @@ pub(crate) fn elapsed_ms(start: std::time::Instant) -> u64 {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "agent-run")]
     #[test]
     fn every_stop_reason_has_a_stable_label() {
         for (stop, label) in [

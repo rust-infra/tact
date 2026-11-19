@@ -344,7 +344,10 @@ unreadable when it fails. `tools` asserts on the calls by name — `tool`,
 `no_tool`, `first_tool`, `at_most` — which is the only way "use `read`, not
 `bash cat`" becomes a case. A record the runner could not attribute to a tool
 satisfies no assertion, and makes `no_tool`/`at_most` inconclusive rather than
-passing them: an unattributed call could be the one they forbid.
+passing them: an unattributed call could be the one they forbid. The host
+runner narrows that gap by pairing `StepStarted` and `StepFailed` on the
+invocation id, so a failed call keeps the name it announced; the headless log
+still has to carry a name on the line itself.
 
 **A `--config`-only CLI run is comparable again.** The CLI runner never saw the
 settings its child resolved, so `model` was `null` and two runs of one config
@@ -391,3 +394,18 @@ just answer text), now that `tools` and `json` graders can express it, then wire
 `tact-eval run` plus `tact-eval compare` into a nightly workflow with both
 reports uploaded as artifacts. Keep `--strict` for the small curated suites where
 "every attempt passed" is the contract.
+
+The regression suite now grows in stages, one capability per file prefix:
+`loop-` (history and recovery), `tool-` (selection and surgical edits), `mcp-`
+(project `.tact/.mcp.json`), `hook-` (unreviewed hooks stay pending),
+`subagent-`, `memory-`, and `compact-`. Each stage is data only — cases and
+fixtures — so a new capability is added without changing the harness. Two of
+them read process-global state that a case cannot vary: hook trust lives in
+`~/.tact/hooks-state.json`, and `auto_memory_directory` can move memory out of
+the work directory. The cases pin the defaults, and a hermetic run needs `HOME`
+pointed at a scratch directory.
+
+`compact-` is a wiring case, not summary-quality coverage: `RunArtifact` has no
+compaction field and the headless log prints no compaction line, so a no-op
+compaction looks the same as a correct one. Summary quality becomes testable
+only after the artifact carries the compaction outcome for both runners.

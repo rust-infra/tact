@@ -194,6 +194,23 @@ fn check_tools(tools: &[crate::ToolRecord], assertions: &[ToolAssertion]) -> Ver
                     Some(format!("the run never called {tool}"))
                 }
             }
+            // Needing a result: a named failure proves the call happened but
+            // not that it produced anything, so only a success decides it.
+            ToolAssertion::ToolSucceeded { tool } => {
+                let succeeded = tools.iter().any(|record| {
+                    record.name.as_deref() == Some(tool.as_str())
+                        && record.status == crate::ToolStatus::Succeeded
+                });
+                if succeeded {
+                    None
+                } else if unattributed > 0 {
+                    return cannot_say(&format!("the run may have called {tool}"));
+                } else if named.contains(&tool.as_str()) {
+                    Some(format!("every call to {tool} failed"))
+                } else {
+                    Some(format!("the run never called {tool}"))
+                }
+            }
             // Needing an absence: finding the call is a proven violation,
             // whether or not other records were unattributed.
             ToolAssertion::NoTool { tool } => {
@@ -701,6 +718,115 @@ mod tests {
             Verdict::Fail { reason } => assert!(reason.contains("never called read"), "{reason}"),
             other => panic!("expected failure, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn a_succeeded_assertion_rejects_a_failed_call() {
+        // The call happened, so `tool` would pass. It produced nothing, so the
+        // case that needs the result must not.
+        let dir = tempfile::tempdir().unwrap();
+        let mut artifact = artifact();
+        artifact.tools = vec![crate::ToolRecord {
+            name: Some("load_memory".into()),
+            args: None,
+            status: crate::ToolStatus::Failed,
+            duration_ms: None,
+            message: Some("no memories saved for this repository yet".into()),
+        }];
+
+        let grades = grade(
+            &case(vec![GraderSpec::Tools {
+                name: "loaded".into(),
+                assertions: vec![ToolAssertion::ToolSucceeded {
+                    tool: "load_memory".into(),
+                }],
+            }]),
+            dir.path(),
+            &artifact,
+        )
+        .await;
+
+        match &grades[0].verdict {
+            Verdict::Fail { reason } => {
+                assert!(
+                    reason.contains("every call to load_memory failed"),
+                    "{reason}"
+                );
+            }
+            other => panic!("expected failure, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_succeeded_assertion_accepts_a_retry_that_worked() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut artifact = artifact();
+        artifact.tools = vec![
+            crate::ToolRecord {
+                name: Some("load_memory".into()),
+                args: None,
+                status: crate::ToolStatus::Failed,
+                duration_ms: None,
+                message: Some("no memories saved yet".into()),
+            },
+            tool("load_memory"),
+        ];
+
+        let grades = grade(
+            &case(vec![GraderSpec::Tools {
+                name: "loaded".into(),
+                assertions: vec![ToolAssertion::ToolSucceeded {
+                    tool: "load_memory".into(),
+                }],
+            }]),
+            dir.path(),
+            &artifact,
+        )
+        .await;
+
+        assert!(grades[0].verdict.is_pass(), "{:?}", grades[0]);
+    }
+
+    #[tokio::test]
+    async fn a_succeeded_assertion_stays_undecided_while_a_call_is_unattributed() {
+        // The named failure proves one call did not work. The unattributed one
+        // might have been a successful retry, so this cannot fail the case.
+        let dir = tempfile::tempdir().unwrap();
+        let mut artifact = artifact();
+        artifact.tools = vec![
+            crate::ToolRecord {
+                name: Some("load_memory".into()),
+                args: None,
+                status: crate::ToolStatus::Failed,
+                duration_ms: None,
+                message: Some("no memories saved yet".into()),
+            },
+            crate::ToolRecord {
+                name: None,
+                args: None,
+                status: crate::ToolStatus::Failed,
+                duration_ms: None,
+                message: Some("bare failure".into()),
+            },
+        ];
+
+        let grades = grade(
+            &case(vec![GraderSpec::Tools {
+                name: "loaded".into(),
+                assertions: vec![ToolAssertion::ToolSucceeded {
+                    tool: "load_memory".into(),
+                }],
+            }]),
+            dir.path(),
+            &artifact,
+        )
+        .await;
+
+        assert!(
+            matches!(&grades[0].verdict, Verdict::Inconclusive { .. }),
+            "{:?}",
+            grades[0]
+        );
     }
 
     #[tokio::test]

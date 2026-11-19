@@ -11,6 +11,7 @@
 //! inherits that model and permission mode. A caller that needs a different
 //! configuration per case spawns `tact-eval` again with different flags.
 
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use tact_host::{Frontend, Notices, SessionBuild, bootstrap_session};
@@ -297,6 +298,11 @@ async fn drain_events(
     shutdown: tokio::sync::oneshot::Receiver<()>,
 ) -> (Vec<ToolRecord>, TokenTotals) {
     let mut tools = Vec::new();
+    // `StepFailed` carries the invocation id and the error, but not the tool
+    // name. The `StepStarted` before it does, so remember it by id: without
+    // this a failed call is recorded as unattributed, and a `tools` grader can
+    // only call the case inconclusive.
+    let mut started = HashMap::new();
     let mut tokens = TokenTotals::default();
     let mut shutdown = shutdown;
 
@@ -309,11 +315,11 @@ async fn drain_events(
         let Some(update) = update else {
             break;
         };
-        record(&mut tools, &mut tokens, update);
+        record(&mut tools, &mut started, &mut tokens, update);
     }
 
     while let Ok(update) = rx.try_recv() {
-        record(&mut tools, &mut tokens, update);
+        record(&mut tools, &mut started, &mut tokens, update);
     }
 
     (tools, tokens)
@@ -336,19 +342,35 @@ fn last_assistant_text(agent: &tact::Agent) -> String {
         .to_string()
 }
 
-fn record(tools: &mut Vec<ToolRecord>, tokens: &mut TokenTotals, update: AgentUpdate) {
+fn record(
+    tools: &mut Vec<ToolRecord>,
+    started: &mut HashMap<String, (String, String)>,
+    tokens: &mut TokenTotals,
+    update: AgentUpdate,
+) {
     match update {
+        AgentUpdate::StepStarted {
+            tool_id,
+            tool_name,
+            arg_summary,
+            ..
+        } => {
+            started.insert(tool_id, (tool_name, arg_summary));
+        }
         AgentUpdate::StepFinished { result, .. } => tools.push(tool_record(&result)),
         // The event adapter emits `StepFailed` for every failed tool call and
         // never a `StepFinished` with `Failed` status, so without this arm the
         // host report would show no failures at all.
-        AgentUpdate::StepFailed { error, .. } => tools.push(ToolRecord {
-            name: None,
-            args: None,
-            status: ToolStatus::Failed,
-            duration_ms: None,
-            message: Some(error),
-        }),
+        AgentUpdate::StepFailed { tool_id, error, .. } => {
+            let start = started.remove(&tool_id);
+            tools.push(ToolRecord {
+                name: start.as_ref().map(|(name, _)| name.clone()),
+                args: start.map(|(_, args)| args),
+                status: ToolStatus::Failed,
+                duration_ms: None,
+                message: Some(error),
+            });
+        }
         AgentUpdate::TokenUsage(usage) => add_usage(tokens, &usage),
         _ => {}
     }
@@ -405,6 +427,65 @@ mod tests {
         assert_eq!(record.name.as_deref(), Some("bash"));
         assert_eq!(record.status, ToolStatus::Failed);
         assert_eq!(record.duration_ms, Some(1500));
+    }
+
+    #[test]
+    fn a_failed_step_keeps_the_name_its_start_announced() {
+        let mut tools = Vec::new();
+        let mut started = HashMap::new();
+        let mut tokens = TokenTotals::default();
+        record(
+            &mut tools,
+            &mut started,
+            &mut tokens,
+            AgentUpdate::StepStarted {
+                idx: 0,
+                tool_id: "call-1".into(),
+                tool_name: "load_memory".into(),
+                arg_summary: r#"{"name":"deploy-token"}"#.into(),
+                arg_full: String::new(),
+                presentation: ToolPresentationInfo::generic("t"),
+            },
+        );
+        record(
+            &mut tools,
+            &mut started,
+            &mut tokens,
+            AgentUpdate::StepFailed {
+                idx: 0,
+                run_id: None,
+                tool_id: "call-1".into(),
+                arg_summary: r#"{"name":"deploy-token"}"#.into(),
+                error: "no memories saved for this repository yet".into(),
+            },
+        );
+
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name.as_deref(), Some("load_memory"));
+        assert_eq!(tools[0].args.as_deref(), Some(r#"{"name":"deploy-token"}"#));
+        assert_eq!(tools[0].status, ToolStatus::Failed);
+    }
+
+    #[test]
+    fn a_failure_with_no_matching_start_stays_unattributed() {
+        let mut tools = Vec::new();
+        let mut started = HashMap::new();
+        let mut tokens = TokenTotals::default();
+        record(
+            &mut tools,
+            &mut started,
+            &mut tokens,
+            AgentUpdate::StepFailed {
+                idx: 0,
+                run_id: None,
+                tool_id: "call-unknown".into(),
+                arg_summary: String::new(),
+                error: "boom".into(),
+            },
+        );
+
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, None);
     }
 
     /// The pump returns when told to, even while a sender is still alive.

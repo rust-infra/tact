@@ -1,0 +1,20 @@
+# An edit must touch one value, not rewrite the file. Blank lines and the
+# section order are part of the fixture, so a formatter that "helps" fails.
+prompt = """
+In settings.ini, change only the cache ttl from 60 to 120.
+Keep every other line, the blank line included, exactly as it is.
+"""
+timeout_secs = 180
+
+[isolation]
+kind = "copy"
+fixture = "fixtures/tools"
+
+[[graders]]
+kind = "files"
+name = "one-value-changed"
+
+[[graders.assertions]]
+kind = "matches"
+path = "settings.ini"
+pattern = '^\[database\]\nhost = db\.internal\nport = 5432\npool = 10\n\n\[cache\]\nttl = 120\n?$'

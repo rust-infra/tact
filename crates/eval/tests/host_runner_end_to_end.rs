@@ -8,6 +8,7 @@
 //! second `#[tokio::test]` in this binary would race the first for it. The two
 //! scenarios share one server and are told apart by what the prompt asks for.
 
+#![cfg(feature = "agent-run")]
 #![allow(clippy::result_large_err)]
 
 use std::path::PathBuf;

@@ -52,12 +52,38 @@ Check that a suite is well formed without a model, a binary, or an API key.
 This is the part CI can run on every pull request:
 
 ```bash
-cargo run -p tact_eval -- validate suites/smoke
+cargo run -p tact_eval --no-default-features -- validate suites/smoke
 ```
+
+`run` and the two built-in runners live behind the default `agent-run` feature.
+Turning it off drops `tact`, `tact_host`, and `tact_llm` from the build, so
+`validate` and `compare` compile without the agent's sqlite, TLS, and provider
+clients. Keep the feature on for anything that executes a case.
 
 It prints the case count and `suite=<fingerprint>`. That is the same fingerprint
 a run records in `ReportMeta` and prints as `suite=`, so a baseline and a
 candidate can be checked against each other before either is compared.
+
+## Regression suite stages
+
+`suites/regression` grows one capability at a time; the file prefix says which
+stage a case belongs to.
+
+| prefix | what it pins |
+|---|---|
+| `loop-` | turns that must share history, and recovery after a failed tool call |
+| `tool-` | tool selection and surgical edits (`first_tool`, `no_tool`) |
+| `mcp-` | a project `.tact/.mcp.json` server, called as `mcp__<server>__<tool>` |
+| `hook-` | a repository hook stays pending until reviewed, and never runs unseen |
+| `subagent-` | `spawn_subagent` actually delegates the work |
+| `memory-` | `.tact/memory` is read, and save/load round-trips |
+| `compact-` | the `compact` call is dispatched and the loop continues; summary quality is not observable |
+
+Two stages depend on the operator's `$HOME` rather than on the case: hook trust
+(`~/.tact/hooks-state.json`) and a configured `auto_memory_directory`. The cases
+here pin the defaults — an untrusted hook does not run, and memory is read from
+the work directory — so run them with a scratch `HOME` when the machine has
+customised either.
 
 ## A case
 
@@ -125,14 +151,21 @@ Five graders:
   that cannot parse fails at load, so it never reads as "the agent wrote the
   wrong shape".
 - `tools` asserts on the calls the run made, by name: `tool` (called at least
-  once), `no_tool`, `first_tool` (the run started with it), `at_most` (a call
-  budget). It is how "use `read`, not `bash cat`" becomes a checkable case,
-  which is something the other four cannot see.
+  once), `tool_succeeded` (called and at least one call succeeded), `no_tool`,
+  `first_tool` (the run started with it), `at_most` (a call budget). It is how
+  "use `read`, not `bash cat`" becomes a checkable case, which is something the
+  other four cannot see. Use `tool_succeeded` when the tool's result is the
+  evidence, because a failed call still satisfies `tool`.
 
 A tool record the runner could not attribute to a tool (a bare `[tool failed]`
 line in the headless log) matches no assertion. It makes `no_tool` and `at_most`
 inconclusive rather than passing them, because an unattributed call could be the
 one they forbid.
+
+`HostRunner` does not have to guess: it pairs each `StepFailed` with the
+`StepStarted` carrying the same invocation id, so a failed call keeps the tool
+name and arguments it announced. A failure with no matching start stays
+unattributed. `CliRunner` still depends on whether the log line names the tool.
 
 ```toml
 [[graders]]

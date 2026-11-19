@@ -18,6 +18,11 @@ __pycache__/
 .openai
 .superpowers/
 .tact/
+# Eval fixtures ship a project-scoped `.tact/` (hooks, MCP, memory). The
+# directory has to be re-included first: git cannot re-include a file whose
+# parent directory is excluded.
+!suites/*/fixtures/**/.tact/
+!suites/*/fixtures/**/.tact/**
 .tact-acp-images/
 # Obsidian workspace state for the book vault; editor-local, not source.
 /book/.obsidian/

@@ -9,6 +9,7 @@
 //! behaviour — where it writes, what it refuses, and what it exits with — not
 //! the agent, which `host_runner_end_to_end` covers against a wiremock server.
 
+#![cfg(feature = "agent-run")]
 #![allow(clippy::result_large_err)]
 
 use std::path::{Path, PathBuf};

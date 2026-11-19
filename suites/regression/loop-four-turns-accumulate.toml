@@ -1,0 +1,39 @@
+# One conversation, four turns, each depending on the last. A loop that drops
+# history fails at the second turn, and the file grader names which turn was
+# lost instead of only reporting a wrong final answer.
+prompts = [
+  """
+Create a file named ledger.txt in the current directory.
+Its only line must be: 1
+""",
+  """
+Append one line to ledger.txt. The new line must be: 2
+""",
+  """
+Append one line to ledger.txt. The new line must be: 3
+""",
+  """
+Read ledger.txt and reply with its lines in order, separated by spaces.
+""",
+]
+timeout_secs = 300
+
+[[graders]]
+kind = "files"
+name = "three-lines-in-order"
+
+[[graders.assertions]]
+kind = "matches"
+path = "ledger.txt"
+pattern = "^1\\n2\\n3\\n?$"
+
+[[graders]]
+kind = "answer"
+name = "reported-all-three"
+
+[[graders.assertions]]
+kind = "matches"
+pattern = "(?s)1.*2.*3"
+
+[[graders.assertions]]
+kind = "non_empty"

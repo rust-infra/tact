@@ -15,10 +15,13 @@
 //! callers through the re-exports below.
 
 mod case;
+#[cfg(feature = "agent-run")]
 mod cli_runner;
 mod compare;
 mod grader;
+#[cfg(feature = "agent-run")]
 mod host_runner;
+#[cfg(feature = "agent-run")]
 mod options;
 mod process;
 mod report;
@@ -26,6 +29,7 @@ mod runner;
 mod suite;
 
 pub use case::{EvalCase, FileAssertion, GraderSpec, Isolation, MAX_TIMEOUT_SECS, TextAssertion};
+#[cfg(feature = "agent-run")]
 pub use cli_runner::{CliRunner, default_cli_binary};
 pub use compare::{
     COMPARISON_SCHEMA_VERSION, CaseComparisonStatus, CaseCounts, CaseDelta, ComparisonReason,
@@ -33,8 +37,10 @@ pub use compare::{
     comparison_exit_code,
 };
 pub use grader::{Grade, Verdict, grade};
+#[cfg(feature = "agent-run")]
 pub use host_runner::HostRunner;
-pub use options::{PermissionMode, RunOptions};
+#[cfg(feature = "agent-run")]
+pub use options::RunOptions;
 pub use report::{
     CaseCost, CaseOutcome, CaseSummary, EvalReport, REPORT_SCHEMA_VERSION, ReportMeta,
     suite_fingerprint,
@@ -44,6 +50,7 @@ pub use runner::{
     ToolRecord, ToolStatus,
 };
 pub use suite::EvalSuite;
+pub use tact_protocol::PermissionMode;
 
 /// Run every case `attempts` times and grade each attempt.
 ///

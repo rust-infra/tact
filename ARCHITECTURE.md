@@ -27,7 +27,7 @@ This project is a Cargo Workspace containing the following crates:
 | `crates/tact-acp`             | `tact-acp`             | `2.0.6` (workspace) | ACP v2 stdio frontend: one `HostSession` per ACP session, streaming Transcript/tool updates and forwarding permission requests. Used by T3 Code's `Local command` provider.                                                                             |
 | `crates/tact_llm`             | `tact_llm`             | `2.0.6` (workspace) | Stable provider SDK and `tact_agent_api::ModelPort` implementation. `core` exposes the facade, builder, endpoint/limit/auth types, and a lazy stream; protocol adapters are feature-isolated behind `anthropic`, `openai-chat`, and `openai-responses`. |
 | `crates/tool_refactor_macros` | `tool_refactor_macros` | `2.0.6` (workspace) | Proc-macro `#[tool]` that generates `Tool` trait implementations from async functions.                                                                                                                                                                  |
-| `crates/eval`                 | `tact_eval`            | `2.0.6` (workspace) | Evaluation harness: case suites, one in-process runner and one `tact-ui headless` runner, graders over the run's artifact, and baseline-report comparison that distinguishes regressions from inconclusive results. Depends on the product; no product crate depends on it. |
+| `crates/eval`                 | `tact_eval`            | `2.0.6` (workspace) | Evaluation harness: case suites, one in-process runner and one `tact-ui headless` runner, graders over the run's artifact, and baseline-report comparison that distinguishes regressions from inconclusive results. Depends on the product only through the default `agent-run` feature — `validate` and `compare` build without it; no product crate depends on it. |
 
 Dependency graph:
 
@@ -64,8 +64,8 @@ flowchart TB
     tact_agent_sdk --> tact_agent_core["tact_agent_core"]
     tact_agent_core --> tact_agent_api
     tact_llm --> tact_agent_api
-    tact_eval["tact_eval"] --> tact
-    tact_eval --> tact_host
+    tact_eval["tact_eval"] -->|agent-run| tact
+    tact_eval -->|agent-run| tact_host
 ```
 
 `tact_agent_api` defines ports; `tact_agent_core` runs the control loop; `tact`

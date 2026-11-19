@@ -202,6 +202,30 @@ jobs:
           python-version: "3.12"
       - run: python3 scripts/book-check.py book
 
+  # No model and no API key: this catches a malformed case, a moved fixture, or
+  # an invalid grader regex before the paid suite can run. It is its own job,
+  # built with `--no-default-features`, so it does not wait for — or pay for —
+  # the agent stack that `run` needs.
+  eval-validate:
+    name: Eval suites
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-eval-validate-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-eval-validate-
+      - name: Validate eval suites (no model)
+        run: |
+          cargo run -q -p tact_eval --no-default-features -- validate suites/smoke
+          cargo run -q -p tact_eval --no-default-features -- validate suites/regression
+
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -225,12 +249,6 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-test-
-      # No model and no API key: this catches a malformed case, a moved
-      # fixture, or an invalid grader regex before the paid suite can run.
-      - name: Validate eval suites (no model)
-        run: |
-          cargo run -p tact_eval -- validate suites/smoke
-          cargo run -p tact_eval -- validate suites/regression
       - name: Run full workspace tests
         # `--workspace`: `default-members` otherwise narrows this to tact-ui.
         run: cargo test --workspace --verbose

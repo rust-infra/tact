@@ -5,6 +5,7 @@
 //! group with it. Both are tested with a shell script so the assertions do not
 //! depend on a built binary or a provider.
 
+#![cfg(feature = "agent-run")]
 #![allow(clippy::result_large_err)]
 
 use std::path::{Path, PathBuf};

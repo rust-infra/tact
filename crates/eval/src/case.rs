@@ -437,12 +437,22 @@ pub enum JsonAssertion {
 /// Every variant names a tool, because a runner that cannot attribute a line to
 /// a tool records `None` (a bare `[tool failed]` in the headless log). An
 /// unattributed record therefore matches no assertion and can only ever fail
-/// one, which is the honest reading: nothing shows which tool ran.
+/// one, which is the honest reading: nothing shows which tool ran. The host
+/// runner correlates `StepFailed` with the `StepStarted` that named the call,
+/// so a failed tool keeps its name there; the CLI path depends on what its log
+/// line carries.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ToolAssertion {
     /// The tool was called at least once.
     Tool { tool: String },
+    /// The tool was called at least once, and one of those calls succeeded.
+    ///
+    /// `tool` proves only that the model tried. A failed call still satisfies
+    /// it, and a case whose answer can be copied from the conversation would
+    /// then pass even though the tool never produced a result. This variant is
+    /// for cases where the tool's output is the evidence.
+    ToolSucceeded { tool: String },
     /// The tool was never called.
     NoTool { tool: String },
     /// The first tool call was this one.

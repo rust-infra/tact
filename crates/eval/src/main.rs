@@ -4,10 +4,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use tact_eval::{
-    CliRunner, EvalReport, EvalSuite, HostRunner, PermissionMode, RunOptions, Runner, RunnerKind,
-    compare_reports, comparison_exit_code, run_suite,
-};
+#[cfg(feature = "agent-run")]
+use tact_eval::{CliRunner, HostRunner, PermissionMode, RunOptions, Runner, RunnerKind, run_suite};
+use tact_eval::{EvalReport, EvalSuite, compare_reports, comparison_exit_code};
 
 #[derive(Parser, Debug)]
 #[command(version, about = "Run Tact agent evaluation suites")]
@@ -18,6 +17,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    #[cfg(feature = "agent-run")]
     /// Run a suite of cases
     Run(RunArgs),
     /// Check that every case parses and validates, without calling a model
@@ -34,10 +34,12 @@ enum Command {
     },
 }
 
+#[cfg(feature = "agent-run")]
 fn parse_runner(value: &str) -> Result<RunnerKind, String> {
     value.parse()
 }
 
+#[cfg(feature = "agent-run")]
 #[derive(Parser, Debug)]
 struct RunArgs {
     /// Directory of `*.toml` case files
@@ -75,6 +77,7 @@ struct RunArgs {
     options: OptionArgs,
 }
 
+#[cfg(feature = "agent-run")]
 /// The flags both runners accept, spelled as `tact-ui` spells them.
 #[derive(Parser, Debug, Clone, Default)]
 struct OptionArgs {
@@ -90,6 +93,7 @@ struct OptionArgs {
     permission_mode: Option<PermissionMode>,
 }
 
+#[cfg(feature = "agent-run")]
 impl OptionArgs {
     fn run_options(&self) -> RunOptions {
         // Start from `RunOptions::default()` so the eval-specific `auto` default
@@ -110,6 +114,7 @@ impl OptionArgs {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        #[cfg(feature = "agent-run")]
         Command::Run(args) => run(args).await,
         Command::Validate { suite } => validate(&suite),
         Command::Compare {
@@ -191,6 +196,7 @@ fn validate(dir: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "agent-run")]
 async fn run(args: RunArgs) -> anyhow::Result<()> {
     let suite = EvalSuite::load(&args.suite)?.select(&args.filters)?;
     let options = args.options.run_options();
@@ -237,7 +243,7 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "agent-run"))]
 mod tests {
     use super::*;
 

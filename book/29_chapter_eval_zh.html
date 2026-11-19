@@ -202,6 +202,18 @@
     th { background: #f6f7f9; }
     hr { border: none; border-top: 1px solid #e4e6ea; margin: 40px 0; }
     .mermaid { margin: 24px 0; text-align: center; }
+    @media (min-width: 1100px) {
+      body.has-toc > main figure.eval-arch {
+        --eval-arch-w: min(1400px, calc(100vw - 96px));
+        width: var(--eval-arch-w); max-width: none;
+        margin: 26px 0 26px calc((100% - var(--eval-arch-w)) / 2);
+      }
+      html[data-toc="open"] body.has-toc > main figure.eval-arch {
+        --eval-arch-w: min(1600px, calc(100vw - 336px));
+      }
+      figure.eval-arch img { width: 100%; height: auto; }
+      figure.eval-arch figcaption { text-align: center; font-size: 13px; color: #5f6b7a; }
+    }
     .lab { background: #fffdf5; border: 1px dashed #d8c07a; border-radius: 10px; padding: 8px 22px 22px; }
     .lab h2 { border: none; }
     .eval-flow {
@@ -458,11 +470,13 @@
 </div>
 <div class="toc-group">
 <ol class="toc-list">
+<li class="toc-l2"><a href="#%E6%A8%A1%E5%9D%97%E6%9E%B6%E6%9E%84" title="模块架构"><span class="toc-label">模块架构</span></a></li>
 <li class="toc-l2"><a href="#1-%E4%B8%89%E6%9D%A1%E6%9D%A5%E8%87%AA%E6%97%A2%E6%9C%89%E5%AE%9E%E7%8E%B0%E7%9A%84%E7%BA%A6%E6%9D%9F" title="1. 三条来自既有实现的约束"><span class="toc-label">1. 三条来自既有实现的约束</span></a></li>
 <li class="toc-l3"><a href="#agentupdate-%E4%B8%8D%E5%8F%AF%E5%BA%8F%E5%88%97%E5%8C%96%E4%B8%94%E4%B8%A2%E6%8E%89%E7%BB%93%E6%9E%9C" title="AgentUpdate 不可序列化，且丢掉结果"><span class="toc-label">AgentUpdate 不可序列化，且丢掉结果</span></a></li>
 <li class="toc-l3"><a href="#%E9%85%8D%E7%BD%AE%E6%98%AF%E8%BF%9B%E7%A8%8B%E5%85%A8%E5%B1%80%E7%9A%84" title="配置是进程全局的"><span class="toc-label">配置是进程全局的</span></a></li>
 <li class="toc-l3"><a href="#headless-%E6%97%A0%E6%B3%95%E5%9B%9E%E7%AD%94%E6%9D%83%E9%99%90%E6%8F%90%E7%A4%BA" title="headless 无法回答权限提示"><span class="toc-label">headless 无法回答权限提示</span></a></li>
 <li class="toc-l2"><a href="#2-%E7%94%A8%E4%BE%8B" title="2. 用例"><span class="toc-label">2. 用例</span></a></li>
+<li class="toc-l3"><a href="#%E5%9B%9E%E5%BD%92%E5%A5%97%E4%BB%B6%E7%9A%84%E9%98%B6%E6%AE%B5" title="回归套件的阶段"><span class="toc-label">回归套件的阶段</span></a></li>
 <li class="toc-l2"><a href="#3-%E5%88%A4%E5%88%86%E5%99%A8" title="3. 判分器"><span class="toc-label">3. 判分器</span></a></li>
 <li class="toc-l3"><a href="#verdict-%E6%98%AF%E4%B8%89%E6%80%81" title="Verdict 是三态"><span class="toc-label">Verdict 是三态</span></a></li>
 <li class="toc-l2"><a href="#4-%E4%B8%A4%E4%B8%AA-runner" title="4. 两个 runner"><span class="toc-label">4. 两个 runner</span></a></li>
@@ -489,14 +503,31 @@
 <main>
 <h1 id="agent-评测evaluation">Agent 评测（Evaluation）</h1>
 <blockquote>
-<p><strong>文档状态：已实现并接入回归门禁（2026-11-18）。</strong>
+<p><strong>文档状态：已实现并接入回归门禁（2026-11-19）。</strong>
 本章描述 <code>crates/eval</code> 提供的评测能力：用例格式、两个 runner、
 判分器、报告与可比性，以及 <code>compare</code> 与 CI 回归门禁。
 它是一套验证工具，不是产品运行时的一部分。</p>
 </blockquote>
 <p>评测要回答一个问题：某次改动让 Agent 变好了还是变坏了。回答问题需要三样东西同时成立：
 用例可重复、证据来自运行本身而不是模型自述、两次运行的数字可比。
-Tact 的既有结构让这三件事都不显然，本章先解释约束，再给出形状。</p>
+Tact 的既有结构让这三件事都不显然，本章先给出模块形状，再解释约束。</p>
+<h2 id="模块架构">模块架构</h2>
+<p>下图按数据流拆开 <code>crates/eval</code>：输入是用例文件和运行参数，
+<code>EvalSuite</code> 把它们变成已排序、已校验且带指纹的声明；
+两个 runner 各自执行，但都只交出同一个 <code>RunArtifact</code>；
+判分器与报告只读这份证据，比较再把它变成 CI 的退出码。
+工作目录只在一次尝试内存在：fixture 拷进去，判分后整个删掉。</p>
+<figure class="eval-arch">
+<a href="assets/eval-architecture.png" title="打开原图"><img src="assets/eval-architecture.png" width="2400" height="2060" alt="Eval 模块架构图：数据与配置、Runner、Grader、报告与比较四列，底部为整体评测流程" /></a>
+<figcaption>图：<code>crates/eval</code> 的模块架构；点击图片查看原图。</figcaption>
+</figure>
+<blockquote>
+<p>图的读法：横向是模块，纵向是证据的收敛。
+<code>validate</code> 只走左侧上半段，不构造 runner，也不调用模型；
+<code>compare</code> 从两份 <code>report.json</code> 开始，与 runner 无关。
+两个 runner 的差异被限制在 <code>RunArtifact</code> 之前，
+这也是判分器不需要知道是谁跑的原因。</p>
+</blockquote>
 <hr />
 <h2 id="1-三条来自既有实现的约束">1. 三条来自既有实现的约束</h2>
 <h3 id="agentupdate-不可序列化且丢掉结果">AgentUpdate 不可序列化，且丢掉结果</h3>
@@ -524,8 +555,9 @@ headless 会把每个需要工具的用例都判成失败。因此
 <h2 id="2-用例">2. 用例</h2>
 <p>用例是可版本化的数据，每个用例一个 <code>*.toml</code>。</p>
 <p>仓库当前有两套小套件。<code>suites/smoke</code> 保留两个结构冒烟
-case，<code>suites/regression</code> 有七个行为回归 case，覆盖
-answer、file、command、fixture 读取与编辑，以及一条多轮会话用例。
+case，<code>suites/regression</code> 有十八个行为回归 case，覆盖
+answer、file、command、json 与工具轨迹，以及按能力分阶段的用例
+（主循环、工具、MCP、hooks、子代理、memory、压缩）。
 两者都用同一套 <code>EvalCase</code> 格式，不引入第二套 runner 或判分语言。</p>
 <pre><code class="language-toml">prompt = &quot;Create hello.txt containing exactly: hello eval&quot;
 timeout_secs = 180
@@ -589,6 +621,52 @@ text = &quot;hello eval&quot;</code></pre>
 判分仍然只看最终状态：答案是最后一轮的文字，文件是最后一轮留下的样子。
 某一轮如果没产出任何回答，会话到此结束——把下一句送进一个上一轮为空的会话，
 判到的会是第二个错误而不是第一个错误。</p>
+<h3 id="回归套件的阶段">回归套件的阶段</h3>
+<p>套件按能力逐个阶段扩，文件名前缀就是阶段名。每个阶段只增加
+<code>.toml</code> 与 fixture，不改 runner 或判分语言。</p>
+<table>
+<thead>
+<tr>
+<th>前缀</th>
+<th>钉住的行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>loop-</code></td>
+<td>多轮共享历史；工具报错后主循环继续，而不是整次运行死掉</td>
+</tr>
+<tr>
+<td><code>tool-</code></td>
+<td>先读后写、只读请求不留痕、编辑只改一个值（<code>first_tool</code> / <code>no_tool</code>）</td>
+</tr>
+<tr>
+<td><code>mcp-</code></td>
+<td>项目级 <code>.tact/.mcp.json</code> 被读取，工具以 <code>mcp__&lt;server&gt;__&lt;tool&gt;</code> 调用</td>
+</tr>
+<tr>
+<td><code>hook-</code></td>
+<td>仓库自带的 hook 在人工审核前不执行（信任存储之外没有开关）</td>
+</tr>
+<tr>
+<td><code>subagent-</code></td>
+<td><code>spawn_subagent</code> 真的把写入委托给子代理，子代理也确实写进工作目录</td>
+</tr>
+<tr>
+<td><code>memory-</code></td>
+<td><code>.tact/memory</code> 里的条目可被 <code>load_memory</code> 读到；保存后再读回</td>
+</tr>
+<tr>
+<td><code>compact-</code></td>
+<td>调用 <code>compact</code> 后循环继续、上下文仍可答出；摘要质量本身不可观测</td>
+</tr>
+</tbody>
+</table>
+<p>两个阶段依赖操作者的 <code>$HOME</code> 而不是用例本身：
+hook 信任存在 <code>~/.tact/hooks-state.json</code>，
+memory 路径可被 <code>auto_memory_directory</code> 改写。
+这里的用例钉的是默认行为——未审核的 hook 不跑、memory 从工作目录读——
+所以在定制过这两项的机器上跑套件时应把 <code>HOME</code> 指到临时目录。</p>
 <p>单轮用例的指纹没有因为这次改动而变：<code>prompt</code> 变成
 <code>Option&lt;String&gt;</code> 后序列化仍是 <code>"prompt":"..."</code>，
 空的 <code>prompts</code> 不进哈希。否则所有已记录的 baseline
@@ -636,7 +714,7 @@ fixture 是否存在要等 <code>EvalSuite::load</code>，
 </tr>
 <tr>
 <td><code>tools</code></td>
-<td>按名字断言工具调用：<code>tool</code>、<code>no_tool</code>、<code>first_tool</code>、<code>at_most</code></td>
+<td>按名字断言工具调用：<code>tool</code>、<code>tool_succeeded</code>、<code>no_tool</code>、<code>first_tool</code>、<code>at_most</code></td>
 </tr>
 </tbody>
 </table>
@@ -647,6 +725,9 @@ fixture 是否存在要等 <code>EvalSuite::load</code>，
 "用 <code>read</code> 而不是 <code>bash cat</code>"、"最多调一次 <code>grep</code>"
 这类工具选择回归，文件和回答判分器都会判通过。
 它只读名字，不读参数：CLI 日志里 finished-step 行没有参数摘要。</p>
+<p><code>tool</code> 只证明模型尝试过：一次失败的调用同样满足它。
+当工具的结果本身就是证据（例如 <code>load_memory</code> 必须真的读回内容）时，
+用 <code>tool_succeeded</code>，它要求至少一次调用成功。</p>
 <p>runner 无法归属到某个工具的记录（headless 日志里裸的
 <code>[tool failed]</code> 行）不满足任何断言，并且会让
 <code>no_tool</code> 与 <code>at_most</code> 判 <code>Inconclusive</code>
@@ -673,6 +754,9 @@ fixture 是否存在要等 <code>EvalSuite::load</code>，
 <p>没有判分器的用例同样判 <code>Inconclusive</code>，不是通过。</p>
 <hr />
 <h2 id="4-两个-runner">4. 两个 runner</h2>
+<p>两个 runner 都在默认开启的 <code>agent-run</code> feature 后面：
+关掉它，<code>HostRunner</code>、<code>CliRunner</code> 与 <code>RunOptions</code>
+一起消失，crate 只剩加载、校验与比较。</p>
 <h3 id="eval-整体时序">eval 整体时序</h3>
 <p>下图按一次 <code>tact-eval run</code> 展开完整链路：套件先加载并校验，
 runner 按身份配置构造；随后每个用例按 <code>--attempts</code> 顺序执行，
@@ -852,7 +936,7 @@ name = "hello-file"`,
         format: "SUITE",
         title: "套件形成可比身份",
         desc: "EvalSuite 按 id 排序、解析 fixture、拒绝重复 id，并把声明用例与 Copy fixture 内容哈希成 suite 指纹。",
-        payload: `cases: 6
+        payload: `cases: 18
 suite: 3635e0205ee9b383
 fixture: copied into attempt dir
 sorted by case id`,
@@ -888,7 +972,7 @@ failure: null`,
       {
         format: "GRADE",
         title: "判分器读取证据",
-        desc: "command、files、answer 三类 grader 只读 RunArtifact 和工作目录，不知道是哪个 runner 跑的。",
+        desc: "command、files、answer、json、tools 五类 grader 只读 RunArtifact 和工作目录，不知道是哪个 runner 跑的。",
         payload: `grader: hello-file
 assertion: contains("hello eval")
 verdict: pass
@@ -909,8 +993,8 @@ runner_visible: false`,
         format: "REPORT",
         title: "汇总并进入回归门禁",
         desc: "所有 attempt 汇总成 EvalReport。compare 再检查 suite 指纹、identity 与 attempts，输出 pass、regression、inconclusive 或 incomparable。",
-        payload: `cases_passing_any: 6/6
-cases_passing_all: 6/6
+        payload: `cases_passing_any: 18/18
+cases_passing_all: 18/18
 comparison: pass
 exit_code: 0`,
       },
@@ -1076,7 +1160,7 @@ stdout 上的最终答案、stderr 上的每行一个事件、退出码。
 过同一批判分器，因此同一套件在两条路径上得分方式一致。
 两处刻意的差异都在类型上可见：</p>
 <pre><code class="language-rust">struct ToolRecord {
-    name: Option&lt;String&gt;,      // 日志行没点名工具时是 None
+    name: Option&lt;String&gt;,      // CLI 日志没点名工具时是 None
     args: Option&lt;String&gt;,
     message: Option&lt;String&gt;,
     status: ToolStatus,
@@ -1095,6 +1179,11 @@ provider 活动失败（<code>[tool failed] {error}</code>，不点名任何工�
 把后者当成前者，就会把一句错误信息读成工具名。
 所以只有行本身能证明时才归因，否则 <code>name</code> 为
 <code>None</code>、文本进 <code>message</code>。</p>
+<p>Host 路径不需要从文本猜：<code>StepFailed</code> 带 invocation id 和错误，
+工具名与参数在它之前的 <code>StepStarted</code> 里。runner 按 id 记下这一对，
+失败时取回，所以失败的调用在 host 报告里仍有名字，<code>tools</code>
+判分器可以断言它；找不到对应 start 的失败保持 <code>None</code>——
+宁可 unknown，也不把错误信息当工具名。</p>
 <hr />
 <h2 id="5-比较与回归门禁">5. 比较与回归门禁</h2>
 <p>上面的时序止于一次运行生成报告。"这次改动让 Agent 变坏了吗"不由单次运行回答，
@@ -1266,14 +1355,21 @@ tact-eval run suites/smoke --strict --json-out target/eval/report.json
 
 # 基线回归门禁：与上一次接受的报告比较
 tact-eval compare target/eval/baseline.json target/eval/candidate.json</code></pre>
+<p><code>validate</code> 与 <code>compare</code> 不执行用例，因此可以从构建里去掉
+<code>run</code> 路径：<code>cargo run -p tact_eval --no-default-features -- validate suites/smoke</code>。
+关闭默认的 <code>agent-run</code> feature 后，<code>tact</code>、<code>tact_host</code>、
+<code>tact_llm</code> 以及它们的 sqlite、TLS、供应商客户端都不再被编译，
+这正是适合每个 PR 的轻量门禁；要执行任何 case 时保持默认 feature 即可。</p>
 <p><code>--strict</code> 只在每个用例的每次尝试都通过时退出 0。
 一次失败或一次 inconclusive 都会让整个运行失败，
 所以它适合小而精的套件，不适合测噪声大的模型。
 <code>compare</code> 是另一条门禁：它不要求 100%，只要求不比已接受的
 baseline 更差；两者不要混用。</p>
-<p>PR CI 运行两条 <code>validate</code>，不接触模型。夜间 workflow
-运行 <code>suites/regression</code>，在提供 baseline 时再调用
-<code>compare</code>，并上传 candidate 与 comparison 产物。</p>
+<p>PR CI 里的 <code>eval-validate</code> 是独立 job，用
+<code>--no-default-features</code> 跑两条 <code>validate</code>，
+既不接触模型，也不用等 agent 栈编译完。夜间 workflow 运行
+<code>suites/regression</code>，在提供 baseline 时再调用 <code>compare</code>，
+并上传 candidate 与 comparison 产物。</p>
 <p>相对 <code>--config</code> 与 <code>--binary</code> 都会在构造时规范化为绝对路径，
 因为每次尝试都在用例自己的目录里启动子进程。
 <code>--json-out</code> 的父目录不存在时会自动创建：文档里每个例子都写
@@ -1375,17 +1471,17 @@ baseline 更差；两者不要混用。</p>
 <code>EVAL_BASELINE_PATH</code></td>
 </tr>
 <tr>
-<td>回归套件仍然很小</td>
-<td><code>suites/regression</code> 只有 6 个 case，且没有多轮、MCP、hook、
-subagent、memory、compaction 场景（工具轨迹现在可以用 <code>tools</code>
-判分器表达，但还没有这类 case）</td>
-<td>按<a href="./18_chapter_agent_loop_zh.html">主循环</a>、<a
+<td>阶段覆盖是单点而非矩阵</td>
+<td><code>suites/regression</code> 现在有 18 个 case，多轮、MCP、hook、
+subagent、memory、compaction 都已落地；但多数阶段只钉住一两条主线，
+失败路径与边界值还没有对偶用例</td>
+<td>给每个阶段补反例与边界（缺失 fixture、工具报错、空回合），
+再扩到多模型矩阵；<a href="./18_chapter_agent_loop_zh.html">主循环</a>、<a
 href="./07_chapter_tool_zh.html">工具</a>、<a
 href="./08_chapter_mcp_zh.html">MCP</a>、<a
 href="./09_chapter_hook_zh.html">hooks</a>、<a
 href="./12_chapter_subagent_zh.html">子代理</a>、<a
-href="./03_chapter_memory_zh.html">memory</a>、<a
-href="./05_chapter_compact_zh.html">压缩</a>分阶段扩套件</td>
+href="./03_chapter_memory_zh.html">memory</a> 的章节仍是行为的来源</td>
 </tr>
 <tr>
 <td>多轮用例只判最终状态</td>

@@ -1,0 +1,31 @@
+# The parent must delegate rather than do the write itself. The tool grader
+# proves `spawn_subagent` was called; the file grader proves the child actually
+# had a working workspace and wrote into it.
+prompt = """
+Use the spawn_subagent tool exactly once. Give it a self-contained prompt that
+tells it to create a file named child.txt in the current directory containing
+exactly: from-child
+Do not create child.txt yourself; the subagent must do it.
+"""
+timeout_secs = 300
+
+[[graders]]
+kind = "files"
+name = "child-wrote-the-file"
+
+[[graders.assertions]]
+kind = "exists"
+path = "child.txt"
+
+[[graders.assertions]]
+kind = "matches"
+path = "child.txt"
+pattern = "^from-child\\s*$"
+
+[[graders]]
+kind = "tools"
+name = "delegated-with-spawn-subagent"
+
+[[graders.assertions]]
+kind = "tool"
+tool = "spawn_subagent"

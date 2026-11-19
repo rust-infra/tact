@@ -258,6 +258,7 @@ fn resolve_fixture(case: &mut EvalCase, suite_dir: &Path, case_path: &Path) -> R
 /// a library caller with a separator would otherwise aim that deletion outside
 /// the scratch root. Sanitizing is the guarantee; `EvalCase::validate_shape`
 /// reports the same mistake at load, where it can name the file.
+#[cfg(feature = "agent-run")]
 pub(crate) fn prepare_work_dir(case: &EvalCase) -> Result<PathBuf> {
     let dir = std::env::temp_dir()
         .join("tact-eval")
@@ -282,6 +283,7 @@ pub(crate) fn prepare_work_dir(case: &EvalCase) -> Result<PathBuf> {
 /// left behind by a crashed run would no longer say which case it came from.
 /// With it the mapping is still not injective in theory, but a collision now
 /// needs two ids that agree on both the sanitized form and the hash.
+#[cfg(feature = "agent-run")]
 fn work_dir_component(id: &str) -> String {
     let original = id.trim();
     let mut component: String = original
@@ -307,6 +309,7 @@ fn work_dir_component(id: &str) -> String {
     component
 }
 
+#[cfg(feature = "agent-run")]
 fn copy_tree(from: &Path, to: &Path) -> Result<()> {
     for entry in walkdir::WalkDir::new(from).follow_links(false) {
         let entry = entry?;
@@ -482,6 +485,7 @@ mod tests {
         assert!(error.contains("not a directory"), "{error}");
     }
 
+    #[cfg(feature = "agent-run")]
     #[test]
     fn a_copy_isolation_copies_the_fixture_into_a_fresh_dir() {
         let fixture = tempfile::tempdir().unwrap();

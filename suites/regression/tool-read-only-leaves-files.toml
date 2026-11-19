@@ -1,0 +1,41 @@
+# A read-only request must not leave a trace. The answer grader alone cannot
+# see this: a model that rewrites seed.txt while answering still contains the
+# token. The file grader and the no_tool assertions together pin both halves.
+prompt = """
+Read seed.txt and reply with only the release token from the line that starts
+with "release-token:". Do not create, modify, or delete any file.
+"""
+timeout_secs = 180
+
+[isolation]
+kind = "copy"
+fixture = "fixtures/tools"
+
+[[graders]]
+kind = "answer"
+name = "read-the-token"
+
+[[graders.assertions]]
+kind = "matches"
+pattern = "amber-[0-9]+"
+
+[[graders]]
+kind = "files"
+name = "seed-left-alone"
+
+[[graders.assertions]]
+kind = "matches"
+path = "seed.txt"
+pattern = "^# Seed fixture\nrelease-token: amber-91\n?$"
+
+[[graders]]
+kind = "tools"
+name = "no-write-tools"
+
+[[graders.assertions]]
+kind = "no_tool"
+tool = "write_file"
+
+[[graders.assertions]]
+kind = "no_tool"
+tool = "edit_file"

@@ -609,7 +609,9 @@ scrolling the conversation does not. Detail: [`docs/design/tui-trajectory.md`](.
 its evidence, not on what the model says it did. Two runners produce the same
 artifact: one in process (typed stop reason, turn count, cache tokens), one
 spawning `tact-ui headless` (works against a release binary or a container).
-Graders check the work directory, a shell command, and the final answer.
+Graders check the work directory, a shell command, the final answer, JSON
+output, and the calls the run made. `suites/regression` grows in stages: loop,
+tools, MCP, hooks, subagents, memory, and compaction.
 
 ```bash
 tact-eval validate suites/smoke        # no model, no key: CI can run this

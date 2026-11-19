@@ -1,0 +1,2 @@
+# Seed fixture
+release-token: amber-91
