@@ -1962,6 +1962,42 @@ fn the_pinned_header_and_the_live_stats_row_coexist() {
     );
 }
 
+/// The reported bug, asserted through the renderer: a failed tool used to
+/// clear `task_start_time`, so the live stats row vanished while the turn was
+/// still running. Real update sequence, then look at the panel.
+#[test]
+fn the_live_stats_row_survives_a_failed_tool() {
+    use crate::test_fixtures::StepCall;
+    use tact_protocol::AgentUpdate;
+
+    let mut app = make_app();
+    app.add_user_message("run the thing".into());
+    app.task_start_time = Some(chrono::Local::now() - chrono::Duration::seconds(65));
+    app.status = crate::widgets::state::Status::Executing {
+        current_step: 0,
+        total: 2,
+    };
+
+    app.handle_agent_update(
+        StepCall::new(0, "t1", "bash", "cargo test")
+            .presentation(tact_protocol::ToolPresentationInfo::generic("bash"))
+            .started(),
+    );
+    app.handle_agent_update(AgentUpdate::StepFailed {
+        idx: 0,
+        run_id: None,
+        tool_id: "t1".into(),
+        arg_summary: "cargo test".into(),
+        error: "exit 101".into(),
+    });
+
+    let text = render_log_panel_text(&mut app, 120, 12);
+    assert!(
+        text.contains("Task stats:"),
+        "the turn is still running, so the live stats row must still be there, got:\n{text}"
+    );
+}
+
 /// Deciding whether to pin must not depend on the height that pinning itself
 /// changes: the same scroll position must give the same answer on two
 /// consecutive frames.
