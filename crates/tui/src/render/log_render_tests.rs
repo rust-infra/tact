@@ -1851,3 +1851,87 @@ fn a_footer_on_a_clipped_card_is_clickable_in_both_directions() {
         );
     }
 }
+
+/// Scrolled away from the tail, the current turn's prompt is pinned on the
+/// panel's first content row so a long turn cannot bury it.
+#[test]
+fn a_scrolled_away_prompt_is_pinned_to_the_top() {
+    let mut app = make_app();
+    app.add_user_message("install mind-elixir please".into());
+    for i in 0..40 {
+        app.add_system_message(format!("noise line {i}"));
+    }
+    // Draw once so the caches exist, then scroll to the very top.
+    let _ = render_log_panel_text(&mut app, 60, 14);
+    app.log_scroll.follow = false;
+    app.log_scroll.visual_top = 4;
+    let text = render_log_panel_text(&mut app, 60, 14);
+
+    let first = text.lines().nth(1).unwrap_or_default();
+    assert!(
+        first.contains("> install mind-elixir please"),
+        "the pinned row must lead the panel: {text:?}"
+    );
+    assert_eq!(
+        app.log_scroll.pinned_top_inset, 1,
+        "the row it took is published for the pointer path"
+    );
+}
+
+/// A header costs a body row. A panel that can still afford it keeps the
+/// header; one that cannot keeps its body instead.
+#[test]
+fn a_panel_that_cannot_afford_a_header_keeps_its_body() {
+    let mut app = make_app();
+    app.add_user_message("短提示".into());
+    for i in 0..20 {
+        app.add_system_message(format!("noise {i}"));
+    }
+
+    // 5 rows: 2 for borders, leaving 3 — one header plus the 2-row floor.
+    let _ = render_log_panel_text(&mut app, 40, 5);
+    app.log_scroll.follow = false;
+    app.log_scroll.visual_top = 2;
+    let _ = render_log_panel_text(&mut app, 40, 5);
+    assert_eq!(
+        app.log_scroll.pinned_top_inset, 1,
+        "3 body rows still leave the 2-row floor below a header"
+    );
+
+    // 4 rows: 2 for borders, leaving 2 — a header would starve the body.
+    let _ = render_log_panel_text(&mut app, 40, 4);
+    assert_eq!(
+        app.log_scroll.pinned_top_inset, 0,
+        "2 rows cannot fund both a header and the body floor"
+    );
+}
+
+/// A multi-line prompt is flattened to the one row it is given, and a long one
+/// is elided rather than wrapped over the body.
+#[test]
+fn a_long_multi_line_prompt_is_elided_to_one_row() {
+    let mut app = make_app();
+    app.add_user_message(format!(
+        "first line {}\nsecond line cannot be shown",
+        "x".repeat(200)
+    ));
+    for i in 0..40 {
+        app.add_system_message(format!("noise line {i}"));
+    }
+    let _ = render_log_panel_text(&mut app, 50, 14);
+    app.log_scroll.follow = false;
+    app.log_scroll.visual_top = 4;
+    let text = render_log_panel_text(&mut app, 50, 14);
+
+    let pinned = text.lines().nth(1).unwrap_or_default();
+    // The row begins with the panel's left border, so look inside it.
+    assert!(pinned.contains("> first line x"), "{pinned:?}");
+    assert!(
+        pinned.contains('…'),
+        "an over-long prompt is elided: {pinned:?}"
+    );
+    assert!(
+        !pinned.contains("cannot be shown"),
+        "only the first line survives: {pinned:?}"
+    );
+}

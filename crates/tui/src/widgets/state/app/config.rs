@@ -226,6 +226,7 @@ impl App {
             stream: self.stream().state(),
             mouse: &self.mouse,
             skills_data: &self.skills_data,
+            log_top_inset: self.log_scroll.pinned_top_inset,
             loading_idx: self.loading_idx,
             spinner_frame: self.spinner_frame,
             status_bar: self.status_bar().state(),

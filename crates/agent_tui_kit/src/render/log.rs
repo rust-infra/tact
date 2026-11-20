@@ -256,11 +256,15 @@ pub fn render_log_panel_pure(
 
     // The rect the renderer will draw cells into, computed up front: a cell's
     // hit rects have to be measured against the same area it draws in.
+    // `log_top_inset` is what the host reserved above the first log row (a
+    // pinned prompt header). It is already out of `log_scroll.height`, so the
+    // viewport holds one fewer row; shifting `inner` down is what puts that
+    // row where the header was drawn instead of drawing over it.
     let inner = Rect::new(
         area.x + left,
-        area.y + top,
+        area.y + top + ctx.log_top_inset,
         area.width.saturating_sub(left + right),
-        area.height.saturating_sub(top + bottom),
+        area.height.saturating_sub(top + bottom + ctx.log_top_inset),
     );
 
     let mut renderer = LogColumnRenderer::new().with_viewport(visual_scroll, visible_height);

@@ -13,7 +13,98 @@ use crate::{
 };
 
 use agent_tui_kit::render::log::render_log_panel_pure;
-use agent_tui_kit::state::{LogCoordinator, LogScroll, SkillEntry, log_indent_at};
+use agent_tui_kit::state::{LogCoordinator, LogItemKind, LogScroll, SkillEntry, log_indent_at};
+
+/// Rows of the panel's content area given up above the first log row.
+///
+/// The log can pin the current turn's prompt as a header so it stays readable
+/// once a long turn pushes it off the top. When it is shown, the scrollable
+/// viewport starts one row lower and is one row shorter — nothing else in the
+/// panel moves.
+///
+/// `log_scroll.height` is the one value the renderer and the pointer path both
+/// read, so the reservation is expressed by shortening it. A click is then
+/// mapped by `log_hit` against exactly the rows that were drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum PinnedRow {
+    /// No header: the viewport starts at the content area's first row.
+    #[default]
+    None,
+    /// A one-line header owns the content area's first row.
+    Prompt,
+}
+
+impl PinnedRow {
+    const fn rows(self) -> u16 {
+        match self {
+            Self::None => 0,
+            Self::Prompt => 1,
+        }
+    }
+}
+
+/// Whether the current turn's prompt has scrolled out of the viewport.
+///
+/// Only the *current* turn's prompt is pinned. An earlier turn's prompt is
+/// ordinary history: re-showing it would claim the reader is still working on
+/// it, and the header has exactly one row to give.
+/// The physical rows of the current turn's prompt, first row first.
+///
+/// A prompt is stored one [`LogItemKind::User`] item per input line, so the
+/// last `User` row is the prompt's *tail*, not its start. Walk back over the
+/// contiguous run to find where the reader's words begin — the header shows the
+/// first line, and a tail would show the end of a pasted block.
+fn current_prompt_rows(app: &App) -> Option<std::ops::RangeInclusive<usize>> {
+    let last = app
+        .log
+        .items
+        .iter()
+        .rposition(|item| item.kind == LogItemKind::User)?;
+    let mut first = last;
+    while first > 0 && app.log.items[first - 1].kind == LogItemKind::User {
+        first -= 1;
+    }
+    Some(first..=last)
+}
+
+fn prompt_needs_pinning(app: &App, reserve: u16, area: Rect) -> bool {
+    if app.log_scroll.follow {
+        // At the tail the prompt is either on screen or the turn is old enough
+        // to have scrolled away inside the same view; a header would only
+        // duplicate the row directly above it.
+        return false;
+    }
+    let Some(rows) = current_prompt_rows(app) else {
+        return false;
+    };
+    let phys = *rows.start();
+    // Too short to give up a row: keep the body readable instead.
+    let content = area
+        .height
+        .saturating_sub(2)
+        .saturating_sub(reserve)
+        .saturating_sub(1);
+    if content < PINNED_MIN_BODY_ROWS {
+        return false;
+    }
+    // Only when that row has actually scrolled above the viewport. If it is
+    // still visible, the header would repeat a row the reader can already see.
+    let Some(logical) = app
+        .log_scroll
+        .visible_indices
+        .iter()
+        .position(|&p| p == phys)
+    else {
+        return true;
+    };
+    let Some(&visual_start) = app.log_scroll.visual_start.get(logical) else {
+        return false;
+    };
+    visual_start < app.log_viewport_top()
+}
+
+/// Body rows that must remain below a pinned prompt before it is worth drawing.
+const PINNED_MIN_BODY_ROWS: u16 = 2;
 
 /// Render the Log panel: wrapping, scrolling, and mouse selection.
 ///
@@ -63,6 +154,14 @@ pub(crate) fn render_log_panel_with_borders(
         borders,
         app.task_start_time.is_some(),
     );
+    // Decided once, before the caches are rebuilt: `prepare_log_frame` shrinks
+    // the viewport by this row and the pointer path maps against the same
+    // value, so the two cannot disagree about where the first log row is.
+    let pinned = if prompt_needs_pinning(app, reserve, area) {
+        PinnedRow::Prompt
+    } else {
+        PinnedRow::None
+    };
     // Fold decisions are copied out before `log_scroll` is borrowed mutably:
     // the two live in different fields of `App`, and the renderer cannot read
     // one while holding a `&mut` to the other.
@@ -140,6 +239,7 @@ pub(crate) fn render_log_panel_with_borders(
         area,
         borders,
         reserve,
+        pinned,
         &fold,
         app.fold_commentary,
         &tool_rows,
@@ -159,6 +259,65 @@ pub(crate) fn render_log_panel_with_borders(
             .map(|btn| (btn.child_id, btn.rect)),
     );
     app.mouse.replace_open_actions(output.open_actions);
+    if pinned == PinnedRow::Prompt {
+        draw_pinned_prompt(frame, area, app);
+    }
+}
+
+/// Draw the current turn's prompt on the row reserved above the log.
+///
+/// One row only, so a multi-line prompt is flattened: the first line is kept
+/// and the rest is elided. The `💬` prefix the log row carries is dropped — the
+/// header already reads as the reader's own words, and the glyph would cost two
+/// columns of a line that is short by definition.
+fn draw_pinned_prompt(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(rows) = current_prompt_rows(app) else {
+        return;
+    };
+    let raw = app.log.items[*rows.start()].raw.trim_start();
+    let raw = raw.strip_prefix('💬').unwrap_or(raw).trim_start();
+    if raw.is_empty() {
+        return;
+    }
+
+    let theme = app.theme;
+    let width = area.width.saturating_sub(3) as usize; // borders + leading space
+    // `> ` costs two columns of the row, so the text gets what is left.
+    let text = elide_to_width(raw, width.saturating_sub(2));
+    let line = Line::from(vec![
+        Span::styled("> ", Style::default().fg(theme.accent)),
+        Span::styled(text, Style::default().fg(theme.fg)),
+    ]);
+    frame.render_widget(
+        ratatui::widgets::Paragraph::new(line),
+        Rect::new(area.x + 1, area.y + 1, area.width.saturating_sub(2), 1),
+    );
+}
+
+/// Truncate `text` to `max` display columns, ending with `…` when it does not
+/// fit. Counts display width, not chars, so a CJK prompt does not overflow.
+fn elide_to_width(text: &str, max: usize) -> String {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+    if max == 0 {
+        return String::new();
+    }
+    if text.width() <= max {
+        return text.to_string();
+    }
+    let budget = max.saturating_sub(1); // the ellipsis
+    let mut used = 0;
+    let mut out = String::new();
+    for ch in text.chars() {
+        let w = ch.width().unwrap_or(0);
+        if used + w > budget {
+            break;
+        }
+        used += w;
+        out.push(ch);
+    }
+    out.push('…');
+    out
 }
 
 /// Phase 0-2: rebuild the scroll/layout caches (mutable). Runs once per frame
@@ -177,6 +336,7 @@ fn prepare_log_frame(
     area: Rect,
     borders: Borders,
     reserve: u16,
+    pinned: PinnedRow,
     fold: &crate::render::fold::FoldLayout,
     fold_commentary: bool,
     tool_rows: &[(usize, usize)],
@@ -199,7 +359,17 @@ fn prepare_log_frame(
     // `reserve` is the live stats line's row: it is *inside* the box, on the
     // content area's last row, so it comes out of the scrollable height while
     // the border stays where it is.
-    log_scroll.height = area.height.saturating_sub(top + bottom + reserve);
+    log_scroll.height = area
+        .height
+        .saturating_sub(top + bottom + reserve + pinned.rows());
+    // Published before anything draws: the pointer path reads this to map a
+    // click back to a log row, so it must already be set by the time the next
+    // event arrives.
+    log_scroll.pinned_top_inset = if borders.contains(Borders::TOP) {
+        pinned.rows()
+    } else {
+        0
+    };
     let visible_height = log_scroll.height as usize;
     // 两行做两件事：
     // 和 `height` 同样的 `saturating_sub`：

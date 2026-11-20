@@ -388,15 +388,19 @@ struct LogHit {
 
 /// Resolve a pointer position against the log panel.
 ///
-/// `content_y` and `content_x` are the panel rect's inside edges, so a panel
-/// with borders maps `area.y + 1` to the first content row. Any future row
-/// reserved above the log belongs in `PinnedRows`, not in a `+ 2` here.
+/// `area.y + 1` is the panel's top border. `log_scroll.pinned_top_inset` is any
+/// row the host reserved above the first log row — the render pass publishes it
+/// and shrinks `height` by the same amount, so adding it back here is what keeps
+/// a click on the row the reader is actually pointing at. A pointer landing on
+/// that reserved row yields no row at all: it is a header, not history.
 fn log_hit(app: &App, mouse: MouseEvent) -> LogHit {
     let area = app.mouse.area(SurfaceId::Log);
     let visual_base = app.log_viewport_top();
-    let raw_visual_row =
-        visual_base + mouse.row.saturating_sub(area.y + 1) as usize;
-    let visual_row = (!below_log_viewport(app, visual_base, raw_visual_row))
+    let inset = app.log_scroll.pinned_top_inset;
+    let row_offset = mouse.row.saturating_sub(area.y + 1);
+    let on_reserved_row = row_offset < inset;
+    let raw_visual_row = visual_base + row_offset.saturating_sub(inset) as usize;
+    let visual_row = (!on_reserved_row && !below_log_viewport(app, visual_base, raw_visual_row))
         .then_some(raw_visual_row);
     LogHit {
         visual_row,
@@ -2816,6 +2820,51 @@ mod tests {
             "a reserved row owns no log line"
         );
         assert!(!app.mouse.dragging_log);
+    }
+
+    /// With a pinned prompt header, the first log row is drawn one row lower —
+    /// so a click there must resolve to the same line as it would without the
+    /// header, and a click on the header itself must resolve to nothing.
+    #[test]
+    fn a_pinned_header_shifts_the_rows_a_click_resolves_to() {
+        let mut app = app_with_clickable_log();
+        app.add_system_message("first body row".into());
+        app.log_scroll.visual_start = vec![0, 1];
+        app.log_scroll.height = 4;
+
+        // Without a header: row 1 is the first log row.
+        handle_mouse_event(&mut app, mouse_down(1, 1));
+        let without = app.mouse.log_selection;
+
+        // With a one-row header reserved: the body now starts at row 2.
+        app.mouse.clear_log_selection();
+        app.log_scroll.pinned_top_inset = 1;
+
+        handle_mouse_event(&mut app, mouse_down(1, 1));
+        assert!(
+            app.mouse.log_selection.is_none(),
+            "the header row owns no log line, so a click there selects nothing"
+        );
+        assert!(!app.mouse.dragging_log, "and it starts no drag");
+
+        handle_mouse_event(&mut app, mouse_down(1, 2));
+        assert_eq!(
+            app.mouse.log_selection, without,
+            "the row after the header resolves to the line the header displaced"
+        );
+    }
+
+    /// The header only exists while the panel can spare the row.
+    #[test]
+    fn a_short_panel_does_not_reserve_a_header_row() {
+        let mut app = app_with_clickable_log();
+        app.add_system_message("hello".into());
+        // Too short: the body would lose the only row it has.
+        let _ = crate::render::test_harness::render_log_panel_text(&mut app, 40, 4);
+        assert_eq!(
+            app.log_scroll.pinned_top_inset, 0,
+            "a panel this short must spend its rows on the body"
+        );
     }
 
     /// The `⎘` on a frozen stats row is centered with the row, and the click
