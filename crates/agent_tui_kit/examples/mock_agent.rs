@@ -265,6 +265,7 @@ impl MockShell {
                     stream: &self.stream,
                     mouse: &MouseState::default(),
                     skills_data: &[],
+                    log_top_inset: 0,
                     loading_idx: None,
                     spinner_frame: 3,
                     status_bar: &self.status_bar,

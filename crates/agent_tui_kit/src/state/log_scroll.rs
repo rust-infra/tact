@@ -37,6 +37,13 @@ pub struct LogScroll {
     pub state: ScrollbarState,
     /// Panel height.
     pub height: u16,
+    /// Rows reserved above the first log row inside the panel's top border.
+    ///
+    /// Currently 0 or 1: the host pins the current turn's prompt there once it
+    /// scrolls out of view. `height` is already net of this, so the scrollable
+    /// viewport and the drawn rows agree; the pointer path adds it back when
+    /// mapping a row back to the log.
+    pub pinned_top_inset: u16,
     /// Last-known panel content width (set on render; used at table-build time
     /// so streamed tables are laid out to fit before the panel wraps them).
     pub width: u16,
@@ -89,6 +96,7 @@ impl LogScroll {
     pub fn new() -> Self {
         Self {
             visual_top: 0,
+            pinned_top_inset: 0,
             follow: true,
             unseen: false,
             offset: 0,

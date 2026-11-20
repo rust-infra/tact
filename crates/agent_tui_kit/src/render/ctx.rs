@@ -69,6 +69,14 @@ pub struct RenderCtx<'a> {
     pub stream: &'a StreamState,
     pub mouse: &'a MouseState,
     pub skills_data: &'a [SkillEntry],
+    /// Rows the host reserved above the first log row, inside the panel's top
+    /// border (currently 0 or 1: a pinned prompt header).
+    ///
+    /// The host shrinks `log_scroll.height` by the same amount, so the viewport
+    /// and this offset must agree. It exists because the first log row is then
+    /// *not* the content area's first row, and every drawn cell and hit rect
+    /// has to start one row lower.
+    pub log_top_inset: u16,
     /// Loading placeholder row index, if present.
     pub loading_idx: Option<usize>,
     /// Animation tick: advances once per painted frame in an active state.
