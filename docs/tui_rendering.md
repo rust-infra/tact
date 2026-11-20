@@ -259,14 +259,15 @@ tool labels were stated.
 
 The default is the same shape as a run's: a region with a live member never
 folds, a reader's explicit choice wins, otherwise a foldable mixed region folds.
-Fold state keys on the region's first member's `block_id`/`tool_id`, never on
-`phys_idx`. The reader's choice lives in `ToolState::folded_regions` /
-`unfolded_regions` — a separate key space from a tool run's, so one cannot
-shadow the other.
+Fold state keys on the region's first member's `block_id`/`tool_id`, or on a
+narration run's generated key, never on `phys_idx`. The reader's choice lives in
+`ToolState::folded_regions` / `unfolded_regions` — a separate key space from a
+tool run's, so one cannot shadow the other.
 
-Expanding a region gives the members their rows back. The calls inside it are
-still their own tool run, so they keep the run's summary: a region answers "how
-much of this turn was work", a run answers "which calls ran".
+Expanding a region gives every member its rows back. The calls inside it do not
+draw a second summary: one stretch of work gets one summary, the region's, and
+`runs_covered_by_region` suppresses the inner run while the region exists. A
+tool-only span still folds through `tool_group`, whose summary names each call.
 
 Failures survive folding: the summary counts them (`1 failed`) and paints the
 row in the error colour with `⚠`.
@@ -301,9 +302,11 @@ same predicate — `mixes_thinking_and_tools()` is the older rule and misses a
 narration-headed region, which left `z` toggling the tool run *inside* the
 region and left an opened region with no control to close it.
 
-Region identity is the first **non-blank** row's text. A narration run commonly
-opens with the blank gap before its paragraph, and a key of `""` would be shared
-by every such region — folding one would fold them all.
+Region identity for a narration run is derived from its first **non-blank** row's
+text plus an occurrence counter. Text alone is not unique: two turns can open
+with the same sentence, and a code-only message has no text at all. The
+occurrence counter keeps those regions in separate fold state while still
+surviving inserts above the run.
 
 Both callers derive regions through `App::activity_regions()` so the fold, the
 renderer and the click path cannot disagree; `commentary_runs` itself lives in

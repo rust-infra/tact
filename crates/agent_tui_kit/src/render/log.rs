@@ -70,8 +70,8 @@ impl<T: Renderable> Renderable for SelectedCell<T> {
 struct FoldGutterCell<T> {
     inner: T,
     style: Style,
-    /// Columns the row's own text is indented by. The glyph goes here, and the
-    /// text shifts right by [`crate::render::util::FOLD_GUTTER_COLS`] from it —
+    /// Columns the row's own text is indented by. The glyph goes
+    /// [`crate::render::util::FOLD_GUTTER_COLS`] columns left of that indent —
     /// the same geometry a folded region summary uses, so the control occupies
     /// one column in both states.
     indent: u16,
@@ -100,7 +100,7 @@ impl<T: Renderable> Renderable for FoldGutterCell<T> {
             ),
             1,
         );
-        if glyph.width > 0 && area.height > 0 {
+        if skip_lines == 0 && glyph.width > 0 && area.height > 0 {
             buf.set_string(glyph.x, glyph.y, "⏷", self.style);
         }
     }
@@ -308,9 +308,10 @@ pub fn render_log_panel_pure(
             // whole-log line, and this row's screen position is that line less
             // the scroll offset.
             if let Some((area, _skip)) = renderer.cell_slice(vs_cache[logical_i], 1, inner) {
-                // Same fold gutter as every other control: the row's indent,
-                // which is where the region summary's `⏵` sat.
-                let x = area.x + phys_idx.map_or(0, |p| log_indent_at(ctx.log, p));
+                // Same fold gutter as every other control: the glyph columns
+                // immediately left of the row's text.
+                let indent = phys_idx.map_or(0, |p| log_indent_at(ctx.log, p));
+                let x = area.x + crate::render::util::fold_glyph_x(indent);
                 open_actions.push(OpenAction::new(
                     OpenTarget::activity_region(region_id.clone()),
                     Rect::new(x, area.y, crate::render::util::FOLD_GUTTER_COLS, 1),
@@ -913,5 +914,61 @@ fn render_loading_spinner(
     if spinner_area.bottom() <= area.bottom() {
         frame.render_widget(Clear, spinner_area);
         frame.render_widget(Paragraph::new(spinner_line), spinner_area);
+    }
+}
+
+#[cfg(test)]
+mod fold_gutter_tests {
+    use super::*;
+
+    struct TwoRows;
+
+    impl Renderable for TwoRows {
+        fn render(&self, area: Rect, buf: &mut Buffer) {
+            self.render_partial(area, buf, 0);
+        }
+
+        fn height(&self, _width: u16) -> u16 {
+            2
+        }
+
+        fn render_partial(&self, area: Rect, buf: &mut Buffer, skip_lines: usize) {
+            for row in skip_lines..2 {
+                if row - skip_lines >= area.height as usize {
+                    break;
+                }
+                buf.set_string(
+                    area.x,
+                    area.y + (row - skip_lines) as u16,
+                    format!("row{row}"),
+                    Style::default(),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_clipped_head_does_not_paint_the_glyph_on_a_continuation_line() {
+        let cell = FoldGutterCell {
+            inner: TwoRows,
+            style: Style::default(),
+            indent: 3,
+        };
+        let area = Rect::new(0, 0, 20, 1);
+        let mut buf = Buffer::empty(area);
+
+        cell.render_partial(area, &mut buf, 1);
+
+        let text: String = (0..area.width)
+            .map(|x| buf[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(
+            !text.contains('⏷'),
+            "the head's glyph must not move onto a continuation row: {text:?}"
+        );
+        assert!(
+            text.contains("row1"),
+            "the visible continuation row still draws: {text:?}"
+        );
     }
 }

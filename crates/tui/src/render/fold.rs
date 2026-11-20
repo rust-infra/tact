@@ -76,11 +76,9 @@ impl FoldLayout {
             &is_turn_boundary,
         );
         let covered = |phys: usize| {
-            regions_found.iter().any(|region| {
-                region.folds_here()
-                    && phys > region.phys_idx
-                    && phys < region.phys_idx + region.expanded_rows
-            })
+            regions_found
+                .iter()
+                .any(|region| region.folds_here() && region.contains(phys))
         };
         let folds = tool_group::runs(blocks)
             .into_iter()
@@ -166,9 +164,7 @@ impl FoldLayout {
 mod tests {
     use super::*;
     use agent_tui_kit::state::thinking::ThinkingBlock;
-    use agent_tui_kit::widgets::tool_widget::{
-        ToolLayout, ToolPhase, ToolRenderOutput, tool_visual_rows,
-    };
+    use agent_tui_kit::widgets::tool_widget::{ToolLayout, ToolPhase, ToolRenderOutput};
     use std::time::Duration;
 
     fn block(tool_id: &str, phys_idx: usize, phase: ToolPhase) -> ToolBlock {
@@ -187,7 +183,6 @@ mod tests {
                 arg_summary: tool_id.to_string(),
                 arg_full: String::new(),
                 layout: ToolLayout {
-                    visual_rows: tool_visual_rows(false, 0, 0, false),
                     preview_lines: 0,
                     has_detail_card: false,
                     detail_collapsed: true,

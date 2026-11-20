@@ -613,6 +613,50 @@ fn opening_a_region_shows_the_card_and_every_call_again() {
     );
 }
 
+/// A tool wave that is followed by reasoning is the tool-headed shape: the
+/// region starts at the first call, and its run starts there too. Opening the
+/// region must still give every call its row back.
+fn reads_then_thought(app: &mut App) {
+    app.add_user_message("Check the tree.".into());
+    seed(app, 0, "r1", "read_file", "a.rs", StepStatus::Success);
+    seed(app, 1, "r2", "read_file", "b.rs", StepStatus::Success);
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Started,
+    ));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Delta("I should compare both files.\n".into()),
+    ));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Finished,
+    ));
+}
+
+#[test]
+fn opening_a_tool_headed_region_shows_every_call() {
+    let mut app = make_app();
+    reads_then_thought(&mut app);
+    let _ = render_log_panel_text(&mut app, 100, 24);
+
+    let regions =
+        agent_tui_kit::state::activity_region::regions(&app.thinking().blocks, &app.tools().blocks);
+    let region = regions
+        .into_iter()
+        .find(|region| region.mixes_thinking_and_tools())
+        .expect("the calls and the card are one region");
+    assert_eq!(region.tools(), 2, "the region starts at the tool wave");
+    assert!(app.toggle_region(region), "the region must open");
+
+    let text = render_log_panel_text(&mut app, 100, 24);
+    assert!(
+        text.contains("a.rs") && text.contains("b.rs"),
+        "opening the region must show both calls: {text}"
+    );
+    assert!(
+        !text.contains("2 tools"),
+        "the run inside the open region must not draw a second summary: {text}"
+    );
+}
+
 /// A region whose calls all succeeded has no failure to report; one with a
 /// failure keeps `⚠` and the count, so folding cannot make an error quieter.
 #[test]
@@ -765,9 +809,7 @@ fn the_turn_separator_row_sits_between_two_turns_activities() {
 /// from spacing.
 #[test]
 fn adjacency_alone_does_not_fuse_two_turns() {
-    use agent_tui_kit::widgets::tool_widget::{
-        ToolLayout, ToolPhase as Phase, ToolRenderOutput, tool_visual_rows,
-    };
+    use agent_tui_kit::widgets::tool_widget::{ToolLayout, ToolPhase as Phase, ToolRenderOutput};
 
     let mk_tool = |id: &str, phys: usize| agent_tui_kit::state::ToolBlock {
         phys_idx: phys,
@@ -784,7 +826,6 @@ fn adjacency_alone_does_not_fuse_two_turns() {
             arg_summary: id.to_string(),
             arg_full: String::new(),
             layout: ToolLayout {
-                visual_rows: tool_visual_rows(false, 0, 0, false),
                 preview_lines: 0,
                 has_detail_card: false,
                 detail_collapsed: true,

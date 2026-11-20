@@ -125,11 +125,8 @@ pub(crate) fn render_log_panel_with_borders(
             .iter()
             .filter(|region| region.folds_here())
             .flat_map(|region| {
-                runs.iter().filter_map(|run| {
-                    (run.phys_idx > region.phys_idx
-                        && run.phys_idx < region.phys_idx + region.expanded_rows)
-                        .then_some(run.phys_idx)
-                })
+                runs.iter()
+                    .filter_map(|run| region.contains(run.phys_idx).then_some(run.phys_idx))
             })
             .collect()
     };

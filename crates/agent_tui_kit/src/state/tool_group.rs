@@ -511,6 +511,24 @@ impl ToolState {
         )
     }
 
+    /// Whether an activity region can start at `phys_idx`.
+    ///
+    /// The renderer asks this for every visible row before deriving the whole
+    /// region set, so the cheap "nothing starts here" case stays cheap.
+    fn region_may_start_at(
+        &self,
+        thinking: &crate::state::thinking::ThinkingState,
+        commentary: &[crate::state::activity_region::CommentaryRun],
+        phys_idx: usize,
+    ) -> bool {
+        self.blocks.iter().any(|block| block.phys_idx == phys_idx)
+            || thinking
+                .blocks
+                .iter()
+                .any(|block| block.phys_idx == phys_idx)
+            || commentary.iter().any(|run| run.phys_idx == phys_idx)
+    }
+
     /// The folded summary cell for a **mixed** activity region whose first
     /// member sits at `phys_idx`, if that region is folded right now.
     ///
@@ -532,13 +550,7 @@ impl ToolState {
         // A region can start at a narration row, which is in neither `blocks`
         // slice — so the cheap "nothing starts here" check has to include the
         // commentary runs too, or a narration-headed region never gets drawn.
-        if !self.blocks.iter().any(|block| block.phys_idx == phys_idx)
-            && !thinking
-                .blocks
-                .iter()
-                .any(|block| block.phys_idx == phys_idx)
-            && !commentary.iter().any(|run| run.phys_idx == phys_idx)
-        {
+        if !self.region_may_start_at(thinking, commentary, phys_idx) {
             return None;
         }
         let found = self.activity_regions_with_commentary(thinking, commentary, is_turn_boundary);
@@ -623,6 +635,9 @@ impl ToolState {
         is_turn_boundary: impl Fn(usize) -> bool,
         phys_idx: usize,
     ) -> Option<String> {
+        if !self.region_may_start_at(thinking, commentary, phys_idx) {
+            return None;
+        }
         let found = self.activity_regions_with_commentary(thinking, commentary, is_turn_boundary);
         let index = crate::state::activity_region::region_at_phys(&found, phys_idx)?;
         let region = &found[index];
@@ -649,7 +664,7 @@ impl ToolState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widgets::tool_widget::{ToolLayout, ToolPhase, ToolRenderOutput, tool_visual_rows};
+    use crate::widgets::tool_widget::{ToolLayout, ToolPhase, ToolRenderOutput};
 
     /// The English locale, so a summary's wording is pinned in one place.
     fn msgs() -> crate::i18n::Messages {
@@ -684,7 +699,6 @@ mod tests {
                 arg_summary: tool_id.to_string(),
                 arg_full: String::new(),
                 layout: ToolLayout {
-                    visual_rows: tool_visual_rows(false, 0, 0, false),
                     preview_lines: 0,
                     has_detail_card: false,
                     detail_collapsed: false,
