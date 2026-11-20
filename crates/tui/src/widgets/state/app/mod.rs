@@ -4,6 +4,7 @@ pub(crate) mod config;
 pub(crate) mod construct;
 pub(crate) mod extensions;
 pub(crate) mod messages;
+pub(crate) mod paste;
 pub(crate) mod pending;
 pub(crate) mod popups;
 pub(crate) mod registry;

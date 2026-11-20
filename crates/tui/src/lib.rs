@@ -8,6 +8,7 @@
 #[cfg(test)]
 mod clipboard_lock;
 
+mod clipboard_paste;
 mod handlers;
 pub(crate) mod i18n {
     pub(crate) use agent_tui_kit::i18n::*;
@@ -516,24 +517,13 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                         handle_mouse_event(&mut app, mouse);
                     }
                     Event::Paste(data) => {
-                        // Paste text (including newlines) into the current input buffer
-                        match app.input_mode {
-                            InputMode::Insert => {
-                                // Multi-line edit: preserve newlines, insert at cursor position
-                                let cursor =
-                                    app.input.floor_char_boundary(app.input_cursor.min(app.input.len()));
-                                let before = app.input[..cursor].to_string();
-                                let after = app.input[cursor..].to_string();
-                                app.input = before.clone() + &data + &after;
-                                app.input_cursor = before.len() + data.len();
-                            }
-                            InputMode::Palette => {
-                                // Single-line command: replace newlines with spaces, append to end
-                                let text: String = data.replace(['\n', '\r'], " ");
-                                app.cmd_line.push_str(&text);
-                            }
-                            _ => {}
-                        }
+                        // A paste is not always text: a screenshot or a
+                        // file-manager copy has no text form, so the pasteboard
+                        // is consulted and a reference is inserted instead.
+                        // Anything it cannot turn into a reference still pastes
+                        // as the text the terminal decoded.
+                        let action = app.resolve_paste(Some(&data));
+                        app.apply_paste(action, Some(&data));
                     }
                     Event::Resize(_, _new_height) => {}
                     _ => {}
