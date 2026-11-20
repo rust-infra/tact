@@ -367,6 +367,26 @@ pub(crate) fn handle_insert_mode(
                 }
             }
         }
+        // Ctrl+V: paste from the system clipboard.
+        //
+        // A terminal with bracketed paste (the TUI enables it) normally turns
+        // `Ctrl+V` into an `Event::Paste` of the text itself — handled in the
+        // event loop. This branch covers what that path cannot carry: a
+        // screenshot or a copied file, which has no text form. When the
+        // pasteboard has nothing worth referencing, the keystroke is left
+        // unhandled on purpose so the terminal's own paste still applies.
+        KeyCode::Char('v')
+            if key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL)
+                || key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::SUPER) =>
+        {
+            if app.paste_from_clipboard() {
+                app.dirty = true;
+            }
+        }
         // Ctrl+Z: undo
         KeyCode::Char('z')
             if key

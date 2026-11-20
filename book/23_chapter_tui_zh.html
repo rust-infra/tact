@@ -867,6 +867,10 @@ href="#6-渲染层">§6 渲染层</a>）：
 <li>仅当 <code>dirty</code>、<code>Status::Done</code>
 或仍有工具运行时重绘（实时 elapsed）。</li>
 <li>将键盘/鼠标分发给模式特定 handler。</li>
+<li>把 <code>Event::Paste</code> 交给 <code>App::resolve_paste</code>：终端已解出
+<strong>非空文本</strong>时它就是这次粘贴本身，直接插入；文本为空（截图没有文本形态）或是一串
+<code>file://</code> URI 时才读剪贴板，把文件/位图落成 <code>@</code>
+引用。转换不出引用时一律回退为文本粘贴，SSH/headless 下没有剪贴板也不会坏。</li>
 </ul></li>
 <li><strong>余额 timer</strong> — DeepSeek 或 Kimi 活跃时，随机 5–15 s
 间隔发送 <code>UserCommand::QueryBalance</code>（与启动 fetch

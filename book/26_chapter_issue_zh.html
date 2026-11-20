@@ -817,6 +817,7 @@
 <li class="toc-l2"><a href="#85-2026-11-25--%E7%A9%BA%E5%9B%9E%E5%90%88%E5%BA%94%E8%AF%A5%E8%87%AA%E5%8A%A8%E7%BB%AD%E8%B7%91%E8%80%8C%E4%B8%8D%E6%98%AF%E5%81%9C%E4%BD%8F" title="85. 2026-11-25 — 空回合应该自动续跑，而不是停住"><span class="toc-label">85. 2026-11-25 — 空回合应该自动续跑，而不是停住</span></a></li>
 <li class="toc-l2"><a href="#86-2026-11-26--acp-v2-%E5%8D%8F%E8%AE%AE%E8%A1%A5%E9%BD%90%E5%9B%9B%E6%9D%A1-must" title="86. 2026-11-26 — ACP v2 协议补齐四条 MUST"><span class="toc-label">86. 2026-11-26 — ACP v2 协议补齐四条 MUST</span></a></li>
 <li class="toc-l2"><a href="#87-2026-11-26--%E5%81%9C%E6%AD%A2%E5%8E%9F%E5%9B%A0%E7%BB%88%E4%BA%8E%E5%88%86%E5%87%BA%E4%BA%86-max_tokens-%E4%B8%8E-refusal" title="87. 2026-11-26 — 停止原因终于分出了 max_tokens 与 refusal"><span class="toc-label">87. 2026-11-26 — 停止原因终于分出了 max_tokens 与 refusal</span></a></li>
+<li class="toc-l2"><a href="#73-2026-11-20--tui-%E8%BE%93%E5%85%A5%E6%A1%86%E5%8F%AF%E7%B2%98%E8%B4%B4%E5%89%AA%E8%B4%B4%E6%9D%BF%E5%9B%BE%E7%89%87%E4%B8%8E%E6%96%87%E4%BB%B6" title="73. 2026-11-20 — TUI：输入框可粘贴剪贴板图片与文件"><span class="toc-label">73. 2026-11-20 — TUI：输入框可粘贴剪贴板图片与文件</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -24954,6 +24955,50 @@ T3 0.1.9 的 <code>app.asar</code> 后确认它的 ACP 客户端从不发这个�
 <code>crates/tact-acp/src/lib.rs</code>（<code>error_stop_reason</code>）、
 <code>crates/desktop_core/src/acp_bridge.rs</code>（idle 的停止原因映射）、
 <code>crates/tact/src/recovery.rs</code>（<code>Refused</code> 的建议文案）。</p>
+<h2 id="73-2026-11-20--tui-输入框可粘贴剪贴板图片与文件">73. 2026-11-20 —
+TUI：输入框可粘贴剪贴板图片与文件</h2>
+<p><strong>症状：</strong> 输入框只认文字粘贴。截图在剪贴板里时
+<code>Ctrl+V</code> 毫无反应，因为没有终端能把位图当成文本转发；从文件管理器复制文件时，bracketed
+paste 送来的是 <code>file://…</code> URI 串，直接插入后模型读不到——它既不是路径，也过不了
+<code>safe_path</code>。</p>
+<p><strong>改后行为：</strong> <code>Event::Paste</code> 交给
+<code>App::resolve_paste</code>，规则是
+<strong>回退而非拦截</strong>：</p>
+<ul>
+<li>终端解出的文本<strong>非空</strong>时，它就是这次粘贴本身，直接插入，完全不碰剪贴板。否则「复制截图后又粘贴一段选中的文字」会被悄悄换成图片引用。</li>
+<li>文本为空（位图没有文本形态，正是截图粘贴的情形）或是一串
+<code>file://</code> URI 时，才读剪贴板：位图按 PNG 存盘，文件按原样引用。</li>
+<li>工作区之外的文件（<code>~/Downloads</code>、<code>/tmp</code>）先复制到
+<code>.tact/attachments/</code> 再引用，因为 <code>Path::join</code>
+遇到绝对路径会丢掉工作区前缀，<code>safe_path</code> 必然报
+<code>Path escapes workspace</code>。沙箱本身不放松。</li>
+<li>一次粘贴多个文件时按空格连成一串，路径带空格则写成
+<code>@"…"</code>（<code>@</code> 语法的带引号形式）。</li>
+<li>同名不同内容的文件写成 <code>shot-1.png</code>；同名同内容重复粘贴复用已有副本，不堆积。</li>
+<li>整段逻辑读不到剪贴板（SSH / headless）或转换失败时，静默回退成文本粘贴，不弹错误。</li>
+</ul>
+<p><code>Ctrl+V</code>/<code>Cmd+V</code> 在 Insert 模式另有显式分支：没有 bracketed
+paste 的终端不会发 <code>Event::Paste</code>，raw mode 又把按键吞掉，那条路径必须自己读剪贴板，否则纯文本
+<code>Ctrl+V</code> 会完全失效。剪贴板是空的才返回
+<code>false</code>，把按键让回终端。</p>
+<p><strong>验证：</strong>
+<code>clipboard_paste::tests</code> 钉住百分号解码、URI 只认
+<code>file://</code> 前缀、带空格路径加引号、工作区内不复制、区外复制、同名冲突编号、重复粘贴复用，以及
+<code>a_reference_resolves_through_the_workspace_guard</code>——引用必须真的通过
+<code>safe_path</code>，否则模型仍读不到；
+<code>app::paste::tests</code> 钉住文本粘贴不被剪贴板里的截图劫持、非 Insert 模式不读剪贴板、光标处插入的分隔符。
+<code>cargo test -p tui --lib</code> 888 passed。</p>
+<p><strong>Pointers：</strong> <code>crates/tui/src/clipboard_paste.rs</code>
+（<code>Snapshot</code>、<code>files_in_uri_text</code>、
+<code>reference_for</code>、<code>save_image</code>）、
+<code>crates/tui/src/widgets/state/app/paste.rs</code>（
+<code>resolve_paste</code>、<code>apply_paste</code>、
+<code>paste_from_clipboard</code>）、<code>crates/tui/src/lib.rs</code>
+（<code>Event::Paste</code> 分支）、
+<code>crates/tui/src/handlers/insert.rs</code>（<code>Ctrl+V</code>）、
+<code>crates/tact/src/consts.rs</code>（
+<code>TactPath::attachments_dir</code>）、
+<code>book/23_chapter_tui_zh.html</code>（§5 TUI 主循环）。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>

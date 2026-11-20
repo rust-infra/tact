@@ -293,6 +293,13 @@ pub struct Messages {
     /// Singular form of [`Self::copied_summary_tmpl`] — one line, so the count
     /// is spelled out rather than substituted.
     pub copied_summary_one_tmpl: &'static str,
+    /// Report after pasted clipboard files were written into
+    /// `.tact/attachments` before being referenced: `{}` counts the files.
+    ///
+    /// Only used when a copy actually happened — a reference to a file already
+    /// inside the workspace needs no notice, because it shows up in the input
+    /// box the user is looking at.
+    pub pasted_attachment_tmpl: &'static str,
 
     // ---- 用户操作反馈 ----
     pub no_options: &'static str,
@@ -725,6 +732,7 @@ impl Messages {
             copied_internal_tmpl: "📋 Copied to internal buffer (clipboard unavailable): {}",
             copied_summary_tmpl: "{} lines · {}",
             copied_summary_one_tmpl: "1 line · {}",
+            pasted_attachment_tmpl: "📎 Copied {} pasted file(s) into .tact/attachments",
 
             no_options: "⚠ No options available",
             selected_tmpl: "✓ Selected: {}",
@@ -1091,6 +1099,7 @@ impl Messages {
             copied_internal_tmpl: "📋 已复制到内部缓冲区 (剪贴板不可用): {}",
             copied_summary_tmpl: "{} 行 · {}",
             copied_summary_one_tmpl: "1 行 · {}",
+            pasted_attachment_tmpl: "📎 已把 {} 个粘贴的文件复制到 .tact/attachments",
 
             no_options: "⚠ 无可用选项",
             selected_tmpl: "✓ 已选择: {}",
