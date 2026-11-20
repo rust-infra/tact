@@ -375,6 +375,7 @@
 </div>
 <div class="toc-group">
 <ol class="toc-list">
+<li class="toc-l2"><a href="#2026-11-21--tui-%E5%9B%BA%E5%AE%9A%E5%9C%A8%E6%97%A5%E5%BF%97%E9%A1%B6%E9%83%A8%E7%9A%84%E7%94%A8%E6%88%B7-prompt" title="2026-11-21 — TUI：把当前回合的 prompt 固定在日志顶部"><span class="toc-label">2026-11-21 — TUI：把当前回合的 prompt 固定在日志顶部</span></a></li>
 <li class="toc-l2"><a href="#2026-11-21--try-again-%E7%BB%AD%E8%B7%91%E8%A2%AB%E4%B8%AD%E6%96%AD%E7%9A%84%E5%9B%9E%E5%90%88" title="2026-11-21 — /try-again：续跑被中断的回合"><span class="toc-label">2026-11-21 — /try-again：续跑被中断的回合</span></a></li>
 <li class="toc-l2"><a href="#2026-11-19--tui-thinking-%E4%B8%8E%E7%9B%B8%E9%82%BB-tool-%E5%90%88%E6%88%90%E4%B8%80%E4%B8%AA%E6%B4%BB%E5%8A%A8%E5%8C%BA%E6%8A%98%E5%8F%A0" title="2026-11-19 — TUI：thinking 与相邻 tool 合成一个活动区折叠"><span class="toc-label">2026-11-19 — TUI：thinking 与相邻 tool 合成一个活动区折叠</span></a></li>
 <li class="toc-l2"><a href="#2026-11-14--%E5%AD%90%E4%BB%A3%E7%90%86%E5%AE%9E%E6%97%B6%E8%BE%93%E5%87%BA%E5%8D%A1%E7%89%87%E7%9A%84%E9%A1%B5%E8%84%9A%E7%82%B9%E4%B8%8D%E5%8A%A8" title="2026-11-14 — 子代理实时输出卡片的页脚点不动"><span class="toc-label">2026-11-14 — 子代理实时输出卡片的页脚点不动</span></a></li>
@@ -814,6 +815,32 @@ bugfix日志</strong>，记录有用户可见或 API
 <a href="../ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> 和对应章节，
 更早的设计与实施记录保存在 Git 历史中。正文中出现的旧 spec / plan
 文件名只用于标识当时的修订，文件本身已删除。</p>
+<h2 id="2026-11-21--tui-固定在日志顶部的用户-prompt">2026-11-21 — TUI：把当前回合的 prompt 固定在日志顶部</h2>
+<p><strong>现象：</strong> 一轮跑久了，用户自己写的那句话被推出屏幕，日志里再也找不到「这一轮到底要做什么」。滚动回去看，又失去了正在进行的输出。桌面端一直有工作区标题可参照，终端侧没有任何等价物。</p>
+<p><strong>决策：</strong> 当日志离开尾部、且当前回合的 prompt 已滚出视口时，占用面板内容区的<strong>第一行</strong>把它固定显示。</p>
+<p>预留方式是<strong>扣高度</strong>，不是叠加。滚动位置、渲染视口、鼠标命中三者都读
+<code>log_scroll.height</code>，所以固定行把高度减一，并发布
+<code>pinned_top_inset</code>；<code>log_hit</code> 再把它加回去。这样「第一行日志在哪」只有一处答案——两处各写一遍判断，正是上一轮折叠 bug 的成因。</p>
+<p>点在固定行上<strong>不解析成任何日志行</strong>：它是边框性质的东西，不是历史内容，否则会静默清掉选区。</p>
+<p>三个边界：只固定<strong>当前</strong>回合（旧回合的 prompt 是历史，重新显示等于声称读者还在做那件事）；面板至少要能留出两行正文，否则让位给正文；prompt 多行时按显示宽度截断并补 <code>…</code>，绝不换行压到正文上。</p>
+<p><strong>过程中修掉的三个真问题：</strong></p>
+<p>其一，用户消息按<strong>每行一个 <code>User</code> item</strong> 存储，所以「最后一个 <code>User</code> 行」是 prompt 的<strong>尾巴</strong>。最初的实现固定显示的是一个多行粘贴块的末行（测试里看到的是
+<code>&gt; xxxxx…</code>）。改为
+<code>current_prompt_rows</code> 回溯连续 run 取首行。</p>
+<p>其二，<code>&gt; </code> 前缀占两列，但宽度预算只算了一次，导致省略号永远画不出来——长 prompt 被<strong>静默截断且无提示</strong>。</p>
+<p>其三，固定行与实时 stats 行都会扣
+<code>height</code>，此前没有测试覆盖二者共存。补了一条断言精确高度的用例（16 行面板 → 2 边框 + 1 stats + 1 固定行 = 12 行正文），而不是
+<code>&gt;= 2</code> 这种「即使 stats 预留悄悄变成 0 也会通过」的弱断言。</p>
+<p><strong>代码位置：</strong>
+<code>crates/tui/src/render/log.rs</code>（
+<code>PinnedRow</code> / <code>prompt_needs_pinning</code> /
+<code>current_prompt_rows</code> / <code>draw_pinned_prompt</code> /
+<code>elide_to_width</code>）、
+<code>crates/agent_tui_kit/src/state/log_scroll.rs</code>（
+<code>pinned_top_inset</code>）、
+<code>crates/agent_tui_kit/src/render/{ctx,log}.rs</code>（
+<code>log_top_inset</code> 偏移）、
+<code>crates/tui/src/handlers/mouse.rs</code>（<code>log_hit</code>）。</p>
 <h2 id="2026-11-21--try-again-续跑被中断的回合">2026-11-21 — <code>/try-again</code>：续跑被中断的回合</h2>
 <p><strong>现象：</strong> 回合被截断（输出上限、provider 断流、用户取消）之后，读者没有
 一个干净的办法继续。重打一遍指令会重复已经生效的操作；什么都不做，这一轮就晾在那里。

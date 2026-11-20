@@ -1935,3 +1935,53 @@ fn a_long_multi_line_prompt_is_elided_to_one_row() {
         "only the first line survives: {pinned:?}"
     );
 }
+
+/// The header and the live stats line can be on screen together, and both come
+/// out of the same height. Neither may starve the other.
+#[test]
+fn the_pinned_header_and_the_live_stats_row_coexist() {
+    let mut app = make_app();
+    app.add_user_message("a prompt that will scroll away".into());
+    for i in 0..40 {
+        app.add_system_message(format!("noise line {i}"));
+    }
+    // A task in flight is what reserves the stats row.
+    app.task_start_time = Some(chrono::Local::now());
+    let _ = render_log_panel_text(&mut app, 60, 16);
+    app.log_scroll.follow = false;
+    app.log_scroll.visual_top = 4;
+    let _ = render_log_panel_text(&mut app, 60, 16);
+
+    assert_eq!(app.log_scroll.pinned_top_inset, 1, "header drawn");
+    // 16 rows: 2 borders + 1 stats row + 1 header => 12 body rows. Asserting
+    // the exact arithmetic is what proves both deductions happened; a `>= 2`
+    // would pass even if the reserve were silently zero.
+    assert_eq!(
+        app.log_scroll.height, 12,
+        "the stats row and the header both come out of the panel height"
+    );
+}
+
+/// Deciding whether to pin must not depend on the height that pinning itself
+/// changes: the same scroll position must give the same answer on two
+/// consecutive frames.
+#[test]
+fn the_pin_decision_is_stable_across_frames() {
+    let mut app = make_app();
+    app.add_user_message("stable prompt".into());
+    for i in 0..40 {
+        app.add_system_message(format!("noise line {i}"));
+    }
+    let _ = render_log_panel_text(&mut app, 60, 14);
+    app.log_scroll.follow = false;
+    app.log_scroll.visual_top = 4;
+
+    let _ = render_log_panel_text(&mut app, 60, 14);
+    let first = app.log_scroll.pinned_top_inset;
+    let _ = render_log_panel_text(&mut app, 60, 14);
+    let second = app.log_scroll.pinned_top_inset;
+    assert_eq!(
+        first, second,
+        "a pin decision that feeds on its own height would flip between frames"
+    );
+}

@@ -122,6 +122,34 @@ The log panel is the most complex rendering component. Its core flow is:
   (`scroll_log_down` -> `scroll_log_to_bottom`).
 - Only renders `TextCell`s that fall inside the current viewport.
 
+### 6.3.1 Pinned Prompt Row
+
+A long turn pushes the reader's own prompt off the top, leaving nothing on
+screen that says what the turn was about. While the log is scrolled away from
+the tail and the prompt has left the viewport, the panel's **first content
+row** is reserved for it.
+
+The reservation is expressed as height, not as an overlay. `log_scroll.height`
+is the one value the renderer and the pointer path both read, so pinning
+shortens it by one and publishes `log_scroll.pinned_top_inset`. `log_hit`
+(`handlers/mouse.rs`) adds that back when mapping a click to a row, and a click
+**on** the row yields no row at all — it is chrome, not history.
+
+- Only the **current** turn's prompt is pinned. An earlier turn's prompt is
+  ordinary history, and re-showing it would claim the reader is still working
+  on it.
+- Only when the panel can still spare `PINNED_MIN_BODY_ROWS` (2) below it; a
+  shorter panel keeps its body instead.
+- A prompt is stored one `LogItemKind::User` item per input line, so the last
+  `User` row is the prompt's *tail*. `current_prompt_rows` walks back over the
+  contiguous run to find the first line.
+- The row is one line, so a long or CJK prompt is elided by display width
+  (`elide_to_width`), ending in `…`. It is never wrapped over the body.
+
+The header and the live stats row can be on screen together; both come out of
+`log_scroll.height`, which is why the two reservations are added, not
+overwritten.
+
 ### 6.4 Card Overlays
 
 Completed code cards remain overlays; thinking and tool cards are direct log cells:
