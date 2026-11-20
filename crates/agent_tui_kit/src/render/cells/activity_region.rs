@@ -20,7 +20,7 @@ use ratatui::{
 
 use crate::{
     i18n::Messages,
-    render::{renderable::Renderable, util::LOG_TOOL_BLOCK_INDENT},
+    render::renderable::Renderable,
     state::activity_region::{self, ActivityRegion},
     theme::Theme,
     widgets::tool_widget::{ToolPhase, format_duration_us},
@@ -42,13 +42,23 @@ pub struct ActivityRegionCell {
     elapsed: Option<std::time::Duration>,
     fg: ratatui::style::Color,
     bg: ratatui::style::Color,
-    accent: ratatui::style::Color,
     error: ratatui::style::Color,
     muted: ratatui::style::Color,
+    /// The summary's colour: the error hue when a member failed, the accent
+    /// otherwise. Stored so the fold gutter's `⏵` matches the text it
+    /// introduces.
+    summary_color: ratatui::style::Color,
     /// The region's stable identity, so a click can name what it toggles.
     identity: String,
     /// The locale the summary line is composed with (`Messages` is `Copy`).
     msgs: Messages,
+    /// Columns the region's **first member's row** is indented by.
+    ///
+    /// The summary stands in for that row, so it has to be drawn at that row's
+    /// indent or the whole line shifts sideways when the fold flips. It is not a
+    /// constant: a region headed by a thinking card is indented 2, one headed by
+    /// a tool block 8, one headed by narration 3.
+    indent: u16,
 }
 
 impl ActivityRegionCell {
@@ -73,6 +83,13 @@ impl ActivityRegionCell {
         theme: &Theme,
         msgs: &Messages,
     ) -> Self {
+        // A failed member keeps the error hue, so the fold can never make an
+        // error quieter than the calls it hides.
+        let summary_color = if titles.iter().any(|(phase, _)| phase.is_failure()) {
+            theme.error
+        } else {
+            theme.accent
+        };
         Self {
             thoughts,
             notes,
@@ -83,11 +100,27 @@ impl ActivityRegionCell {
             elapsed,
             fg: theme.fg,
             bg: theme.bg,
-            accent: theme.accent,
             error: theme.error,
             muted: theme.muted,
+            summary_color,
             identity: region.key.clone(),
             msgs: *msgs,
+            indent: region
+                .members
+                .first()
+                .map(|member| match member.kind {
+                    activity_region::RegionMemberKind::Thinking => {
+                        crate::render::util::LOG_THINKING_INDENT
+                    }
+                    activity_region::RegionMemberKind::Tool => {
+                        crate::render::util::LOG_TOOL_BLOCK_INDENT
+                    }
+                    // Narration is assistant prose: one column past a card.
+                    activity_region::RegionMemberKind::Commentary => {
+                        crate::render::util::LOG_THINKING_INDENT + 1
+                    }
+                })
+                .unwrap_or(crate::render::util::LOG_THINKING_INDENT),
         }
     }
 
@@ -113,18 +146,13 @@ impl ActivityRegionCell {
         // A failure keeps its colour after folding: `⚠` plus the error hue is
         // what tells the reader one of these calls went wrong without making
         // them count the labels.
-        let (glyph, color) = if summary.failures > 0 {
-            ("⚠ ", self.error)
-        } else {
-            ("⏵ ", self.accent)
-        };
-        let mut spans = vec![
-            Span::styled(glyph, Style::default().fg(color)),
-            Span::styled(
-                summary.text,
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
-            ),
-        ];
+        // No glyph in the text: the row's fold gutter paints it, so the
+        // summary text starts at [`FOLD_TEXT_OFFSET`] in both fold states.
+        let color = self.summary_color;
+        let mut spans = vec![Span::styled(
+            summary.text,
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        )];
         // The total comes last, after the counts: a reader asks "how long did
         // this cost me" after "how much ran".
         if let Some(elapsed) = self.elapsed {
@@ -154,7 +182,7 @@ impl Renderable for ActivityRegionCell {
     }
 
     fn render_partial(&self, area: Rect, buf: &mut Buffer, skip_lines: usize) {
-        let area = crate::render::util::indent_rect(area, LOG_TOOL_BLOCK_INDENT);
+        let area = crate::render::util::indent_rect(area, self.indent);
         if area.height == 0 || area.width == 0 {
             return;
         }
@@ -166,7 +194,31 @@ impl Renderable for ActivityRegionCell {
         if skip_lines > 0 {
             return;
         }
-        Paragraph::new(vec![self.summary_line()])
+        let line = self.summary_line();
+        // The glyph goes in the gutter two columns left of the text, and the text
+        // itself does not move: that is exactly where an expanded head draws its
+        // `⏷`, so flipping the fold leaves the control under the pointer.
+        // `area` is already indented by `self.indent`, so stepping
+        // `FOLD_GUTTER_COLS` back lands in the gutter left of the text.
+        let x = area.x.saturating_sub(crate::render::util::FOLD_GUTTER_COLS);
+        let width = crate::render::util::FOLD_GUTTER_COLS.min(area.width);
+        if width > 0 {
+            // A failure keeps its `⚠`: the glyph is what tells the reader one of
+            // these calls went wrong without making them count the labels, and
+            // it has to survive the fold. The expander yields to it.
+            let glyph = if self.summary_color == self.error {
+                "⚠"
+            } else {
+                "⏵"
+            };
+            buf.set_string(
+                x,
+                area.y,
+                glyph,
+                Style::default().fg(self.summary_color).bg(self.bg),
+            );
+        }
+        Paragraph::new(vec![line])
             .style(Style::default().fg(self.fg).bg(self.bg))
             .render(Rect::new(area.x, area.y, area.width, 1), buf);
     }

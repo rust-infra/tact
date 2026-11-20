@@ -322,11 +322,25 @@ the count sits on is a language decision, which is why `fold_repeat` holds both:
 #### Folding and unfolding the same region
 
 A folded region's summary occupies the first member's row, so expanding removes
-the control the reader came from. The first member's **head row** takes it over:
-a thinking card draws `⏷` in its indent gutter, the same glyph an expanded tool
-run uses on its title row. Its hit rect is only the two glyph columns — the head
-row doubles as the start of a card-selection drag, and a full-width target would
-turn a click meant to select into a fold.
+the control the reader came from. The first member's **head row** takes it over.
+
+An expanded head's `⏷` sits two columns **left of** its title, in the indent
+gutter, and the title itself does not move. That is where the folded summary's
+`⏵` is. The rule is one constant pair: `FOLD_GUTTER_COLS` in the gutter left of
+the text, `fold_glyph_x(indent)` for the column. Before it, the two states placed
+the glyph independently — a summary drew `⏵` as the first characters *of its
+text*, while a head painted `⏷` two columns left of its title — so the control
+jumped sideways on every flip: two columns for a tool run, eight for a thinking
+card (whose text indent is 2, not a tool block's 8). A control nobody can keep
+pointing at is a control the reader has to hunt for.
+
+Shifting the *title* right instead does not work: the head would then start one
+column right of the members below it, and the block staircases.
+
+The hit rect is only the two glyph columns — the head row doubles as the start of
+a card-selection drag, and a full-width target turns a click meant to select into
+a fold. A failed summary keeps `⚠` in that column instead of `⏵`, so folding
+never makes an error quieter.
 
 `Z` folds every open region and run at once. `z` finds one fold in view; when a
 reader has opened several, the summaries they came from are gone and there is no
