@@ -928,6 +928,24 @@ mod tests {
         );
     }
 
+    /// The status bar's user-turn counter counts `/try-again` like any other
+    /// user turn: it is a real `SubmitTask`, and a reader resuming five times
+    /// wants to see five.
+    #[test]
+    fn try_again_counts_as_a_user_turn() {
+        let (mut app, _user_cmd_rx) = TestApp::new().into_commands();
+        app.status = Status::Idle;
+        let before = app.status_bar_mut().turn_user;
+
+        execute_palette_command(&mut app, "try-again");
+
+        assert_eq!(
+            app.status_bar_mut().turn_user,
+            before + 1,
+            "a resumed turn is still a user turn"
+        );
+    }
+
     /// The agent may still be wedged on the turn that was cut short, so the
     /// prompt must queue rather than be dropped.
     #[test]
