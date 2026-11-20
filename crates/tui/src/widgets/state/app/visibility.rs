@@ -107,7 +107,6 @@ impl App {
     pub(crate) fn commentary_runs(
         &self,
     ) -> Vec<agent_tui_kit::state::activity_region::CommentaryRun> {
-        use agent_tui_kit::state::{LogItemKind, activity_region::CommentaryRun};
         if !self.fold_commentary {
             return Vec::new();
         }
@@ -133,41 +132,9 @@ impl App {
             owned.extend(active.phys_idx..active.phys_idx + rows);
         }
 
-        let mut runs: Vec<CommentaryRun> = Vec::new();
-        let mut current: Option<CommentaryRun> = None;
-        for (phys, item) in self.log.items.iter().enumerate() {
-            match item.kind {
-                LogItemKind::AssistantCommentary => match current.as_mut() {
-                    Some(run) => run.rows += 1,
-                    None => {
-                        current = Some(CommentaryRun {
-                            phys_idx: phys,
-                            rows: 1,
-                            // The row's text, not its index: a `phys_idx` is
-                            // rewritten by every insert above the run.
-                            identity: item.raw.clone(),
-                        });
-                    }
-                },
-                // A blank row inside narration is the paragraph break, not the
-                // end of the run — whatever kind the appender chose for it
-                // (`ensure_gap_before_tools` writes `SystemTool`).
-                _ if item.raw.is_empty() && !owned.contains(&phys) => {
-                    if let Some(run) = current.as_mut() {
-                        run.rows += 1;
-                    }
-                }
-                _ => {
-                    if let Some(run) = current.take() {
-                        runs.push(run);
-                    }
-                }
-            }
-        }
-        if let Some(run) = current {
-            runs.push(run);
-        }
-        runs
+        agent_tui_kit::state::activity_region::commentary_runs(&self.log.items, |phys| {
+            owned.contains(&phys)
+        })
     }
 
     /// Every activity region of this log, with this log's turn boundaries.
@@ -210,11 +177,13 @@ impl App {
                 agent_tui_kit::state::activity_region::region_at_phys(&regions, phys)
             {
                 let region = &regions[index];
-                // Only a **mixed** region folds as a region; a tool-only one is
-                // folded by the tool run below, whose summary names each call.
-                // Returning it here would hand `toggle_region` a region whose
-                // own rule says "never folded", and `z` would do nothing.
-                if region.mixes_thinking_and_tools()
+                // Only a region the fold rules actually fold belongs to `z`; a
+                // tool-only one is folded by the tool run below, whose summary
+                // names each call. `folds_here` is the same predicate the fold
+                // uses — `mixes_thinking_and_tools` misses a region headed by a
+                // narration run, and `z` would then flip the inner run while the
+                // region's summary stayed on screen.
+                if region.folds_here()
                     && agent_tui_kit::state::activity_region::is_foldable(blocks, region)
                 {
                     return Some(FoldTarget::Region(region.clone()));
@@ -317,10 +286,12 @@ impl App {
 
     /// Fold or unfold the region whose stable identity is `region_id`.
     pub(crate) fn toggle_region_by_id(&mut self, region_id: &str) -> bool {
-        let regions = agent_tui_kit::state::activity_region::regions(
-            &self.thinking().state().blocks,
-            &self.tools().blocks,
-        );
+        // `self.activity_regions()`, not `activity_region::regions`: the latter
+        // derives the members *without* the log's narration runs, so the region
+        // the renderer drew a summary for would not exist here and the click
+        // would do nothing. One derivation, used by the fold, the renderer and
+        // this toggle alike.
+        let regions = self.activity_regions();
         let Some(index) = agent_tui_kit::state::activity_region::region_by_key(&regions, region_id)
         else {
             return false;

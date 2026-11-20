@@ -191,6 +191,64 @@ pub fn regions_bounded(
     regions_with_commentary(thinking, tools, &[], is_turn_boundary)
 }
 
+/// Group the log's rows into narration runs.
+///
+/// `is_owned` answers "does a card or a tool block own this row". Those rows are
+/// blank too, and they are **not** narration: absorbing one would make a run
+/// overlap a member and the region builder would drop the whole stretch.
+///
+/// Two callers need this — the host (for event handling) and the renderer (for
+/// its layout caches) — and a second copy drifts on the one rule that matters:
+/// what a run's `identity` is. It is the first **non-blank** row's text. A row's
+/// own text is what survives an insert above it, but a narration run commonly
+/// opens with the blank gap that preceded its paragraph, and keyed on `""` every
+/// such region would share one fold key — folding one would fold them all.
+#[must_use]
+pub fn commentary_runs(
+    items: &[crate::state::LogItem],
+    is_owned: impl Fn(usize) -> bool,
+) -> Vec<CommentaryRun> {
+    let mut runs: Vec<CommentaryRun> = Vec::new();
+    let mut current: Option<CommentaryRun> = None;
+    for (phys, item) in items.iter().enumerate() {
+        match item.kind {
+            crate::state::LogItemKind::AssistantCommentary => match current.as_mut() {
+                Some(run) => {
+                    run.rows += 1;
+                    if run.identity.is_empty() && !item.raw.trim().is_empty() {
+                        run.identity = item.raw.clone();
+                    }
+                }
+                None => {
+                    current = Some(CommentaryRun {
+                        phys_idx: phys,
+                        rows: 1,
+                        identity: if item.raw.trim().is_empty() {
+                            String::new()
+                        } else {
+                            item.raw.clone()
+                        },
+                    });
+                }
+            },
+            _ if item.raw.is_empty() && !is_owned(phys) => {
+                if let Some(run) = current.as_mut() {
+                    run.rows += 1;
+                }
+            }
+            _ => {
+                if let Some(run) = current.take() {
+                    runs.push(run);
+                }
+            }
+        }
+    }
+    if let Some(run) = current {
+        runs.push(run);
+    }
+    runs
+}
+
 /// [`regions_bounded`] with the log's narration runs included.
 ///
 /// Narration is the half the desktop transcript folds and the log did not: the
