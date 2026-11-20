@@ -228,6 +228,10 @@ pub async fn run_command_loop_with_account(
     let background_session_id = agent.session_id().map(str::to_string);
     let goal_manager = agent.tool_context.goal_manager.clone();
     let task_manager = agent.tool_context.task_manager.clone();
+    // Shared permission authority: the gate reads the mode on every call, so
+    // setting it here applies to the next tool the in-flight turn dispatches
+    // instead of waiting for that turn to hand the `&mut Agent` back.
+    let permissions = agent.permission_handle();
     let limits = goal_limits();
 
     // Reconcile durable Goal state once, before serving commands: a crashed
@@ -330,6 +334,15 @@ pub async fn run_command_loop_with_account(
             UserCommand::Cancel => {
                 cancel_flag.cancel();
                 events.send(AgentUpdate::Info("Cancelling...".into()));
+            }
+            UserCommand::SetPermissionMode(mode) => {
+                // Applied through the shared authority, not the `&mut Agent`,
+                // so it takes effect mid-turn: the gate reads the mode on every
+                // call, and the next tool this turn dispatches already sees it.
+                // Serving it here also keeps it out of the fallback arm, which
+                // would await the running turn and defer the change to the
+                // boundary.
+                permissions.set_mode(mode);
             }
             UserCommand::CancelSubagent { child_id } => {
                 if subagent_manager.request_cancel(&child_id) {
@@ -2301,10 +2314,6 @@ async fn handle_user_command_with_account(
                 )));
             }
         }
-        UserCommand::SetPermissionMode(mode) => {
-            // TUI already shows the localized confirmation; do not emit Info here.
-            agent.set_permission_mode(mode);
-        }
         UserCommand::SetThinkingBudget(budget) => {
             agent.set_thinking_budget(budget);
             tact::config::update_llm_model_and_thinking_budget(agent.model().to_string(), budget);
@@ -2497,7 +2506,9 @@ mod tests {
     };
 
     use super::{compact_line, handle_user_command};
-    use crate::test_support::{build_test_agent, install_test_config};
+    use crate::test_support::{build_test_agent, build_test_agent_with_mode, install_test_config};
+    use std::time::Duration;
+    use tact::permission::PermissionMode;
 
     fn text_block(content: &str) -> ContentBlock {
         ContentBlock::Text {
@@ -5285,5 +5296,79 @@ mod tests {
                 .any(|update| matches!(update, AgentUpdate::Error(_))),
             "the reader has to be told the reply was cut: {updates:?}"
         );
+    }
+    /// A permission-mode change must reach the gate of the turn that is already
+    /// running, not wait for it to finish.
+    ///
+    /// The turn is held open by a `bash` call that sleeps far longer than this
+    /// test's deadline, so the mode is flipped while the `Agent` is owned by the
+    /// in-flight task — exactly the window where the old fallback arm awaited
+    /// the join handle and deferred the change to the turn boundary.
+    ///
+    /// Without the fix this fails: the mode stays `Auto` until the sleep ends.
+    #[tokio::test]
+    async fn a_permission_mode_change_reaches_the_running_turn() {
+        install_test_config();
+        let mock = MockClient::new(vec![
+            (
+                vec![ContentBlock::ToolUse {
+                    id: "bash-1".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({ "command": "sleep 6" }),
+                }],
+                Some(StopReason::ToolUse),
+            ),
+            (vec![text_block("done")], Some(StopReason::EndTurn)),
+        ]);
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (agent, work_dir) =
+            build_test_agent_with_mode(mock, Some(agent_tx), PermissionMode::Auto);
+
+        // Reading through the same handle the loop uses is what makes "did it
+        // land?" observable from outside the `Agent`.
+        let permissions = agent.permission_handle();
+        assert_eq!(permissions.mode(), PermissionMode::Auto);
+
+        let (user_cmd_tx, user_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        let loop_handle = tokio::spawn(super::run_command_loop(agent, user_cmd_rx, work_dir));
+
+        user_cmd_tx
+            .send(UserCommand::SubmitTask("run the test".into()))
+            .unwrap();
+
+        // Wait until the tool actually starts: that proves the `Agent` is owned
+        // by the in-flight task, so the fallback arm could not serve this.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut started = false;
+        while std::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_millis(200), agent_rx.recv()).await {
+                Ok(Some(AgentUpdate::StepStarted { .. })) => {
+                    started = true;
+                    break;
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => break,
+            }
+        }
+        assert!(started, "the bash call must start before the mode change");
+
+        user_cmd_tx
+            .send(UserCommand::SetPermissionMode(PermissionMode::Plan))
+            .unwrap();
+
+        // The `sleep 6` still has several seconds to run. Deferring the change to
+        // the turn boundary would leave this at `Auto`.
+        let deadline = std::time::Instant::now() + Duration::from_millis(2500);
+        while std::time::Instant::now() < deadline && permissions.mode() != PermissionMode::Plan {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            permissions.mode(),
+            PermissionMode::Plan,
+            "the change must land while the turn is still running"
+        );
+
+        drop(user_cmd_tx);
+        let _ = tokio::time::timeout(Duration::from_secs(30), loop_handle).await;
     }
 }

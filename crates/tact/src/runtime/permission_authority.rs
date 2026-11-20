@@ -40,7 +40,8 @@ impl PermissionAuthority {
         Self::new(PermissionManager::from_snapshot(snapshot))
     }
 
-    pub(crate) fn mode(&self) -> PermissionMode {
+    /// The mode a tool dispatched right now would be checked against.
+    pub fn mode(&self) -> PermissionMode {
         self.manager.lock_recover().mode()
     }
 
