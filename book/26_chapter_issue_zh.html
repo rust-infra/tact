@@ -375,6 +375,7 @@
 </div>
 <div class="toc-group">
 <ol class="toc-list">
+<li class="toc-l2"><a href="#2026-11-21--try-again-%E7%BB%AD%E8%B7%91%E8%A2%AB%E4%B8%AD%E6%96%AD%E7%9A%84%E5%9B%9E%E5%90%88" title="2026-11-21 — /try-again：续跑被中断的回合"><span class="toc-label">2026-11-21 — /try-again：续跑被中断的回合</span></a></li>
 <li class="toc-l2"><a href="#2026-11-19--tui-thinking-%E4%B8%8E%E7%9B%B8%E9%82%BB-tool-%E5%90%88%E6%88%90%E4%B8%80%E4%B8%AA%E6%B4%BB%E5%8A%A8%E5%8C%BA%E6%8A%98%E5%8F%A0" title="2026-11-19 — TUI：thinking 与相邻 tool 合成一个活动区折叠"><span class="toc-label">2026-11-19 — TUI：thinking 与相邻 tool 合成一个活动区折叠</span></a></li>
 <li class="toc-l2"><a href="#2026-11-14--%E5%AD%90%E4%BB%A3%E7%90%86%E5%AE%9E%E6%97%B6%E8%BE%93%E5%87%BA%E5%8D%A1%E7%89%87%E7%9A%84%E9%A1%B5%E8%84%9A%E7%82%B9%E4%B8%8D%E5%8A%A8" title="2026-11-14 — 子代理实时输出卡片的页脚点不动"><span class="toc-label">2026-11-14 — 子代理实时输出卡片的页脚点不动</span></a></li>
 <li class="toc-l2"><a href="#2026-11-13--trajectory-%E5%9C%A8%E9%87%8D%E5%90%AF%E5%90%8E%E4%BB%8E%E4%BC%9A%E8%AF%9D%E8%AE%B0%E5%BD%95%E9%87%8D%E5%BB%BA" title="2026-11-13 — Trajectory 在重启后从会话记录重建"><span class="toc-label">2026-11-13 — Trajectory 在重启后从会话记录重建</span></a></li>
@@ -813,6 +814,40 @@ bugfix日志</strong>，记录有用户可见或 API
 <a href="../ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> 和对应章节，
 更早的设计与实施记录保存在 Git 历史中。正文中出现的旧 spec / plan
 文件名只用于标识当时的修订，文件本身已删除。</p>
+<h2 id="2026-11-21--try-again-续跑被中断的回合">2026-11-21 — <code>/try-again</code>：续跑被中断的回合</h2>
+<p><strong>现象：</strong> 回合被截断（输出上限、provider 断流、用户取消）之后，读者没有
+一个干净的办法继续。重打一遍指令会重复已经生效的操作；什么都不做，这一轮就晾在那里。
+模型自己也不知道上一轮停在哪里——它只看到一段结束得莫名其妙的对话。</p>
+<p><strong>根因：</strong> 这是一个<em>缺失的命令</em>，不是 bug。所有既有 slash
+命令要么改本地状态（<code>/theme</code>、<code>/lang</code>），要么控制运行时
+（<code>/cancel</code>、<code>/compact</code>），没有一条能把「继续，但别重复」这个
+意图完整地交给模型。而这句话必须<strong>写准</strong>：被打断的回合可能留下仍在前台
+运行的命令，也可能留下执行了一半的文件改动，所以提示要针对「有没有生效」而不是
+「再来一次」。</p>
+<p><strong>决策：</strong> 新增 <code>/try-again</code>，提交一段固定文案
+<code>tact_protocol::TRY_AGAIN_PROMPT</code>，要求模型在重复任何改状态的操作前先确认
+它是否已经生效、是否仍在运行，判断不了就直说。</p>
+<p>文案放在 <code>tact_protocol</code> 而不是 <code>tact_catalog</code>：对 slash
+命令来说 catalog 更「自然」，但 <code>tact-acp</code> 不依赖 catalog，放那里就得给
+ACP 加一条依赖边，否则三个前端各抄一份文案。所有前端本来就依赖 protocol，常量放这里
+既不加依赖，也不会让措辞漂移。</p>
+<p>三个前端的接法各自沿用既有形状：TUI 走
+<code>skills::submit_user_task</code>，因此<strong>忙碌时排队</strong>而不是丢弃——被打断
+的那个回合可能还卡着，这正是最需要它的时刻；桌面端路由成
+<code>UserCommand::SubmitTask</code>，与 <code>/compact</code>、<code>/cancel</code>
+并列；ACP 既广播也处理。ACP 的广播与处理必须一致，因为 T3 会把选中的命令原样回传成
+<code>/name</code> 文本——广播了却没有分支，就会作为散文喂给模型。新增的
+<code>every_advertised_command_is_handled</code> 遍历广播列表，拒绝任何落到
+<code>Forward</code> 的项。</p>
+<p><strong>顺带发现：</strong> 写这个不变量测试时，最初把 <code>/goal</code>（缺子命令时
+返回用法提示）和 <code>/model-select</code>（需要取值）误判为失败。它们并非缺陷，只是
+断言过严；改为带占位参数、且只拒绝真正的 <code>Forward</code> 落空。</p>
+<p><strong>代码位置：</strong>
+<code>crates/protocol/src/prompt.rs</code>（文案常量）、
+<code>crates/catalog/src/builtin.rs</code>（命令声明）、
+<code>crates/tui/src/handlers/mod.rs</code>、
+<code>crates/desktop_core/src/commands.rs</code>、
+<code>crates/tact-acp/src/lib.rs</code>。</p>
 <h2 id="2026-11-19--tui-thinking-与相邻-tool-合成一个活动区折叠">2026-11-19 — TUI：thinking 与相邻 tool 合成一个活动区折叠</h2>
 <p><strong>现象：</strong> 一轮「想一会儿 → 跑三条命令」在 TUI 里占两行摘要：
 <code>🧠 已思考 · ⏱ 1.5s | 12 行 · [打开]</code>，下面紧跟

@@ -623,6 +623,11 @@ href="./18_chapter_agent_loop_zh.html">Ch 18</a>）</td>
 href="./05_chapter_compact_zh.html">Ch 5</a>）</td>
 </tr>
 <tr>
+<td><strong><code>SubmitTask</code></strong>（续跑）</td>
+<td><code>/try-again</code>：提交一段固定的续跑提示，让 agent 从未完成的回合继续</td>
+<td>与普通 <code>SubmitTask</code> 同一条路径；忙碌时同样排队。提示要求模型在重复任何改状态的操作前先确认它是否已经生效、是否仍在运行，判断不了就直说——因为被打断的回合可能留下半执行或仍在跑的命令</td>
+</tr>
+<tr>
 <td><strong><code>QueryBalance</code></strong></td>
 <td><code>/balance</code>（仅 DeepSeek/Kimi）</td>
 <td><code>account::query_once()</code> → <code>AccountUpdate</code>
@@ -2584,7 +2589,9 @@ popup（同一份内置命令列表）。<strong>skills
 skill，因此内置名始终赢过同名 skill。</p>
 <p><code>/balance</code>
 是唯一按会话条件隐藏的命令（没有账户通道时不出现在列表里）；<code>/skill</code>、<code>/plugin</code>、<code>/mcp</code>、<code>/hooks</code>、<code>/subagent_cancel</code>
-是五个需要参数的命令。<strong>子命令补全</strong>：<code>handlers/insert.rs</code>
+是五个需要参数的命令；<code>/try-again</code>
+则相反——它不带任何参数，提交的文案由
+<code>tact_protocol::TRY_AGAIN_PROMPT</code> 提供，三个前端共用同一份常量，避免措辞各自漂移。<strong>子命令补全</strong>：<code>handlers/insert.rs</code>
 与 <code>widgets/state/slash_command.rs</code> 共用
 <code>App::slash_candidates()</code>，输入到子命令位置时弹窗列出下一层节点（<code>/skill </code>、<code>/plugin mar</code>、<code>/hooks trust --</code>、以及嵌套的
 <code>/plugin marketplace </code>），Tab
