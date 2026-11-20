@@ -116,9 +116,8 @@ fn z_opens_the_narration_headed_region_it_stands_for() {
 }
 
 /// The same defect on the mouse path: an opened region's fold control is its
-/// first member's row, found through `expanded_region_head_at`. The helper
-/// derived the regions *without* narration, so a narration-headed region
-/// answered `None`, and its rows came back with no way to close them again.
+/// first member's row, found through `expanded_region_head_at`. Clicking the
+/// drawn glyph itself — not just the recorded rect — must close it.
 #[test]
 fn clicking_an_open_narration_headed_region_head_folds_it_back() {
     use crate::render::test_harness::render_app_text;
@@ -157,7 +156,16 @@ fn clicking_an_open_narration_headed_region_head_folds_it_back() {
         })
         .cloned()
         .expect("an open region's head is the control that closes it");
-    click(&mut app, head.rect.x, head.rect.y);
+    let row = open
+        .lines()
+        .nth(head.rect.y as usize)
+        .expect("the head's screen row");
+    let glyph_x = glyph_display_column(row, '⏷').expect("the open head draws ⏷");
+    assert_eq!(
+        glyph_x as u16, head.rect.x,
+        "the fold hitbox must start at the drawn glyph"
+    );
+    click(&mut app, glyph_x as u16, head.rect.y);
 
     let again = render_app_text(&mut app, 100, 32);
     assert!(
@@ -181,21 +189,21 @@ fn click(app: &mut App, x: u16, y: u16) {
 
 /// Two narration-headed regions must have *different* fold keys.
 ///
-/// A run's identity is its first row's text — the doc says so, and it is what
-/// survives an insert above the run. But a narration run commonly opens with a
-/// blank separator (the gap before the paragraph, or the one
-/// `ensure_gap_after_tools` leaves), and that row's text is `""`. Keyed on it,
-/// every such region shares one key: folding one folds them all, and a reader's
-/// choice lands on a region they never touched.
+/// A run's identity is its first non-blank row's text, which survives inserts
+/// above the run. That text is not unique across turns: a model can open two
+/// different narration regions with the same sentence, and a code-only message
+/// has no text at all. Keyed on text alone, folding one region would fold every
+/// other region with the same opening.
 #[test]
-fn two_narration_headed_regions_do_not_share_a_fold_key() {
+fn two_narration_headed_regions_with_the_same_text_do_not_share_a_fold_key() {
     let mut app = make_app();
+    let opening = "Same opening.\n\n";
     // Turn one.
     app.add_user_message("first".into());
     app.handle_agent_update(AgentUpdate::MessageStarted {
         message_id: "m1".into(),
     });
-    app.handle_agent_update(AgentUpdate::StreamChunk("First.\n\n".into()));
+    app.handle_agent_update(AgentUpdate::StreamChunk(opening.into()));
     app.handle_agent_update(AgentUpdate::MessageFinished {
         message_id: "m1".into(),
         phase: Some(tact_protocol::MessagePhase::Commentary),
@@ -207,7 +215,7 @@ fn two_narration_headed_regions_do_not_share_a_fold_key() {
     app.handle_agent_update(AgentUpdate::MessageStarted {
         message_id: "m2".into(),
     });
-    app.handle_agent_update(AgentUpdate::StreamChunk("Second.\n\n".into()));
+    app.handle_agent_update(AgentUpdate::StreamChunk(opening.into()));
     app.handle_agent_update(AgentUpdate::MessageFinished {
         message_id: "m2".into(),
         phase: Some(tact_protocol::MessagePhase::Commentary),
@@ -494,6 +502,18 @@ fn the_fold_glyph_sits_in_the_same_column_folded_and_open() {
 fn glyph_column(text: &str, glyph: char) -> Option<usize> {
     text.lines()
         .find_map(|line| line.chars().position(|c| c == glyph))
+}
+
+/// Terminal column of `glyph` in `line`, counting wide characters as two cells.
+fn glyph_display_column(line: &str, glyph: char) -> Option<usize> {
+    let mut column = 0;
+    for ch in line.chars() {
+        if ch == glyph {
+            return Some(column);
+        }
+        column += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+    }
+    None
 }
 
 /// The same guarantee for a tool run: the summary's `⏵` and the head's `⏷` are

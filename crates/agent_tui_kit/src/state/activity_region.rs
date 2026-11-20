@@ -27,13 +27,13 @@
 //! [`super::tool_group`] derives it: a block inserted, resized or drained
 //! cannot leave a stale member behind. Only the reader's explicit choice is
 //! stored, keyed on the region's stable identity (its first member's
-//! `block_id` or `tool_id`).
+//! `block_id` or `tool_id`, or a narration run's generated key).
 //!
 //! Members are **indices**, not block copies: a region is rebuilt for every
 //! logical row on every frame, and cloning a [`ToolBlock`] carries a whole
 //! `ToolRenderOutput` (previews, detail text, a cached popup body).
 
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
 use super::thinking::ThinkingBlock;
 use super::tool_group;
@@ -78,8 +78,8 @@ pub struct ActivityRegion {
     pub expanded_rows: usize,
     /// Rows the summary occupies when the region is folded (always 1).
     pub folded_rows: usize,
-    /// The region's stable identity: its first member's `block_id` or
-    /// `tool_id`.
+    /// The region's stable identity: its first member's `block_id`,
+    /// `tool_id`, or narration-run key.
     ///
     /// Computed once while the source slices are in hand, because a `phys_idx`
     /// is rewritten by every insert above it and a fold keyed on one would
@@ -92,6 +92,12 @@ impl ActivityRegion {
     #[must_use]
     pub fn saved_rows(&self) -> usize {
         self.expanded_rows.saturating_sub(self.folded_rows)
+    }
+
+    /// Whether `phys_idx` is one of the rows this region owns when expanded.
+    #[must_use]
+    pub fn contains(&self, phys_idx: usize) -> bool {
+        phys_idx >= self.phys_idx && phys_idx < self.phys_idx + self.expanded_rows
     }
 
     /// How many thinking cards the region holds.
@@ -154,12 +160,19 @@ pub struct CommentaryRun {
     pub phys_idx: usize,
     /// How many log rows the run covers. They are contiguous by construction.
     pub rows: usize,
-    /// Stable identity for the fold key when a run heads a region.
+    /// First non-blank row's text, used to derive [`Self::key`].
     ///
     /// The log has no id per paragraph, so the host passes the run's first
     /// row's text: it survives inserts above the run, where a `phys_idx`
     /// would not.
     pub identity: String,
+    /// Unique fold key for a run that heads a region.
+    ///
+    /// Text alone is not enough: two turns can open with the same sentence,
+    /// and a code-only commentary message has no text at all. The key combines
+    /// the text with its occurrence count, so repeated narration never folds
+    /// two regions together.
+    pub key: String,
 }
 
 /// Build the activity regions of one log.
@@ -199,10 +212,12 @@ pub fn regions_bounded(
 ///
 /// Two callers need this — the host (for event handling) and the renderer (for
 /// its layout caches) — and a second copy drifts on the one rule that matters:
-/// what a run's `identity` is. It is the first **non-blank** row's text. A row's
-/// own text is what survives an insert above it, but a narration run commonly
-/// opens with the blank gap that preceded its paragraph, and keyed on `""` every
-/// such region would share one fold key — folding one would fold them all.
+/// how a run's `identity` and `key` are built. The identity is the first
+/// **non-blank** row's text. A row's own text is what survives an insert above
+/// it, but a narration run commonly opens with the blank gap that preceded its
+/// paragraph, and keyed on `""` every such region would share one fold key —
+/// folding one would fold them all. The key adds an occurrence counter so
+/// repeated non-empty text stays distinct too.
 #[must_use]
 pub fn commentary_runs(
     items: &[crate::state::LogItem],
@@ -228,6 +243,7 @@ pub fn commentary_runs(
                         } else {
                             item.raw.clone()
                         },
+                        key: String::new(),
                     });
                 }
             },
@@ -245,6 +261,12 @@ pub fn commentary_runs(
     }
     if let Some(run) = current {
         runs.push(run);
+    }
+    let mut occurrences: HashMap<String, usize> = HashMap::new();
+    for run in &mut runs {
+        let occurrence = occurrences.entry(run.identity.clone()).or_insert(0);
+        *occurrence += 1;
+        run.key = format!("commentary\u{1f}{}\u{1f}{occurrence}", run.identity);
     }
     runs
 }
@@ -295,7 +317,7 @@ pub fn regions_with_commentary(
                     phys_idx: run.phys_idx,
                     rows: run.rows,
                 },
-                run.identity.clone(),
+                run.key.clone(),
             )
         }))
         .collect();
@@ -440,9 +462,7 @@ pub fn is_folded(
 /// The region containing `phys_idx`, if any.
 #[must_use]
 pub fn region_at_phys(regions: &[ActivityRegion], phys_idx: usize) -> Option<usize> {
-    regions.iter().position(|region| {
-        phys_idx >= region.phys_idx && phys_idx < region.phys_idx + region.expanded_rows
-    })
+    regions.iter().position(|region| region.contains(phys_idx))
 }
 
 /// The region whose stable identity is `key`.
@@ -534,7 +554,7 @@ pub fn summarize_with_commentary(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widgets::tool_widget::{ToolLayout, ToolPhase, ToolRenderOutput, tool_visual_rows};
+    use crate::widgets::tool_widget::{ToolLayout, ToolPhase, ToolRenderOutput};
 
     /// The English locale, so a summary's wording is pinned in one place.
     fn msgs() -> crate::i18n::Messages {
@@ -569,7 +589,6 @@ mod tests {
                 arg_summary: tool_id.to_string(),
                 arg_full: String::new(),
                 layout: ToolLayout {
-                    visual_rows: tool_visual_rows(false, 0, 0, false),
                     preview_lines: 0,
                     has_detail_card: false,
                     detail_collapsed: true,

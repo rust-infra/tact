@@ -470,7 +470,7 @@ impl ToolCell {
     }
 
     /// Screen rect of an expanded run head's collapse control: the glyph in the
-    /// gutter plus the whole title row beside it.
+    /// gutter.
     ///
     /// The glyph alone would be a two-cell target, and the row beside it is not
     /// text a reader selects — activating either puts the run back. That row is
@@ -882,9 +882,7 @@ mod tests {
     use tact_protocol::ToolOutputSpan;
 
     use super::*;
-    use crate::widgets::tool_widget::{
-        TOOL_HEADER_ROWS, TOOL_META_ROW, ToolLayout, ToolPhase, tool_visual_rows,
-    };
+    use crate::widgets::tool_widget::{TOOL_HEADER_ROWS, TOOL_META_ROW, ToolLayout, ToolPhase};
 
     /// Build a `ToolRenderOutput` for a hypothetical "Step 1: write_file".
     ///
@@ -912,7 +910,6 @@ mod tests {
             arg_summary: "src/main.rs".into(),
             arg_full: "src/main.rs".into(),
             layout: ToolLayout {
-                visual_rows: tool_visual_rows(has_card, preview_count, total, false),
                 preview_lines: preview_count,
                 has_detail_card: has_card,
                 detail_collapsed: false,

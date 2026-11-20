@@ -132,11 +132,9 @@ impl App {
         for run in &runs {
             // A run inside a region is that region's member; folding it too
             // would record a key nothing ever reads.
-            let inside_region = regions.iter().any(|region| {
-                region.folds_here()
-                    && run.phys_idx > region.phys_idx
-                    && run.phys_idx < region.phys_idx + region.expanded_rows
-            });
+            let inside_region = regions
+                .iter()
+                .any(|region| region.folds_here() && region.contains(run.phys_idx));
             if inside_region {
                 continue;
             }

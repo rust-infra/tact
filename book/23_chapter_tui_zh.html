@@ -2240,7 +2240,8 @@ tool 块</em>合成一个更大的 <em>活动区</em>
 <code>tool_group</code>，因为只有那份摘要会点名每个调用。两者默认都折叠，
 失败会计数并以 error 色绘制摘要行（<code>⚠</code>），所以折叠不会让错误更安静。
 折叠态以区域首个成员的 <code>block_id</code>/<code>tool_id</code> 为 key，
-不用 <code>phys_idx</code>；读者的显式选择存在
+叙述段则用「首行文本 + 同文本出现序号」生成的 key；不用 <code>phys_idx</code>；
+读者的显式选择存在
 <code>ToolState::folded_regions</code> / <code>unfolded_regions</code> 里，
 与 tool run 的 key 空间分开。<code>z</code> 取视口内第一个可折叠单位，
 混合区域优先于同起点的 tool run；<code>Z</code> 一次折上**所有**展开的区域与
@@ -2259,8 +2260,9 @@ tool run 跳 2 列，思考卡跳 <strong>8 列</strong>（正文缩进 2，而 
 整行命中会把「想选文字」变成「折叠区域」。失败摘要该列画 <code>⚠</code> 而不是
 <code>⏵</code>，所以折叠不会让错误变安静。若一次展开了好几个区域，
 <code>Z</code> 是不用去找任何一行的入口。</p>
-<p>展开区域只把成员行还给它们；区域里的调用仍是自己的 tool run，因此保留
-run 的摘要——区域回答「这一轮有多少工作」，run 回答「跑了哪些调用」。</p>
+<p>展开区域会把每个成员的行还给它们；区域里的调用不再额外画一份 tool run
+摘要——一段工作只有一份摘要，即区域自己的摘要。纯 tool 区间仍由
+<code>tool_group</code> 折叠，只有那份摘要会点名每个调用。</p>
 <p>区域还可以包含<strong>助手叙述</strong>：provider 把一条消息标为
 <code>Commentary</code> 时，该消息的行被重标为
 <code>LogItemKind::AssistantCommentary</code>，并与相邻的卡片/调用合成一个区域。
