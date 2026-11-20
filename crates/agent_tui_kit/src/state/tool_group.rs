@@ -493,20 +493,7 @@ impl ToolState {
         crate::state::activity_region::regions(&thinking.blocks, &self.blocks)
     }
 
-    /// [`Self::activity_regions`] with the log's turn boundaries supplied.
-    ///
-    /// The kit has no log, so the host passes the predicate. Use this wherever a
-    /// log is in hand: a turn end that leaves no row of its own would otherwise
-    /// let two turns fuse into one summary.
-    pub fn activity_regions_in_log(
-        &self,
-        thinking: &crate::state::thinking::ThinkingState,
-        is_turn_boundary: impl Fn(usize) -> bool,
-    ) -> Vec<crate::state::activity_region::ActivityRegion> {
-        self.activity_regions_with_commentary(thinking, &[], is_turn_boundary)
-    }
-
-    /// [`Self::activity_regions_in_log`] with the log's narration runs.
+    /// [`Self::activity_regions`] with the log's narration runs.
     ///
     /// The host passes these when `[ui] fold_commentary` is on; an empty slice
     /// gives the pre-switch shape, where narration kept its own rows.
@@ -590,56 +577,6 @@ impl ToolState {
         )
     }
 
-    /// Whether the region whose summary sits at `phys_idx` is folded right now.
-    pub fn region_folded_at(
-        &self,
-        thinking: &crate::state::thinking::ThinkingState,
-        is_turn_boundary: impl Fn(usize) -> bool,
-        phys_idx: usize,
-    ) -> bool {
-        let found = self.activity_regions_in_log(thinking, is_turn_boundary);
-        let Some(index) = crate::state::activity_region::region_at_phys(&found, phys_idx) else {
-            return false;
-        };
-        let region = &found[index];
-        region.mixes_thinking_and_tools()
-            && region.phys_idx == phys_idx
-            && crate::state::activity_region::is_folded(
-                &self.blocks,
-                region,
-                &self.folded_regions,
-                &self.unfolded_regions,
-            )
-    }
-
-    /// Flip the region that owns `phys_idx`.
-    pub fn toggle_region_at(
-        &mut self,
-        thinking: &crate::state::thinking::ThinkingState,
-        is_turn_boundary: impl Fn(usize) -> bool,
-        phys_idx: usize,
-    ) -> bool {
-        let found = self.activity_regions_in_log(thinking, is_turn_boundary);
-        let Some(index) = crate::state::activity_region::region_at_phys(&found, phys_idx) else {
-            return false;
-        };
-        self.toggle_region(&found[index])
-    }
-
-    /// Flip the region whose stable identity is `region_id`.
-    pub fn toggle_region_by_key(
-        &mut self,
-        thinking: &crate::state::thinking::ThinkingState,
-        is_turn_boundary: impl Fn(usize) -> bool,
-        region_id: &str,
-    ) -> bool {
-        let found = self.activity_regions_in_log(thinking, is_turn_boundary);
-        let Some(index) = crate::state::activity_region::region_by_key(&found, region_id) else {
-            return false;
-        };
-        self.toggle_region(&found[index])
-    }
-
     /// Flip one region, recording the reader's choice in the set that differs
     /// from the state they are leaving.
     ///
@@ -671,21 +608,30 @@ impl ToolState {
     /// The identity of the region whose **first** member sits at `phys_idx`,
     /// when that region is drawn expanded right now.
     ///
-    /// The mirror of [`Self::expanded_run_head_at`] for a region that mixes a
-    /// card and a call: expanding replaces the summary row with the members, so
-    /// the first member's own row takes the control back.
+    /// The mirror of [`Self::expanded_run_head_at`] for a region: expanding
+    /// replaces the summary row with the members, so the first member's own row
+    /// takes the control back.
+    ///
+    /// `commentary` must be the same runs the fold was built from. Deriving the
+    /// regions without them yields a *different* set — a narration-headed region
+    /// only exists when the runs are passed — and the control would be missing
+    /// exactly where the fold drew a summary for it.
     pub fn expanded_region_head_at(
         &self,
         thinking: &crate::state::thinking::ThinkingState,
+        commentary: &[crate::state::activity_region::CommentaryRun],
         is_turn_boundary: impl Fn(usize) -> bool,
         phys_idx: usize,
     ) -> Option<String> {
-        let found = self.activity_regions_in_log(thinking, is_turn_boundary);
+        let found = self.activity_regions_with_commentary(thinking, commentary, is_turn_boundary);
         let index = crate::state::activity_region::region_at_phys(&found, phys_idx)?;
         let region = &found[index];
         // A tool-only region is not a region here: the run below owns that row,
         // and handing its key back would leave the run with no control at all.
-        if !region.mixes_thinking_and_tools()
+        // `folds_here` is the region/run split the fold itself uses — not
+        // `mixes_thinking_and_tools`, which misses a narration-headed region and
+        // would leave it open with no way to close it.
+        if !region.folds_here()
             || region.phys_idx != phys_idx
             || crate::state::activity_region::is_folded(
                 &self.blocks,
@@ -697,74 +643,6 @@ impl ToolState {
             return None;
         }
         Some(region.key.clone())
-    }
-
-    /// The bounds of a **folded** region, plus the rows it hides.
-    ///
-    /// The scroll-compensation half of [`Self::run_bounds_by_id`]: the caller
-    /// needs to know how much disappeared and whether it all sat above the
-    /// viewport.
-    pub fn region_bounds_by_key(
-        &self,
-        thinking: &crate::state::thinking::ThinkingState,
-        is_turn_boundary: impl Fn(usize) -> bool,
-        region_id: &str,
-    ) -> Option<(usize, usize, usize)> {
-        let found = self.activity_regions_in_log(thinking, is_turn_boundary);
-        let index = crate::state::activity_region::region_by_key(&found, region_id)?;
-        let region = &found[index];
-        crate::state::activity_region::is_folded(
-            &self.blocks,
-            region,
-            &self.folded_regions,
-            &self.unfolded_regions,
-        )
-        .then(|| {
-            (
-                region.phys_idx,
-                region.phys_idx + region.expanded_rows,
-                region.saved_rows(),
-            )
-        })
-    }
-
-    /// The bounds of a region that is currently **unfolded**, plus the rows it
-    /// would hide if folded.
-    pub fn region_bounds_if_unfolded(
-        &self,
-        thinking: &crate::state::thinking::ThinkingState,
-        is_turn_boundary: impl Fn(usize) -> bool,
-        region_id: &str,
-    ) -> Option<(usize, usize, usize)> {
-        let found = self.activity_regions_in_log(thinking, is_turn_boundary);
-        let index = crate::state::activity_region::region_by_key(&found, region_id)?;
-        let region = &found[index];
-        let foldable = crate::state::activity_region::is_foldable(&self.blocks, region);
-        let folded = crate::state::activity_region::is_folded(
-            &self.blocks,
-            region,
-            &self.folded_regions,
-            &self.unfolded_regions,
-        );
-        (!folded && foldable).then(|| {
-            (
-                region.phys_idx,
-                region.phys_idx + region.expanded_rows,
-                region.saved_rows(),
-            )
-        })
-    }
-
-    /// The identity of the region owning `phys_idx`, if any.
-    pub fn region_identity_at(
-        &self,
-        thinking: &crate::state::thinking::ThinkingState,
-        is_turn_boundary: impl Fn(usize) -> bool,
-        phys_idx: usize,
-    ) -> Option<String> {
-        let found = self.activity_regions_in_log(thinking, is_turn_boundary);
-        let index = crate::state::activity_region::region_at_phys(&found, phys_idx)?;
-        Some(found[index].key.clone())
     }
 }
 

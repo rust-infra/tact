@@ -865,6 +865,21 @@ run，thinking 卡永远自成一行。</p>
 标签再覆盖整段。冲尾巴会一并关掉打开的思考卡，而
 <code>MessageFinished</code> 刻意不算思考区结束（否则一段推理会被切成多张卡），
 所以思考卡还开着时跳过这次 flush。</p>
+<p><strong>叙述开头的区域（本轮 review 补的）：</strong> 一个区域可以由叙述行开头而不是由思考卡开头
+（<code>叙述 → 两次调用</code>）。折叠规则 <code>is_folded</code> 认同它，但三处调用点仍在问旧的
+<code>mixes_thinking_and_tools()</code>，于是出现两种错：<code>z</code> 折叠的是区域<b>内部</b>的
+tool run，摘要行留在原地看着自己的成员被展开；展开后区域首次成员是纯文本行，没有任何点击区，
+<strong>再也关不回去</strong>。统一改用折叠规则同一个谓词 <code>folds_here()</code>，并让文本行也登记
+折叠控件。</p>
+<p><strong>折叠 key 冲突（本轮 review 补的）：</strong> 叙述 run 常常以它前面的空行开头，
+而 key 取的是首行文本——于是两个区域的 key 都是 <code>""</code>，折叠一个会把它们全折掉。
+改为取第一个非空行的文本，仍是「插入行之后依然有效」的那个属性，但没有冲突。</p>
+<p><strong>一次推导（本轮 review 补的）：</strong> 上面两处 symptomatic 修的根因是同一条规则有
+多份实现：<code>ToolState</code> 上六个无人调用的 helper 各自<b>不带</b>叙述重新推导区域，点击路径
+<code>toggle_region_by_id</code> 也一样，而折叠与渲染都<b>带</b>叙述——同一条日志因此有两个
+不同的区域集合。现在只留一条推导路径，叙述 run 的构建也收进
+<code>activity_region::commentary_runs</code> 一处（原先 TUI 里有两份复制，靠注释要求彼此
+一致）。删掉的六个 helper 从未被调用。</p>
 <p><strong>时间统计修正：</strong><code>ThinkingBlock</code> 原来只存
 <code>elapsed</code>，没有墙钟起止，于是任何「思考 + 调用」的区域只要含 tool，
 思考的时间就被整个丢掉（<code>total_span</code> 有 tool 时只算 tool 的并集）。

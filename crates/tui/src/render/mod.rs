@@ -35,6 +35,8 @@ mod log_render_tests;
 #[cfg(test)]
 mod narration_buffer_tests;
 #[cfg(test)]
+mod narration_region_tests;
+#[cfg(test)]
 mod popup_scene_tests;
 #[cfg(test)]
 mod render_gap_tests;

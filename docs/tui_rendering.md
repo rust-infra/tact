@@ -294,6 +294,21 @@ stay unfolded above the region instead of inside it. The flush is skipped while
 a thinking card is still open, because it would close the card and
 `MessageFinished` is deliberately not a thinking-region end.
 
+A region may be headed by narration rather than by a card (`narrate → calls`).
+The fold rule decides region vs. run with `ActivityRegion::folds_here()`, and
+every caller that asks "is this row a region's summary/head?" has to use that
+same predicate — `mixes_thinking_and_tools()` is the older rule and misses a
+narration-headed region, which left `z` toggling the tool run *inside* the
+region and left an opened region with no control to close it.
+
+Region identity is the first **non-blank** row's text. A narration run commonly
+opens with the blank gap before its paragraph, and a key of `""` would be shared
+by every such region — folding one would fold them all.
+
+Both callers derive regions through `App::activity_regions()` so the fold, the
+renderer and the click path cannot disagree; `commentary_runs` itself lives in
+`state::activity_region` for the same reason.
+
 Every word in a summary comes from `Messages` (`fold_tools`, `fold_tools_one`,
 `fold_failed`, `fold_thoughts`, `fold_thoughts_one`, `fold_sep`,
 `fold_repeat`), so `/lang` rewrites the row in place. The parts are separate keys

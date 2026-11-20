@@ -229,41 +229,13 @@ fn prepare_log_frame(
         log_scroll.commentary_runs = if !fold_commentary {
             Vec::new()
         } else {
-            use agent_tui_kit::state::{LogItemKind, activity_region::CommentaryRun};
             let mut owned = std::collections::BTreeSet::new();
             for &(phys, rows) in tool_rows.iter().chain(card_rows.iter()) {
                 owned.extend(phys..phys + rows);
             }
-            let mut runs: Vec<CommentaryRun> = Vec::new();
-            let mut current: Option<CommentaryRun> = None;
-            for (phys, item) in log.items.iter().enumerate() {
-                match item.kind {
-                    LogItemKind::AssistantCommentary => match current.as_mut() {
-                        Some(run) => run.rows += 1,
-                        None => {
-                            current = Some(CommentaryRun {
-                                phys_idx: phys,
-                                rows: 1,
-                                identity: item.raw.clone(),
-                            })
-                        }
-                    },
-                    _ if item.raw.is_empty() && !owned.contains(&phys) => {
-                        if let Some(run) = current.as_mut() {
-                            run.rows += 1;
-                        }
-                    }
-                    _ => {
-                        if let Some(run) = current.take() {
-                            runs.push(run);
-                        }
-                    }
-                }
-            }
-            if let Some(run) = current {
-                runs.push(run);
-            }
-            runs
+            agent_tui_kit::state::activity_region::commentary_runs(&log.items, |phys| {
+                owned.contains(&phys)
+            })
         };
         log_scroll.runs_covered_by_region = covered_runs.clone();
         log_scroll.turn_boundary_rows = (0..log.items.len())

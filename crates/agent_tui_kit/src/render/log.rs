@@ -237,6 +237,38 @@ pub fn render_log_panel_pure(
 
         let phys_idx = ctx.log_scroll.visible_indices.get(logical_i).copied();
 
+        // A region headed by a **narration** row has no card to hang a control
+        // on, and its head row is plain prose — so this is the one head that
+        // would otherwise leave the region open with no way back. Cards and tool
+        // blocks register the richer control inside their own branches below;
+        // registering there only would mean a narration-headed region could be
+        // opened and never closed.
+        let narration_head = phys_idx.is_some_and(|phys| {
+            ctx.log
+                .items
+                .get(phys)
+                .is_some_and(|item| item.kind == LogItemKind::AssistantCommentary)
+        });
+        if narration_head
+            && let Some(phys) = phys_idx
+            && let Some(region_id) = ctx.tools.expanded_region_head_at(
+                ctx.thinking,
+                ctx.commentary_runs,
+                |phys: usize| ctx.turn_boundary_rows.contains(&phys),
+                phys,
+            )
+        {
+            // `cell_slice` owns the viewport arithmetic: the visual start is a
+            // whole-log line, and this row's screen position is that line less
+            // the scroll offset.
+            if let Some((area, _skip)) = renderer.cell_slice(vs_cache[logical_i], 1, inner) {
+                open_actions.push(OpenAction::new(
+                    OpenTarget::activity_region(region_id),
+                    Rect::new(area.x, area.y, area.width, 1),
+                ));
+            }
+        }
+
         // Compute the byte-range selection for this logical row, if any.
         //
         // A bared row is a container's rail (a hook block's header or its "… N
@@ -485,6 +517,7 @@ pub fn render_log_panel_pure(
                             .tools
                             .expanded_region_head_at(
                                 ctx.thinking,
+                                ctx.commentary_runs,
                                 |phys: usize| ctx.turn_boundary_rows.contains(&phys),
                                 phys_idx,
                             )
@@ -504,6 +537,7 @@ pub fn render_log_panel_pure(
                     // start here, matching `first_fold_in_view`.
                     if let Some(region_id) = ctx.tools.expanded_region_head_at(
                         ctx.thinking,
+                        ctx.commentary_runs,
                         |phys: usize| ctx.turn_boundary_rows.contains(&phys),
                         phys_idx,
                     ) && let Some(rect) = card_cell.run_toggle_rect(cell_area, skip_lines)
