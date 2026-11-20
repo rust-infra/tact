@@ -2473,9 +2473,14 @@ impl SessionActor {
     }
 
     /// Hand every queued config change to the host. Safe only at an idle
-    /// boundary: the driver parks config commands behind the active turn,
-    /// which would also park the `UiResponse` and `Cancel` commands a blocked
-    /// turn needs.
+    /// boundary: the driver parks the model and thinking-budget commands behind
+    /// the active turn, which would also park the `UiResponse` and `Cancel`
+    /// commands a blocked turn needs.
+    ///
+    /// Permission mode is the one config the host applies mid-turn, so it does
+    /// not have to wait — but this path is shared with the model switch and the
+    /// adapter still settles the whole set at the boundary, which keeps the
+    /// client's option list consistent with what it was told applied.
     fn apply_config_now(&mut self) {
         // The model must be applied first: a permission change is
         // session-scoped and cheap, but the driver still processes commands in

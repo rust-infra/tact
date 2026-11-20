@@ -113,7 +113,10 @@ or `$skill` the adapter owns), routes Tact's permission prompt through
 form elicitation. The actor is the single writer of the per-session config
 surface: model, permission mode, and thought level are applied only at a turn
 boundary, because a `SetModel` queued behind a running turn would also park the
-UI answers and cancellation that turn waits on. Client MCP servers are merged
+UI answers and cancellation that turn waits on. Permission mode is the
+exception and is sent immediately: it does not reshape the running request, and
+the gate re-reads it on every tool call, so the change applies to the next tool
+the current turn dispatches. Client MCP servers are merged
 into the session's own `.mcp.json` resolution, so a client that supplies a
 stdio bridge gets its tools without any config write. ACP v2 is still a draft,
 so the adapter pins `agent-client-protocol`'s `unstable_protocol_v2` feature and
@@ -415,6 +418,8 @@ Key `AgentUpdate` variants used today:
 ## 3. Permission System
 
 Every tool call is classified by risk and checked against the active permission mode.
+The mode is read at check time, not captured for the turn, so a mode change applied
+while a turn is running governs the next tool that turn dispatches.
 
 ```mermaid
 flowchart TD

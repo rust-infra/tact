@@ -945,6 +945,15 @@ impl Agent {
         self.runtime.permission_manager.set_mode(mode);
     }
 
+    /// A cloneable handle to the live permission authority.
+    ///
+    /// The command loop cannot reach the `&mut Agent` while a turn owns it, but
+    /// the mode must still change mid-turn: the gate reads it on every call, so
+    /// a mode set here applies to the next tool the running turn dispatches.
+    pub fn permission_handle(&self) -> PermissionAuthority {
+        self.runtime.permission_manager.clone()
+    }
+
     /// Shared background-subagent result queue for detached child tasks.
     pub fn pending_subagent_results(&self) -> Arc<Mutex<VecDeque<SubagentResult>>> {
         self.runtime.pending_subagent_results.clone()
