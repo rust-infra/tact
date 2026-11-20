@@ -86,6 +86,86 @@ impl App {
         }
     }
 
+    /// Fold every region and tool run that is open right now.
+    ///
+    /// The bulk counterpart of [`Self::toggle_fold_in_view`], for the shape that
+    /// prompted it: a reader expands a few regions to read a turn, then has no
+    /// one place to press because the summaries they came from are gone. `z`
+    /// finds one fold in view; this finds all of them, which is what "put the
+    /// work away" means when several are open.
+    ///
+    /// Only **folds**. A key that toggled each fold independently would need a
+    /// reading of mixed state ("some open, some shut") that says more about the
+    /// viewport than about what the reader wants; folding is the direction that
+    /// always reduces the log, and `z` still opens one at a time.
+    ///
+    /// Returns how many folds it closed, so the caller can stay silent when
+    /// there was nothing to do.
+    pub(crate) fn fold_all_activity(&mut self) -> usize {
+        let mut folded = 0;
+        let regions = self.activity_regions();
+        for region in &regions {
+            if !region.folds_here() {
+                continue;
+            }
+            // Closed by the same rules the renderer uses: a region that is
+            // already folded, or that cannot fold yet (a live call), is left
+            // alone.
+            if !agent_tui_kit::state::activity_region::is_foldable(&self.tools().blocks, region)
+                || agent_tui_kit::state::activity_region::is_folded(
+                    &self.tools().blocks,
+                    region,
+                    &self.tools().state().folded_regions,
+                    &self.tools().state().unfolded_regions,
+                )
+            {
+                continue;
+            }
+            // Recorded directly rather than through `toggle_region`, which flips
+            // and would therefore *open* the ones already folded.
+            let key = region.key.clone();
+            self.tools_mut().unfolded_regions.remove(&key);
+            self.tools_mut().folded_regions.insert(key);
+            folded += 1;
+        }
+        let runs = agent_tui_kit::state::tool_group::runs(&self.tools().blocks);
+        for run in &runs {
+            // A run inside a region is that region's member; folding it too
+            // would record a key nothing ever reads.
+            let inside_region = regions.iter().any(|region| {
+                region.folds_here()
+                    && run.phys_idx > region.phys_idx
+                    && run.phys_idx < region.phys_idx + region.expanded_rows
+            });
+            if inside_region {
+                continue;
+            }
+            if !agent_tui_kit::state::tool_group::is_foldable(&self.tools().blocks, run)
+                || agent_tui_kit::state::tool_group::is_folded(
+                    &self.tools().blocks,
+                    run,
+                    self.tools().state(),
+                )
+            {
+                continue;
+            }
+            if let Some(key) = agent_tui_kit::state::tool_group::run_key(&self.tools().blocks, run)
+            {
+                let key = key.to_string();
+                self.tools_mut().unfolded.remove(&key);
+                self.tools_mut().folded.insert(key);
+                folded += 1;
+            }
+        }
+        if folded > 0 {
+            // One generation bump for the whole sweep: the layout caches key on
+            // it, and per-fold bumps would only rebuild them repeatedly.
+            self.tools_mut().state_mut().fold_rev = self.tools().state().fold_rev.wrapping_add(1);
+            self.dirty = true;
+        }
+        folded
+    }
+
     /// Whether a physical log row ends a turn.
     ///
     /// Two things end a turn on screen: the trailing separator `TaskComplete`

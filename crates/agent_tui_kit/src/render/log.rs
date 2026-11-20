@@ -411,10 +411,39 @@ pub fn render_log_panel_pure(
                             .find(|block| block.phys_idx == thinking_phys)
                             .map(|block| ThinkingCell::completed(block, ctx.theme, msgs))
                     });
+                // The card is an open activity region's first member: its header
+                // row has to carry the `⏷` that folds the region back, or the
+                // region can only ever be opened. Asked here, where the cell is
+                // built, because only the log knows the region's extent.
+                let is_region_head = ctx
+                    .tools
+                    .expanded_region_head_at(
+                        ctx.thinking,
+                        ctx.commentary_runs,
+                        |phys: usize| ctx.turn_boundary_rows.contains(&phys),
+                        thinking_phys,
+                    )
+                    .is_some();
+                let cell = cell.map(|cell| cell.with_region_head(is_region_head));
                 if let Some(cell) = cell {
                     // Record the footer button's rect from the geometry the
                     // renderer is about to draw with: the card's text and blank
                     // rows are not a click target, these glyphs are.
+                    if let Some((cell_area, skip_lines)) =
+                        renderer.cell_slice(vis_start, cell.height(inner.width) as usize, inner)
+                        && let Some(region_id) = ctx.tools.expanded_region_head_at(
+                            ctx.thinking,
+                            ctx.commentary_runs,
+                            |phys: usize| ctx.turn_boundary_rows.contains(&phys),
+                            thinking_phys,
+                        )
+                        && let Some(rect) = cell.region_toggle_rect(cell_area, skip_lines)
+                    {
+                        open_actions.push(OpenAction::new(
+                            OpenTarget::activity_region(region_id),
+                            rect,
+                        ));
+                    }
                     if let Some((cell_area, skip_lines)) =
                         renderer.cell_slice(vis_start, cell.height(inner.width) as usize, inner)
                         && let Some(rect) = cell.open_button_rect(cell_area, skip_lines)

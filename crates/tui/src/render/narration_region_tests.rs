@@ -233,3 +233,228 @@ fn two_narration_headed_regions_do_not_share_a_fold_key() {
         "each region needs its own key, got {keys:?}"
     );
 }
+
+/// Rules out the cheap explanation for "no way back": does `z` itself work on an
+/// open region, or is the missing entry point only the mouse one?
+#[test]
+fn z_folds_a_region_it_opened() {
+    let mut app = make_app();
+    narration_headed_region(&mut app);
+    let folded = render_log_panel_text(&mut app, 100, 32);
+    assert!(folded.contains("1 note"), "starts folded: {folded}");
+
+    z(&mut app);
+    let open = render_log_panel_text(&mut app, 100, 32);
+    assert!(open.contains("Branch looks right."), "opens: {open}");
+
+    z(&mut app);
+    let again = render_log_panel_text(&mut app, 100, 32);
+    assert!(
+        again.contains("1 note") && !again.contains("Branch looks right."),
+        "the second press must fold it back: {again}"
+    );
+}
+
+/// The card-headed shape: a thought, then the calls. `z` after expanding has to
+/// fold it back, because the summary row it stood on is gone while it is open.
+#[test]
+fn z_folds_a_card_headed_region_it_opened() {
+    let mut app = make_app();
+    app.add_user_message("Check.".into());
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Started,
+    ));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Delta("Think.\n".into()),
+    ));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Finished,
+    ));
+    seed(&mut app, 0, "b1", "bash", "one");
+
+    let folded = render_log_panel_text(&mut app, 100, 32);
+    assert!(
+        folded.contains("1 thought") && folded.contains("1 tool"),
+        "starts folded: {folded}"
+    );
+
+    z(&mut app);
+    let open = render_log_panel_text(&mut app, 100, 32);
+    assert!(!open.contains("1 thought · 1 tool"), "opens: {open}");
+
+    z(&mut app);
+    let again = render_log_panel_text(&mut app, 100, 32);
+    assert!(
+        again.contains("1 thought") && again.contains("1 tool"),
+        "the second press must fold it back: {again}"
+    );
+}
+
+/// The complaint that started this: an expanded region must show a *visible*
+/// control on the card's own head row, the way an expanded tool run draws `⏷`.
+#[test]
+fn an_expanded_card_headed_region_draws_a_collapse_glyph() {
+    let mut app = make_app();
+    app.add_user_message("Check.".into());
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Started,
+    ));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Delta("Think.\n".into()),
+    ));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Finished,
+    ));
+    seed(&mut app, 0, "b1", "bash", "one");
+    let _ = render_log_panel_text(&mut app, 100, 32);
+
+    z(&mut app);
+    let open = render_log_panel_text(&mut app, 100, 32);
+    assert!(
+        open.contains('⏷'),
+        "an expanded region's head needs a visible way back: {open}"
+    );
+}
+
+/// The glyph is a control, not decoration: clicking the card's head row folds
+/// the region back, the same click an expanded tool run's head takes.
+#[test]
+fn clicking_an_open_card_headed_region_folds_it_back() {
+    use crate::render::test_harness::render_app_text;
+
+    let mut app = make_app();
+    app.add_user_message("Check.".into());
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Started,
+    ));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Delta("Think.\n".into()),
+    ));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Finished,
+    ));
+    seed(&mut app, 0, "b1", "bash", "one");
+    let _ = render_app_text(&mut app, 100, 32);
+
+    z(&mut app);
+    let open = render_app_text(&mut app, 100, 32);
+    assert!(!open.contains("1 thought · 1 tool"), "opens: {open}");
+
+    let head = app
+        .mouse
+        .open_actions
+        .iter()
+        .find(|action| {
+            matches!(
+                action.target,
+                agent_tui_kit::render::log::OpenTarget::ActivityRegion { .. }
+            )
+        })
+        .cloned()
+        .expect("an open region's head is the control that closes it");
+    click(&mut app, head.rect.x, head.rect.y);
+
+    let again = render_app_text(&mut app, 100, 32);
+    assert!(
+        again.contains("1 thought") && again.contains("1 tool"),
+        "the head must fold the region back: {again}"
+    );
+}
+
+// ── `Z`: fold everything open ────────────────────────────────────────────
+
+fn big_z(app: &mut App) {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    app.input_mode = crate::widgets::state::InputMode::Normal;
+    crate::handlers::handle_normal_mode(
+        app,
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('Z'),
+            crossterm::event::KeyModifiers::SHIFT,
+        ),
+        &tx,
+    );
+}
+
+/// The shape that prompted the key: several regions open, and the summaries they
+/// came from are gone, so there is no single row left to press.
+#[test]
+fn big_z_folds_every_open_region_at_once() {
+    let mut app = make_app();
+    // Two turns, each with its own region.
+    app.add_user_message("one".into());
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Started,
+    ));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Delta("First thought.\n".into()),
+    ));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Finished,
+    ));
+    seed(&mut app, 0, "b1", "bash", "one");
+    app.append_markdown("---\n");
+    app.add_user_message("two".into());
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Started,
+    ));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Delta("Second thought.\n".into()),
+    ));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Finished,
+    ));
+    seed(&mut app, 1, "b2", "bash", "two");
+
+    let folded = render_log_panel_text(&mut app, 100, 32);
+    assert_eq!(
+        folded.matches("1 thought").count(),
+        2,
+        "both turns start folded: {folded}"
+    );
+
+    // Open both. `z` toggles the first fold in view, so it cannot open the
+    // second one without scrolling; the reader's other route is a click, and
+    // the state it leaves is what matters here.
+    for region in app.activity_regions() {
+        assert!(
+            app.toggle_region(region),
+            "the fixture's regions are foldable"
+        );
+    }
+    let open = render_log_panel_text(&mut app, 100, 32);
+    assert!(
+        !open.contains("1 thought"),
+        "no region is left drawn as a summary: {open}"
+    );
+
+    big_z(&mut app);
+    let again = render_log_panel_text(&mut app, 100, 32);
+    assert_eq!(
+        again.matches("1 thought").count(),
+        2,
+        "`Z` puts every region back: {again}"
+    );
+    assert!(!again.contains("⏷"), "no region head is left open: {again}");
+}
+
+/// `Z` folds, never opens: a region the reader already closed stays closed, and
+/// its key is not moved to the "open" side by the sweep.
+#[test]
+fn big_z_never_opens_a_folded_region() {
+    let mut app = make_app();
+    narration_headed_region(&mut app);
+    let folded = render_log_panel_text(&mut app, 100, 32);
+    assert!(folded.contains("1 note"), "starts folded: {folded}");
+    let before = app.tools().state().unfolded_regions.clone();
+
+    big_z(&mut app);
+
+    let after = render_log_panel_text(&mut app, 100, 32);
+    assert!(after.contains("1 note"), "still folded: {after}");
+    assert_eq!(
+        before,
+        app.tools().state().unfolded_regions,
+        "a sweep must not record an explicit unfold"
+    );
+}
