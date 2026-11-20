@@ -98,6 +98,57 @@ pub(crate) fn files_in_uri_text(text: &str) -> Vec<PathBuf> {
         .collect()
 }
 
+/// The file a paste names outright, when the **whole** paste is one path.
+///
+/// File managers and `pwd`-style copies put a bare path on the clipboard, and
+/// some terminals forward that as the paste text. Without this the path lands
+/// as prose: `build_user_message` only recognises a reference that carries the
+/// literal `@`, so the model would read a path string it was never told to open.
+///
+/// Deliberately strict, because guessing wrong rewrites the user's words:
+///
+/// - the whole paste must be one line (a paragraph that mentions a path is
+///   text — the `file://` rule in [`files_in_uri_text`] is not loosened either),
+/// - it must name an existing **file**,
+/// - `work_dir` is optional because this is also used to decide whether text is
+///   a path at all; when given, a relative path resolves against it.
+pub(crate) fn file_in_plain_text(text: &str, work_dir: Option<&Path>) -> Option<PathBuf> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() || trimmed.contains('\n') {
+        return None;
+    }
+    // A quoted shell-style path (`'/tmp/my shot.png'`) is what a shell hands
+    // over; the `@` grammar quotes differently, so unwrap it here.
+    let unquoted = unwrap_quotes(trimmed);
+    // `file://` is handled by the URI rule; do not double-report it.
+    if unquoted.starts_with("file://") {
+        return None;
+    }
+
+    let candidate = PathBuf::from(unquoted);
+    let resolved = if candidate.is_absolute() {
+        candidate
+    } else {
+        match work_dir {
+            Some(dir) => dir.join(candidate),
+            None => candidate,
+        }
+    };
+    resolved.is_file().then_some(resolved)
+}
+
+/// Strip one matching pair of quotes (`"…"`, `'…'`, or backticks).
+fn unwrap_quotes(text: &str) -> &str {
+    let bytes = text.as_bytes();
+    if bytes.len() >= 2 {
+        let (first, last) = (bytes[0], bytes[bytes.len() - 1]);
+        if first == last && matches!(first, b'"' | b'\'' | b'`') {
+            return &text[1..text.len() - 1];
+        }
+    }
+    text
+}
+
 /// The local path from a `file://` URI remainder.
 fn uri_path(rest: &str) -> PathBuf {
     let decoded = percent_decode(rest);
@@ -261,7 +312,10 @@ pub(crate) fn save_image(
 mod tests {
     use std::fs;
 
-    use super::{files_in_uri_text, percent_decode, quote_reference, reference_for, uri_path};
+    use super::{
+        file_in_plain_text, files_in_uri_text, percent_decode, quote_reference, reference_for,
+        uri_path,
+    };
 
     #[test]
     fn percent_decoding_restores_spaces_and_utf8() {
@@ -294,6 +348,52 @@ mod tests {
             file.display()
         );
         assert_eq!(files_in_uri_text(&text), vec![file]);
+    }
+
+    #[test]
+    fn a_plain_path_is_recognised_only_when_it_names_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("shot.png");
+        fs::write(&file, b"x").unwrap();
+
+        assert_eq!(
+            file_in_plain_text(&file.display().to_string(), None),
+            Some(file.clone())
+        );
+        assert_eq!(
+            file_in_plain_text(&format!("'{}'", file.display()), None),
+            Some(file.clone()),
+            "a shell-quoted path is what a drag-and-drop hands over"
+        );
+        assert_eq!(
+            file_in_plain_text(&file.display().to_string(), None).map(|p| p.is_file()),
+            Some(true),
+            "the reference must point at a readable file"
+        );
+    }
+
+    #[test]
+    fn multi_line_text_is_never_a_bare_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("shot.png");
+        fs::write(&file, b"x").unwrap();
+
+        let text = format!(
+            "{}
+and some notes",
+            file.display()
+        );
+        assert_eq!(
+            file_in_plain_text(&text, None),
+            None,
+            "a path plus commentary is prose, not a reference"
+        );
+    }
+
+    #[test]
+    fn a_plain_path_that_no_longer_exists_is_not_a_reference() {
+        assert_eq!(file_in_plain_text("/nope/deleted.png", None), None);
+        assert_eq!(file_in_plain_text("", None), None);
     }
 
     #[test]

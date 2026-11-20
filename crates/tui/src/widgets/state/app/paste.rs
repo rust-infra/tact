@@ -45,6 +45,16 @@ impl App {
         if !text_references.is_empty() {
             return self.references_for(text_references);
         }
+        // A terminal can also forward the path itself, with no `file://` scheme
+        // and no `@`: a file-manager copy of a bare path, or a `pwd`-style
+        // drag-and-drop. It has to become a reference here, because the message
+        // parser only treats a path as a reference when it carries the literal
+        // `@`, and a bare path would reach the model as prose it has not been
+        // told to open.
+        if let Some(path) = clipboard_paste::file_in_plain_text(terminal_text, Some(&self.work_dir))
+        {
+            return self.references_for(vec![path]);
+        }
         if !terminal_text.is_empty() {
             return PasteAction::Text(terminal_text.to_string());
         }
@@ -332,6 +342,72 @@ mod tests {
                 .iter()
                 .any(|line| line.contains(".tact/attachments")),
             "the user must learn their file was copied somewhere else: {messages:?}"
+        );
+    }
+
+    #[test]
+    fn a_bare_path_paste_becomes_a_reference_with_the_at_sign() {
+        // The reported bug: the path showed up in the input box but without the
+        // `@`, so `build_user_message` read it as prose and never opened the
+        // file. Every reference must carry the `@`, without exception.
+        let workspace = tempfile::tempdir().unwrap();
+        let shot = workspace.path().join("shot.png");
+        fs::write(&shot, b"x").unwrap();
+
+        let (mut app, _rx) = TestApp::new().into_commands();
+        app.work_dir = workspace.path().to_path_buf();
+        app.input_mode = InputMode::Insert;
+
+        let action = app.resolve_paste(Some(&shot.display().to_string()));
+
+        match action {
+            PasteAction::References { references, copied } => {
+                assert_eq!(references, vec!["@shot.png".to_string()]);
+                assert_eq!(copied, 0, "the file was already in the workspace");
+            }
+            PasteAction::Text(text) => {
+                panic!("a bare path must become a reference, got text {text:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn a_relative_bare_path_paste_resolves_against_the_workspace() {
+        let workspace = tempfile::tempdir().unwrap();
+        fs::create_dir(workspace.path().join("shots")).unwrap();
+        fs::write(workspace.path().join("shots/a.png"), b"x").unwrap();
+
+        let (mut app, _rx) = TestApp::new().into_commands();
+        app.work_dir = workspace.path().to_path_buf();
+        app.input_mode = InputMode::Insert;
+
+        let action = app.resolve_paste(Some("shots/a.png"));
+
+        assert!(
+            matches!(action, PasteAction::References { ref references, .. }
+                if references == &vec!["@shots/a.png".to_string()]),
+            "a relative path names a file under the workspace, so it is a reference"
+        );
+    }
+
+    #[test]
+    fn prose_that_merely_mentions_a_path_stays_text() {
+        // The reason the bare-path rule requires the *whole* paste to be one
+        // path: rewriting a sentence would change what the user said.
+        let workspace = tempfile::tempdir().unwrap();
+        let shot = workspace.path().join("shot.png");
+        fs::write(&shot, b"x").unwrap();
+
+        let (mut app, _rx) = TestApp::new().into_commands();
+        app.work_dir = workspace.path().to_path_buf();
+        app.input_mode = InputMode::Insert;
+
+        let prose = format!("compare this with {}", shot.display());
+        let action = app.resolve_paste(Some(&prose));
+
+        assert!(
+            matches!(action, PasteAction::Text(ref text) if text == &prose),
+            "a sentence containing a path must stay a sentence"
         );
     }
 }

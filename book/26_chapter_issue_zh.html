@@ -24974,6 +24974,10 @@ paste 送来的是 <code>file://…</code> URI 串，直接插入后模型读不
 <code>Path escapes workspace</code>。沙箱本身不放松。</li>
 <li>一次粘贴多个文件时按空格连成一串，路径带空格则写成
 <code>@"…"</code>（<code>@</code> 语法的带引号形式）。</li>
+<li><strong>裸路径也补上 <code>@</code></strong>：文件管理器或 <code>pwd</code> 式复制给的是不带
+<code>file://</code>、不带 <code>@</code> 的纯路径，而
+<code>build_user_message</code> 的正则只把<strong>带字面 <code>@</code></strong> 的路径当引用。不补的话路径会以普通文本落到模型眼里，模型并不知道要去
+<code>read_image</code>。判定刻意严格：整段粘贴必须只有一行、且真的指向一个已存在的<strong>文件</strong>，所以「顺便提到某个路径」的句子仍是句子。</li>
 <li>同名不同内容的文件写成 <code>shot-1.png</code>；同名同内容重复粘贴复用已有副本，不堆积。</li>
 <li>整段逻辑读不到剪贴板（SSH / headless）或转换失败时，静默回退成文本粘贴，不弹错误。</li>
 </ul>
@@ -24986,11 +24990,16 @@ paste 的终端不会发 <code>Event::Paste</code>，raw mode 又把按键吞掉
 <code>file://</code> 前缀、带空格路径加引号、工作区内不复制、区外复制、同名冲突编号、重复粘贴复用，以及
 <code>a_reference_resolves_through_the_workspace_guard</code>——引用必须真的通过
 <code>safe_path</code>，否则模型仍读不到；
-<code>app::paste::tests</code> 钉住文本粘贴不被剪贴板里的截图劫持、非 Insert 模式不读剪贴板、光标处插入的分隔符。
-<code>cargo test -p tui --lib</code> 888 passed。</p>
+<code>app::paste::tests</code> 钉住文本粘贴不被剪贴板里的截图劫持、裸路径补 <code>@</code>、相对路径按工作区解析、「提到路径的句子」不被改写、非
+Insert 模式不读剪贴板、光标处插入的分隔符；
+<code>tact_host</code> 的
+<code>test_a_bare_path_without_the_at_sign_is_not_a_reference</code>
+反向钉住 grammar 边界——正是它让「粘贴的路径必须有 <code>@</code>」成为硬约束。
+<code>cargo test --workspace</code> 全绿。</p>
 <p><strong>Pointers：</strong> <code>crates/tui/src/clipboard_paste.rs</code>
 （<code>Snapshot</code>、<code>files_in_uri_text</code>、
-<code>reference_for</code>、<code>save_image</code>）、
+<code>file_in_plain_text</code>、<code>reference_for</code>、
+<code>save_image</code>）、
 <code>crates/tui/src/widgets/state/app/paste.rs</code>（
 <code>resolve_paste</code>、<code>apply_paste</code>、
 <code>paste_from_clipboard</code>）、<code>crates/tui/src/lib.rs</code>
