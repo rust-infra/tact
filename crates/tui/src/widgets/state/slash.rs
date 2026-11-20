@@ -135,6 +135,7 @@ mod tests {
             SlashCommand::Trajectory => msgs.cmd_trajectory,
             SlashCommand::Background => msgs.cmd_background,
             SlashCommand::Goal => msgs.cmd_goal,
+            SlashCommand::TryAgain => msgs.cmd_try_again,
         }
     }
 

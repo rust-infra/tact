@@ -9,6 +9,7 @@
 pub mod agent;
 pub mod biz;
 pub mod events;
+pub mod prompt;
 pub mod subagent_transcript;
 pub mod tool_output;
 
@@ -29,6 +30,7 @@ pub use biz::{
 pub use events::{
     UpdateDispatch, UpdateReceiver, UpdateSendError, UpdateSender, UpdateSink, update_channel,
 };
+pub use prompt::TRY_AGAIN_PROMPT;
 pub use subagent_transcript::{SubagentStep, SubagentStepStatus, SubagentTranscriptEntry};
 // `AgentUpdate::Compaction` carries these, so a host that renders the
 // lifecycle should not have to depend on the kernel crate to name its states.

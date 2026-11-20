@@ -3975,6 +3975,11 @@ fn available_commands(skills: &[(String, String)]) -> Vec<schema::AvailableComma
             "Compact the conversation context (T3 reserves `/compact`)",
             "",
         ),
+        (
+            "try-again",
+            "Resume an interrupted turn without repeating what already ran",
+            "",
+        ),
         ("stats", "Show session token and turn statistics", ""),
         ("mcp", "Inspect the connected MCP servers", "[list|prompts]"),
         (
@@ -4293,6 +4298,9 @@ fn slash_command(text: &str) -> SlashCommand {
     };
     let command = match name.to_ascii_lowercase().as_str() {
         "compact" | "compact-context" => SlashCommand::Host(UserCommand::Compact),
+        "try-again" => SlashCommand::Host(UserCommand::SubmitTask(
+            tact_protocol::TRY_AGAIN_PROMPT.to_string(),
+        )),
         "stats" => SlashCommand::Host(UserCommand::QueryStats),
         "mcp" => match args.split_whitespace().next() {
             Some("prompts") => SlashCommand::Host(UserCommand::McpPrompts {
@@ -4862,6 +4870,44 @@ mod tests {
         assert!(matches!(
             slash_command("/goal pause"),
             SlashCommand::Invalid(message) if message.contains("needs a Goal id")
+        ));
+    }
+
+    /// Every command this adapter advertises must have a handler, because T3
+    /// sends a chosen command back as verbatim `/name` prompt text: one with no
+    /// handler is forwarded to the model as literal text instead of running.
+    ///
+    /// `Forward` is that failure mode, so it is what this rejects. A command
+    /// whose bare form reports a usage error (`/goal` with no verb) is fine —
+    /// it still reached its own handler.
+    #[test]
+    fn every_advertised_command_is_handled() {
+        for command in available_commands(&[]) {
+            let schema::AvailableCommand::Command(command) = command else {
+                continue;
+            };
+            // A `$skill` entry is resolved through the skill registry, not
+            // `slash_command`, and there are no skills in this fixture.
+            if command.name.starts_with('$') {
+                continue;
+            }
+            // T3 inserts the command with its argument, so a name that only
+            // matches when it carries one (`/model-select`, `/thought`) is
+            // exercised the way the client actually sends it.
+            let line = format!("/{} x", command.name);
+            assert!(
+                !matches!(slash_command(&line), SlashCommand::Forward(_)),
+                "`{line}` is advertised but falls through to the model"
+            );
+        }
+    }
+
+    #[test]
+    fn try_again_submits_the_protocol_prompt_verbatim() {
+        assert!(matches!(
+            slash_command("/try-again"),
+            SlashCommand::Host(UserCommand::SubmitTask(text))
+                if text == tact_protocol::TRY_AGAIN_PROMPT
         ));
     }
 

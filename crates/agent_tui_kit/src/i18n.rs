@@ -365,6 +365,7 @@ pub struct Messages {
     pub cmd_background: &'static str,
     /// `/goal` — durable supervised Goal lifecycle.
     pub cmd_goal: &'static str,
+    pub cmd_try_again: &'static str,
 
     // ---- /model-subagent ----
     pub model_subagent_select_prompt_tmpl: &'static str,
@@ -808,6 +809,7 @@ impl Messages {
             cmd_stats: tact_catalog::BuiltinCommand::Stats.description().en,
             cmd_background: tact_catalog::BuiltinCommand::Background.description().en,
             cmd_goal: tact_catalog::BuiltinCommand::Goal.description().en,
+            cmd_try_again: tact_catalog::BuiltinCommand::TryAgain.description().en,
             permission_select_prompt: "Permission mode",
             permission_option_default: "Default — ask for writes",
             permission_option_plan: "Plan — read only",
@@ -1173,6 +1175,7 @@ impl Messages {
             cmd_stats: tact_catalog::BuiltinCommand::Stats.description().zh,
             cmd_background: tact_catalog::BuiltinCommand::Background.description().zh,
             cmd_goal: tact_catalog::BuiltinCommand::Goal.description().zh,
+            cmd_try_again: tact_catalog::BuiltinCommand::TryAgain.description().zh,
             permission_select_prompt: "权限模式",
             permission_option_default: "默认 — 写入需确认",
             permission_option_plan: "只读 — 阻止所有写操作",
