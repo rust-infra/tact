@@ -458,3 +458,87 @@ fn big_z_never_opens_a_folded_region() {
         "a sweep must not record an explicit unfold"
     );
 }
+
+/// The glyph a reader presses must be in the same column in both states, or the
+/// control visibly jumps out from under the pointer when the fold flips.
+#[test]
+fn the_fold_glyph_sits_in_the_same_column_folded_and_open() {
+    let mut app = make_app();
+    app.add_user_message("Check.".into());
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Started,
+    ));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Delta("Think.\n".into()),
+    ));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Finished,
+    ));
+    seed(&mut app, 0, "b1", "bash", "one");
+
+    let folded = render_log_panel_text(&mut app, 100, 32);
+    let folded_col = glyph_column(&folded, '⏵').expect("the summary draws ⏵");
+
+    let _ = render_log_panel_text(&mut app, 100, 32);
+    z(&mut app);
+    let open = render_log_panel_text(&mut app, 100, 32);
+    let open_col = glyph_column(&open, '⏷').expect("the open head draws ⏷");
+
+    assert_eq!(
+        folded_col, open_col,
+        "the control must not move when the fold flips"
+    );
+}
+
+/// Column of `glyph` in the first row that contains it.
+fn glyph_column(text: &str, glyph: char) -> Option<usize> {
+    text.lines()
+        .find_map(|line| line.chars().position(|c| c == glyph))
+}
+
+/// The same guarantee for a tool run: the summary's `⏵` and the head's `⏷` are
+/// one control in one column. This was the smaller of the two original offsets
+/// (two columns), and it predates the activity region — the narration work just
+/// made it visible next to a much larger one.
+#[test]
+fn a_tool_run_fold_glyph_keeps_its_column() {
+    let mut app = make_app();
+    app.add_user_message("Check.".into());
+    app.handle_agent_update(AgentUpdate::StreamChunk("Looking.\n\n".into()));
+    seed(&mut app, 0, "r1", "read_file", "a.rs");
+    seed(&mut app, 1, "r2", "read_file", "b.rs");
+
+    let folded = render_log_panel_text(&mut app, 100, 32);
+    let folded_col = glyph_column(&folded, '⏵').expect("the summary draws ⏵");
+
+    let _ = render_log_panel_text(&mut app, 100, 32);
+    z(&mut app);
+    let open = render_log_panel_text(&mut app, 100, 32);
+    let open_col = glyph_column(&open, '⏷').expect("the open head draws ⏷");
+
+    assert_eq!(
+        folded_col, open_col,
+        "the run's control must not move when the fold flips"
+    );
+}
+
+/// And for a region headed by narration, whose head row is plain prose: it drew
+/// no glyph at all before, so there was nothing to keep aligned.
+#[test]
+fn a_narration_headed_fold_glyph_keeps_its_column() {
+    let mut app = make_app();
+    narration_headed_region(&mut app);
+
+    let folded = render_log_panel_text(&mut app, 100, 32);
+    let folded_col = glyph_column(&folded, '⏵').expect("the summary draws ⏵");
+
+    let _ = render_log_panel_text(&mut app, 100, 32);
+    z(&mut app);
+    let open = render_log_panel_text(&mut app, 100, 32);
+    let open_col = glyph_column(&open, '⏷').expect("the open narration head draws ⏷");
+
+    assert_eq!(
+        folded_col, open_col,
+        "the narration head's control must sit where the summary's did"
+    );
+}

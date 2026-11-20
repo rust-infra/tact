@@ -61,6 +61,51 @@ impl<T: Renderable> Renderable for SelectedCell<T> {
     }
 }
 
+/// Paints `⏷` in a row's fold gutter, for a region whose head row is plain text.
+///
+/// A region headed by a narration row has no card to hang the control on, and
+/// the row itself is prose. Wrapping its cell keeps the glyph in the same
+/// column every other fold control uses — the columns the closed summary's `⏵`
+/// occupied — so the fold does not move under the pointer.
+struct FoldGutterCell<T> {
+    inner: T,
+    style: Style,
+    /// Columns the row's own text is indented by. The glyph goes here, and the
+    /// text shifts right by [`crate::render::util::FOLD_GUTTER_COLS`] from it —
+    /// the same geometry a folded region summary uses, so the control occupies
+    /// one column in both states.
+    indent: u16,
+}
+
+impl<T: Renderable> Renderable for FoldGutterCell<T> {
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        self.render_partial(area, buf, 0);
+    }
+
+    fn height(&self, width: u16) -> u16 {
+        self.inner.height(width)
+    }
+
+    fn render_partial(&self, area: Rect, buf: &mut Buffer, skip_lines: usize) {
+        // Text untouched; the glyph goes in the gutter left of it, where a
+        // folded region summary draws its `⏵`.
+        self.inner.render_partial(area, buf, skip_lines);
+        let x = area.x + crate::render::util::fold_glyph_x(self.indent);
+        let glyph = Rect::new(
+            x,
+            area.y,
+            crate::render::util::FOLD_GUTTER_COLS.min(
+                area.width
+                    .saturating_sub(crate::render::util::fold_glyph_x(self.indent)),
+            ),
+            1,
+        );
+        if glyph.width > 0 && area.height > 0 {
+            buf.set_string(glyph.x, glyph.y, "⏷", self.style);
+        }
+    }
+}
+
 fn tool_id_for_phys(ctx: &RenderCtx, phys_idx: usize) -> Option<String> {
     ctx.tools
         .active
@@ -243,6 +288,7 @@ pub fn render_log_panel_pure(
         // blocks register the richer control inside their own branches below;
         // registering there only would mean a narration-headed region could be
         // opened and never closed.
+        let mut narration_fold: Option<String> = None;
         let narration_head = phys_idx.is_some_and(|phys| {
             ctx.log
                 .items
@@ -262,11 +308,15 @@ pub fn render_log_panel_pure(
             // whole-log line, and this row's screen position is that line less
             // the scroll offset.
             if let Some((area, _skip)) = renderer.cell_slice(vs_cache[logical_i], 1, inner) {
+                // Same fold gutter as every other control: the row's indent,
+                // which is where the region summary's `⏵` sat.
+                let x = area.x + phys_idx.map_or(0, |p| log_indent_at(ctx.log, p));
                 open_actions.push(OpenAction::new(
-                    OpenTarget::activity_region(region_id),
-                    Rect::new(area.x, area.y, area.width, 1),
+                    OpenTarget::activity_region(region_id.clone()),
+                    Rect::new(x, area.y, crate::render::util::FOLD_GUTTER_COLS, 1),
                 ));
             }
+            narration_fold = Some(region_id);
         }
 
         // Compute the byte-range selection for this logical row, if any.
@@ -688,17 +738,30 @@ pub fn render_log_panel_pure(
             ctx.theme.bg,
         );
 
-        if let Some(phys) = phys_idx
-            && ctx
-                .mouse
+        let selected = phys_idx.is_some_and(|phys| {
+            ctx.mouse
                 .card_selection
                 .as_ref()
                 .is_some_and(|selection| selection.contains_phys(phys))
-        {
+        });
+        // Push at this row's visual-line offset; LogColumnRenderer does a second
+        // viewport clip and calls TextCell::render_partial for sub-line trimming.
+        if let Some(_region_id) = narration_fold {
+            // An open region headed by prose: the glyph belongs to this row, and
+            // the row's text is shifted right so the two do not overlap.
+            let cell = FoldGutterCell {
+                inner: cell,
+                style: Style::default().fg(ctx.theme.accent).bg(ctx.theme.bg),
+                indent: phys_idx.map_or(0, |p| log_indent_at(ctx.log, p)),
+            };
+            if selected {
+                renderer.push(vs_cache[logical_i], SelectedCell { inner: cell });
+            } else {
+                renderer.push(vs_cache[logical_i], cell);
+            }
+        } else if selected {
             renderer.push(vs_cache[logical_i], SelectedCell { inner: cell });
         } else {
-            // Push at this row's visual-line offset; LogColumnRenderer does a second
-            // viewport clip and calls TextCell::render_partial for sub-line trimming.
             renderer.push(vs_cache[logical_i], cell);
         }
         logical_i += 1;

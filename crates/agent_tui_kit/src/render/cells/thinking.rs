@@ -310,10 +310,17 @@ impl ThinkingCell {
     /// `None` when this card is not an open region's head, or when the gutter is
     /// too narrow to hold the glyph without leaving the panel.
     fn region_toggle_glyph_rect(&self, row_area: Rect) -> Option<Rect> {
-        if !self.region_head || row_area.x < 2 {
+        if !self.region_head {
             return None;
         }
-        Some(Rect::new(row_area.x - 2, row_area.y, 2, 1))
+        // Two columns left of the title, in the card's gutter — where the closed
+        // region summary draws its `⏵`. The title itself does not move.
+        Some(Rect::new(
+            crate::render::util::fold_glyph_x(row_area.x),
+            row_area.y,
+            crate::render::util::FOLD_GUTTER_COLS,
+            1,
+        ))
     }
 
     /// The `⏷` in the header's gutter as a screen rect, for the same

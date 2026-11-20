@@ -232,10 +232,18 @@ impl ToolCell {
     /// `None` when this block is not an expanded run head, or when the gutter is
     /// too narrow to hold the glyph without leaving the panel.
     fn run_toggle_glyph_rect(&self, row_area: Rect) -> Option<Rect> {
-        if !self.run_expanded_head || row_area.x < 2 {
+        if !self.run_expanded_head {
             return None;
         }
-        Some(Rect::new(row_area.x - 2, row_area.y, 2, 1))
+        // Two columns left of the title, in the block's indent gutter — the same
+        // place the closed summary draws its `⏵`. The title itself does not
+        // move, so the members below keep their column too (no staircase).
+        Some(Rect::new(
+            crate::render::util::fold_glyph_x(row_area.x),
+            row_area.y,
+            crate::render::util::FOLD_GUTTER_COLS,
+            1,
+        ))
     }
 
     fn meta_line(&self) -> Line<'static> {
@@ -477,8 +485,11 @@ impl ToolCell {
         }
         let row =
             crate::render::util::indent_rect(area, crate::render::util::LOG_TOOL_BLOCK_INDENT);
-        let width = row.width.saturating_add(2);
-        (width > 0 && row.height > 0).then(|| Rect::new(row.x.saturating_sub(2), row.y, width, 1))
+        // The glyph's own columns, the same place the closed summary's `⏵`
+        // occupies. Only the glyph: the title row is a click target of its own
+        // (it opens the tool's popup), so a full-row fold target would shadow it.
+        let x = crate::render::util::fold_glyph_x(row.x);
+        (row.height > 0).then(|| Rect::new(x, row.y, crate::render::util::FOLD_GUTTER_COLS, 1))
     }
 
     /// Screen rect of a collapsed tool's `[Open]` meta-row button.
@@ -704,6 +715,11 @@ impl Renderable for ToolCell {
                     // exist. The paragraph keeps the row's own fg so the
                     // untouched remainder of the row is painted exactly as the
                     // rest of the theme paints every other row.
+                    //
+                    // The title is **not** shifted: the glyph lives in the
+                    // gutter left of it, so the head's text starts in the same
+                    // column its members' do (no staircase) and in the column
+                    // the folded summary's text used.
                     Paragraph::new(vec![self.drawn_title_line()])
                         .style(Style::default().fg(self.fg).bg(self.bg))
                         .render(row_area, buf);
