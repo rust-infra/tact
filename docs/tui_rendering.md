@@ -319,6 +319,21 @@ glyph are not localized — they name the call itself — but which side of the 
 the count sits on is a language decision, which is why `fold_repeat` holds both:
 `"{} ×{}"`.
 
+#### Folding and unfolding the same region
+
+A folded region's summary occupies the first member's row, so expanding removes
+the control the reader came from. The first member's **head row** takes it over:
+a thinking card draws `⏷` in its indent gutter, the same glyph an expanded tool
+run uses on its title row. Its hit rect is only the two glyph columns — the head
+row doubles as the start of a card-selection drag, and a full-width target would
+turn a click meant to select into a fold.
+
+`Z` folds every open region and run at once. `z` finds one fold in view; when a
+reader has opened several, the summaries they came from are gone and there is no
+single row to press, which is the shape `Z` answers. It only folds — a key that
+toggled each fold independently would have to read a mixed state ("some open,
+some shut") that says more about the viewport than about intent.
+
 #### Folding and unfolding the same run
 
 Both affordances have to work in both directions, and each is where the run
