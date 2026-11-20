@@ -259,8 +259,8 @@ mod tests {
             key: "t1".to_string(),
         };
         let titles = vec![
-            (ToolPhase::Success, "1. 📖  Read  src/a.rs".to_string()),
-            (ToolPhase::Success, "2. 📖  Read  src/b.rs".to_string()),
+            (ToolPhase::Success, "1. 📖 Read  src/a.rs".to_string()),
+            (ToolPhase::Success, "2. 📖 Read  src/b.rs".to_string()),
         ];
         ActivityRegionCell::new(
             &region,

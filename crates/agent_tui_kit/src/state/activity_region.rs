@@ -691,7 +691,7 @@ mod tests {
     #[test]
     fn the_summary_counts_both_halves_and_puts_failures_before_the_labels() {
         let titles = [
-            (ToolPhase::Success, "1. 📖  Read  a.rs"),
+            (ToolPhase::Success, "1. 📖 Read  a.rs"),
             (ToolPhase::Failed, "2. $ Bash  false"),
         ];
         let summary = summarize(2, &titles, Some(Duration::from_millis(900)), &msgs());
@@ -707,9 +707,9 @@ mod tests {
     #[test]
     fn the_summary_follows_the_locale() {
         let titles = [
-            (ToolPhase::Success, "1. 📖  Read  a.rs"),
+            (ToolPhase::Success, "1. 📖 Read  a.rs"),
             (ToolPhase::Failed, "2. $ Bash  false"),
-            (ToolPhase::Success, "3. 📖  Read  b.rs"),
+            (ToolPhase::Success, "3. 📖 Read  b.rs"),
         ];
         let english = summarize(
             2,

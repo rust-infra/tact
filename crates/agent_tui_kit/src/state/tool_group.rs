@@ -109,7 +109,7 @@ pub fn runs(blocks: &[ToolBlock]) -> Vec<ToolRun> {
 
 /// What a folded run says about itself.
 ///
-/// The titles are per-call (`"3. 📖  Read  src/app.rs"`), so the summary first
+/// The titles are per-call (`"3. 📖 Read  src/app.rs"`), so the summary first
 /// drops the step ordinal and the argument, then counts the remaining labels.
 /// Repeating `Read ×3` once is the point of folding — three paths on three rows
 /// say less than "three reads".
@@ -203,18 +203,22 @@ pub fn tools_summary(
 /// The tool label inside a title row, with the step ordinal and the argument
 /// removed.
 ///
-/// A title is built as `"<ordinal>. <glyph> <Name>  <argument>"` — note the
-/// argument is separated by two spaces while the glyph and the name are not, so
-/// the argument starts at the **last** double-space run, not the first. A title
-/// without an ordinal (the subagent popup builds its own) and a title without an
-/// argument both fall back to what is actually there rather than printing an
-/// empty label.
+/// [`ToolWidget::title_text`] builds the title as `"<label>  <argument>"`,
+/// optionally prefixed with `"<n>. "`. The label itself is a display name such
+/// as `"📖 Read"` or `"$ Bash"` and never contains a double space, so the *first*
+/// double-space run is the separator. Splitting at the last one stripped the
+/// wrong thing whenever the argument contained one — `bash` passes its command
+/// through here, and `echo "a  b"` reduced the label to `"$ Bash echo 'a"`.
+///
+/// A title without an ordinal (the subagent popup builds its own) and a title
+/// without an argument both fall back to what is actually there rather than
+/// printing an empty label.
 fn tool_label(title: &str) -> String {
     let without_ordinal = match title.split_once(". ") {
         Some((ordinal, rest)) if ordinal.chars().all(|c| c.is_ascii_digit()) => rest,
         _ => title,
     };
-    match without_ordinal.rsplit_once("  ") {
+    match without_ordinal.split_once("  ") {
         Some((label, _argument)) if !label.trim().is_empty() => normalize_spaces(label),
         _ => normalize_spaces(without_ordinal),
     }
@@ -720,9 +724,9 @@ mod tests {
     #[test]
     fn a_summary_counts_repeated_tools_once() {
         let members = [
-            (ToolPhase::Success, "1. 📖  Read  src/main.rs"),
-            (ToolPhase::Success, "2. 📖  Read  src/lib.rs"),
-            (ToolPhase::Success, "3. 📖  Read  src/app.rs"),
+            (ToolPhase::Success, "1. 📖 Read  src/main.rs"),
+            (ToolPhase::Success, "2. 📖 Read  src/lib.rs"),
+            (ToolPhase::Success, "3. 📖 Read  src/app.rs"),
             (ToolPhase::Success, "4. $ Bash  cargo test"),
             (ToolPhase::Success, "5. Grep  fn main"),
         ];
@@ -737,7 +741,7 @@ mod tests {
     #[test]
     fn a_failure_is_counted_in_the_summary_not_hidden_by_it() {
         let members = [
-            (ToolPhase::Success, "1. 📖  Read  a.rs"),
+            (ToolPhase::Success, "1. 📖 Read  a.rs"),
             (ToolPhase::Failed, "2. $ Bash  cargo test"),
             (ToolPhase::Cancelled, "3. $ Bash  cargo build"),
         ];
@@ -766,12 +770,59 @@ mod tests {
     #[test]
     fn the_tool_half_of_a_fold_line_is_reusable() {
         let members = [
-            (ToolPhase::Success, "1. 📖  Read  a.rs"),
+            (ToolPhase::Success, "1. 📖 Read  a.rs"),
             (ToolPhase::Failed, "2. $ Bash  false"),
         ];
         assert_eq!(
             tools_summary(&members, 1, &msgs()),
             "2 tools · 1 failed · 📖 Read · $ Bash"
+        );
+    }
+
+    /// A command whose own text contains a double space must not leak into the
+    /// label.
+    ///
+    /// The label is separated from the argument by the *first* double space. When
+    /// this split at the last one instead, `bash` — which passes its whole
+    /// command as the argument — produced a label like `"$ Bash echo 'a"` and the
+    /// folded summary printed the command instead of the tool.
+    #[test]
+    fn an_argument_with_a_double_space_does_not_become_the_label() {
+        assert_eq!(tool_label("$ Bash  echo 'a  b' && ls"), "$ Bash");
+        assert_eq!(tool_label("1. $ Bash  echo 'a  b' && ls"), "$ Bash");
+        assert_eq!(
+            tool_label("$ Bash  cd /repo && echo '=== x ===' && grep -n \"pub fn \\\" | head"),
+            "$ Bash"
+        );
+        // The label itself keeps its own single space.
+        assert_eq!(tool_label("📖 Read  src/main.rs"), "📖 Read");
+    }
+
+    /// The fixtures above are hand-written; this one derives the title the way
+    /// the widget does, so a change to the separator cannot pass unnoticed.
+    #[test]
+    fn a_summary_reads_labels_from_real_widget_titles() {
+        use crate::widgets::tool_widget::{ToolPhase as WidgetPhase, ToolWidget};
+
+        let read = ToolWidget::new()
+            .with_tool("read_file")
+            .with_arg_summary("src/main.rs")
+            .with_phase(WidgetPhase::Success)
+            .build();
+        let bash = ToolWidget::new()
+            .with_tool("bash")
+            .with_arg_summary("echo 'a  b' && ls")
+            .with_phase(WidgetPhase::Success)
+            .build();
+
+        let members = [
+            (ToolPhase::Success, read.title_raw.as_str()),
+            (ToolPhase::Success, bash.title_raw.as_str()),
+        ];
+        assert_eq!(
+            tools_summary(&members, 0, &msgs()),
+            "2 tools · 📖 Read · $ Bash",
+            "a real bash title must fold to `$ Bash`, not to its command"
         );
     }
 
