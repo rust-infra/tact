@@ -25,6 +25,7 @@ The desktop prototype uses one interaction model:
 | `/save` | Download transcript + saved-path feedback | Complete |
 | `/compact` | Animated compaction result sheet | Complete |
 | `/cancel` | Cancel the active run | Complete |
+| `/try-again` | Submit the continuation prompt as a new turn | Complete |
 | `/subagent_cancel` | Running-agent value picker + stop action | Complete |
 | `/quit` | Persisted-session quit confirmation | Complete |
 | `/help` | Keyboard shortcut reader | Complete |

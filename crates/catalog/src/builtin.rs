@@ -55,6 +55,8 @@ pub enum BuiltinCommand {
     Background,
     #[strum(serialize = "goal")]
     Goal,
+    #[strum(serialize = "try-again")]
+    TryAgain,
 }
 
 /// One declared subcommand, recursive to arbitrary depth.
@@ -164,6 +166,7 @@ impl BuiltinCommand {
         Self::Trajectory,
         Self::Background,
         Self::Goal,
+        Self::TryAgain,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -268,6 +271,10 @@ impl BuiltinCommand {
                 "Create, inspect, and control durable Goals",
                 "创建、查看和控制持久 Goal",
             ),
+            Self::TryAgain => LocalizedText::new(
+                "Resume an interrupted turn without repeating what already ran",
+                "继续被中断的回合，不重复已执行的操作",
+            ),
         }
     }
 
@@ -298,6 +305,7 @@ impl BuiltinCommand {
             Self::Trajectory => "trajectory",
             Self::Background => "background",
             Self::Goal => "goal",
+            Self::TryAgain => "try-again",
         }
     }
 }

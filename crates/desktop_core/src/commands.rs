@@ -44,6 +44,9 @@ fn route_builtin(command: tact_catalog::BuiltinCommand, args: &CommandArguments)
         B::Save => CommandRoute::Shell(CommandId::Builtin(command)),
         B::Compact => CommandRoute::User(UserCommand::Compact),
         B::Cancel => CommandRoute::User(UserCommand::Cancel),
+        B::TryAgain => CommandRoute::User(UserCommand::SubmitTask(
+            tact_protocol::TRY_AGAIN_PROMPT.to_string(),
+        )),
         B::SubagentCancel => CommandRoute::User(UserCommand::CancelSubagent {
             child_id: args.tokens.first().cloned().unwrap_or_default(),
         }),
@@ -536,6 +539,20 @@ mod tests {
             CommandRoute::User(UserCommand::ListGoals {
                 include_archived: true
             })
+        ));
+    }
+
+    /// `/try-again` is a continuation, not a shell gesture: the desktop has to
+    /// submit the fixed prompt as a task the host will run.
+    #[test]
+    fn try_again_routes_to_the_continuation_prompt() {
+        assert!(matches!(
+            route_command(
+                &CommandId::Builtin(tact_catalog::BuiltinCommand::TryAgain),
+                &CommandArguments::default(),
+            ),
+            CommandRoute::User(UserCommand::SubmitTask(text))
+                if text == tact_protocol::TRY_AGAIN_PROMPT
         ));
     }
 
