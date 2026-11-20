@@ -368,6 +368,43 @@ fn popup_text_hit(app: &App, column: u16, row: u16, clamp_vertical: bool) -> Opt
         .map(|hit_row| hit_row.hit(column))
 }
 
+/// Where a pointer landed inside the log panel.
+///
+/// The click path and the drag path used to each subtract `area.y + 1` and
+/// `area.x + 1` themselves. That is one assumption written twice: the moment
+/// the panel draws anything above the first log row (a pinned prompt), the two
+/// copies have to be corrected together or a click resolves one row off from
+/// what it looks like. Deriving both here keeps a single answer.
+struct LogHit {
+    /// The visual row the pointer is on, or `None` when it is below the drawn
+    /// viewport (the stats row and the bottom border own no log line).
+    visual_row: Option<usize>,
+    /// The visual row as computed, before the viewport check. Callers that
+    /// extend a selection past the edge still want it.
+    raw_visual_row: usize,
+    /// Column relative to the content area's left edge.
+    col: usize,
+}
+
+/// Resolve a pointer position against the log panel.
+///
+/// `content_y` and `content_x` are the panel rect's inside edges, so a panel
+/// with borders maps `area.y + 1` to the first content row. Any future row
+/// reserved above the log belongs in `PinnedRows`, not in a `+ 2` here.
+fn log_hit(app: &App, mouse: MouseEvent) -> LogHit {
+    let area = app.mouse.area(SurfaceId::Log);
+    let visual_base = app.log_viewport_top();
+    let raw_visual_row =
+        visual_base + mouse.row.saturating_sub(area.y + 1) as usize;
+    let visual_row = (!below_log_viewport(app, visual_base, raw_visual_row))
+        .then_some(raw_visual_row);
+    LogHit {
+        visual_row,
+        raw_visual_row,
+        col: mouse.column.saturating_sub(area.x + 1) as usize,
+    }
+}
+
 /// True when `visual_row` falls below the drawn log viewport.
 ///
 /// The Log panel's content area can be taller than the viewport: the live task
@@ -469,20 +506,14 @@ fn start_card_selection(app: &mut App, phys_idx: usize) {
 
 fn handle_log_click(app: &mut App, mouse: MouseEvent) {
     app.focused_panel = FocusedPanel::Log;
-    let visual_base = app.log_viewport_top();
-    let visual_row = visual_base
-        + mouse
-            .row
-            .saturating_sub(app.mouse.area(SurfaceId::Log).y + 1) as usize;
-    if below_log_viewport(app, visual_base, visual_row) {
+    let hit = log_hit(app, mouse);
+    let Some(visual_row) = hit.visual_row else {
         app.mouse.clear_log_selection();
         app.mouse.dragging_log = false;
         return;
-    }
+    };
     let line_idx = app.logical_from_visual(visual_row);
-    let col = mouse
-        .column
-        .saturating_sub(app.mouse.area(SurfaceId::Log).x + 1) as usize;
+    let col = hit.col;
 
     let now = std::time::Instant::now();
     let pos = (mouse.column, mouse.row);
@@ -686,22 +717,17 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
 
 fn handle_mouse_drag(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
     if app.mouse.dragging_log && hit.in_log {
-        let visual_base = app.log_viewport_top();
-        let visual_row = visual_base
-            + mouse
-                .row
-                .saturating_sub(app.mouse.area(SurfaceId::Log).y + 1) as usize;
-        if below_log_viewport(app, visual_base, visual_row) {
+        let log = log_hit(app, mouse);
+        if log.visual_row.is_none() {
             return;
         }
+        let visual_row = log.raw_visual_row;
         let line_idx = app.logical_from_visual(visual_row);
         if app.mouse.card_selection.is_some() {
             extend_card_selection(app, line_idx);
             return;
         }
-        let col = mouse
-            .column
-            .saturating_sub(app.mouse.area(SurfaceId::Log).x + 1) as usize;
+        let col = log.col;
         if line_idx < app.total_log_lines()
             && let Some((phys, byte)) = app.byte_offset_from_log_position(line_idx, visual_row, col)
         {
