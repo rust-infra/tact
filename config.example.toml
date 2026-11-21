@@ -359,6 +359,15 @@ theme = "ink"     # ink | ink-light | claude | claude-dark | retro | brutal | no
 # hook from running, use `/hooks` (or `[hooks]`), not this.
 # hook_output = false
 
+# Fold mid-turn assistant narration into the activity region's one summary row.
+# Display only: the model's text is unaffected, and the final answer is never
+# folded. On (default) matches the desktop transcript; off restores the shape
+# where every "let me check that" line keeps its own rows.
+# Toggle at runtime with /fold-commentary.
+#
+# The commented line shows the default, like every other switch in this file.
+# fold_commentary = true
+
 # ---------------------------------------------------------------------------
 # Voice input (macOS-first; independent of LLM providers)
 # ---------------------------------------------------------------------------

@@ -89,6 +89,7 @@ fn seed_thinking_popup(app: &mut App) {
         summary: "Deep reasoning line".into(),
         cached_markdown: vec![Line::from("Deep reasoning line")],
         elapsed: Duration::from_millis(10),
+        span: None,
     });
     app.thinking_mut().popup = Some(ThinkingPopup {
         block_id: "test-thinking".into(),
@@ -1104,6 +1105,7 @@ fn completed_thinking_popup_separates_adjacent_ordered_list_items() {
         summary: "second item".into(),
         cached_markdown: vec![Line::from("1. first item"), Line::from("2. second item")],
         elapsed: Duration::ZERO,
+        span: None,
     });
     app.thinking_mut().popup = Some(ThinkingPopup {
         block_id: "test-thinking".into(),

@@ -448,6 +448,7 @@ const fn group_for(command: BuiltinCommand) -> CommandGroup {
         | BuiltinCommand::Compact
         | BuiltinCommand::Cancel
         | BuiltinCommand::SubagentCancel
+        | BuiltinCommand::TryAgain
         | BuiltinCommand::Balance => CommandGroup::Run,
         BuiltinCommand::Theme | BuiltinCommand::Lang => CommandGroup::Appearance,
         BuiltinCommand::Skill
@@ -477,6 +478,7 @@ const fn availability_for(command: BuiltinCommand) -> Availability {
         | BuiltinCommand::Compact
         | BuiltinCommand::Cancel
         | BuiltinCommand::SubagentCancel
+        | BuiltinCommand::TryAgain
         | BuiltinCommand::History
         | BuiltinCommand::Stats
         | BuiltinCommand::TasksDag

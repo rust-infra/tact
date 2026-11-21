@@ -1192,6 +1192,7 @@ mod tests {
                     jpeg_quality: 80,
                 },
                 hook_output: true,
+                fold_commentary: true,
             },
             tools: tact::config::ToolSettings {
                 bash_timeout_secs: tact::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,

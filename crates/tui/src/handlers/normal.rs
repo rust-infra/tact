@@ -166,12 +166,19 @@ pub(crate) fn handle_normal_mode(
             }
         }
         KeyCode::Char('z') => {
-            // Fold or unfold the first tool run in view. `z` is the fold verb in
-            // every editor this keymap borrows from. The target is the first run
-            // the reader can see, not the row at the viewport top: that row is
-            // usually prose or a separator, and expanding a run moves its
+            // Fold or unfold the first fold in view. `z` is the fold verb in
+            // every editor this keymap borrows from. The target is the first
+            // fold the reader can see, not the row at the viewport top: that row
+            // is usually prose or a separator, and expanding a fold moves its
             // summary off the top anyway.
             app.toggle_fold_in_view();
+        }
+        KeyCode::Char('Z') => {
+            // Fold every open region and run at once, the shift of the fold
+            // verb: `z` is "this one", `Z` is "all of it". Measured, because a
+            // reader who expanded a few regions to read a turn has no summary
+            // row left to press — the entry point they came from is gone.
+            app.fold_all_activity();
         }
         KeyCode::Char('q') => {
             app.should_quit = true;

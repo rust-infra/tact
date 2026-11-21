@@ -38,6 +38,15 @@ pub struct ToolState {
     /// how many *logical* rows exist without changing how many physical rows
     /// there are. This counter is what tells them the mapping moved.
     pub fold_rev: u64,
+    /// Activity regions the reader folded, keyed by the region's first member's
+    /// `block_id`/`tool_id` — see [`super::activity_region`].
+    ///
+    /// Separate from [`Self::folded`] because a region's default is decided by
+    /// a different rule (it must mix a card and a call), and one key space
+    /// shared by both would let a tool run's key shadow a region's.
+    pub folded_regions: std::collections::BTreeSet<String>,
+    /// Activity regions the reader opened, overriding the default.
+    pub unfolded_regions: std::collections::BTreeSet<String>,
     /// Popup preview state for file write/read content.
     pub popup: Option<DiffPopup>,
     /// Subagent conversations, keyed by the parent `spawn_subagent` tool id.
@@ -137,6 +146,38 @@ pub struct ToolBlock {
 pub struct ToolSpan {
     pub started_at: std::time::Instant,
     pub finished_at: std::time::Instant,
+}
+
+/// Wall time covered by `spans`, counting overlapping intervals once.
+///
+/// A span per member, unioned — not summed — because a tool run's total and an
+/// activity region's total answer the same question ("how long did this take
+/// me"), and both are made of spans that can overlap (parallel calls, a
+/// thought running under a call). Two copies of this accumulation existed, one
+/// in each module, each with its own note saying it matched the other; this is
+/// the single one they now share.
+pub fn unioned_span(spans: &[ToolSpan]) -> Option<std::time::Duration> {
+    let mut spans = spans.to_vec(); // `ToolSpan: Copy`; sorting needs ownership
+    if spans.is_empty() {
+        return None;
+    }
+    spans.sort_by_key(|span| span.started_at);
+
+    let mut total = std::time::Duration::ZERO;
+    let mut current_start = spans[0].started_at;
+    let mut current_end = spans[0].finished_at;
+    for span in &spans[1..] {
+        if span.started_at <= current_end {
+            // Overlaps (or touches) the interval being accumulated.
+            current_end = current_end.max(span.finished_at);
+        } else {
+            total += current_end.saturating_duration_since(current_start);
+            current_start = span.started_at;
+            current_end = span.finished_at;
+        }
+    }
+    total += current_end.saturating_duration_since(current_start);
+    Some(total)
 }
 
 impl DiffPopup {

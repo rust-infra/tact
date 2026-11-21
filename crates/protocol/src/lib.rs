@@ -9,6 +9,7 @@
 pub mod agent;
 pub mod biz;
 pub mod events;
+pub mod prompt;
 pub mod subagent_transcript;
 pub mod tool_output;
 
@@ -29,11 +30,12 @@ pub use biz::{
 pub use events::{
     UpdateDispatch, UpdateReceiver, UpdateSendError, UpdateSender, UpdateSink, update_channel,
 };
+pub use prompt::TRY_AGAIN_PROMPT;
 pub use subagent_transcript::{SubagentStep, SubagentStepStatus, SubagentTranscriptEntry};
 // `AgentUpdate::Compaction` carries these, so a host that renders the
 // lifecycle should not have to depend on the kernel crate to name its states.
-pub use tact_agent_api::ReasoningEffort;
 pub use tact_agent_api::{CompactionEvent, CompactionKind, CompactionOutcome, CompactionState};
+pub use tact_agent_api::{MessagePhase, ReasoningEffort};
 pub use tool_output::{
     ToolOutputBuffer, ToolOutputChunk, ToolOutputLine, ToolOutputSpan, ToolOutputStream,
 };

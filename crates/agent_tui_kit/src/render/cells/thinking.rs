@@ -86,6 +86,14 @@ pub struct ThinkingCell {
     fg: ratatui::style::Color,
     bg: ratatui::style::Color,
     accent: ratatui::style::Color,
+    /// Whether this card's header row is the fold control of an **open**
+    /// activity region.
+    ///
+    /// A folded region's summary row is where `⏵` sits, and expanding replaces
+    /// it with the members — so the first member's header has to carry `⏷`.
+    /// Without it a region can be opened and never folded again: the summary row
+    /// is gone, and nothing on screen says the head is clickable.
+    region_head: bool,
 }
 
 impl ThinkingCell {
@@ -160,6 +168,7 @@ impl ThinkingCell {
             fg: theme.thinking_preview_fg(),
             bg: theme.bg,
             accent: theme.thinking_card_border(),
+            region_head: false,
         }
     }
 
@@ -175,7 +184,16 @@ impl ThinkingCell {
             fg: theme.thinking_preview_fg(),
             bg: theme.bg,
             accent: theme.thinking_card_border(),
+            region_head: false,
         }
+    }
+
+    /// Mark this card as an open activity region's head, so its header row
+    /// carries the `⏷` that folds the region back.
+    #[must_use]
+    pub fn with_region_head(mut self, region_head: bool) -> Self {
+        self.region_head = region_head;
+        self
     }
 
     /// The footer as one line: the readout (elapsed, line count) in the accent
@@ -286,6 +304,44 @@ impl ThinkingCell {
         Some((Rect::new(area.x, area.y, area.width, height), skip_lines))
     }
 
+    /// Where the header's `⏷` goes: two columns left of the title, in the
+    /// indent gutter, so the region's members stay aligned under it.
+    ///
+    /// `None` when this card is not an open region's head, or when the gutter is
+    /// too narrow to hold the glyph without leaving the panel.
+    fn region_toggle_glyph_rect(&self, row_area: Rect) -> Option<Rect> {
+        if !self.region_head {
+            return None;
+        }
+        // Two columns left of the title, in the card's gutter — where the closed
+        // region summary draws its `⏵`. The title itself does not move.
+        Some(Rect::new(
+            crate::render::util::fold_glyph_x(row_area.x),
+            row_area.y,
+            crate::render::util::FOLD_GUTTER_COLS,
+            1,
+        ))
+    }
+
+    /// The `⏷` in the header's gutter as a screen rect, for the same
+    /// `(area, skip_lines)` the renderer draws the cell with.
+    ///
+    /// Deliberately the **glyph only**, unlike `ToolCell::run_toggle_rect`, which
+    /// claims the whole title row: a card's title row is also where a drag
+    /// starts a card selection, and a full-width fold target would swallow it —
+    /// a click meant to select would fold the region instead. The glyph is the
+    /// affordance; the columns it is painted in are the target.
+    ///
+    /// `None` when this card is not an open region's head, or when a clip has
+    /// scrolled the header off the frame.
+    pub fn region_toggle_rect(&self, area: Rect, skip_lines: usize) -> Option<Rect> {
+        if !self.region_head || skip_lines > 0 {
+            return None;
+        }
+        let row = crate::render::util::indent_rect(area, LOG_THINKING_INDENT);
+        self.region_toggle_glyph_rect(Rect::new(row.x, row.y, row.width, 1))
+    }
+
     /// The header's `[󰜼 Open]` button as a screen rect, for the same
     /// `(area, skip_lines)` the renderer draws the cell with.
     ///
@@ -339,6 +395,20 @@ impl Renderable for ThinkingCell {
             if row == 0 {
                 let line = self.header_line();
                 buf.set_line(rect.x, y, &line, rect.width);
+                // The folded summary's `⏵` sits in this gutter column, so an
+                // open region's head draws `⏷` there too: the two states differ
+                // by the glyph, not by where the region starts. Same rule as
+                // `ToolCell::run_toggle_glyph_rect` for a run's head.
+                if let Some(glyph) =
+                    self.region_toggle_glyph_rect(Rect::new(rect.x, y, rect.width, 1))
+                {
+                    buf.set_string(
+                        glyph.x,
+                        glyph.y,
+                        "⏷",
+                        Style::default().fg(self.accent).bg(self.bg),
+                    );
+                }
             } else if let Some(line) = body.get(row - 1) {
                 buf.set_line(rect.x, y, line, rect.width);
             }
@@ -422,6 +492,7 @@ mod tests {
             summary: "last".into(),
             cached_markdown: Vec::new(),
             elapsed: std::time::Duration::from_millis(1500),
+            span: None,
         };
         ThinkingCell::completed(&block, theme, msgs)
     }
@@ -459,6 +530,7 @@ mod tests {
             summary: "last".into(),
             cached_markdown: Vec::new(),
             elapsed: std::time::Duration::ZERO,
+            span: None,
         };
         let cell = ThinkingCell::completed(&block, &theme, &msgs);
         let text = render_text(&cell);
@@ -779,6 +851,7 @@ mod tests {
                 summary: "only line".into(),
                 cached_markdown: Vec::new(),
                 elapsed: std::time::Duration::from_millis(40),
+                span: None,
             };
             let cell = ThinkingCell::completed(&block, &theme, &msgs);
             let drawn: String = cell

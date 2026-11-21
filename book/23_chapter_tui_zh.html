@@ -623,6 +623,11 @@ href="./18_chapter_agent_loop_zh.html">Ch 18</a>）</td>
 href="./05_chapter_compact_zh.html">Ch 5</a>）</td>
 </tr>
 <tr>
+<td><strong><code>SubmitTask</code></strong>（续跑）</td>
+<td><code>/try-again</code>：提交一段固定的续跑提示，让 agent 从未完成的回合继续</td>
+<td>与普通 <code>SubmitTask</code> 同一条路径；忙碌时同样排队。提示要求模型在重复任何改状态的操作前先确认它是否已经生效、是否仍在运行，判断不了就直说——因为被打断的回合可能留下半执行或仍在跑的命令</td>
+</tr>
+<tr>
 <td><strong><code>QueryBalance</code></strong></td>
 <td><code>/balance</code>（仅 DeepSeek/Kimi）</td>
 <td><code>account::query_once()</code> → <code>AccountUpdate</code>
@@ -862,6 +867,10 @@ href="#6-渲染层">§6 渲染层</a>）：
 <li>仅当 <code>dirty</code>、<code>Status::Done</code>
 或仍有工具运行时重绘（实时 elapsed）。</li>
 <li>将键盘/鼠标分发给模式特定 handler。</li>
+<li>把 <code>Event::Paste</code> 交给 <code>App::resolve_paste</code>：终端已解出
+<strong>非空文本</strong>时它就是这次粘贴本身，直接插入；文本为空（截图没有文本形态）或是一串
+<code>file://</code> URI 时才读剪贴板，把文件/位图落成 <code>@</code>
+引用。转换不出引用时一律回退为文本粘贴，SSH/headless 下没有剪贴板也不会坏。</li>
 </ul></li>
 <li><strong>余额 timer</strong> — DeepSeek 或 Kimi 活跃时，随机 5–15 s
 间隔发送 <code>UserCommand::QueryBalance</code>（与启动 fetch
@@ -2227,8 +2236,56 @@ viewport 钉在底部（render 中 clamp）。</p>
 <h3 id="614-可见性规则">6.14 可见性规则</h3>
 <p>Thinking、tool 与 code placeholder 行在 Phase 0 各自可见，使
 logical-to-physical 映射稳定。Phase 3 用单个 direct cell 替换 thinking
-或 tool 的 placeholder 范围；code 仍使用 overlay。Thinking 没有隐藏
-source 行，也没有 <code>is_message_visible</code> 折叠规则。</p>
+或 tool 的 placeholder 范围；code 仍使用 overlay。Thinking 自身没有
+隐藏 source 行，但它的 placeholder 行可以被外层折叠单位藏起来——
+见下面的活动区。</p>
+<p><strong>两级折叠单位。</strong> 相邻且已结束的 tool 调用合成一个
+<em>tool run</em>（<code>tool_group::runs</code>），摘要按工具名计数量：
+<code>3 tools · 📖 Read ×2 · $ Bash · 1.2s</code>。相邻的 <em>thinking 卡 +
+tool 块</em>合成一个更大的 <em>活动区</em>
+（<code>activity_region::regions</code>），摘要同时计两半：
+<code>1 thought · 2 tools · 1 failed · Read ×2 · 0.9s</code>。</p>
+<p>只有「同时含卡和调用」的区域走活动区折叠；纯 tool 区域仍交给
+<code>tool_group</code>，因为只有那份摘要会点名每个调用。两者默认都折叠，
+失败会计数并以 error 色绘制摘要行（<code>⚠</code>），所以折叠不会让错误更安静。
+折叠态以区域首个成员的 <code>block_id</code>/<code>tool_id</code> 为 key，
+叙述段则用「首行文本 + 同文本出现序号」生成的 key；不用 <code>phys_idx</code>；
+读者的显式选择存在
+<code>ToolState::folded_regions</code> / <code>unfolded_regions</code> 里，
+与 tool run 的 key 空间分开。<code>z</code> 取视口内第一个可折叠单位，
+混合区域优先于同起点的 tool run；<code>Z</code> 一次折上**所有**展开的区域与
+run（只折不开——展开走 <code>z</code>、点摘要行或点头行）。</p>
+<p><strong>展开后的回折入口：</strong>区域折叠时摘要行占着首个成员的行，
+展开后那行就没了，所以第一个成员的<strong>头行</strong>接管控件。</p>
+<p><strong>两个状态必须同一列：</strong>展开后的 <code>⏷</code> 画在标题<strong>左侧两列</strong>
+（缩进槽里），标题本身不动；折叠摘要的 <code>⏵</code> 也在同一格。规则就一对常量：
+槽宽 <code>FOLD_GUTTER_COLS</code> 与列位置 <code>fold_glyph_x(indent)</code>。
+在这之前两者各自为政——摘要把 <code>⏵</code> 当成<strong>正文的首字符</strong>画，
+头行却把 <code>⏷</code> 画在标题左边两列——于是每次翻折控件都横向跳一下：
+tool run 跳 2 列，思考卡跳 <strong>8 列</strong>（正文缩进 2，而 tool 块是 8）。
+按不到原位的控件，等于每次都要重新找。</p>
+<p>反过来把<strong>标题</strong>右移是不行的：头行会比它下面的成员多缩一列，整块呈阶梯状。</p>
+<p>命中区只有那 2 列字形本身，不占整行——头行同时是拖选卡片的起点，
+整行命中会把「想选文字」变成「折叠区域」。失败摘要该列画 <code>⚠</code> 而不是
+<code>⏵</code>，所以折叠不会让错误变安静。若一次展开了好几个区域，
+<code>Z</code> 是不用去找任何一行的入口。</p>
+<p>展开区域会把每个成员的行还给它们；区域里的调用不再额外画一份 tool run
+摘要——一段工作只有一份摘要，即区域自己的摘要。纯 tool 区间仍由
+<code>tool_group</code> 折叠，只有那份摘要会点名每个调用。</p>
+<p>区域还可以包含<strong>助手叙述</strong>：provider 把一条消息标为
+<code>Commentary</code> 时，该消息的行被重标为
+<code>LogItemKind::AssistantCommentary</code>，并与相邻的卡片/调用合成一个区域。
+<code>FinalAnswer</code> 和 <code>phase: None</code> 的文本永不折叠。
+开关是 <code>[ui] fold_commentary</code>（默认开），运行时用
+<code>/fold-commentary</code> 切换。</p>
+<p>区域耗时是所有成员 span 的<strong>并集</strong>：思考卡与调用重叠时只算一次，
+串行时相加；没有 span 的成员（从历史重建）贡献 0，全无时钟时摘要不显示耗时。</p>
+<p>摘要的每个词都来自 <code>Messages</code>（<code>fold_tools</code> /
+<code>fold_tools_one</code> / <code>fold_failed</code> / <code>fold_thoughts</code> /
+<code>fold_thoughts_one</code> / <code>fold_sep</code> / <code>fold_repeat</code>），
+<code>/lang</code> 当场重写整行：英文 <code>1 tool</code> / <code>3 tools</code>，
+中文 <code>1 个工具</code> / <code>3 个工具</code>。工具标签与 <code>×</code>
+不翻译，但计数在标签哪一侧由模板决定。</p>
 <p><code>total_log_lines()</code> 跳过不可见 physical 索引，使 logical
 编号与用户所见对齐。</p>
 <h3 id="615-wrapscroll-与自动跟随">6.15 Wrap、scroll 与自动跟随</h3>
@@ -2536,7 +2593,9 @@ popup（同一份内置命令列表）。<strong>skills
 skill，因此内置名始终赢过同名 skill。</p>
 <p><code>/balance</code>
 是唯一按会话条件隐藏的命令（没有账户通道时不出现在列表里）；<code>/skill</code>、<code>/plugin</code>、<code>/mcp</code>、<code>/hooks</code>、<code>/subagent_cancel</code>
-是五个需要参数的命令。<strong>子命令补全</strong>：<code>handlers/insert.rs</code>
+是五个需要参数的命令；<code>/try-again</code>
+则相反——它不带任何参数，提交的文案由
+<code>tact_protocol::TRY_AGAIN_PROMPT</code> 提供，三个前端共用同一份常量，避免措辞各自漂移。<strong>子命令补全</strong>：<code>handlers/insert.rs</code>
 与 <code>widgets/state/slash_command.rs</code> 共用
 <code>App::slash_candidates()</code>，输入到子命令位置时弹窗列出下一层节点（<code>/skill </code>、<code>/plugin mar</code>、<code>/hooks trust --</code>、以及嵌套的
 <code>/plugin marketplace </code>），Tab

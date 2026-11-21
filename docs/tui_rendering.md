@@ -122,6 +122,34 @@ The log panel is the most complex rendering component. Its core flow is:
   (`scroll_log_down` -> `scroll_log_to_bottom`).
 - Only renders `TextCell`s that fall inside the current viewport.
 
+### 6.3.1 Pinned Prompt Row
+
+A long turn pushes the reader's own prompt off the top, leaving nothing on
+screen that says what the turn was about. While the log is scrolled away from
+the tail and the prompt has left the viewport, the panel's **first content
+row** is reserved for it.
+
+The reservation is expressed as height, not as an overlay. `log_scroll.height`
+is the one value the renderer and the pointer path both read, so pinning
+shortens it by one and publishes `log_scroll.pinned_top_inset`. `log_hit`
+(`handlers/mouse.rs`) adds that back when mapping a click to a row, and a click
+**on** the row yields no row at all — it is chrome, not history.
+
+- Only the **current** turn's prompt is pinned. An earlier turn's prompt is
+  ordinary history, and re-showing it would claim the reader is still working
+  on it.
+- Only when the panel can still spare `PINNED_MIN_BODY_ROWS` (2) below it; a
+  shorter panel keeps its body instead.
+- A prompt is stored one `LogItemKind::User` item per input line, so the last
+  `User` row is the prompt's *tail*. `current_prompt_rows` walks back over the
+  contiguous run to find the first line.
+- The row is one line, so a long or CJK prompt is elided by display width
+  (`elide_to_width`), ending in `…`. It is never wrapped over the body.
+
+The header and the live stats row can be on screen together; both come out of
+`log_scroll.height`, which is why the two reservations are added, not
+overwritten.
+
 ### 6.4 Card Overlays
 
 Completed code cards remain overlays; thinking and tool cards are direct log cells:
@@ -195,6 +223,10 @@ derives the runs from the log itself: two blocks belong together when the second
 starts exactly where the first ends, so a gap row or a thinking card breaks the
 run and membership can never go stale.
 
+A run of calls that sits beside a thinking card is not the largest fold unit:
+see [§6.6.1 Activity Regions](#661-activity-regions-thinking--calls) for the
+row that counts both halves.
+
 A folded run is **one logical row**, not a run of zero-height rows. Its members
 are left out of `visible_indices` and `phys_to_logical_cache` entirely. Giving
 them zero height instead would repeat the same visual start for two rows, so
@@ -219,16 +251,150 @@ The summary reports one wall-clock total for the run, computed as the **union**
 of the members' spans rather than the sum of their durations: tools in one turn
 run concurrently by wave, so four parallel one-second calls took one second.
 
+### 6.6.1 Activity Regions (thinking + calls)
+
+A turn that thinks, then runs three commands, then thinks again used to cost
+two card rows **plus** the run's summary row, even though every one of those
+rows described the same stretch of work. The desktop transcript has always
+folded them together (`ProcessGroup` in `crates/desktop/src/ui/process.rs`);
+`activity_region` is the log-side equivalent.
+
+A *region* is a maximal run of adjacent thinking cards and tool blocks, derived
+exactly like a tool run: the next member must start where the previous one ends,
+so a gap row or any other block kind breaks it. Only **finished** cards are
+members — a live card's rows still change.
+
+Adjacency is necessary but not sufficient: a region must also stay inside one
+turn. The log is where a turn ends, so the host fills
+`LogScroll::turn_boundary_rows` (the `TaskComplete` separator and a user
+message's leading gap) during frame preparation, and
+`activity_region::regions_bounded` ends a region at any boundary row between two
+would-be members. Without that set, two turns whose members happened to land on
+touching rows would fold into one summary — the boundary rows are what makes the
+guarantee structural rather than a coincidence of spacing.
+
+Two fold units, kept apart on purpose:
+
+| Region contents | Folded by | Summary line |
+|---|---|---|
+| calls only | `tool_group` | `3 tools · 📖 Read ×2 · $ Bash · 1.2s` |
+| at least one card and one call | `activity_region` | `1 thought · 2 tools · 1 failed · Read ×2 · 0.9s` |
+| narration beside either | `activity_region` | `1 note · 2 tools · Read ×2 · 0.9s` |
+
+A tool-only region is left to `tool_group` because that summary names each call.
+A region's `N tools` could not, and the reader would lose the only place the
+tool labels were stated.
+
+The default is the same shape as a run's: a region with a live member never
+folds, a reader's explicit choice wins, otherwise a foldable mixed region folds.
+Fold state keys on the region's first member's `block_id`/`tool_id`, or on a
+narration run's generated key, never on `phys_idx`. The reader's choice lives in
+`ToolState::folded_regions` / `unfolded_regions` — a separate key space from a
+tool run's, so one cannot shadow the other.
+
+Expanding a region gives every member its rows back. The calls inside it do not
+draw a second summary: one stretch of work gets one summary, the region's, and
+`runs_covered_by_region` suppresses the inner run while the region exists. A
+tool-only span still folds through `tool_group`, whose summary names each call.
+
+Failures survive folding: the summary counts them (`1 failed`) and paints the
+row in the error colour with `⚠`.
+
+The region's clock is the **union** of every member's span — cards and calls
+alike. Summing durations would count a thought and the call it overlapped twice,
+and would report four parallel one-second calls as four seconds. A member with
+no span (rebuilt from history) contributes nothing; when nothing is timed the
+total is `None` rather than a fabricated zero.
+
+Assistant narration (`LogItemKind::AssistantCommentary`) joins a region only
+when the provider labelled the message `Commentary`, and only when
+`[ui] fold_commentary` is on (default). That is the `Commentary` text the model
+writes *before* it calls a tool; the final answer and any unlabelled message
+keep their own rows, so a fold can never hide the answer.
+`/fold-commentary` flips the switch for the session and, when there is a config
+file, for the next one.
+
+The label is applied when the message *finishes*, so `MessageFinished` first
+commits whatever the message still has buffered. The stream holds an
+unterminated last paragraph — text without its trailing blank line — until
+another event flushes it, and the relabel can only rewrite rows that already
+exist; a buffered tail would land afterwards as plain `AssistantMarkdown` and
+stay unfolded above the region instead of inside it. The flush is skipped while
+a thinking card is still open, because it would close the card and
+`MessageFinished` is deliberately not a thinking-region end.
+
+A region may be headed by narration rather than by a card (`narrate → calls`).
+The fold rule decides region vs. run with `ActivityRegion::folds_here()`, and
+every caller that asks "is this row a region's summary/head?" has to use that
+same predicate — `mixes_thinking_and_tools()` is the older rule and misses a
+narration-headed region, which left `z` toggling the tool run *inside* the
+region and left an opened region with no control to close it.
+
+Region identity for a narration run is derived from its first **non-blank** row's
+text plus an occurrence counter. Text alone is not unique: two turns can open
+with the same sentence, and a code-only message has no text at all. The
+occurrence counter keeps those regions in separate fold state while still
+surviving inserts above the run.
+
+Both callers derive regions through `App::activity_regions()` so the fold, the
+renderer and the click path cannot disagree; `commentary_runs` itself lives in
+`state::activity_region` for the same reason.
+
+Every word in a summary comes from `Messages` (`fold_tools`, `fold_tools_one`,
+`fold_failed`, `fold_thoughts`, `fold_thoughts_one`, `fold_sep`,
+`fold_repeat`), so `/lang` rewrites the row in place. The parts are separate keys
+rather than one template because each has its own singular form and its own
+natural order: Chinese does not pluralize, so `1 个工具` and `3 个工具` share a
+template, while English needs `1 tool` and `3 tools`. The tool label and the `×`
+glyph are not localized — they name the call itself — but which side of the label
+the count sits on is a language decision, which is why `fold_repeat` holds both:
+`"{} ×{}"`.
+
+#### Folding and unfolding the same region
+
+A folded region's summary occupies the first member's row, so expanding removes
+the control the reader came from. The first member's **head row** takes it over.
+
+An expanded head's `⏷` sits two columns **left of** its title, in the indent
+gutter, and the title itself does not move. That is where the folded summary's
+`⏵` is. The rule is one constant pair: `FOLD_GUTTER_COLS` in the gutter left of
+the text, `fold_glyph_x(indent)` for the column. Before it, the two states placed
+the glyph independently — a summary drew `⏵` as the first characters *of its
+text*, while a head painted `⏷` two columns left of its title — so the control
+jumped sideways on every flip: two columns for a tool run, eight for a thinking
+card (whose text indent is 2, not a tool block's 8). A control nobody can keep
+pointing at is a control the reader has to hunt for.
+
+Shifting the *title* right instead does not work: the head would then start one
+column right of the members below it, and the block staircases.
+
+The hit rect is only the two glyph columns — the head row doubles as the start of
+a card-selection drag, and a full-width target turns a click meant to select into
+a fold. A failed summary keeps `⚠` in that column instead of `⏵`, so folding
+never makes an error quieter.
+
+`Z` folds every open region and run at once. `z` finds one fold in view; when a
+reader has opened several, the summaries they came from are gone and there is no
+single row to press, which is the shape `Z` answers. It only folds — a key that
+toggled each fold independently would have to read a mixed state ("some open,
+some shut") that says more about the viewport than about intent.
+
 #### Folding and unfolding the same run
 
 Both affordances have to work in both directions, and each is where the run
 *is* rather than where it was.
 
-`z` takes the **first run with a row in the viewport**, not the run under the
-viewport's top row. In a real log that top row is prose or a blank separator, so
-a rule keyed on it found no run and the key silently did nothing; it also broke
-the second press, because expanding a run moves its summary row off the top.
-Scanning the visible rows makes one key do one run wherever the reader is.
+`z` takes the **first foldable run or mixed region with a row in the
+viewport**, not the one under the viewport's top row. In a real log that top row
+is prose or a blank separator, so a rule keyed on it found nothing and the key
+silently did nothing; it also broke the second press, because expanding a fold
+moves its summary row off the top. Scanning the visible rows makes one key do
+one fold wherever the reader is.
+
+A mixed region wins over a tool run that starts at the same row: it is the
+larger unit, and folding it is what a turn that thought and then ran commands
+asked for. A tool-only region is never returned to the region path — its run
+owns that row and keeps the per-tool summary.
 
 A click on the folded summary flips it. While the run is expanded that summary
 row does not exist, so the **first member's title row** takes the control: it is

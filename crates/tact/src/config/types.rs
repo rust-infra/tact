@@ -299,6 +299,14 @@ pub struct UiTomlConfig {
     /// it. Off is for readers who find a briefing between every turn noisy, not
     /// for turning hooks off (`[hooks]` / `/hooks` do that).
     pub hook_output: Option<bool>,
+
+    /// Fold mid-turn assistant narration into the activity region (default:
+    /// true).
+    ///
+    /// Display only: the model's text is unaffected. Off restores the old
+    /// shape, where every "let me check that" line kept its own rows. The
+    /// final answer is never folded either way.
+    pub fold_commentary: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -593,10 +601,14 @@ pub struct UiSettings {
     /// Whether the TUI renders hook-injected content (progress lines and the
     /// context block). Display only — see `UiTomlConfig::hook_output`.
     pub hook_output: bool,
+    /// Whether mid-turn assistant narration folds into the activity region.
+    /// See `UiTomlConfig::fold_commentary`.
+    pub fold_commentary: bool,
 }
 
 impl UiSettings {
     pub const DEFAULT_HOOK_OUTPUT: bool = true;
+    pub const DEFAULT_FOLD_COMMENTARY: bool = true;
 }
 
 #[derive(Debug, Clone)]

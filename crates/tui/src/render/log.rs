@@ -13,7 +13,104 @@ use crate::{
 };
 
 use agent_tui_kit::render::log::render_log_panel_pure;
-use agent_tui_kit::state::{LogCoordinator, LogScroll, SkillEntry, log_indent_at};
+use agent_tui_kit::state::{LogCoordinator, LogItemKind, LogScroll, SkillEntry, log_indent_at};
+
+/// Rows of the panel's content area given up above the first log row.
+///
+/// The log can pin the current turn's prompt as a header so it stays readable
+/// once a long turn pushes it off the top. When it is shown, the scrollable
+/// viewport starts one row lower and is one row shorter — nothing else in the
+/// panel moves.
+///
+/// `log_scroll.height` is the one value the renderer and the pointer path both
+/// read, so the reservation is expressed by shortening it. A click is then
+/// mapped by `log_hit` against exactly the rows that were drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum PinnedRow {
+    /// No header: the viewport starts at the content area's first row.
+    #[default]
+    None,
+    /// A one-line header owns the content area's first row.
+    Prompt,
+}
+
+impl PinnedRow {
+    const fn rows(self) -> u16 {
+        match self {
+            Self::None => 0,
+            Self::Prompt => 1,
+        }
+    }
+}
+
+/// Whether the current turn's prompt has scrolled out of the viewport.
+///
+/// Only the *current* turn's prompt is pinned. An earlier turn's prompt is
+/// ordinary history: re-showing it would claim the reader is still working on
+/// it, and the header has exactly one row to give.
+/// The physical rows of the current turn's prompt, first row first.
+///
+/// A prompt is stored one [`LogItemKind::User`] item per input line, so the
+/// last `User` row is the prompt's *tail*, not its start. Walk back over the
+/// contiguous run to find where the reader's words begin — the header shows the
+/// first line, and a tail would show the end of a pasted block.
+fn current_prompt_rows(app: &App) -> Option<std::ops::RangeInclusive<usize>> {
+    // A header is only meaningful while the turn it describes is in flight.
+    // `task_start_time` is the same field the live stats row reads, so the two
+    // turn-boundary affordances cannot disagree about whether a turn is
+    // running. Without this, scrolling up after a turn finished pinned the
+    // *previous* turn's prompt — exactly the claim the doc above forbids.
+    app.task_start_time?;
+    let last = app
+        .log
+        .items
+        .iter()
+        .rposition(|item| item.kind == LogItemKind::User)?;
+    let mut first = last;
+    while first > 0 && app.log.items[first - 1].kind == LogItemKind::User {
+        first -= 1;
+    }
+    Some(first..=last)
+}
+
+fn prompt_needs_pinning(app: &App, reserve: u16, area: Rect) -> bool {
+    if app.log_scroll.follow {
+        // At the tail the prompt is either on screen or the turn is old enough
+        // to have scrolled away inside the same view; a header would only
+        // duplicate the row directly above it.
+        return false;
+    }
+    let Some(rows) = current_prompt_rows(app) else {
+        return false;
+    };
+    let phys = *rows.start();
+    // Too short to give up a row: keep the body readable instead.
+    let content = area
+        .height
+        .saturating_sub(2)
+        .saturating_sub(reserve)
+        .saturating_sub(1);
+    if content < PINNED_MIN_BODY_ROWS {
+        return false;
+    }
+    // Only when that row has actually scrolled above the viewport. If it is
+    // still visible, the header would repeat a row the reader can already see.
+    let Some(logical) = app
+        .log_scroll
+        .visible_indices
+        .iter()
+        .position(|&p| p == phys)
+    else {
+        return true;
+    };
+    let Some(&visual_start) = app.log_scroll.visual_start.get(logical) else {
+        return false;
+    };
+    visual_start < app.log_viewport_top()
+}
+
+/// Body rows that must remain below a pinned prompt before it is worth drawing.
+const PINNED_MIN_BODY_ROWS: u16 = 2;
 
 /// Render the Log panel: wrapping, scrolling, and mouse selection.
 ///
@@ -63,11 +160,57 @@ pub(crate) fn render_log_panel_with_borders(
         borders,
         app.task_start_time.is_some(),
     );
+    // Decided once, before the caches are rebuilt: `prepare_log_frame` shrinks
+    // the viewport by this row and the pointer path maps against the same
+    // value, so the two cannot disagree about where the first log row is.
+    let pinned = if prompt_needs_pinning(app, reserve, area) {
+        PinnedRow::Prompt
+    } else {
+        PinnedRow::None
+    };
     // Fold decisions are copied out before `log_scroll` is borrowed mutably:
     // the two live in different fields of `App`, and the renderer cannot read
     // one while holding a `&mut` to the other.
-    let fold =
-        crate::render::fold::FoldLayout::capture(&app.tools().state().blocks, app.tools().state());
+    // The commentary runs are computed from the log rather than read off
+    // `log_scroll`: the cache is (re)built later in `prepare_log_frame`, so on
+    // the frame a message first gets labelled it would still be empty.
+    let commentary = app.commentary_runs();
+    let fold = crate::render::fold::FoldLayout::capture(
+        &app.tools().state().blocks,
+        app.thinking().state(),
+        app.tools().state(),
+        &commentary,
+        |phys| app.log_scroll.turn_boundary_rows.contains(&phys),
+    );
+    // Owned copies, taken before `log_scroll` is borrowed mutably: the
+    // commentary-run builder needs the card-occupied rows, which live on the
+    // tools and thinking components.
+    //
+    // One derivation for both consumers. The pairs feed the renderer (which
+    // rows a card paints); the set feeds the narration scan (a card's blank
+    // rows are not narration). Two copies of this scan existed and drifted,
+    // which let a narration run swallow a card's rows.
+    let tool_rows = app.tool_row_spans();
+    let card_rows = app.thinking_row_spans();
+
+    // Tool runs a mixed region already stands for, so their own summaries are
+    // not drawn on top of it.
+    let covered_runs: std::collections::BTreeSet<usize> = {
+        let regions = app
+            .tools()
+            .activity_regions(app.thinking().state(), &commentary, |phys| {
+                app.log_scroll.turn_boundary_rows.contains(&phys)
+            });
+        let runs = agent_tui_kit::state::tool_group::runs(&app.tools().state().blocks);
+        regions
+            .iter()
+            .filter(|region| region.folds_here())
+            .flat_map(|region| {
+                runs.iter()
+                    .filter_map(|run| region.contains(run.phys_idx).then_some(run.phys_idx))
+            })
+            .collect()
+    };
     prepare_log_frame(
         &mut app.log_scroll,
         &app.log,
@@ -78,7 +221,12 @@ pub(crate) fn render_log_panel_with_borders(
         area,
         borders,
         reserve,
+        pinned,
         &fold,
+        app.fold_commentary,
+        &tool_rows,
+        &card_rows,
+        &covered_runs,
     );
     let ctx = app.render_ctx();
     let output = render_log_panel_pure(frame, area, &ctx, borders);
@@ -93,6 +241,65 @@ pub(crate) fn render_log_panel_with_borders(
             .map(|btn| (btn.child_id, btn.rect)),
     );
     app.mouse.replace_open_actions(output.open_actions);
+    if pinned == PinnedRow::Prompt {
+        draw_pinned_prompt(frame, area, app);
+    }
+}
+
+/// Draw the current turn's prompt on the row reserved above the log.
+///
+/// One row only, so a multi-line prompt is flattened: the first line is kept
+/// and the rest is elided. The `💬` prefix the log row carries is dropped — the
+/// header already reads as the reader's own words, and the glyph would cost two
+/// columns of a line that is short by definition.
+fn draw_pinned_prompt(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(rows) = current_prompt_rows(app) else {
+        return;
+    };
+    let raw = app.log.items[*rows.start()].raw.trim_start();
+    let raw = raw.strip_prefix('💬').unwrap_or(raw).trim_start();
+    if raw.is_empty() {
+        return;
+    }
+
+    let theme = app.theme;
+    let width = area.width.saturating_sub(3) as usize; // borders + leading space
+    // `> ` costs two columns of the row, so the text gets what is left.
+    let text = elide_to_width(raw, width.saturating_sub(2));
+    let line = Line::from(vec![
+        Span::styled("> ", Style::default().fg(theme.accent)),
+        Span::styled(text, Style::default().fg(theme.fg)),
+    ]);
+    frame.render_widget(
+        ratatui::widgets::Paragraph::new(line),
+        Rect::new(area.x + 1, area.y + 1, area.width.saturating_sub(2), 1),
+    );
+}
+
+/// Truncate `text` to `max` display columns, ending with `…` when it does not
+/// fit. Counts display width, not chars, so a CJK prompt does not overflow.
+fn elide_to_width(text: &str, max: usize) -> String {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+    if max == 0 {
+        return String::new();
+    }
+    if text.width() <= max {
+        return text.to_string();
+    }
+    let budget = max.saturating_sub(1); // the ellipsis
+    let mut used = 0;
+    let mut out = String::new();
+    for ch in text.chars() {
+        let w = ch.width().unwrap_or(0);
+        if used + w > budget {
+            break;
+        }
+        used += w;
+        out.push(ch);
+    }
+    out.push('…');
+    out
 }
 
 /// Phase 0-2: rebuild the scroll/layout caches (mutable). Runs once per frame
@@ -111,7 +318,12 @@ fn prepare_log_frame(
     area: Rect,
     borders: Borders,
     reserve: u16,
+    pinned: PinnedRow,
     fold: &crate::render::fold::FoldLayout,
+    fold_commentary: bool,
+    tool_rows: &[(usize, usize)],
+    card_rows: &[(usize, usize)],
+    covered_runs: &std::collections::BTreeSet<usize>,
 ) {
     let top = u16::from(borders.contains(Borders::TOP));
     let bottom = u16::from(borders.contains(Borders::BOTTOM));
@@ -129,7 +341,17 @@ fn prepare_log_frame(
     // `reserve` is the live stats line's row: it is *inside* the box, on the
     // content area's last row, so it comes out of the scrollable height while
     // the border stays where it is.
-    log_scroll.height = area.height.saturating_sub(top + bottom + reserve);
+    log_scroll.height = area
+        .height
+        .saturating_sub(top + bottom + reserve + pinned.rows());
+    // Published before anything draws: the pointer path reads this to map a
+    // click back to a log row, so it must already be set by the time the next
+    // event arrives.
+    log_scroll.pinned_top_inset = if borders.contains(Borders::TOP) {
+        pinned.rows()
+    } else {
+        0
+    };
     let visible_height = log_scroll.height as usize;
     // 两行做两件事：
     // 和 `height` 同样的 `saturating_sub`：
@@ -149,6 +371,29 @@ fn prepare_log_frame(
     let indices_stale = log_scroll.visible_indices_ver != log.items.len()
         || log_scroll.visible_indices_fold_rev != fold.rev;
     if indices_stale {
+        // The fold rules ask this once per row per frame; scanning `raw` for the
+        // turn separator each time would cost more than the rebuild.
+        // Cached for `RenderCtx`: the pure renderer asks once per row per frame,
+        // and the builder needs the card-owned rows that this pass already has.
+        log_scroll.commentary_runs = if !fold_commentary {
+            Vec::new()
+        } else {
+            let mut owned = std::collections::BTreeSet::new();
+            for &(phys, rows) in tool_rows.iter().chain(card_rows.iter()) {
+                owned.extend(phys..phys + rows);
+            }
+            agent_tui_kit::state::activity_region::commentary_runs(&log.items, |phys| {
+                owned.contains(&phys)
+            })
+        };
+        log_scroll.runs_covered_by_region = covered_runs.clone();
+        log_scroll.turn_boundary_rows = (0..log.items.len())
+            .filter(|&phys| {
+                let item = &log.items[phys];
+                super::cells::separator::is_task_end_separator(&item.raw)
+                    || (item.raw.is_empty() && item.kind.is_user())
+            })
+            .collect();
         log_scroll.visible_indices.clear();
         log_scroll.phys_to_logical_cache.clear();
         log_scroll
@@ -313,11 +558,14 @@ fn prepare_log_frame(
             // matches what will be drawn.
             let wrapped_rows = wrapped.len();
             if let Some(&phys_idx) = log_scroll.visible_indices.get(logical_i)
-                && let Some(run) = fold.folded_run_at(phys_idx)
+                && let Some(rows) = fold.folded_rows_at(phys_idx)
             {
+                // A folded fold — a tool run or a mixed activity region — is one
+                // logical row whose summary cell paints over it. Reserving its
+                // height here keeps the prefix sum matching what will be drawn.
                 log_scroll
                     .visual_cache
-                    .extend(std::iter::repeat_n(Line::default(), run.folded_rows));
+                    .extend(std::iter::repeat_n(Line::default(), rows));
             } else {
                 let _ = wrapped_rows;
                 log_scroll.visual_cache.extend(wrapped);

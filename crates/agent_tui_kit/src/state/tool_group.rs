@@ -47,31 +47,12 @@ impl ToolRun {
 /// member has one the total is `None`, because a fabricated zero would read as
 /// "instantaneous".
 pub fn total_span(blocks: &[ToolBlock], run: &ToolRun) -> Option<Duration> {
-    let mut spans: Vec<ToolSpan> = run
+    let spans: Vec<ToolSpan> = run
         .members
         .iter()
         .filter_map(|&index| blocks.get(index)?.span)
         .collect();
-    if spans.is_empty() {
-        return None;
-    }
-    spans.sort_by_key(|span| span.started_at);
-
-    let mut total = Duration::ZERO;
-    let mut current_start = spans[0].started_at;
-    let mut current_end = spans[0].finished_at;
-    for span in &spans[1..] {
-        if span.started_at <= current_end {
-            // Overlaps (or touches) the interval being accumulated.
-            current_end = current_end.max(span.finished_at);
-        } else {
-            total += current_end.saturating_duration_since(current_start);
-            current_start = span.started_at;
-            current_end = span.finished_at;
-        }
-    }
-    total += current_end.saturating_duration_since(current_start);
-    Some(total)
+    super::tool_state::unioned_span(&spans)
 }
 
 /// Runs of blocks that sit back to back in the log.
@@ -109,7 +90,7 @@ pub fn runs(blocks: &[ToolBlock]) -> Vec<ToolRun> {
 
 /// What a folded run says about itself.
 ///
-/// The titles are per-call (`"3. 📖  Read  src/app.rs"`), so the summary first
+/// The titles are per-call (`"3. 📖 Read  src/app.rs"`), so the summary first
 /// drops the step ordinal and the argument, then counts the remaining labels.
 /// Repeating `Read ×3` once is the point of folding — three paths on three rows
 /// say less than "three reads".
@@ -133,27 +114,36 @@ pub struct FoldSummary {
 /// `elapsed` is the run's wall clock ([`total_span`]); it is carried beside the
 /// line rather than folded into it, so a caller with no clock still gets the
 /// same text.
-pub fn summarize(members: &[(ToolPhase, &str)], elapsed: Option<Duration>) -> FoldSummary {
+pub fn summarize(
+    members: &[(ToolPhase, &str)],
+    elapsed: Option<Duration>,
+    msgs: &crate::i18n::Messages,
+) -> FoldSummary {
     let failures = members
         .iter()
         .filter(|(phase, _)| phase.is_failure())
         .count();
     FoldSummary {
-        text: fold_summary(
-            &members.iter().map(|(_, title)| *title).collect::<Vec<_>>(),
-            failures,
-        ),
+        text: tools_summary(members, failures, msgs),
         elapsed,
         failures,
     }
 }
 
-/// `"5 tools · 2 failed · Read ×3 · Bash"` — the failure count comes right
-/// after the total so a fold can never hide one behind the tool labels.
-fn fold_summary(titles: &[&str], failures: usize) -> String {
+/// `"5 tools · 2 failed · Read ×3 · Bash"` — the tool half of a fold line.
+///
+/// Exposed so an activity region ([`super::activity_region`]) can put its own
+/// thought count in front of the same labels instead of growing a second copy
+/// of the counting rule.
+pub fn tools_summary(
+    titles: &[(ToolPhase, &str)],
+    failures: usize,
+    msgs: &crate::i18n::Messages,
+) -> String {
+    let titles = titles.iter().map(|(_, title)| *title).collect::<Vec<_>>();
     let mut labels: Vec<String> = Vec::with_capacity(titles.len());
     let mut counts: Vec<usize> = Vec::with_capacity(titles.len());
-    for title in titles {
+    for title in &titles {
         let label = tool_label(title);
         match labels.iter().position(|known| known == &label) {
             Some(index) => counts[index] += 1,
@@ -163,15 +153,29 @@ fn fold_summary(titles: &[&str], failures: usize) -> String {
             }
         }
     }
-    let mut text = format!("{} tools", titles.len());
+    let count_tmpl = if titles.len() == 1 {
+        msgs.fold_tools_one
+    } else {
+        msgs.fold_tools
+    };
+    let mut text = count_tmpl.replacen("{}", &titles.len().to_string(), 1);
     if failures > 0 {
-        text.push_str(&format!(" · {failures} failed"));
+        text.push_str(msgs.fold_sep);
+        text.push_str(&msgs.fold_failed.replacen("{}", &failures.to_string(), 1));
     }
     for (label, count) in labels.iter().zip(&counts) {
-        text.push_str(" · ");
-        text.push_str(label);
+        text.push_str(msgs.fold_sep);
         if *count > 1 {
-            text.push_str(&format!(" ×{count}"));
+            // Both the label and the count live in the template: `×` is a
+            // glyph, but which side of the label it sits on is a language
+            // decision.
+            let marked =
+                msgs.fold_repeat
+                    .replacen("{}", label, 1)
+                    .replacen("{}", &count.to_string(), 1);
+            text.push_str(&marked);
+        } else {
+            text.push_str(label);
         }
     }
     text
@@ -180,21 +184,45 @@ fn fold_summary(titles: &[&str], failures: usize) -> String {
 /// The tool label inside a title row, with the step ordinal and the argument
 /// removed.
 ///
-/// A title is built as `"<ordinal>. <glyph> <Name>  <argument>"` — note the
-/// argument is separated by two spaces while the glyph and the name are not, so
-/// the argument starts at the **last** double-space run, not the first. A title
-/// without an ordinal (the subagent popup builds its own) and a title without an
-/// argument both fall back to what is actually there rather than printing an
-/// empty label.
+/// [`ToolWidget::title_text`] builds the title as `"<label>  <argument>"`,
+/// optionally prefixed with `"<n>. "`. The label itself is a display name such
+/// as `"📖 Read"` or `"$ Bash"` and never contains a double space, so the *first*
+/// double-space run is the separator. Splitting at the last one stripped the
+/// wrong thing whenever the argument contained one — `bash` passes its command
+/// through here, and `echo "a  b"` reduced the label to `"$ Bash echo 'a"`.
+///
+/// Two shapes reach here, because [`ToolWidget::title_text`] has two:
+///
+/// - `<label>  <argument>` — the `Command`/file/`_` arms separate with a double
+///   space.
+/// - `<label> · <argument>` — the `Subagent`, `Sleep` and `Task` arms separate
+///   with a middle dot. The `Task` arm is the loud one: it passes the whole
+///   `# Task · create · subject: …` summary through, so a label split that only
+///   knew about double spaces produced a folded row reading
+///   `# Task · create · subject: …` four times over.
+///
+/// The double-space rule stays *first*: a `Task` subject can itself contain
+/// `·`, and the dot rule must not fire before the separator the shape actually
+/// uses. Both fall back to the whole string when there is no separator, so a
+/// title without an argument never prints an empty label.
 fn tool_label(title: &str) -> String {
     let without_ordinal = match title.split_once(". ") {
         Some((ordinal, rest)) if ordinal.chars().all(|c| c.is_ascii_digit()) => rest,
         _ => title,
     };
-    match without_ordinal.rsplit_once("  ") {
-        Some((label, _argument)) if !label.trim().is_empty() => normalize_spaces(label),
-        _ => normalize_spaces(without_ordinal),
+    if let Some((label, _argument)) = without_ordinal.split_once("  ")
+        && !label.trim().is_empty()
+    {
+        return normalize_spaces(label);
     }
+    // The middle-dot shape. Split at the *first* ` · `: everything after it is
+    // the argument, and a label never contains one.
+    if let Some((label, _argument)) = without_ordinal.split_once(" · ")
+        && !label.trim().is_empty()
+    {
+        return normalize_spaces(label);
+    }
+    normalize_spaces(without_ordinal)
 }
 
 /// Collapse runs of spaces to one, so `"📖  Read"` and `"$ Bash"` read alike.
@@ -308,9 +336,16 @@ impl ToolState {
     /// answered for **every** logical row on every frame. Checking the cheap
     /// case first keeps a fold from turning the render loop quadratic: `runs`
     /// walks every block, and the log redraws each line.
+    ///
+    /// `covers_run` answers "does a mixed activity region stand for this run?".
+    /// A run inside a region folds with that region — an independent summary
+    /// would paint a second row for a stretch the region already stands for,
+    /// and expanding one would leave the other's summary lying across its
+    /// members.
     pub fn fold_summary(
         &self,
         phys_idx: usize,
+        covers_run: impl Fn(usize) -> bool,
         theme: &crate::theme::Theme,
         msgs: &crate::i18n::Messages,
     ) -> Option<crate::render::cells::tool_run::ToolRunCell> {
@@ -318,9 +353,11 @@ impl ToolState {
             return None;
         }
         let found = runs(&self.blocks);
-        let run = found
-            .into_iter()
-            .find(|run| run.phys_idx == phys_idx && is_folded(&self.blocks, run, self))?;
+        let run = found.into_iter().find(|run| {
+            run.phys_idx == phys_idx
+                && is_folded(&self.blocks, run, self)
+                && !covers_run(run.phys_idx)
+        })?;
         let key = run_key(&self.blocks, &run)?.to_string();
         let members = run
             .members
@@ -442,12 +479,199 @@ impl ToolState {
         }
         run_key(&self.blocks, run).map(str::to_string)
     }
+
+    // ── Activity regions (thinking cards + tool blocks) ──────────────
+    //
+    // A run of adjacent tool blocks folds through `runs` above. A run that also
+    // holds a finished thinking card folds through `activity_region`, because
+    // the row it stands for has to count both halves. The two are kept apart on
+    // purpose: a tool-only run's summary names each tool, which a region's
+    // `N tools` could not.
+
+    /// Every activity region in the log, given its finished thinking cards and
+    /// the log's narration runs.
+    ///
+    /// This is the **only** way in: a commentary-less variant existed and was
+    /// deleted, because two ways to derive the regions is exactly how the click
+    /// path and the renderer came to disagree about which region a row belongs
+    /// to. `thinking` is `ThinkingState::blocks`; the live card is not a
+    /// member. `narration` empty reproduces the pre-`fold_commentary` shape.
+    ///
+    /// The host passes `narration` when `[ui] fold_commentary` is on; an empty slice
+    /// gives the pre-switch shape, where narration kept its own rows.
+    pub fn activity_regions(
+        &self,
+        thinking: &crate::state::thinking::ThinkingState,
+        commentary: &[crate::state::activity_region::CommentaryRun],
+        is_turn_boundary: impl Fn(usize) -> bool,
+    ) -> Vec<crate::state::activity_region::ActivityRegion> {
+        crate::state::activity_region::regions_with_commentary(
+            &thinking.blocks,
+            &self.blocks,
+            commentary,
+            is_turn_boundary,
+        )
+    }
+
+    /// Whether an activity region can start at `phys_idx`.
+    ///
+    /// The renderer asks this for every visible row before deriving the whole
+    /// region set, so the cheap "nothing starts here" case stays cheap.
+    fn region_may_start_at(
+        &self,
+        thinking: &crate::state::thinking::ThinkingState,
+        commentary: &[crate::state::activity_region::CommentaryRun],
+        phys_idx: usize,
+    ) -> bool {
+        self.blocks.iter().any(|block| block.phys_idx == phys_idx)
+            || thinking
+                .blocks
+                .iter()
+                .any(|block| block.phys_idx == phys_idx)
+            || commentary.iter().any(|run| run.phys_idx == phys_idx)
+    }
+
+    /// The folded summary cell for a **mixed** activity region whose first
+    /// member sits at `phys_idx`, if that region is folded right now.
+    ///
+    /// The region twin of [`Self::fold_summary`], with the same cheap-first
+    /// shape: the common case is "no region starts here", asked for every
+    /// logical row on every frame.
+    ///
+    /// `is_turn_boundary` comes from the host's log: a region must never span
+    /// two turns, and only the host can say where a turn ended.
+    pub fn region_fold_summary(
+        &self,
+        thinking: &crate::state::thinking::ThinkingState,
+        commentary: &[crate::state::activity_region::CommentaryRun],
+        phys_idx: usize,
+        is_turn_boundary: impl Fn(usize) -> bool,
+        theme: &crate::theme::Theme,
+        msgs: &crate::i18n::Messages,
+    ) -> Option<crate::render::cells::activity_region::ActivityRegionCell> {
+        // A region can start at a narration row, which is in neither `blocks`
+        // slice — so the cheap "nothing starts here" check has to include the
+        // commentary runs too, or a narration-headed region never gets drawn.
+        if !self.region_may_start_at(thinking, commentary, phys_idx) {
+            return None;
+        }
+        let found = self.activity_regions(thinking, commentary, is_turn_boundary);
+        let index = crate::state::activity_region::region_at_phys(&found, phys_idx)?;
+        let region = &found[index];
+        if region.phys_idx != phys_idx
+            || !crate::state::activity_region::is_folded(
+                &self.blocks,
+                region,
+                &self.folded_regions,
+                &self.unfolded_regions,
+            )
+        {
+            return None;
+        }
+        let titles: Vec<(crate::widgets::tool_widget::ToolPhase, String)> = region
+            .members
+            .iter()
+            .filter(|member| member.kind == crate::state::activity_region::RegionMemberKind::Tool)
+            .filter_map(|member| self.blocks.get(member.index))
+            .map(|block| (block.output.phase, block.output.title_raw.clone()))
+            .collect();
+        let elapsed =
+            crate::state::activity_region::total_span(&thinking.blocks, &self.blocks, region);
+        Some(
+            crate::render::cells::activity_region::ActivityRegionCell::new(
+                region,
+                region.thoughts(),
+                region.commentary(),
+                titles,
+                elapsed,
+                true,
+                theme,
+                msgs,
+            ),
+        )
+    }
+
+    /// Flip one region, recording the reader's choice in the set that differs
+    /// from the state they are leaving.
+    ///
+    /// The default (a mixed region folds) never has to be stored: opening a
+    /// region lands it in `unfolded_regions`, and folding it back drops out of
+    /// that set. `folded_regions` is the mirror case.
+    pub fn toggle_region(
+        &mut self,
+        region: &crate::state::activity_region::ActivityRegion,
+    ) -> bool {
+        let key = region.key.clone();
+        let now_folded = crate::state::activity_region::is_folded(
+            &self.blocks,
+            region,
+            &self.folded_regions,
+            &self.unfolded_regions,
+        );
+        if now_folded {
+            self.folded_regions.remove(&key);
+            self.unfolded_regions.insert(key);
+        } else {
+            self.unfolded_regions.remove(&key);
+            self.folded_regions.insert(key);
+        }
+        self.fold_rev = self.fold_rev.wrapping_add(1);
+        true
+    }
+
+    /// The identity of the region whose **first** member sits at `phys_idx`,
+    /// when that region is drawn expanded right now.
+    ///
+    /// The mirror of [`Self::expanded_run_head_at`] for a region: expanding
+    /// replaces the summary row with the members, so the first member's own row
+    /// takes the control back.
+    ///
+    /// `commentary` must be the same runs the fold was built from. Deriving the
+    /// regions without them yields a *different* set — a narration-headed region
+    /// only exists when the runs are passed — and the control would be missing
+    /// exactly where the fold drew a summary for it.
+    pub fn expanded_region_head_at(
+        &self,
+        thinking: &crate::state::thinking::ThinkingState,
+        commentary: &[crate::state::activity_region::CommentaryRun],
+        is_turn_boundary: impl Fn(usize) -> bool,
+        phys_idx: usize,
+    ) -> Option<String> {
+        if !self.region_may_start_at(thinking, commentary, phys_idx) {
+            return None;
+        }
+        let found = self.activity_regions(thinking, commentary, is_turn_boundary);
+        let index = crate::state::activity_region::region_at_phys(&found, phys_idx)?;
+        let region = &found[index];
+        // A tool-only region is not a region here: the run below owns that row,
+        // and handing its key back would leave the run with no control at all.
+        // `folds_here` is the region/run split the fold itself uses — not
+        // `mixes_thinking_and_tools`, which misses a narration-headed region and
+        // would leave it open with no way to close it.
+        if !region.folds_here()
+            || region.phys_idx != phys_idx
+            || crate::state::activity_region::is_folded(
+                &self.blocks,
+                region,
+                &self.folded_regions,
+                &self.unfolded_regions,
+            )
+        {
+            return None;
+        }
+        Some(region.key.clone())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widgets::tool_widget::{ToolLayout, ToolPhase, ToolRenderOutput, tool_visual_rows};
+    use crate::widgets::tool_widget::{ToolLayout, ToolPhase, ToolRenderOutput};
+
+    /// The English locale, so a summary's wording is pinned in one place.
+    fn msgs() -> crate::i18n::Messages {
+        crate::i18n::Messages::by_language(crate::i18n::Language::English)
+    }
     use std::time::Instant;
 
     /// A block whose layout reserves `rows` visual rows and draws no card.
@@ -477,7 +701,6 @@ mod tests {
                 arg_summary: tool_id.to_string(),
                 arg_full: String::new(),
                 layout: ToolLayout {
-                    visual_rows: tool_visual_rows(false, 0, 0, false),
                     preview_lines: 0,
                     has_detail_card: false,
                     detail_collapsed: false,
@@ -499,13 +722,13 @@ mod tests {
     #[test]
     fn a_summary_counts_repeated_tools_once() {
         let members = [
-            (ToolPhase::Success, "1. 📖  Read  src/main.rs"),
-            (ToolPhase::Success, "2. 📖  Read  src/lib.rs"),
-            (ToolPhase::Success, "3. 📖  Read  src/app.rs"),
+            (ToolPhase::Success, "1. 📖 Read  src/main.rs"),
+            (ToolPhase::Success, "2. 📖 Read  src/lib.rs"),
+            (ToolPhase::Success, "3. 📖 Read  src/app.rs"),
             (ToolPhase::Success, "4. $ Bash  cargo test"),
             (ToolPhase::Success, "5. Grep  fn main"),
         ];
-        let summary = summarize(&members, None);
+        let summary = summarize(&members, None, &msgs());
         assert_eq!(
             summary.text, "5 tools · 📖 Read ×3 · $ Bash · Grep",
             "repeated tools must collapse to one counted label"
@@ -516,11 +739,11 @@ mod tests {
     #[test]
     fn a_failure_is_counted_in_the_summary_not_hidden_by_it() {
         let members = [
-            (ToolPhase::Success, "1. 📖  Read  a.rs"),
+            (ToolPhase::Success, "1. 📖 Read  a.rs"),
             (ToolPhase::Failed, "2. $ Bash  cargo test"),
             (ToolPhase::Cancelled, "3. $ Bash  cargo build"),
         ];
-        let summary = summarize(&members, None);
+        let summary = summarize(&members, None, &msgs());
         assert_eq!(summary.failures, 2, "failed and cancelled both count");
         assert!(
             summary.text.contains("2 failed"),
@@ -532,12 +755,72 @@ mod tests {
     #[test]
     fn a_summary_survives_titles_without_an_ordinal_or_an_argument() {
         assert_eq!(
-            summarize(&[(ToolPhase::Success, "Bash")], None).text,
-            "1 tools · Bash"
+            summarize(&[(ToolPhase::Success, "Bash")], None, &msgs()).text,
+            "1 tool · Bash",
+            "one call takes the singular form"
         );
         assert_eq!(
-            summarize(&[(ToolPhase::Success, "1. Bash")], None).text,
-            "1 tools · Bash"
+            summarize(&[(ToolPhase::Success, "1. Bash")], None, &msgs()).text,
+            "1 tool · Bash"
+        );
+    }
+
+    #[test]
+    fn the_tool_half_of_a_fold_line_is_reusable() {
+        let members = [
+            (ToolPhase::Success, "1. 📖 Read  a.rs"),
+            (ToolPhase::Failed, "2. $ Bash  false"),
+        ];
+        assert_eq!(
+            tools_summary(&members, 1, &msgs()),
+            "2 tools · 1 failed · 📖 Read · $ Bash"
+        );
+    }
+
+    /// A command whose own text contains a double space must not leak into the
+    /// label.
+    ///
+    /// The label is separated from the argument by the *first* double space. When
+    /// this split at the last one instead, `bash` — which passes its whole
+    /// command as the argument — produced a label like `"$ Bash echo 'a"` and the
+    /// folded summary printed the command instead of the tool.
+    #[test]
+    fn an_argument_with_a_double_space_does_not_become_the_label() {
+        assert_eq!(tool_label("$ Bash  echo 'a  b' && ls"), "$ Bash");
+        assert_eq!(tool_label("1. $ Bash  echo 'a  b' && ls"), "$ Bash");
+        assert_eq!(
+            tool_label("$ Bash  cd /repo && echo '=== x ===' && grep -n \"pub fn \\\" | head"),
+            "$ Bash"
+        );
+        // The label itself keeps its own single space.
+        assert_eq!(tool_label("📖 Read  src/main.rs"), "📖 Read");
+    }
+
+    /// The fixtures above are hand-written; this one derives the title the way
+    /// the widget does, so a change to the separator cannot pass unnoticed.
+    #[test]
+    fn a_summary_reads_labels_from_real_widget_titles() {
+        use crate::widgets::tool_widget::{ToolPhase as WidgetPhase, ToolWidget};
+
+        let read = ToolWidget::new()
+            .with_tool("read_file")
+            .with_arg_summary("src/main.rs")
+            .with_phase(WidgetPhase::Success)
+            .build();
+        let bash = ToolWidget::new()
+            .with_tool("bash")
+            .with_arg_summary("echo 'a  b' && ls")
+            .with_phase(WidgetPhase::Success)
+            .build();
+
+        let members = [
+            (ToolPhase::Success, read.title_raw.as_str()),
+            (ToolPhase::Success, bash.title_raw.as_str()),
+        ];
+        assert_eq!(
+            tools_summary(&members, 0, &msgs()),
+            "2 tools · 📖 Read · $ Bash",
+            "a real bash title must fold to `$ Bash`, not to its command"
         );
     }
 
@@ -706,5 +989,147 @@ mod tests {
         assert_eq!(found.len(), 2);
         assert_eq!(found[0].members, vec![0, 1]);
         assert_eq!(found[1].members, vec![2, 3]);
+    }
+
+    /// Four `Task` calls fold into `# Task ×4`, not four long subjects.
+    ///
+    /// This is the reported symptom end to end: the screenshot's summary row
+    /// read `# Task · create · subject: … · # Task · create · subject: …` and
+    /// overflowed the panel. The label is what a folded row is *for* — one
+    /// glance at what ran — so it must be the tool, never its argument.
+    #[test]
+    fn task_calls_collapse_into_one_label_instead_of_four_subjects() {
+        let msgs = crate::i18n::Messages::by_language(crate::i18n::Language::Chinese);
+        let titles = [
+            (
+                ToolPhase::Success,
+                "# Task · create · subject: S5: 示例值与默认值一致",
+            ),
+            (
+                ToolPhase::Success,
+                "# Task · create · subject: Std1: book/21 补 fold_commentary",
+            ),
+            (
+                ToolPhase::Success,
+                "# Task · create · subject: S1: 固定行只在当前回合",
+            ),
+        ];
+        let summary = tools_summary(&titles, 0, &msgs);
+
+        assert!(
+            summary.contains("# Task"),
+            "the label must survive the fold: {summary}"
+        );
+        assert_eq!(
+            summary.matches("# Task").count(),
+            1,
+            "the three calls share one label and a count, not one label each: {summary}"
+        );
+        assert!(
+            !summary.contains("subject:"),
+            "a folded row must not carry the argument: {summary}"
+        );
+    }
+
+    /// The reported bug: a `Task` tool's fold label swallowed the whole row.
+    #[test]
+    fn a_task_title_that_carries_no_double_space_still_yields_its_label() {
+        // `title_text`'s Task arm returns `arg_summary` verbatim, and that
+        // summary is `# Task · create · subject: …` — `·`-joined, no double
+        // space. Splitting on a double space finds nothing, so the label became
+        // the entire string and the folded summary printed four task subjects.
+        assert_eq!(
+            tool_label("# Task · create · subject: S5: config.example.toml"),
+            "# Task"
+        );
+        assert_eq!(tool_label("📋 Task · update · subject: fix it"), "📋 Task");
+        // The shape `ToolWidget` actually emits for a task: the id sits inside
+        // the label, so the label keeps it.
+        assert_eq!(tool_label("# Task.1 · fix the popup"), "# Task.1");
+        assert_eq!(tool_label("1. # Task.7 · ship it"), "# Task.7");
+    }
+
+    /// Every `ToolVisualKind`'s title shape must reduce to its label.
+    ///
+    /// The `Task` bug was one instance of a general hazard: `title_text` has
+    /// **two** separators (double space, middle dot) and three kind-specific
+    /// arms that bypass the label prefix entirely. A kind whose separator
+    /// `tool_label` does not know folds into a row carrying its whole argument.
+    /// This walks every kind the formatter can produce, so the next arm added
+    /// to `title_text` has to answer this test.
+    #[test]
+    fn every_title_shape_reduces_to_its_label() {
+        // (emitted title, expected label) — one row per `title_text` arm.
+        let cases: &[(&str, &str)] = &[
+            // Command / file / `_`: `<label>  <argument>`.
+            ("$ Bash  cargo test", "$ Bash"),
+            ("📖 Read  src/main.rs", "📖 Read"),
+            ("✏️ Edit  src/lib.rs", "✏️ Edit"),
+            // Subagent: `Subagent · <summary>`.
+            ("Subagent · review the diff", "Subagent"),
+            // Sleep: `<label> · <duration or id>`.
+            ("💤 Sleep · 2.50s", "💤 Sleep"),
+            ("⏳ Wait Background · bg-3", "⏳ Wait Background"),
+            // Task: the argument *is* the human title.
+            ("# Task.1 · fix the popup", "# Task.1"),
+            // Ordinal prefix on any of the above.
+            ("1. $ Bash  cargo test", "$ Bash"),
+            ("2. 📖 Read  src/main.rs", "📖 Read"),
+            ("3. Subagent · review", "Subagent"),
+            ("4. # Task.7 · ship it", "# Task.7"),
+        ];
+
+        for (title, expected) in cases {
+            assert_eq!(
+                &tool_label(title),
+                expected,
+                "title {title:?} must fold down to its label"
+            );
+        }
+    }
+
+    /// A title with neither separator keeps whatever it has.
+    ///
+    /// The fallback matters for the subagent popup, which builds its own title
+    /// with no argument at all.
+    #[test]
+    fn a_title_without_a_separator_is_its_own_label() {
+        assert_eq!(tool_label("Subagent"), "Subagent");
+        assert_eq!(tool_label("💤 Sleep"), "💤 Sleep");
+        assert_eq!(tool_label("# Task.1"), "# Task.1");
+    }
+
+    /// End to end: a real `ToolWidget`'s own title, folded to its label.
+    ///
+    /// [`every_title_shape_reduces_to_its_label`] feeds `tool_label` strings I
+    /// wrote by hand. That only proves the splitter agrees with my reading of
+    /// `title_text`. This drives the widget itself, so a new arm (or a changed
+    /// separator) fails here even if the hand-written cases still pass.
+    #[test]
+    fn a_real_widgets_title_folds_to_its_label() {
+        use crate::widgets::tool_widget::ToolWidget;
+
+        // (tool name, argument summary, expected label)
+        let cases: &[(&str, &str, &str)] = &[
+            ("bash", "cargo test", "$ Bash"),
+            ("read_file", "src/main.rs", "📖 Read"),
+            ("edit_file", "src/lib.rs", "✏️ Edit"),
+            ("spawn_subagent", "review the diff", "Subagent"),
+            ("sleep", "2500", "💤 Sleep"),
+            ("task_create", "# Task.1 · fix the popup", "# Task.1"),
+        ];
+
+        for (tool, arg, expected) in cases {
+            let widget = ToolWidget::new()
+                .with_tool(*tool)
+                .with_arg_summary(*arg)
+                .with_phase(ToolPhase::Success);
+            let title = widget.title_text();
+            assert_eq!(
+                tool_label(&title),
+                *expected,
+                "tool {tool}: title {title:?} must fold to {expected:?}"
+            );
+        }
     }
 }

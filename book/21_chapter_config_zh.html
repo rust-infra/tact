@@ -449,6 +449,11 @@ href="./17_chapter_notify_zh.html">Ch 17 通知</a></td>
 href="./23_chapter_tui_zh.html">Ch 23 TUI</a></td>
 </tr>
 <tr>
+<td>回合中叙述的折叠开关</td>
+<td><code>ui.fold_commentary</code></td>
+<td><a href="./23_chapter_tui_zh.html">Ch 23 TUI</a></td>
+</tr>
+<tr>
 <td>调试</td>
 <td><code>tokio_console</code></td>
 <td><code>tact-ui</code> 的 <code>main()</code></td>
@@ -905,6 +910,11 @@ OpenAI-compatible 代理入口同时提供能读图与不能读图的 id"这种�
 的进度行与注入的上下文块；<strong>只影响显示</strong>，见下）</td>
 </tr>
 <tr>
+<td><code>ui.fold_commentary</code></td>
+<td><code>true</code></td>
+<td>—（是否把回合中的叙述折进活动区的摘要行；<strong>只影响显示</strong>，见下）</td>
+</tr>
+<tr>
 <td><code>ui.vision_image.compress</code></td>
 <td><code>true</code></td>
 <td>—（仅 token 体积；不启用 vision）</td>
@@ -982,6 +992,13 @@ hook 用 <code>/hooks</code>（或
 <code>[hooks]</code>），不是这个键。门设在<strong>行进入日志的那一刻</strong>（<code>App::append_hook_context_markdown</code>
 /
 <code>App::apply_hook_status</code>），不是在渲染层：日志的物理索引是选区、卡片、滚动锚点的键，一行"画的时候跳过"仍会占掉一个索引。同一原因，进度行的<strong>完成</strong>那一半也必须先看这个开关——否则它会给开头被跳过的行补上一行孤儿。</p>
+<p><code>ui.fold_commentary</code>（默认 <code>true</code>）决定回合中的
+<strong>叙述</strong>是否折进活动区的摘要行。开启时「思考 → 调用 → 叙述 →
+再调用」共用一行摘要（<code>2 thoughts · 3 tools · $ Bash</code>），与桌面端
+transcript 同形；关闭时每条「我先查一下」都保留自己的行。运行时用
+<code>/fold-commentary</code> 翻转，也可直接写文件。</p>
+<p><strong>只影响显示，且永不折答案。</strong> 被折的只有
+<code>Commentary</code> 阶段的正文；最终的<strong>回答</strong>始终单独成段。模型的输出不受影响，关掉它只是把已经收起的行重新铺开。</p>
 <h3
 id="agent--skill-根目录指令文件目录预算全文注入"><code>[agent]</code> —
 skill 根目录、指令文件、目录预算、全文注入</h3>

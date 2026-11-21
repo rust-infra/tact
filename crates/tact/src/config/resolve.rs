@@ -585,6 +585,7 @@ struct NonLlmSettings {
     language: String,
     vision_image: VisionImageSettings,
     hook_output: bool,
+    fold_commentary: bool,
     bash_timeout_secs: u64,
     bash_nice: i32,
     rtk_filter: bool,
@@ -693,6 +694,14 @@ fn resolve_non_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<
         .hook_output
         .unwrap_or(UiSettings::DEFAULT_HOOK_OUTPUT);
 
+    // Same contract: display only, so no CLI flag. Absent means folded, which
+    // matches the desktop transcript and the pre-switch log for turns that had
+    // no narration.
+    let fold_commentary = toml_cfg
+        .ui
+        .fold_commentary
+        .unwrap_or(UiSettings::DEFAULT_FOLD_COMMENTARY);
+
     let bash_timeout_secs = toml_cfg
         .tools
         .bash_timeout_secs
@@ -729,6 +738,7 @@ fn resolve_non_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<
         language,
         vision_image,
         hook_output,
+        fold_commentary,
         bash_timeout_secs,
         bash_nice,
         rtk_filter,
@@ -784,6 +794,7 @@ pub(super) fn resolve_non_llm_settings(
             language: non_llm.language,
             vision_image: non_llm.vision_image,
             hook_output: non_llm.hook_output,
+            fold_commentary: non_llm.fold_commentary,
         },
         tools: ToolSettings {
             bash_timeout_secs: non_llm.bash_timeout_secs,
@@ -1147,6 +1158,7 @@ pub(super) fn resolve_config(
             language: non_llm.language,
             vision_image: non_llm.vision_image,
             hook_output: non_llm.hook_output,
+            fold_commentary: non_llm.fold_commentary,
         },
         tools: ToolSettings {
             bash_timeout_secs: non_llm.bash_timeout_secs,

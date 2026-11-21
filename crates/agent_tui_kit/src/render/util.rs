@@ -12,6 +12,33 @@ pub const LOG_TOOL_INDENT: u16 = 4;
 /// Extra indent for rendered tool blocks (title + meta + detail card).
 pub const LOG_TOOL_BLOCK_INDENT: u16 = LOG_TOOL_INDENT + 4;
 
+/// Columns a fold control takes in the gutter **left of** a row's text.
+///
+/// A fold glyph never takes columns from the text: it sits in the indent gutter,
+/// two columns left of the block's text indent. Nothing moves when the fold
+/// flips — the glyph occupies the same cell in both states, and a folded
+/// summary's line starts at exactly the column an expanded head's title does.
+///
+/// Before this rule the two states disagreed: a summary drew `⏵` as the first
+/// characters *of its text* while an expanded head painted `⏷` two columns left
+/// of its title. The control therefore jumped sideways on every flip — by two
+/// columns for a tool run, and by eight for a thinking card, whose text indent
+/// differs from a tool block's in the first place.
+///
+/// The indent must leave room: [`fold_glyph_x`] saturates at 0, so a row that
+/// starts at the panel edge draws its glyph in the first two columns and its
+/// text right after — the degenerate case, still one place in both states.
+pub const FOLD_GUTTER_COLS: u16 = 2;
+
+/// The column a fold glyph goes in, given its row's text indent.
+///
+/// Two columns left of the text: [`FOLD_GUTTER_COLS`] back. Saturating, because
+/// a row at the panel edge has no gutter to spend.
+#[must_use]
+pub fn fold_glyph_x(text_indent: u16) -> u16 {
+    text_indent.saturating_sub(FOLD_GUTTER_COLS)
+}
+
 /// Truncate by Unicode scalar count, appending `…` when over `max_chars`.
 pub fn truncate_chars_with_ellipsis(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {

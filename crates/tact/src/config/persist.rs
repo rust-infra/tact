@@ -94,6 +94,17 @@ pub(super) fn update_ui_hook_output_in_toml(path: &Path, enabled: bool) -> anyho
     })
 }
 
+/// Set `ui.fold_commentary` in `path` and rewrite the file.
+///
+/// Same round trip as [`update_ui_hook_output_in_toml`]: a TOML boolean the
+/// `Option<bool>` field reads back.
+pub(super) fn update_ui_fold_commentary_in_toml(path: &Path, enabled: bool) -> anyhow::Result<()> {
+    update_toml(path, &["ui"], |t| {
+        set_scalar(t, "fold_commentary", enabled);
+        Ok(())
+    })
+}
+
 /// Set `agent.skill_disable` in `path` and rewrite the file.
 ///
 /// `names` is the whole list, not a delta — the key is replaced, so a partial

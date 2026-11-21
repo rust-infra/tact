@@ -43,9 +43,40 @@ pub struct RenderCtx<'a> {
     pub mermaid_blocks: &'a [MermaidBlock],
     pub tools: &'a ToolState,
     pub thinking: &'a ThinkingState,
+    /// Physical log rows that end a turn.
+    ///
+    /// An activity region folds cards and calls together, and two turns must
+    /// never share one summary. The rows that end a turn (the trailing
+    /// separator, a user message's leading gap) belong to the log, which the
+    /// kit does not own — so the host lists them here, and the fold rules ask
+    /// this set instead of guessing from adjacency alone.
+    ///
+    /// A set rather than a predicate: `RenderCtx` is a struct of borrows, and a
+    /// closure created per frame would have nowhere to live. The host rebuilds
+    /// it only when the log changes.
+    pub turn_boundary_rows: &'a std::collections::BTreeSet<usize>,
+    /// Runs of `LogItemKind::AssistantCommentary` rows in the log.
+    ///
+    /// Empty when `[ui] fold_commentary` is off, which restores the old shape:
+    /// narration keeps its own rows instead of sharing a region's summary.
+    pub commentary_runs: &'a [crate::state::activity_region::CommentaryRun],
+    /// First rows of tool runs that a mixed activity region already stands for.
+    ///
+    /// Such a run must not also draw its own summary: one stretch of work gets
+    /// one summary, and an expanded region would otherwise leave the run's
+    /// summary lying across its members.
+    pub runs_covered_by_region: &'a std::collections::BTreeSet<usize>,
     pub stream: &'a StreamState,
     pub mouse: &'a MouseState,
     pub skills_data: &'a [SkillEntry],
+    /// Rows the host reserved above the first log row, inside the panel's top
+    /// border (currently 0 or 1: a pinned prompt header).
+    ///
+    /// The host shrinks `log_scroll.height` by the same amount, so the viewport
+    /// and this offset must agree. It exists because the first log row is then
+    /// *not* the content area's first row, and every drawn cell and hit rect
+    /// has to start one row lower.
+    pub log_top_inset: u16,
     /// Loading placeholder row index, if present.
     pub loading_idx: Option<usize>,
     /// Animation tick: advances once per painted frame in an active state.

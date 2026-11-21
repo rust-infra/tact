@@ -161,6 +161,11 @@ impl App {
             // Shown by default: the switch exists to silence a noisy hook, so
             // a fresh install (and every test) behaves as it did before it.
             hook_output: true,
+            // Matches the desktop transcript, which has always folded
+            // narration: a fresh install (and every test) reads one summary
+            // row per stretch of work.
+            fold_commentary: true,
+            streaming_message_start: None,
             flash_msg: None,
             copy_flash_at: None,
             undo_stack: Vec::new(),

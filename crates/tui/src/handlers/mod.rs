@@ -431,6 +431,10 @@ fn run_command(app: &mut App, command: SlashCommand) -> CommandExecOutcome {
             app.toggle_hook_output();
             CommandExecOutcome::handled()
         }
+        C::FoldCommentary => {
+            app.toggle_fold_commentary();
+            CommandExecOutcome::handled()
+        }
         C::Cancel => {
             // Only cancel an in-flight task; Idle and Done have nothing to
             // abort. Queued (pending) messages are NOT touched — dropping
@@ -483,6 +487,19 @@ fn run_command(app: &mut App, command: SlashCommand) -> CommandExecOutcome {
             } else {
                 let _ = app.user_cmd_tx.send(UserCommand::Compact);
             }
+            CommandExecOutcome::handled()
+        }
+        C::TryAgain => {
+            // A continuation, not a new instruction: submit the fixed prompt as
+            // a normal user turn. `submit_user_task` queues it when the agent is
+            // busy, so a turn that is merely wedged still gets it.
+            // The input box shows the prompt itself, so a reader can see and
+            // edit what is being sent.
+            skills::submit_user_task(
+                app,
+                tact_protocol::TRY_AGAIN_PROMPT.to_string(),
+                tact_protocol::TRY_AGAIN_PROMPT.to_string(),
+            );
             CommandExecOutcome::handled()
         }
         C::Balance => {
@@ -889,6 +906,63 @@ mod tests {
     fn run_skill_command(app: &mut App, sub: &str) -> super::CommandExecOutcome {
         app.input = format!("/skill {sub}");
         execute_palette_command(app, "skill")
+    }
+
+    /// `/try-again` submits the fixed continuation prompt as an ordinary user
+    /// turn, so the model sees it exactly as if the reader had typed it.
+    #[test]
+    fn try_again_submits_the_continuation_prompt() {
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
+        app.status = Status::Idle;
+
+        let outcome = execute_palette_command(&mut app, "try-again");
+
+        assert!(outcome.handled);
+        assert!(
+            matches!(
+                user_cmd_rx.try_recv().ok(),
+                Some(UserCommand::SubmitTask(text))
+                    if text == tact_protocol::TRY_AGAIN_PROMPT
+            ),
+            "the fixed prompt must be submitted verbatim"
+        );
+    }
+
+    /// The status bar's user-turn counter counts `/try-again` like any other
+    /// user turn: it is a real `SubmitTask`, and a reader resuming five times
+    /// wants to see five.
+    #[test]
+    fn try_again_counts_as_a_user_turn() {
+        let (mut app, _user_cmd_rx) = TestApp::new().into_commands();
+        app.status = Status::Idle;
+        let before = app.status_bar_mut().turn_user;
+
+        execute_palette_command(&mut app, "try-again");
+
+        assert_eq!(
+            app.status_bar_mut().turn_user,
+            before + 1,
+            "a resumed turn is still a user turn"
+        );
+    }
+
+    /// The agent may still be wedged on the turn that was cut short, so the
+    /// prompt must queue rather than be dropped.
+    #[test]
+    fn try_again_queues_while_the_agent_is_busy() {
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
+        app.status = Status::Executing {
+            current_step: 0,
+            total: 1,
+        };
+
+        execute_palette_command(&mut app, "try-again");
+
+        assert!(
+            user_cmd_rx.try_recv().is_err(),
+            "a busy agent must not receive the task immediately"
+        );
+        assert_eq!(app.pending_messages.len(), 1);
     }
 
     #[test]

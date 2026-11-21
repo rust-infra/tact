@@ -563,6 +563,32 @@ impl App {
             // ToolTranscriptStream → ToolComponent (the popup's in-flight
             // assistant text); no shell-side effect either.
             AgentUpdate::ToolTranscriptStream { .. } => {}
+            // The assistant message pair brackets the rows this message will
+            // occupy, so a `Commentary` label can be applied to them after the
+            // fact: the stream appends rows before the provider says what they
+            // are.
+            AgentUpdate::MessageStarted { .. } => {
+                self.streaming_message_start = Some(self.log.items.len());
+            }
+            AgentUpdate::MessageFinished { phase, .. } => {
+                // Commit the message's still-buffered tail **before**
+                // labelling it. The stream holds an unterminated last
+                // paragraph (`"text"` without its trailing blank line) in
+                // `stream.buffer` until something later flushes it, and the
+                // label below can only rewrite rows that already exist — a
+                // buffered tail used to land as plain `AssistantMarkdown`
+                // and never fold, which is the "narration sits above the
+                // folded run instead of inside it" shape of 2026-11-19.
+                //
+                // Skipped while a thinking card is still open: the flush
+                // closes the card, and `MessageFinished` is deliberately not a
+                // thinking-region end (see `ends_thinking_region`) — closing it
+                // here would cut one reasoning block into a card per message.
+                if self.thinking().active.is_none() {
+                    self.flush_stream_pending();
+                }
+                self.label_streaming_message(phase);
+            }
             AgentUpdate::TasksChanged { tasks, reason } => {
                 self.on_tasks_changed_tail(tasks, reason);
             }
@@ -579,8 +605,6 @@ impl App {
             | AgentUpdate::RunStarted { .. }
             | AgentUpdate::RunFinished { .. }
             | AgentUpdate::RunFailed { .. }
-            | AgentUpdate::MessageStarted { .. }
-            | AgentUpdate::MessageFinished { .. }
             | AgentUpdate::ToolMeta { .. }
             | AgentUpdate::StreamChunk(_)
             | AgentUpdate::SubagentsChanged { .. }
@@ -588,6 +612,43 @@ impl App {
             | AgentUpdate::SurfaceSnapshot { .. }
             | AgentUpdate::BackgroundTasksChanged { .. }
             | AgentUpdate::UiResponseRejected { .. } => {}
+        }
+    }
+
+    /// Re-label the rows a finished assistant message wrote.
+    ///
+    /// The stream appends rows as text arrives, before the provider says what
+    /// the text *is* — so the label has to be applied retroactively. Only
+    /// `Commentary` changes anything: `FinalAnswer` and `None` both leave the
+    /// rows as [`LogItemKind::AssistantMarkdown`], because a message that was
+    /// never labelled must not be folded away on a guess.
+    ///
+    /// Only prose rows are relabelled. A message can flush a code-card
+    /// placeholder, a table, or a gap row into the same range, and rewriting
+    /// those would change how they render.
+    fn label_streaming_message(&mut self, phase: Option<tact_protocol::MessagePhase>) {
+        let Some(start) = self.streaming_message_start.take() else {
+            return;
+        };
+        if phase != Some(tact_protocol::MessagePhase::Commentary) {
+            return;
+        }
+        let end = self.log.items.len();
+        if start >= end {
+            return;
+        }
+        let mut relabelled = false;
+        for item in self.log.items[start..end].iter_mut() {
+            if item.kind == agent_tui_kit::state::LogItemKind::AssistantMarkdown {
+                item.kind = agent_tui_kit::state::LogItemKind::AssistantCommentary;
+                relabelled = true;
+            }
+        }
+        // The kind decides the fold, and the fold keys the layout caches — so a
+        // relabel has to invalidate them the same way a fold toggle does.
+        if relabelled {
+            self.tools_mut().state_mut().fold_rev = self.tools().state().fold_rev.wrapping_add(1);
+            self.dirty = true;
         }
     }
 
@@ -799,8 +860,21 @@ impl App {
     fn on_step_failed_tail(&mut self) {
         // The card finalization (or Missing message) happened in the
         // component + apply_tool_events; the tail only keeps status in sync.
-        self.status = Status::Idle;
-        self.freeze_last_prompt_cost();
+        //
+        // **A failed tool does not end the turn.** The agent loop carries on
+        // after one step fails — it reports the failure to the model, which
+        // decides what to do next — so treating it as the turn's end froze the
+        // live stats row and the bottom bar's elapsed segment while the
+        // `✻ Thinking` spinner was still turning. The turn ends on
+        // `TaskComplete` / `TaskCancelled` / `TaskIdle`, not here.
+        //
+        // What this does have to do is leave a stale *busy* status: a step that
+        // was `Executing` with no further steps queued would otherwise keep the
+        // input box deferring messages forever. `Planning` is that state — the
+        // turn is in flight, the model is between steps.
+        if matches!(self.status, Status::Executing { .. }) {
+            self.status = Status::Planning;
+        }
     }
 
     /// Finalize a buffered stream code block — either closed by a fence inside
@@ -2293,14 +2367,24 @@ mod lifecycle_tests {
     }
 
     #[test]
-    fn step_failed_sets_idle() {
+    fn a_failed_step_does_not_end_the_turn() {
+        // The reported bug: after a tool failure the live stats row and the
+        // bottom bar's elapsed segment vanished while the turn was still
+        // running. `StepFailed` is one step's outcome — the loop continues —
+        // so the turn clock must survive it.
         let mut app = make_app();
+        app.status = Status::Executing {
+            current_step: 0,
+            total: 3,
+        };
+        app.task_start_time = Some(chrono::Local::now() - chrono::Duration::seconds(30));
         app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
             "read file",
             "read_file",
             "tool_read_1",
             HashMap::from([("path".to_string(), "missing.txt".to_string())]),
         )));
+
         app.handle_agent_update(AgentUpdate::StepFailed {
             idx: 0,
             run_id: None,
@@ -2308,7 +2392,99 @@ mod lifecycle_tests {
             arg_summary: String::new(),
             error: "file not found".into(),
         });
-        assert!(matches!(app.status, Status::Idle));
+
+        assert!(
+            app.task_start_time.is_some(),
+            "a failed step must not freeze the turn clock: the live stats row and \
+             the bottom bar's elapsed segment are driven by it"
+        );
+        assert!(
+            !matches!(app.status, Status::Idle),
+            "the agent loop runs on after a tool failure, so the TUI must stay \
+             busy, got {:?}",
+            app.status
+        );
+    }
+
+    #[test]
+    fn a_failed_step_leaves_executing_for_planning() {
+        // `Executing` would claim a step is in flight when none is; `Planning`
+        // says what is true — the turn is between steps, the model is thinking.
+        let mut app = make_app();
+        app.status = Status::Executing {
+            current_step: 0,
+            total: 1,
+        };
+
+        app.handle_agent_update(AgentUpdate::StepFailed {
+            idx: 0,
+            run_id: None,
+            tool_id: "t".into(),
+            arg_summary: String::new(),
+            error: "boom".into(),
+        });
+
+        assert!(matches!(app.status, Status::Planning));
+    }
+
+    #[test]
+    fn the_turn_ends_on_task_complete_not_on_a_failed_step() {
+        // The other half of the rule: the clock does eventually stop, and the
+        // frozen stats row is what shows it.
+        let mut app = make_app();
+        app.status = Status::Executing {
+            current_step: 0,
+            total: 1,
+        };
+        app.task_start_time = Some(chrono::Local::now() - chrono::Duration::seconds(12));
+
+        app.handle_agent_update(AgentUpdate::StepFailed {
+            idx: 0,
+            run_id: None,
+            tool_id: "t".into(),
+            arg_summary: String::new(),
+            error: "boom".into(),
+        });
+        assert!(app.task_start_time.is_some(), "still in flight");
+
+        app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
+
+        assert_eq!(
+            app.task_start_time, None,
+            "the turn's own end freezes the clock"
+        );
+        assert_eq!(app.last_prompt_elapsed_secs, Some(12));
+    }
+
+    #[test]
+    fn step_failed_still_finalizes_its_card() {
+        // The other half of the change: the *card* lifecycle is untouched. A
+        // failed tool moves out of `active` and keeps its row, only the turn is
+        // no longer declared over.
+        let mut app = make_app();
+        app.handle_agent_update(
+            StepCall::new(0, "tool_read_1", "read_file", "missing.txt")
+                .presentation(tact_protocol::ToolPresentationInfo::generic("read_file"))
+                .started(),
+        );
+        app.handle_agent_update(AgentUpdate::StepFailed {
+            idx: 0,
+            run_id: None,
+            tool_id: "tool_read_1".into(),
+            arg_summary: "missing.txt".into(),
+            error: "file not found".into(),
+        });
+
+        assert!(
+            app.tools_mut().active.is_empty(),
+            "the failed card moves out of `active` even though the turn continues"
+        );
+        let block = app.tools_mut().blocks.last().expect("failed tool block");
+        assert!(
+            block.output.title_raw.contains("missing.txt"),
+            "the failed card stays in the log, got: {:?}",
+            block.output.title_raw
+        );
     }
 
     #[test]

@@ -37,6 +37,13 @@ pub struct LogScroll {
     pub state: ScrollbarState,
     /// Panel height.
     pub height: u16,
+    /// Rows reserved above the first log row inside the panel's top border.
+    ///
+    /// Currently 0 or 1: the host pins the current turn's prompt there once it
+    /// scrolls out of view. `height` is already net of this, so the scrollable
+    /// viewport and the drawn rows agree; the pointer path adds it back when
+    /// mapping a row back to the log.
+    pub pinned_top_inset: u16,
     /// Last-known panel content width (set on render; used at table-build time
     /// so streamed tables are laid out to fit before the panel wraps them).
     pub width: u16,
@@ -64,6 +71,21 @@ pub struct LogScroll {
     /// this cache — a toggle would leave the old mapping and paint a stale
     /// frame.
     pub visible_indices_fold_rev: u64,
+    /// Physical rows that end a turn, rebuilt with the same invalidation key as
+    /// [`Self::visible_indices`].
+    ///
+    /// The fold rules need this to keep two turns out of one summary, and they
+    /// are asked once per row per frame, so the answer is computed when the log
+    /// changes rather than scanned out of `LogItem::raw` each time.
+    pub turn_boundary_rows: std::collections::BTreeSet<usize>,
+    /// Runs of narration rows, rebuilt with the same invalidation key.
+    ///
+    /// Empty while `[ui] fold_commentary` is off — the host clears it there, so
+    /// the fold rules see "no narration" and behaviour matches the old shape.
+    pub commentary_runs: Vec<crate::state::activity_region::CommentaryRun>,
+    /// First rows of tool runs a mixed region already stands for; see
+    /// [`crate::render::ctx::RenderCtx::runs_covered_by_region`].
+    pub runs_covered_by_region: std::collections::BTreeSet<usize>,
     /// Visible index cache: logical line → physical msg index.
     pub visible_indices: Vec<usize>,
     /// physical → logical reverse mapping cache (uses Option for invisible lines).
@@ -74,12 +96,16 @@ impl LogScroll {
     pub fn new() -> Self {
         Self {
             visual_top: 0,
+            pinned_top_inset: 0,
             follow: true,
             unseen: false,
             offset: 0,
             state: ScrollbarState::new(0),
             height: 10,
             width: 80,
+            turn_boundary_rows: std::collections::BTreeSet::new(),
+            commentary_runs: Vec::new(),
+            runs_covered_by_region: std::collections::BTreeSet::new(),
             visible_indices: Vec::new(),
             visual_start: Vec::new(),
             visual_cache: Vec::new(),

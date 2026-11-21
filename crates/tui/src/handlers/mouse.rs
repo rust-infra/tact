@@ -368,6 +368,47 @@ fn popup_text_hit(app: &App, column: u16, row: u16, clamp_vertical: bool) -> Opt
         .map(|hit_row| hit_row.hit(column))
 }
 
+/// Where a pointer landed inside the log panel.
+///
+/// The click path and the drag path used to each subtract `area.y + 1` and
+/// `area.x + 1` themselves. That is one assumption written twice: the moment
+/// the panel draws anything above the first log row (a pinned prompt), the two
+/// copies have to be corrected together or a click resolves one row off from
+/// what it looks like. Deriving both here keeps a single answer.
+struct LogHit {
+    /// The visual row the pointer is on, or `None` when it is below the drawn
+    /// viewport (the stats row and the bottom border own no log line).
+    visual_row: Option<usize>,
+    /// The visual row as computed, before the viewport check. Callers that
+    /// extend a selection past the edge still want it.
+    raw_visual_row: usize,
+    /// Column relative to the content area's left edge.
+    col: usize,
+}
+
+/// Resolve a pointer position against the log panel.
+///
+/// `area.y + 1` is the panel's top border. `log_scroll.pinned_top_inset` is any
+/// row the host reserved above the first log row — the render pass publishes it
+/// and shrinks `height` by the same amount, so adding it back here is what keeps
+/// a click on the row the reader is actually pointing at. A pointer landing on
+/// that reserved row yields no row at all: it is a header, not history.
+fn log_hit(app: &App, mouse: MouseEvent) -> LogHit {
+    let area = app.mouse.area(SurfaceId::Log);
+    let visual_base = app.log_viewport_top();
+    let inset = app.log_scroll.pinned_top_inset;
+    let row_offset = mouse.row.saturating_sub(area.y + 1);
+    let on_reserved_row = row_offset < inset;
+    let raw_visual_row = visual_base + row_offset.saturating_sub(inset) as usize;
+    let visual_row = (!on_reserved_row && !below_log_viewport(app, visual_base, raw_visual_row))
+        .then_some(raw_visual_row);
+    LogHit {
+        visual_row,
+        raw_visual_row,
+        col: mouse.column.saturating_sub(area.x + 1) as usize,
+    }
+}
+
 /// True when `visual_row` falls below the drawn log viewport.
 ///
 /// The Log panel's content area can be taller than the viewport: the live task
@@ -469,20 +510,14 @@ fn start_card_selection(app: &mut App, phys_idx: usize) {
 
 fn handle_log_click(app: &mut App, mouse: MouseEvent) {
     app.focused_panel = FocusedPanel::Log;
-    let visual_base = app.log_viewport_top();
-    let visual_row = visual_base
-        + mouse
-            .row
-            .saturating_sub(app.mouse.area(SurfaceId::Log).y + 1) as usize;
-    if below_log_viewport(app, visual_base, visual_row) {
+    let hit = log_hit(app, mouse);
+    let Some(visual_row) = hit.visual_row else {
         app.mouse.clear_log_selection();
         app.mouse.dragging_log = false;
         return;
-    }
+    };
     let line_idx = app.logical_from_visual(visual_row);
-    let col = mouse
-        .column
-        .saturating_sub(app.mouse.area(SurfaceId::Log).x + 1) as usize;
+    let col = hit.col;
 
     let now = std::time::Instant::now();
     let pos = (mouse.column, mouse.row);
@@ -686,22 +721,17 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
 
 fn handle_mouse_drag(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
     if app.mouse.dragging_log && hit.in_log {
-        let visual_base = app.log_viewport_top();
-        let visual_row = visual_base
-            + mouse
-                .row
-                .saturating_sub(app.mouse.area(SurfaceId::Log).y + 1) as usize;
-        if below_log_viewport(app, visual_base, visual_row) {
+        let log = log_hit(app, mouse);
+        if log.visual_row.is_none() {
             return;
         }
+        let visual_row = log.raw_visual_row;
         let line_idx = app.logical_from_visual(visual_row);
         if app.mouse.card_selection.is_some() {
             extend_card_selection(app, line_idx);
             return;
         }
-        let col = mouse
-            .column
-            .saturating_sub(app.mouse.area(SurfaceId::Log).x + 1) as usize;
+        let col = log.col;
         if line_idx < app.total_log_lines()
             && let Some((phys, byte)) = app.byte_offset_from_log_position(line_idx, visual_row, col)
         {
@@ -1864,6 +1894,22 @@ mod tests {
         panic!("{needle:?} is not drawn");
     }
 
+    /// Open the first activity region in the log, so its members draw again.
+    ///
+    /// A region that mixes a thinking card with a call folds by default; a test
+    /// that needs to see the members has to open it the way the reader would.
+    fn unfold_activity_region(app: &mut App) {
+        let regions = agent_tui_kit::state::activity_region::regions(
+            &app.thinking().state().blocks,
+            &app.tools().blocks,
+        );
+        let region = regions
+            .into_iter()
+            .find(|region| region.mixes_thinking_and_tools())
+            .expect("a mixed activity region");
+        assert!(app.toggle_region(region), "the region must be foldable");
+    }
+
     /// Does the legacy double-click path open the collapsed block's popup?
     fn double_click_opens(app: &mut App, column: u16, row: u16) -> bool {
         app.tools_mut().popup = None;
@@ -2081,6 +2127,13 @@ mod tests {
                 .finished(),
         );
         app.append_markdown("# Target Card\n");
+
+        // The card and the call beside it are one activity region now, so they
+        // start folded into a single summary row. This test is about selecting
+        // *across* the two cards, so open the region first: a hidden card has
+        // no row to start the drag on.
+        let _ = render_main_area_terminal(&mut app, 100, 60);
+        unfold_activity_region(&mut app);
 
         let terminal = render_main_area_terminal(&mut app, 100, 60);
         let buf = terminal.backend().buffer().clone();
@@ -2767,6 +2820,51 @@ mod tests {
             "a reserved row owns no log line"
         );
         assert!(!app.mouse.dragging_log);
+    }
+
+    /// With a pinned prompt header, the first log row is drawn one row lower —
+    /// so a click there must resolve to the same line as it would without the
+    /// header, and a click on the header itself must resolve to nothing.
+    #[test]
+    fn a_pinned_header_shifts_the_rows_a_click_resolves_to() {
+        let mut app = app_with_clickable_log();
+        app.add_system_message("first body row".into());
+        app.log_scroll.visual_start = vec![0, 1];
+        app.log_scroll.height = 4;
+
+        // Without a header: row 1 is the first log row.
+        handle_mouse_event(&mut app, mouse_down(1, 1));
+        let without = app.mouse.log_selection;
+
+        // With a one-row header reserved: the body now starts at row 2.
+        app.mouse.clear_log_selection();
+        app.log_scroll.pinned_top_inset = 1;
+
+        handle_mouse_event(&mut app, mouse_down(1, 1));
+        assert!(
+            app.mouse.log_selection.is_none(),
+            "the header row owns no log line, so a click there selects nothing"
+        );
+        assert!(!app.mouse.dragging_log, "and it starts no drag");
+
+        handle_mouse_event(&mut app, mouse_down(1, 2));
+        assert_eq!(
+            app.mouse.log_selection, without,
+            "the row after the header resolves to the line the header displaced"
+        );
+    }
+
+    /// The header only exists while the panel can spare the row.
+    #[test]
+    fn a_short_panel_does_not_reserve_a_header_row() {
+        let mut app = app_with_clickable_log();
+        app.add_system_message("hello".into());
+        // Too short: the body would lose the only row it has.
+        let _ = crate::render::test_harness::render_log_panel_text(&mut app, 40, 4);
+        assert_eq!(
+            app.log_scroll.pinned_top_inset, 0,
+            "a panel this short must spend its rows on the body"
+        );
     }
 
     /// The `⎘` on a frozen stats row is centered with the row, and the click
