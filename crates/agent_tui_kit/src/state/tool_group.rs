@@ -191,18 +191,38 @@ pub fn tools_summary(
 /// wrong thing whenever the argument contained one — `bash` passes its command
 /// through here, and `echo "a  b"` reduced the label to `"$ Bash echo 'a"`.
 ///
-/// A title without an ordinal (the subagent popup builds its own) and a title
-/// without an argument both fall back to what is actually there rather than
-/// printing an empty label.
+/// Two shapes reach here, because [`ToolWidget::title_text`] has two:
+///
+/// - `<label>  <argument>` — the `Command`/file/`_` arms separate with a double
+///   space.
+/// - `<label> · <argument>` — the `Subagent`, `Sleep` and `Task` arms separate
+///   with a middle dot. The `Task` arm is the loud one: it passes the whole
+///   `# Task · create · subject: …` summary through, so a label split that only
+///   knew about double spaces produced a folded row reading
+///   `# Task · create · subject: …` four times over.
+///
+/// The double-space rule stays *first*: a `Task` subject can itself contain
+/// `·`, and the dot rule must not fire before the separator the shape actually
+/// uses. Both fall back to the whole string when there is no separator, so a
+/// title without an argument never prints an empty label.
 fn tool_label(title: &str) -> String {
     let without_ordinal = match title.split_once(". ") {
         Some((ordinal, rest)) if ordinal.chars().all(|c| c.is_ascii_digit()) => rest,
         _ => title,
     };
-    match without_ordinal.split_once("  ") {
-        Some((label, _argument)) if !label.trim().is_empty() => normalize_spaces(label),
-        _ => normalize_spaces(without_ordinal),
+    if let Some((label, _argument)) = without_ordinal.split_once("  ")
+        && !label.trim().is_empty()
+    {
+        return normalize_spaces(label);
     }
+    // The middle-dot shape. Split at the *first* ` · `: everything after it is
+    // the argument, and a label never contains one.
+    if let Some((label, _argument)) = without_ordinal.split_once(" · ")
+        && !label.trim().is_empty()
+    {
+        return normalize_spaces(label);
+    }
+    normalize_spaces(without_ordinal)
 }
 
 /// Collapse runs of spaces to one, so `"📖  Read"` and `"$ Bash"` read alike.
@@ -969,5 +989,63 @@ mod tests {
         assert_eq!(found.len(), 2);
         assert_eq!(found[0].members, vec![0, 1]);
         assert_eq!(found[1].members, vec![2, 3]);
+    }
+
+    /// Four `Task` calls fold into `# Task ×4`, not four long subjects.
+    ///
+    /// This is the reported symptom end to end: the screenshot's summary row
+    /// read `# Task · create · subject: … · # Task · create · subject: …` and
+    /// overflowed the panel. The label is what a folded row is *for* — one
+    /// glance at what ran — so it must be the tool, never its argument.
+    #[test]
+    fn task_calls_collapse_into_one_label_instead_of_four_subjects() {
+        let msgs = crate::i18n::Messages::by_language(crate::i18n::Language::Chinese);
+        let titles = [
+            (
+                ToolPhase::Success,
+                "# Task · create · subject: S5: 示例值与默认值一致",
+            ),
+            (
+                ToolPhase::Success,
+                "# Task · create · subject: Std1: book/21 补 fold_commentary",
+            ),
+            (
+                ToolPhase::Success,
+                "# Task · create · subject: S1: 固定行只在当前回合",
+            ),
+        ];
+        let summary = tools_summary(&titles, 0, &msgs);
+
+        assert!(
+            summary.contains("# Task"),
+            "the label must survive the fold: {summary}"
+        );
+        assert_eq!(
+            summary.matches("# Task").count(),
+            1,
+            "the three calls share one label and a count, not one label each: {summary}"
+        );
+        assert!(
+            !summary.contains("subject:"),
+            "a folded row must not carry the argument: {summary}"
+        );
+    }
+
+    /// The reported bug: a `Task` tool's fold label swallowed the whole row.
+    #[test]
+    fn a_task_title_that_carries_no_double_space_still_yields_its_label() {
+        // `title_text`'s Task arm returns `arg_summary` verbatim, and that
+        // summary is `# Task · create · subject: …` — `·`-joined, no double
+        // space. Splitting on a double space finds nothing, so the label became
+        // the entire string and the folded summary printed four task subjects.
+        assert_eq!(
+            tool_label("# Task · create · subject: S5: config.example.toml"),
+            "# Task"
+        );
+        assert_eq!(tool_label("📋 Task · update · subject: fix it"), "📋 Task");
+        // The shape `ToolWidget` actually emits for a task: the id sits inside
+        // the label, so the label keeps it.
+        assert_eq!(tool_label("# Task.1 · fix the popup"), "# Task.1");
+        assert_eq!(tool_label("1. # Task.7 · ship it"), "# Task.7");
     }
 }

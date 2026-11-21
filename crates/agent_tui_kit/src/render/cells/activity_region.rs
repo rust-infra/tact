@@ -318,6 +318,57 @@ mod tests {
         assert!(text.contains("1.20s"), "{text}");
     }
 
+    /// The reported row, rendered: four `Task` calls must produce a short
+    /// summary, not four task subjects strung together.
+    ///
+    /// The screenshot showed `# Task · create · subject: …` repeated until the
+    /// panel overflowed. Asserting on the rendered text (a fixed width) is the
+    /// only way to catch "it fits" — the summariser test alone would pass on a
+    /// label that was still far too long.
+    #[test]
+    fn four_task_calls_render_a_short_summary_row() {
+        let region = ActivityRegion {
+            members: Vec::new(),
+            phys_idx: 1,
+            expanded_rows: COMPLETED_THINKING_ROWS + 8,
+            folded_rows: 1,
+            key: "t1".to_string(),
+        };
+        let titles: Vec<(ToolPhase, String)> = (0..4)
+            .map(|n| {
+                (
+                    ToolPhase::Success,
+                    format!("# Task · create · subject: task number {n} with a long subject"),
+                )
+            })
+            .collect();
+        let cell = ActivityRegionCell::new(
+            &region,
+            0,
+            0,
+            titles,
+            Some(std::time::Duration::from_millis(800)),
+            true,
+            &Theme::from(crate::theme::ThemeName::Dark),
+            &Messages::by_language(crate::i18n::Language::English),
+        );
+
+        let text = render_text(&cell);
+        let row = text.lines().next().unwrap_or_default();
+        assert!(
+            row.contains("# Task"),
+            "the tool label must be what a folded row shows: {row:?}"
+        );
+        assert!(
+            !row.contains("subject"),
+            "four subjects must not reach the summary row: {row:?}"
+        );
+        assert!(
+            row.trim_end().chars().count() < 60,
+            "the summary must stay a glance, not a paragraph: {row:?}"
+        );
+    }
+
     /// Render invariant (AGENTS.md): a TUI cell paints its **full** area.
     ///
     /// The folded row is one row wide and the summary is usually shorter than

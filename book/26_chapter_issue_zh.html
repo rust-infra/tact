@@ -819,6 +819,7 @@
 <li class="toc-l2"><a href="#87-2026-11-26--%E5%81%9C%E6%AD%A2%E5%8E%9F%E5%9B%A0%E7%BB%88%E4%BA%8E%E5%88%86%E5%87%BA%E4%BA%86-max_tokens-%E4%B8%8E-refusal" title="87. 2026-11-26 — 停止原因终于分出了 max_tokens 与 refusal"><span class="toc-label">87. 2026-11-26 — 停止原因终于分出了 max_tokens 与 refusal</span></a></li>
 <li class="toc-l2"><a href="#73-2026-11-20--tui-%E8%BE%93%E5%85%A5%E6%A1%86%E5%8F%AF%E7%B2%98%E8%B4%B4%E5%89%AA%E8%B4%B4%E6%9D%BF%E5%9B%BE%E7%89%87%E4%B8%8E%E6%96%87%E4%BB%B6" title="73. 2026-11-20 — TUI：输入框可粘贴剪贴板图片与文件"><span class="toc-label">73. 2026-11-20 — TUI：输入框可粘贴剪贴板图片与文件</span></a></li>
 <li class="toc-l2"><a href="#74-2026-11-21--tui-%E5%B7%A5%E5%85%B7%E5%A4%B1%E8%B4%A5%E5%B0%B1%E8%A2%AB%E5%BD%93%E6%88%90%E5%9B%9E%E5%90%88%E7%BB%93%E6%9D%9F%E5%AE%9E%E6%97%B6%E7%BB%9F%E8%AE%A1%E6%9D%A1%E6%B6%88%E5%A4%B1" title="74. 2026-11-21 — TUI：工具失败就被当成回合结束，实时统计条消失"><span class="toc-label">74. 2026-11-21 — TUI：工具失败就被当成回合结束，实时统计条消失</span></a></li>
+<li class="toc-l2"><a href="#75-2026-11-21--tui-task-%E5%B7%A5%E5%85%B7%E7%9A%84%E6%8A%98%E5%8F%A0%E6%91%98%E8%A6%81%E6%8A%8A%E6%95%B4%E8%A1%8C%E5%8F%82%E6%95%B0%E5%BD%93%E6%A0%87%E7%AD%BE" title="75. 2026-11-21 — TUI：`Task` 工具的折叠摘要把整行参数当标签"><span class="toc-label">75. 2026-11-21 — TUI：`Task` 工具的折叠摘要把整行参数当标签</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -25050,6 +25051,37 @@ transcript reducer 只终结那张卡片，headless 只记一行。只有 TUI �
 <code>crates/tui/src/widgets/state/app/popups.rs</code>（
 <code>add_task_end_separator</code>）、
 <code>crates/tui/src/render/log_render_tests.rs</code>。</p>
+<h2 id="75-2026-11-21--tui-task-工具的折叠摘要把整行参数当标签">75. 2026-11-21 —
+TUI：`Task` 工具的折叠摘要把整行参数当标签</h2>
+<p><strong>症状：</strong> 折叠行显示成
+<code># Task · create · subject: S5: … · # Task · create · subject: Std1: …</code>，四个任务名把整行撑满，摘要失去「一眼看清跑了什么」的作用。</p>
+<p><strong>根因：</strong> <code>tool_label</code>
+只认一种分隔符。它按<strong>第一个双空格</strong>切
+<code>&lt;label&gt;  &lt;argument&gt;</code>，但
+<code>ToolWidget::title_text</code> 有<strong>两种</strong>拼接形状：<code>Command</code>／文件类用双空格，而
+<code>Subagent</code>、<code>Sleep</code>、<code>Task</code>
+用中点 <code> · </code>。切不开就整串当标签——<code>Task</code>
+最响，它把 <code># Task.1 · fix the popup</code> 整体当
+<code>arg_summary</code> 传进来。</p>
+<p><strong>改后行为：</strong> 先试双空格（保持原有优先序：<code>Task</code>
+的 subject 里也可能出现 <code>·</code>，中点规则不能抢在真正使用的分隔符之前），再试中点，两者都失败才回退整串。摘要因此变成
+<code>4 tools · # Task ×4 · 800.00ms</code>。</p>
+<p><strong>验证：</strong>
+<code>task_calls_collapse_into_one_label_instead_of_four_subjects</code>
+断言三个 `Task` 只产生一个标签且不含 <code>subject:</code>；
+<code>four_task_calls_render_a_short_summary_row</code> 在
+<strong>渲染层</strong>用固定宽度断言整行 &lt; 60 字符（只测 summariser
+的话，一个「仍然太长」的标签照样能过）；
+<code>a_task_title_that_carries_no_double_space_still_yields_its_label</code>
+覆盖 <code># Task.1 · fix the popup</code> 这个真实形状——序号在标签内，必须保留。两条 summariser
+测试在<strong>把中点规则去掉后确认变红</strong>。agent_tui_kit 560 passed、
+TUI 900 passed、workspace 全绿、clippy 干净。</p>
+<p><strong>Pointers：</strong>
+<code>crates/agent_tui_kit/src/state/tool_group.rs</code>（
+<code>tool_label</code>、<code>tools_summary</code>）、
+<code>crates/agent_tui_kit/src/widgets/tool_widget.rs</code>（
+<code>title_text</code> 的 Task/Subagent/Sleep 分支）、
+<code>crates/agent_tui_kit/src/render/cells/activity_region.rs</code>。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>
