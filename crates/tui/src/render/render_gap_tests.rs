@@ -1521,3 +1521,32 @@ fn a_system_message_after_a_card_keeps_one_blank_row() {
     );
     assert_blank(&rows, card + 1, "between the card and the system message");
 }
+/// The reported bug: a folded region sat flush against the user's prompt.
+///
+/// `ensure_gap_after_user_message` runs on the streaming path only, so a turn
+/// whose first act is a tool call — no preceding prose — let the region open
+/// directly under the prompt, with nothing between the reader's own words and
+/// the summary that answers them.
+#[test]
+fn a_tool_region_leaves_a_blank_row_under_the_prompt() {
+    let mut app = make_app();
+    app.add_user_message("run the tests".into());
+    seed_write_file_finished(&mut app, "a.txt", "hello");
+
+    let text = render_log_panel_text(&mut app, 100, 24);
+    let rows: Vec<&str> = text.lines().collect();
+    let prompt_row = rows
+        .iter()
+        .position(|row| row.contains("run the tests"))
+        .expect("the prompt is on screen");
+    let next = rows.get(prompt_row + 1).unwrap_or(&"");
+    // Strip the panel chrome: border columns, scrollbar, corners, rules.
+    let bare: String = next
+        .chars()
+        .filter(|c| !matches!(c, '│' | '┌' | '┐' | '└' | '┘' | '─' | '▐' | '▌' | '▲' | '▼'))
+        .collect();
+    assert!(
+        bare.trim().is_empty(),
+        "a blank row must separate the prompt from the folded region, got {next:?} in:\n{text}"
+    );
+}

@@ -822,6 +822,7 @@
 <li class="toc-l2"><a href="#90-2026-11-21--tui-task-%E5%B7%A5%E5%85%B7%E7%9A%84%E6%8A%98%E5%8F%A0%E6%91%98%E8%A6%81%E6%8A%8A%E6%95%B4%E8%A1%8C%E5%8F%82%E6%95%B0%E5%BD%93%E6%A0%87%E7%AD%BE" title="90. 2026-11-21 — TUI：`Task` 工具的折叠摘要把整行参数当标签"><span class="toc-label">90. 2026-11-21 — TUI：`Task` 工具的折叠摘要把整行参数当标签</span></a></li>
 <li class="toc-l2"><a href="#91-2026-11-21--tui-%E6%8A%98%E5%8F%A0%E6%91%98%E8%A6%81%E7%9A%84%E5%8F%A6%E5%A4%96%E4%B8%A4%E5%A4%84%E6%BA%A2%E5%87%BA%E6%BC%8F%E7%BD%91" title="91. 2026-11-21 — TUI：折叠摘要的另外两处溢出漏网"><span class="toc-label">91. 2026-11-21 — TUI：折叠摘要的另外两处溢出漏网</span></a></li>
 <li class="toc-l2"><a href="#92-2026-11-22--tui-%E6%8A%98%E5%8F%A0%E6%91%98%E8%A6%81%E7%9A%84%E7%BC%A9%E8%BF%9B%E8%B7%9F%E7%9D%80%E9%A6%96%E6%88%90%E5%91%98%E6%BC%82%E7%A7%BB" title="92. 2026-11-22 — TUI：折叠摘要的缩进跟着首成员漂移"><span class="toc-label">92. 2026-11-22 — TUI：折叠摘要的缩进跟着首成员漂移</span></a></li>
+<li class="toc-l2"><a href="#93-2026-11-22--tui-%E6%8A%98%E5%8F%A0%E6%91%98%E8%A6%81%E7%B4%A7%E8%B4%B4%E7%94%A8%E6%88%B7-prompt%E6%B2%A1%E6%9C%89%E7%A9%BA%E8%A1%8C" title="93. 2026-11-22 — TUI：折叠摘要紧贴用户 prompt，没有空行"><span class="toc-label">93. 2026-11-22 — TUI：折叠摘要紧贴用户 prompt，没有空行</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -25154,6 +25155,33 @@ Commentary → 3   (LOG_THINKING_INDENT + 1)</code></pre>
 <code>LOG_THINKING_INDENT</code>、<code>LOG_TOOL_BLOCK_INDENT</code>、
 <code>fold_glyph_x</code>）、
 <code>crates/tui/src/render/narration_region_tests.rs</code>。</p>
+<h2 id="93-2026-11-22--tui-折叠摘要紧贴用户-prompt没有空行">93. 2026-11-22 —
+TUI：折叠摘要紧贴用户 prompt，没有空行</h2>
+<p><strong>症状：</strong> 用户那句话下面直接就是折叠摘要（或工具卡），两者之间没有空行，读者的 prompt 和「回答它的那一行」粘在一起。</p>
+<p><strong>根因不在插空行的逻辑，而在它的前提。</strong>
+<code>ensure_gap_before_tools</code> 会先看上一行是否已属于某张卡片，属于就跳过——因为卡片与工具块本就该直接堆叠。问题是
+<code>StepAdded</code> 先用
+<code>phys_idx: 0</code> 建出 active 卡片（哨兵值，真实位置由 shell 稍后
+<code>set_phys_idx</code> 写回），而
+<code>phys_idx_in_tool_block</code> 把 0 当成真实位置，于是判定「第 0 行到第 N 行都属于这张卡」，**用户 prompt 那一行也被算进了卡内**，空行因此被跳过。</p>
+<p>实测：<code>last_visible=1</code>（User 行），但
+<code>phys_idx_owned_by_card(1)=true</code>，<code>items</code> 从 2 到 2——一行都没插。</p>
+<p><strong>改后行为：</strong>
+<code>phys_idx_in_tool_block</code> 只把<strong>已放置</strong>的卡片算进来。判据是
+<code>placement_is_known</code>：<code>phys_idx == 0</code>
+在日志非空时即代表「尚未 backfill」——日志的第一项永远是开场横幅，不可能是一张工具卡，所以声称占据第 0 行的卡片一定还没被放置。</p>
+<p><strong>为什么不改插空行的函数：</strong> 那条规则本身是对的（卡片与工具块直接堆叠，否则一轮工作会变成一张空行表格）。坏的是
+<code>phys_idx_in_tool_block</code> 对一个哨兵值的解读。修被误用的判据，而不是为它让路的规则。</p>
+<p><strong>验证：</strong>
+<code>a_tool_region_leaves_a_blank_row_under_the_prompt</code>
+渲染真实序列（prompt → 工具 → 折叠），断言 prompt 下一行去掉面板边框后为空；<strong>把 <code>placed()</code> 检查去掉确认变红</strong>（<code>got "│ 1. 📝 Write a.txt"</code>，正是截图里的紧贴状态）。TUI 901 passed、workspace 全绿、clippy 干净。</p>
+<p><strong>Pointers：</strong>
+<code>crates/tui/src/widgets/state/app/visibility.rs</code>（
+<code>phys_idx_in_tool_block</code>、<code>placement_is_known</code>、
+<code>ensure_gap_before_tools</code>）、
+<code>crates/agent_tui_kit/src/components/tool.rs</code>（
+<code>ToolEvent::Started</code> 的 <code>phys_idx: 0</code> 约定）、
+<code>crates/tui/src/render/render_gap_tests.rs</code>。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>

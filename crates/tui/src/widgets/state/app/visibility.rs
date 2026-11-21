@@ -883,13 +883,33 @@ impl App {
     }
 
     fn phys_idx_in_tool_block(&self, phys: usize) -> bool {
+        // An active card that the shell has not backfilled yet carries
+        // `phys_idx: 0` (see `ToolEvent::Started`). Treating that as "the card
+        // owns row 0 and everything below it" made `ensure_gap_before_tools`
+        // believe the row it was looking at was already inside a card, so it
+        // skipped the gap and the folded summary landed flush against the
+        // user's prompt. A card is only placed once the shell has told it
+        // where it goes.
+        let placed = |phys_idx: usize| self.placement_is_known(phys_idx);
         self.tools().active.iter().any(|active| {
-            phys >= active.phys_idx
+            placed(active.phys_idx)
+                && phys >= active.phys_idx
                 && phys <= active.phys_idx + active.output.message_placeholder_rows()
         }) || self.tools().blocks.iter().any(|block| {
             phys >= block.phys_idx
                 && phys <= block.phys_idx + block.output.message_placeholder_rows()
         })
+    }
+
+    /// Whether `phys_idx` was written by the shell rather than left at the
+    /// zero initialiser.
+    ///
+    /// `0` is both the unset marker and a legitimate row, so the two are told
+    /// apart by the log: the very first item is never a tool card (the log
+    /// opens with the session banner), so a card claiming row 0 while the log
+    /// has any item at all has not been placed.
+    fn placement_is_known(&self, phys_idx: usize) -> bool {
+        phys_idx != 0 || self.log.items.is_empty()
     }
 
     /// Whether `phys` is one of the rows a thinking card draws.
@@ -1153,6 +1173,7 @@ impl App {
 
     pub(crate) fn push_tool_placeholder_rows(&mut self, rows: usize) -> usize {
         self.ensure_gap_before_tools();
+
         self.log
             .push_placeholder_rows(LogItemKind::SystemTool, rows)
     }
