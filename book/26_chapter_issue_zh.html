@@ -821,6 +821,7 @@
 <li class="toc-l2"><a href="#89-2026-11-21--tui-%E5%B7%A5%E5%85%B7%E5%A4%B1%E8%B4%A5%E5%B0%B1%E8%A2%AB%E5%BD%93%E6%88%90%E5%9B%9E%E5%90%88%E7%BB%93%E6%9D%9F%E5%AE%9E%E6%97%B6%E7%BB%9F%E8%AE%A1%E6%9D%A1%E6%B6%88%E5%A4%B1" title="89. 2026-11-21 — TUI：工具失败就被当成回合结束，实时统计条消失"><span class="toc-label">89. 2026-11-21 — TUI：工具失败就被当成回合结束，实时统计条消失</span></a></li>
 <li class="toc-l2"><a href="#90-2026-11-21--tui-task-%E5%B7%A5%E5%85%B7%E7%9A%84%E6%8A%98%E5%8F%A0%E6%91%98%E8%A6%81%E6%8A%8A%E6%95%B4%E8%A1%8C%E5%8F%82%E6%95%B0%E5%BD%93%E6%A0%87%E7%AD%BE" title="90. 2026-11-21 — TUI：`Task` 工具的折叠摘要把整行参数当标签"><span class="toc-label">90. 2026-11-21 — TUI：`Task` 工具的折叠摘要把整行参数当标签</span></a></li>
 <li class="toc-l2"><a href="#91-2026-11-21--tui-%E6%8A%98%E5%8F%A0%E6%91%98%E8%A6%81%E7%9A%84%E5%8F%A6%E5%A4%96%E4%B8%A4%E5%A4%84%E6%BA%A2%E5%87%BA%E6%BC%8F%E7%BD%91" title="91. 2026-11-21 — TUI：折叠摘要的另外两处溢出漏网"><span class="toc-label">91. 2026-11-21 — TUI：折叠摘要的另外两处溢出漏网</span></a></li>
+<li class="toc-l2"><a href="#92-2026-11-22--tui-%E6%8A%98%E5%8F%A0%E6%91%98%E8%A6%81%E7%9A%84%E7%BC%A9%E8%BF%9B%E8%B7%9F%E7%9D%80%E9%A6%96%E6%88%90%E5%91%98%E6%BC%82%E7%A7%BB" title="92. 2026-11-22 — TUI：折叠摘要的缩进跟着首成员漂移"><span class="toc-label">92. 2026-11-22 — TUI：折叠摘要的缩进跟着首成员漂移</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -25120,6 +25121,39 @@ summariser。<code>area.width</code> 先扣缩进、再扣
 <code>tools_summary</code>）、
 <code>crates/agent_tui_kit/src/widgets/tool_widget.rs</code>（
 <code>title_text</code>）。</p>
+<h2 id="92-2026-11-22--tui-折叠摘要的缩进跟着首成员漂移">92. 2026-11-22 —
+TUI：折叠摘要的缩进跟着首成员漂移</h2>
+<p><strong>症状：</strong> 同一屏上两行折叠摘要的
+<code>⏵</code> 不在同一列——一行在缩进 2，一行在缩进 8，看起来像楼梯。</p>
+<p><strong>根因：</strong> <code>ActivityRegionCell</code>
+的 <code>indent</code> 直接取<strong>首个成员</strong>的缩进：</p>
+<pre><code>Thinking   → 2
+Tool       → 8   (LOG_TOOL_INDENT 4 + 4)
+Commentary → 3   (LOG_THINKING_INDENT + 1)</code></pre>
+<p>实测三个区域分别落在列 <code>[0, 6, 1]</code>。但摘要行是一个区域的
+<strong>标题</strong>，不是某个成员的行——读者是竖着扫这一列的。工具块的 8
+是<strong>内容</strong>缩进（标题、meta、详情卡整体右移
+<code>LOG_TOOL_BLOCK_INDENT</code>），折叠后的跑没有详情卡，把 8 继承给标题就是在为不存在的东西让位。</p>
+<p><strong>改后行为：</strong> 摘要缩进改成按<strong>两个桶</strong>取：
+卡片／工具首成员用 <code>LOG_THINKING_INDENT</code>（2），叙述首成员用
+<code>+1</code>（3）。实测 <code>[0, 0, 1]</code>——截图里那两行（卡片首成员与工具首成员）已同列。</p>
+<p><strong>为什么叙述仍保留 +1：</strong> 这是两条不变量的交点，不能一刀切。叙述区域的展开态标题行本身就是缩进 3（
+<code>log_indent</code>），而「折叠的 <code>⏵</code> 与展开的
+<code>⏷</code> 必须同列」由
+<code>a_narration_headed_fold_glyph_keeps_its_column</code>
+守着。要把叙述也拉到 2，就得同时移动展开态字形——那会改动它所在行 prose 的既有位置。1 列与 6 列不是一个量级的问题，**不动它**，并把测试的期望写成明确的规则而不是"全部相等"。</p>
+<p><strong>验证：</strong>
+<code>summaries_do_not_shift_with_their_first_member</code>
+渲染三种首成员各一个区域，断言卡片与工具同列、叙述恰好 +1；<strong>把旧的继承逻辑放回去确认变红</strong>（<code>got [0, 6, 1]</code>）。
+<code>a_narration_headed_fold_glyph_keeps_its_column</code>
+与 <code>a_tool_run_fold_glyph_keeps_its_column</code> 仍绿，说明区域内「折叠前后同列」没被破坏。agent_tui_kit 565 passed、TUI 900 passed、workspace 全绿、clippy 干净。</p>
+<p><strong>Pointers：</strong>
+<code>crates/agent_tui_kit/src/render/cells/activity_region.rs</code>（
+<code>ActivityRegionCell::new</code> 的 <code>indent</code>）、
+<code>crates/agent_tui_kit/src/render/util.rs</code>（
+<code>LOG_THINKING_INDENT</code>、<code>LOG_TOOL_BLOCK_INDENT</code>、
+<code>fold_glyph_x</code>）、
+<code>crates/tui/src/render/narration_region_tests.rs</code>。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>

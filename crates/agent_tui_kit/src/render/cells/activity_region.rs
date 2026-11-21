@@ -105,22 +105,27 @@ impl ActivityRegionCell {
             summary_color,
             identity: region.key.clone(),
             msgs: *msgs,
-            indent: region
-                .members
-                .first()
-                .map(|member| match member.kind {
-                    activity_region::RegionMemberKind::Thinking => {
-                        crate::render::util::LOG_THINKING_INDENT
-                    }
-                    activity_region::RegionMemberKind::Tool => {
-                        crate::render::util::LOG_TOOL_BLOCK_INDENT
-                    }
-                    // Narration is assistant prose: one column past a card.
-                    activity_region::RegionMemberKind::Commentary => {
-                        crate::render::util::LOG_THINKING_INDENT + 1
-                    }
-                })
-                .unwrap_or(crate::render::util::LOG_THINKING_INDENT),
+            // A summary is the region's *header*, so its column is the column a
+            // reader scans down — it must not inherit the first member's content
+            // indent.
+            //
+            // Measured before this: a region headed by a thinking card opened at
+            // 2, one headed by a tool call at **8**, one headed by narration at
+            // 3 — three folds on one screen in three columns. Tool blocks carry
+            // 8 because a *block* shifts its title, meta and detail card by
+            // `LOG_TOOL_BLOCK_INDENT`; a folded run has no detail card, so
+            // inheriting that put its header six columns right of a card's.
+            //
+            // Narration keeps its one extra column because that is where its own
+            // row draws prose, and the invariant that the folded `⏵` and the
+            // expanded `⏷` share a column is checked against that row. Both
+            // quantities are headers; neither is content.
+            indent: match region.members.first().map(|member| member.kind) {
+                Some(activity_region::RegionMemberKind::Commentary) => {
+                    crate::render::util::LOG_THINKING_INDENT + 1
+                }
+                _ => crate::render::util::LOG_THINKING_INDENT,
+            },
         }
     }
 
@@ -550,5 +555,64 @@ mod tests {
         let text = render_text(&cell);
         assert!(text.contains('⚠'), "{text}");
         assert!(text.contains("1 failed"), "{text}");
+    }
+
+    /// Every folded summary starts in the same column.
+    ///
+    /// The reported bug: a region headed by a thinking card and one headed by a
+    /// tool call drew their `▸` at different columns (2 vs 8), so a column of
+    /// folds read as a staircase. A summary row is the region's *header* — the
+    /// one row a reader scans down — so its position cannot depend on which
+    /// kind of member happened to come first.
+    #[test]
+    fn summaries_do_not_shift_with_their_first_member() {
+        let msgs = Messages::by_language(crate::i18n::Language::English);
+        let theme = Theme::from(crate::theme::ThemeName::Dark);
+
+        let columns: Vec<u16> = [
+            crate::state::activity_region::RegionMemberKind::Thinking,
+            crate::state::activity_region::RegionMemberKind::Tool,
+            crate::state::activity_region::RegionMemberKind::Commentary,
+        ]
+        .into_iter()
+        .map(|kind| {
+            let region = ActivityRegion {
+                members: vec![crate::state::activity_region::RegionMember {
+                    kind,
+                    index: 0,
+                    phys_idx: 1,
+                    rows: COMPLETED_THINKING_ROWS,
+                }],
+                phys_idx: 1,
+                expanded_rows: COMPLETED_THINKING_ROWS,
+                folded_rows: 1,
+                key: format!("{kind:?}"),
+            };
+            let cell =
+                ActivityRegionCell::new(&region, 0, 0, Vec::new(), None, true, &theme, &msgs);
+            let terminal = render_terminal(&cell);
+            let buffer = terminal.backend().buffer();
+            (0..buffer.area.width)
+                .find(|&x| buffer[(x, 0)].symbol() == "⏵")
+                .unwrap_or_else(|| panic!("no fold glyph for {kind:?}"))
+        })
+        .collect();
+
+        // Card- and tool-headed regions share a column: the tool block's
+        // content indent (8) must not reach the header. Narration sits one
+        // column right because its own row draws prose there, and the
+        // folded/expanded glyph must share that row's column — the
+        // `a_narration_headed_fold_glyph_keeps_its_column` case.
+        assert_eq!(
+            columns[0], columns[1],
+            "a tool-headed region's header must not inherit the tool block's \
+             content indent, got {columns:?}"
+        );
+        assert_eq!(
+            columns[2],
+            columns[0] + 1,
+            "narration's header is one column right of a card's, matching where \
+             its own row draws, got {columns:?}"
+        );
     }
 }
