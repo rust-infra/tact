@@ -820,6 +820,7 @@
 <li class="toc-l2"><a href="#73-2026-11-20--tui-%E8%BE%93%E5%85%A5%E6%A1%86%E5%8F%AF%E7%B2%98%E8%B4%B4%E5%89%AA%E8%B4%B4%E6%9D%BF%E5%9B%BE%E7%89%87%E4%B8%8E%E6%96%87%E4%BB%B6" title="73. 2026-11-20 — TUI：输入框可粘贴剪贴板图片与文件"><span class="toc-label">73. 2026-11-20 — TUI：输入框可粘贴剪贴板图片与文件</span></a></li>
 <li class="toc-l2"><a href="#74-2026-11-21--tui-%E5%B7%A5%E5%85%B7%E5%A4%B1%E8%B4%A5%E5%B0%B1%E8%A2%AB%E5%BD%93%E6%88%90%E5%9B%9E%E5%90%88%E7%BB%93%E6%9D%9F%E5%AE%9E%E6%97%B6%E7%BB%9F%E8%AE%A1%E6%9D%A1%E6%B6%88%E5%A4%B1" title="74. 2026-11-21 — TUI：工具失败就被当成回合结束，实时统计条消失"><span class="toc-label">74. 2026-11-21 — TUI：工具失败就被当成回合结束，实时统计条消失</span></a></li>
 <li class="toc-l2"><a href="#75-2026-11-21--tui-task-%E5%B7%A5%E5%85%B7%E7%9A%84%E6%8A%98%E5%8F%A0%E6%91%98%E8%A6%81%E6%8A%8A%E6%95%B4%E8%A1%8C%E5%8F%82%E6%95%B0%E5%BD%93%E6%A0%87%E7%AD%BE" title="75. 2026-11-21 — TUI：`Task` 工具的折叠摘要把整行参数当标签"><span class="toc-label">75. 2026-11-21 — TUI：`Task` 工具的折叠摘要把整行参数当标签</span></a></li>
+<li class="toc-l2"><a href="#76-2026-11-21--tui-%E6%8A%98%E5%8F%A0%E6%91%98%E8%A6%81%E7%9A%84%E5%8F%A6%E5%A4%96%E4%B8%A4%E5%A4%84%E6%BA%A2%E5%87%BA%E6%BC%8F%E7%BD%91" title="76. 2026-11-21 — TUI：折叠摘要的另外两处溢出漏网"><span class="toc-label">76. 2026-11-21 — TUI：折叠摘要的另外两处溢出漏网</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -25082,6 +25083,43 @@ TUI 900 passed、workspace 全绿、clippy 干净。</p>
 <code>crates/agent_tui_kit/src/widgets/tool_widget.rs</code>（
 <code>title_text</code> 的 Task/Subagent/Sleep 分支）、
 <code>crates/agent_tui_kit/src/render/cells/activity_region.rs</code>。</p>
+<h2 id="76-2026-11-21--tui-折叠摘要的另外两处溢出漏网">76. 2026-11-21 —
+TUI：折叠摘要的另外两处溢出漏网</h2>
+<p><strong>动机：</strong> 第 75 条修的是
+<code>Task</code> 一种标签。既然 <code>title_text</code>
+有多个分支，就该问一句「别的工具会不会一样」。查下来有两处，都属同一类缺陷的不同成因。</p>
+<p><strong>其一：分隔符覆盖不全（已被 75 条修掉，此处补全验证）。</strong>
+<code>ToolVisualKind</code> 共 8 种，但
+<code>title_text</code> 只有<strong>两种</strong>拼接形状：双空格（<code>Command</code>／文件类／兜底）与中点（<code>Subagent</code>／<code>Sleep</code>／<code>Task</code>）。新增两条件举测试
+<code>every_title_shape_reduces_to_its_label</code> 与
+<code>a_real_widgets_title_folds_to_its_label</code>——后者驱动真实
+<code>ToolWidget</code> 取 <code>title_text()</code>，而不是我手写的字符串（手写的只能证明切分器同意我的读法，不能证明 widget 真那么输出）。</p>
+<p><strong>其二：不同标签数量无上限（本条新修）。</strong> 标签修对了，行仍会溢出：一轮里用到九种工具就列九个标签。实测
+<code>10 tools · $ Bash · 📖 Read ×2 · ✏️ Edit · 🔍 Grep · 📝 Write · # Task.1 · 🌿 Worktree Create · 🤖 Subagent Check · ✉️ Team Send</code>
+共 123 列，而面板常见 80–120。此前没有宽度预算，<code>Paragraph</code>
+在面板边缘<strong>硬裁</strong>——尾部
+<code>Worktree Create · Subagent Check · Team Send</code>
+直接消失，且看不出被裁过。</p>
+<p><strong>改后行为：</strong> 摘要按实际可用宽度截断。耗时<strong>先预留</strong>——它短、位置固定（最右）、且不该是第一个被裁的东西；余下宽度归计数与标签，超出则以
+<code>…</code> 收尾。渲染效果：</p>
+<pre><code>80 列：⏵ 9 tools · $ Bash · 📖 Read · ✏️ Edit · 🔍 Grep · 📝 Write · # Task.… · 2.50s
+140 列：⏵ 9 tools · $ Bash · 📖 Read · ✏️ Edit · 🔍 Grep · 📝 Write · # Task.1 · 🌿 Worktree Create · 🤖 Subagent Check · ✉️ Team Send · 2.50s</code></pre>
+<p>截断发生在<strong>渲染层</strong>（宽度只有那时才知道），不是
+summariser。<code>area.width</code> 先扣缩进、再扣
+<code>FOLD_GUTTER_COLS</code>（字形占的列）、最后多留 1 列——<code>unicode-width</code>
+对带变体选择符的 emoji（<code>✏️</code>、<code>✉️</code>）与部分终端差一列，测着放得下、终端仍会裁。</p>
+<p><strong>验证：</strong>
+<code>many_distinct_labels_are_truncated_with_an_ellipsis</code> 用 80 列面板渲染九种工具，断言出现
+<code>…</code>、耗时 <code>2.50s</code> 完整、且不出现被切一半的词；<strong>去掉截断后确认变红</strong>。agent_tui_kit 564 passed、TUI 900 passed、workspace 全绿、clippy 干净。</p>
+<p><strong>Pointers：</strong>
+<code>crates/agent_tui_kit/src/render/cells/activity_region.rs</code>（
+<code>summary_line(width)</code>）、
+<code>crates/agent_tui_kit/src/render/util.rs</code>（
+<code>truncate_to_width</code>）、
+<code>crates/agent_tui_kit/src/state/tool_group.rs</code>（
+<code>tools_summary</code>）、
+<code>crates/agent_tui_kit/src/widgets/tool_widget.rs</code>（
+<code>title_text</code>）。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>

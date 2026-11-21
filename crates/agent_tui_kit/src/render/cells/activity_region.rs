@@ -129,8 +129,18 @@ impl ActivityRegionCell {
         &self.identity
     }
 
-    /// The summary line: an expander glyph, the thought count, then the calls.
-    fn summary_line(&self) -> Line<'static> {
+    /// The summary line: the thought count, then the calls, then the total.
+    ///
+    /// `width` is the row's usable columns. The **elapsed** is reserved first:
+    /// it is short, it is the one part a reader looks for by position (far
+    /// right), and it must never be the thing that gets cut. Whatever is left
+    /// belongs to the counts and labels, which are truncated with `…` when a
+    /// turn touched more distinct tools than the row can name.
+    ///
+    /// Without this the row was hard-clipped by the renderer, so a turn using
+    /// nine kinds of tool showed the first six and silently dropped the rest —
+    /// the same failure as the `Task` label, one level up.
+    fn summary_line(&self, width: u16) -> Line<'static> {
         let titles: Vec<(ToolPhase, &str)> = self
             .members
             .iter()
@@ -150,20 +160,29 @@ impl ActivityRegionCell {
         // left of the text (`FOLD_GUTTER_COLS`, via `fold_glyph_x`). The text
         // itself never moves between the folded and open states.
         let color = self.summary_color;
+
+        // The total comes last, after the counts: a reader asks "how long did
+        // this cost me" after "how much ran". Reserved before the labels are
+        // measured so it cannot be the part that gets cut.
+        let elapsed = self.elapsed.map(|elapsed| {
+            format!(
+                " · {}",
+                format_duration_us(elapsed.as_micros().try_into().unwrap_or(u64::MAX))
+            )
+        });
+        let elapsed_width = elapsed
+            .as_deref()
+            .map(unicode_width::UnicodeWidthStr::width)
+            .unwrap_or(0);
+        let budget = (width as usize).saturating_sub(elapsed_width);
+        let body = crate::render::util::truncate_to_width(&summary.text, budget);
+
         let mut spans = vec![Span::styled(
-            summary.text,
+            body,
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         )];
-        // The total comes last, after the counts: a reader asks "how long did
-        // this cost me" after "how much ran".
-        if let Some(elapsed) = self.elapsed {
-            spans.push(Span::styled(
-                format!(
-                    " · {}",
-                    format_duration_us(elapsed.as_micros().try_into().unwrap_or(u64::MAX))
-                ),
-                Style::default().fg(self.muted),
-            ));
+        if let Some(elapsed) = elapsed {
+            spans.push(Span::styled(elapsed, Style::default().fg(self.muted)));
         }
         Line::from(spans)
     }
@@ -195,7 +214,20 @@ impl Renderable for ActivityRegionCell {
         if skip_lines > 0 {
             return;
         }
-        let line = self.summary_line();
+        // The glyph owns `FOLD_GUTTER_COLS` columns to the left of the text,
+        // so the text has that much less room. Without this the row was still
+        // one or two columns too wide and the renderer clipped the tail —
+        // which is how `2.50s` came out as `2.50`.
+        // `truncate_to_width` counts with `unicode-width`, which disagrees with
+        // some terminals by a column on emoji carrying a variation selector
+        // (`✏️`, `✉️`): the string measures as fitting and the terminal still
+        // clips the tail. One spare column absorbs that, and costs a reader
+        // nothing.
+        let line = self.summary_line(
+            area.width
+                .saturating_sub(crate::render::util::FOLD_GUTTER_COLS)
+                .saturating_sub(1),
+        );
         // The glyph goes in the gutter two columns left of the text, and the text
         // itself does not move: that is exactly where an expanded head draws its
         // `⏷`, so flipping the fold leaves the control under the pointer.
@@ -366,6 +398,72 @@ mod tests {
         assert!(
             row.trim_end().chars().count() < 60,
             "the summary must stay a glance, not a paragraph: {row:?}"
+        );
+    }
+
+    /// Many distinct tools are truncated, not silently dropped.
+    ///
+    /// The `Task` fix stopped one label from swallowing its row; this is the
+    /// remaining way to overflow it — a turn that touched nine kinds of tool.
+    /// The renderer used to hard-clip at the panel edge, so the tail of the
+    /// list simply disappeared with no sign it had been cut.
+    #[test]
+    fn many_distinct_labels_are_truncated_with_an_ellipsis() {
+        let region = ActivityRegion {
+            members: Vec::new(),
+            phys_idx: 1,
+            expanded_rows: COMPLETED_THINKING_ROWS + 9,
+            folded_rows: 1,
+            key: "t1".to_string(),
+        };
+        let titles: Vec<(ToolPhase, String)> = [
+            "$ Bash  cargo test",
+            "📖 Read  a.rs",
+            "✏️ Edit  a.rs",
+            "🔍 Grep  pattern",
+            "📝 Write  c.rs",
+            "# Task.1 · a thing",
+            "🌿 Worktree Create  lane",
+            "🤖 Subagent Check  sa-1",
+            "✉️ Team Send  bob",
+        ]
+        .into_iter()
+        .map(|title| (ToolPhase::Success, title.to_string()))
+        .collect();
+        let cell = ActivityRegionCell::new(
+            &region,
+            0,
+            0,
+            titles,
+            Some(std::time::Duration::from_millis(2_500)),
+            true,
+            &Theme::from(crate::theme::ThemeName::Dark),
+            &Messages::by_language(crate::i18n::Language::English),
+        );
+
+        // A narrow panel, the case that overflowed.
+        let row = buffer_text(render_terminal(&cell).backend().buffer());
+        let row = row.lines().next().unwrap_or_default().to_string();
+
+        assert!(
+            row.contains('…'),
+            "a cut summary must say it was cut: {row:?}"
+        );
+        assert!(
+            row.contains("2.50s"),
+            "the elapsed total is reserved and must survive the cut: {row:?}"
+        );
+        // A `TestBackend` buffer is padded to the panel width, so a row that
+        // overflows is *clipped*, not wider — measuring the line cannot see it.
+        // The visible sign is the lost tail: the last label must be the
+        // ellipsis, not a half-word.
+        assert!(
+            row.contains("Team Send") || row.contains('…'),
+            "an overflowing row must end in an ellipsis rather than a cut word: {row:?}"
+        );
+        assert!(
+            !row.contains("Team Sen "),
+            "a label cut mid-word means the row ran past the panel: {row:?}"
         );
     }
 

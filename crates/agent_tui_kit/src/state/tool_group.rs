@@ -1048,4 +1048,88 @@ mod tests {
         assert_eq!(tool_label("# Task.1 · fix the popup"), "# Task.1");
         assert_eq!(tool_label("1. # Task.7 · ship it"), "# Task.7");
     }
+
+    /// Every `ToolVisualKind`'s title shape must reduce to its label.
+    ///
+    /// The `Task` bug was one instance of a general hazard: `title_text` has
+    /// **two** separators (double space, middle dot) and three kind-specific
+    /// arms that bypass the label prefix entirely. A kind whose separator
+    /// `tool_label` does not know folds into a row carrying its whole argument.
+    /// This walks every kind the formatter can produce, so the next arm added
+    /// to `title_text` has to answer this test.
+    #[test]
+    fn every_title_shape_reduces_to_its_label() {
+        // (emitted title, expected label) — one row per `title_text` arm.
+        let cases: &[(&str, &str)] = &[
+            // Command / file / `_`: `<label>  <argument>`.
+            ("$ Bash  cargo test", "$ Bash"),
+            ("📖 Read  src/main.rs", "📖 Read"),
+            ("✏️ Edit  src/lib.rs", "✏️ Edit"),
+            // Subagent: `Subagent · <summary>`.
+            ("Subagent · review the diff", "Subagent"),
+            // Sleep: `<label> · <duration or id>`.
+            ("💤 Sleep · 2.50s", "💤 Sleep"),
+            ("⏳ Wait Background · bg-3", "⏳ Wait Background"),
+            // Task: the argument *is* the human title.
+            ("# Task.1 · fix the popup", "# Task.1"),
+            // Ordinal prefix on any of the above.
+            ("1. $ Bash  cargo test", "$ Bash"),
+            ("2. 📖 Read  src/main.rs", "📖 Read"),
+            ("3. Subagent · review", "Subagent"),
+            ("4. # Task.7 · ship it", "# Task.7"),
+        ];
+
+        for (title, expected) in cases {
+            assert_eq!(
+                &tool_label(title),
+                expected,
+                "title {title:?} must fold down to its label"
+            );
+        }
+    }
+
+    /// A title with neither separator keeps whatever it has.
+    ///
+    /// The fallback matters for the subagent popup, which builds its own title
+    /// with no argument at all.
+    #[test]
+    fn a_title_without_a_separator_is_its_own_label() {
+        assert_eq!(tool_label("Subagent"), "Subagent");
+        assert_eq!(tool_label("💤 Sleep"), "💤 Sleep");
+        assert_eq!(tool_label("# Task.1"), "# Task.1");
+    }
+
+    /// End to end: a real `ToolWidget`'s own title, folded to its label.
+    ///
+    /// [`every_title_shape_reduces_to_its_label`] feeds `tool_label` strings I
+    /// wrote by hand. That only proves the splitter agrees with my reading of
+    /// `title_text`. This drives the widget itself, so a new arm (or a changed
+    /// separator) fails here even if the hand-written cases still pass.
+    #[test]
+    fn a_real_widgets_title_folds_to_its_label() {
+        use crate::widgets::tool_widget::ToolWidget;
+
+        // (tool name, argument summary, expected label)
+        let cases: &[(&str, &str, &str)] = &[
+            ("bash", "cargo test", "$ Bash"),
+            ("read_file", "src/main.rs", "📖 Read"),
+            ("edit_file", "src/lib.rs", "✏️ Edit"),
+            ("spawn_subagent", "review the diff", "Subagent"),
+            ("sleep", "2500", "💤 Sleep"),
+            ("task_create", "# Task.1 · fix the popup", "# Task.1"),
+        ];
+
+        for (tool, arg, expected) in cases {
+            let widget = ToolWidget::new()
+                .with_tool(*tool)
+                .with_arg_summary(*arg)
+                .with_phase(ToolPhase::Success);
+            let title = widget.title_text();
+            assert_eq!(
+                tool_label(&title),
+                *expected,
+                "tool {tool}: title {title:?} must fold to {expected:?}"
+            );
+        }
+    }
 }
