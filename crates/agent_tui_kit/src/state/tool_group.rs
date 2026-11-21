@@ -47,31 +47,12 @@ impl ToolRun {
 /// member has one the total is `None`, because a fabricated zero would read as
 /// "instantaneous".
 pub fn total_span(blocks: &[ToolBlock], run: &ToolRun) -> Option<Duration> {
-    let mut spans: Vec<ToolSpan> = run
+    let spans: Vec<ToolSpan> = run
         .members
         .iter()
         .filter_map(|&index| blocks.get(index)?.span)
         .collect();
-    if spans.is_empty() {
-        return None;
-    }
-    spans.sort_by_key(|span| span.started_at);
-
-    let mut total = Duration::ZERO;
-    let mut current_start = spans[0].started_at;
-    let mut current_end = spans[0].finished_at;
-    for span in &spans[1..] {
-        if span.started_at <= current_end {
-            // Overlaps (or touches) the interval being accumulated.
-            current_end = current_end.max(span.finished_at);
-        } else {
-            total += current_end.saturating_duration_since(current_start);
-            current_start = span.started_at;
-            current_end = span.finished_at;
-        }
-    }
-    total += current_end.saturating_duration_since(current_start);
-    Some(total)
+    super::tool_state::unioned_span(&spans)
 }
 
 /// Runs of blocks that sit back to back in the log.
@@ -487,21 +468,18 @@ impl ToolState {
     // purpose: a tool-only run's summary names each tool, which a region's
     // `N tools` could not.
 
-    /// Every activity region in the log, given its finished thinking cards.
+    /// Every activity region in the log, given its finished thinking cards and
+    /// the log's narration runs.
     ///
-    /// `thinking` is `ThinkingState::blocks`; the live card is not a member.
-    pub fn activity_regions(
-        &self,
-        thinking: &crate::state::thinking::ThinkingState,
-    ) -> Vec<crate::state::activity_region::ActivityRegion> {
-        crate::state::activity_region::regions(&thinking.blocks, &self.blocks)
-    }
-
-    /// [`Self::activity_regions`] with the log's narration runs.
+    /// This is the **only** way in: a commentary-less variant existed and was
+    /// deleted, because two ways to derive the regions is exactly how the click
+    /// path and the renderer came to disagree about which region a row belongs
+    /// to. `thinking` is `ThinkingState::blocks`; the live card is not a
+    /// member. `narration` empty reproduces the pre-`fold_commentary` shape.
     ///
-    /// The host passes these when `[ui] fold_commentary` is on; an empty slice
+    /// The host passes `narration` when `[ui] fold_commentary` is on; an empty slice
     /// gives the pre-switch shape, where narration kept its own rows.
-    pub fn activity_regions_with_commentary(
+    pub fn activity_regions(
         &self,
         thinking: &crate::state::thinking::ThinkingState,
         commentary: &[crate::state::activity_region::CommentaryRun],
@@ -557,7 +535,7 @@ impl ToolState {
         if !self.region_may_start_at(thinking, commentary, phys_idx) {
             return None;
         }
-        let found = self.activity_regions_with_commentary(thinking, commentary, is_turn_boundary);
+        let found = self.activity_regions(thinking, commentary, is_turn_boundary);
         let index = crate::state::activity_region::region_at_phys(&found, phys_idx)?;
         let region = &found[index];
         if region.phys_idx != phys_idx
@@ -642,7 +620,7 @@ impl ToolState {
         if !self.region_may_start_at(thinking, commentary, phys_idx) {
             return None;
         }
-        let found = self.activity_regions_with_commentary(thinking, commentary, is_turn_boundary);
+        let found = self.activity_regions(thinking, commentary, is_turn_boundary);
         let index = crate::state::activity_region::region_at_phys(&found, phys_idx)?;
         let region = &found[index];
         // A tool-only region is not a region here: the run below owns that row,

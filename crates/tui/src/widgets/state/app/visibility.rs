@@ -191,28 +191,73 @@ impl App {
         // Rows a card owns are blank too, and they are **not** narration:
         // absorbing one would make a run overlap a tool block or a card and the
         // region builder would drop the whole stretch.
-        let mut owned = std::collections::BTreeSet::new();
-        for block in &self.tools().blocks {
-            let rows = block.output.visual_rows(false).max(1);
-            owned.extend(block.phys_idx..block.phys_idx + rows);
-        }
-        for active in &self.tools().active {
-            let rows = active.output.visual_rows(false).max(1);
-            owned.extend(active.phys_idx..active.phys_idx + rows);
-        }
-        for block in &self.thinking().blocks {
-            let rows = crate::render::cells::thinking::COMPLETED_THINKING_ROWS;
-            owned.extend(block.phys_idx..block.phys_idx + rows);
-        }
-        if let Some(active) = &self.thinking().state().active {
-            let rows =
-                crate::render::cells::thinking::thinking_visual_rows(active.body_line_count());
-            owned.extend(active.phys_idx..active.phys_idx + rows);
-        }
+        let owned = self.card_owned_rows();
 
         agent_tui_kit::state::activity_region::commentary_runs(&self.log.items, |phys| {
             owned.contains(&phys)
         })
+    }
+
+    /// The rows each card owns, as `(first_phys_row, rows)` pairs.
+    ///
+    /// A *card* is a tool block or a thinking card, live or finished. This is
+    /// the one place that knows how many rows each kind occupies: the fold's
+    /// narration scan needs the set (a card's blank rows are not narration) and
+    /// the renderer needs the pairs (to know which rows a card paints). They
+    /// must agree — two copies drifted once and a narration run swallowed a
+    /// card's rows, which made the region builder drop the whole stretch.
+    ///
+    /// Tool blocks first, then thinking cards, in log order within each group.
+    pub(crate) fn card_row_spans(&self) -> Vec<(usize, usize)> {
+        let mut spans = self.tool_row_spans();
+        spans.extend(self.thinking_row_spans());
+        spans
+    }
+
+    /// [`Self::card_row_spans`], tool blocks only.
+    pub(crate) fn tool_row_spans(&self) -> Vec<(usize, usize)> {
+        self.tools()
+            .blocks
+            .iter()
+            .map(|block| (block.phys_idx, block.output.visual_rows(false).max(1)))
+            .chain(
+                self.tools()
+                    .active
+                    .iter()
+                    .map(|active| (active.phys_idx, active.output.visual_rows(false).max(1))),
+            )
+            .collect()
+    }
+
+    /// [`Self::card_row_spans`], thinking cards only.
+    pub(crate) fn thinking_row_spans(&self) -> Vec<(usize, usize)> {
+        let mut spans: Vec<(usize, usize)> = self
+            .thinking()
+            .blocks
+            .iter()
+            .map(|block| {
+                (
+                    block.phys_idx,
+                    crate::render::cells::thinking::COMPLETED_THINKING_ROWS,
+                )
+            })
+            .collect();
+        if let Some(active) = &self.thinking().state().active {
+            spans.push((
+                active.phys_idx,
+                crate::render::cells::thinking::thinking_visual_rows(active.body_line_count()),
+            ));
+        }
+        spans
+    }
+
+    /// The rows a card owns, as a set — [`Self::card_row_spans`] expanded.
+    pub(crate) fn card_owned_rows(&self) -> std::collections::BTreeSet<usize> {
+        let mut owned = std::collections::BTreeSet::new();
+        for (phys, rows) in self.card_row_spans() {
+            owned.extend(phys..phys + rows);
+        }
+        owned
     }
 
     /// Every activity region of this log, with this log's turn boundaries.
@@ -220,11 +265,10 @@ impl App {
         &self,
     ) -> Vec<agent_tui_kit::state::activity_region::ActivityRegion> {
         let commentary = self.commentary_runs();
-        self.tools().activity_regions_with_commentary(
-            self.thinking().state(),
-            &commentary,
-            |phys| self.is_turn_boundary_row(phys),
-        )
+        self.tools()
+            .activity_regions(self.thinking().state(), &commentary, |phys| {
+                self.is_turn_boundary_row(phys)
+            })
     }
 
     /// The first foldable fold that has any row inside the viewport.

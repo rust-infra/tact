@@ -43,7 +43,7 @@ impl App {
 
         let text_references = clipboard_paste::files_in_uri_text(terminal_text);
         if !text_references.is_empty() {
-            return self.references_for(text_references);
+            return self.references_for(text_references, terminal_text);
         }
         // A terminal can also forward the path itself, with no `file://` scheme
         // and no `@`: a file-manager copy of a bare path, or a `pwd`-style
@@ -53,7 +53,7 @@ impl App {
         // told to open.
         if let Some(path) = clipboard_paste::file_in_plain_text(terminal_text, Some(&self.work_dir))
         {
-            return self.references_for(vec![path]);
+            return self.references_for(vec![path], terminal_text);
         }
         if !terminal_text.is_empty() {
             return PasteAction::Text(terminal_text.to_string());
@@ -63,7 +63,7 @@ impl App {
             return PasteAction::Text(String::new());
         };
         if !snapshot.files.is_empty() || snapshot.image.is_some() {
-            return self.references_from_snapshot(snapshot);
+            return self.references_from_snapshot(snapshot, "");
         }
 
         // An empty terminal payload and nothing referenceable on the pasteboard:
@@ -71,7 +71,15 @@ impl App {
         PasteAction::Text(snapshot.text.unwrap_or_default())
     }
 
-    fn references_for(&self, paths: Vec<std::path::PathBuf>) -> PasteAction {
+    /// Turn clipboard paths into `@` references, falling back to `fallback`
+    /// when none of them can be referenced.
+    ///
+    /// `fallback` is what the terminal already handed over (empty when the
+    /// pasteboard was read because the terminal sent nothing). It matters: a
+    /// path can name a file that vanished between `is_file()` and the copy, or
+    /// a directory. Returning an empty action there would swallow the paste
+    /// without a word — the user pressed the key and nothing happened.
+    fn references_for(&self, paths: Vec<std::path::PathBuf>, fallback: &str) -> PasteAction {
         let mut references = Vec::new();
         let mut copied = 0;
         for path in paths {
@@ -83,9 +91,10 @@ impl App {
         }
 
         if references.is_empty() {
-            // Every path was unusable (deleted, a directory). Keep whatever the
-            // terminal sent so the user does not lose their paste silently.
-            return PasteAction::Text(String::new());
+            // Nothing was referenceable: hand the paste back as text rather
+            // than dropping it. For a URI-list paste that means the URIs land
+            // verbatim, which at least tells the reader what happened.
+            return PasteAction::Text(fallback.to_string());
         }
         PasteAction::References { references, copied }
     }
@@ -117,7 +126,7 @@ impl App {
             return false;
         };
         if !snapshot.files.is_empty() || snapshot.image.is_some() {
-            self.apply_paste(self.references_from_snapshot(snapshot), None);
+            self.apply_paste(self.references_from_snapshot(snapshot, ""), None);
             return true;
         }
         match snapshot.text {
@@ -130,12 +139,17 @@ impl App {
     }
 
     /// Turn a snapshot that has a file or an image into a [`PasteAction`].
-    fn references_from_snapshot(&self, snapshot: Snapshot) -> PasteAction {
+    ///
+    /// `fallback` is the terminal's own text, used when the payload cannot be
+    /// turned into a reference (see [`Self::references_for`]). For a bitmap it
+    /// is normally empty — a screenshot has no text form — so a failure there
+    /// is genuinely nothing to paste; a URI list keeps its URIs.
+    fn references_from_snapshot(&self, snapshot: Snapshot, fallback: &str) -> PasteAction {
         if !snapshot.files.is_empty() {
-            return self.references_for(snapshot.files);
+            return self.references_for(snapshot.files, fallback);
         }
         let Some((width, height, rgba)) = snapshot.image else {
-            return PasteAction::Text(String::new());
+            return PasteAction::Text(fallback.to_string());
         };
         match clipboard_paste::save_image(&self.work_dir, width, height, &rgba) {
             Some(reference) => PasteAction::References {
@@ -317,6 +331,30 @@ mod tests {
             "a picker or palette must not receive an attachment reference"
         );
     }
+    #[test]
+    fn a_uri_list_whose_files_are_gone_falls_back_to_the_uris_as_text() {
+        // The reported defect: `references_for` returned an empty action when
+        // every path was unusable, so the paste vanished without a word. A path
+        // can name a directory, or a file deleted between `is_file()` and the
+        // copy.
+        let workspace = tempfile::tempdir().unwrap();
+        let (mut app, _rx) = TestApp::new().into_commands();
+        app.work_dir = workspace.path().to_path_buf();
+        app.input_mode = InputMode::Insert;
+
+        // A directory is not referenceable (`reference_for` rejects it).
+        let directory = workspace.path().join("sub");
+        fs::create_dir(&directory).unwrap();
+        let text = format!("file://{}", directory.display());
+
+        let action = app.resolve_paste(Some(&text));
+
+        assert!(
+            matches!(action, PasteAction::Text(ref kept) if !kept.is_empty()),
+            "an unusable paste must come back as text, not vanish"
+        );
+    }
+
     #[test]
     fn references_land_at_the_cursor_with_separators() {
         let (mut app, _rx) = TestApp::new().into_commands();

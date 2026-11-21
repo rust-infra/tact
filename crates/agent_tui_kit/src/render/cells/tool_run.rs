@@ -128,8 +128,9 @@ impl ToolRunCell {
         // A failure keeps its color after folding: `⚠` plus the error hue is
         // what tells the reader that one of these calls went wrong, without
         // making them count the tool labels.
-        // No glyph in the text: the row's fold gutter paints it, so the
-        // summary text starts at [`FOLD_TEXT_OFFSET`] in both fold states.
+        // No glyph in the text: the row's fold gutter paints it, two columns
+        // left of the text (`FOLD_GUTTER_COLS`, via `fold_glyph_x`). The text
+        // itself never moves between the folded and open states.
         let color = self.summary_color;
         // The total comes last, after the tool labels: it answers "how long did
         // this cost me", which a reader asks after "what ran".

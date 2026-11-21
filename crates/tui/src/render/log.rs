@@ -55,6 +55,12 @@ impl PinnedRow {
 /// contiguous run to find where the reader's words begin — the header shows the
 /// first line, and a tail would show the end of a pasted block.
 fn current_prompt_rows(app: &App) -> Option<std::ops::RangeInclusive<usize>> {
+    // A header is only meaningful while the turn it describes is in flight.
+    // `task_start_time` is the same field the live stats row reads, so the two
+    // turn-boundary affordances cannot disagree about whether a turn is
+    // running. Without this, scrolling up after a turn finished pinned the
+    // *previous* turn's prompt — exactly the claim the doc above forbids.
+    app.task_start_time?;
     let last = app
         .log
         .items
@@ -179,46 +185,22 @@ pub(crate) fn render_log_panel_with_borders(
     // Owned copies, taken before `log_scroll` is borrowed mutably: the
     // commentary-run builder needs the card-occupied rows, which live on the
     // tools and thinking components.
-    let tool_rows: Vec<(usize, usize)> = app
-        .tools()
-        .state()
-        .blocks
-        .iter()
-        .map(|b| (b.phys_idx, b.output.visual_rows(false).max(1)))
-        .chain(
-            app.tools()
-                .state()
-                .active
-                .iter()
-                .map(|a| (a.phys_idx, a.output.visual_rows(false).max(1))),
-        )
-        .collect();
-    let mut card_rows: Vec<(usize, usize)> = app
-        .thinking()
-        .state()
-        .blocks
-        .iter()
-        .map(|b| {
-            (
-                b.phys_idx,
-                crate::render::cells::thinking::COMPLETED_THINKING_ROWS,
-            )
-        })
-        .collect();
-    if let Some(active) = &app.thinking().state().active {
-        card_rows.push((
-            active.phys_idx,
-            crate::render::cells::thinking::thinking_visual_rows(active.body_line_count()),
-        ));
-    }
+    //
+    // One derivation for both consumers. The pairs feed the renderer (which
+    // rows a card paints); the set feeds the narration scan (a card's blank
+    // rows are not narration). Two copies of this scan existed and drifted,
+    // which let a narration run swallow a card's rows.
+    let tool_rows = app.tool_row_spans();
+    let card_rows = app.thinking_row_spans();
+
     // Tool runs a mixed region already stands for, so their own summaries are
     // not drawn on top of it.
     let covered_runs: std::collections::BTreeSet<usize> = {
-        let regions = app.tools().activity_regions_with_commentary(
-            app.thinking().state(),
-            &commentary,
-            |phys| app.log_scroll.turn_boundary_rows.contains(&phys),
-        );
+        let regions = app
+            .tools()
+            .activity_regions(app.thinking().state(), &commentary, |phys| {
+                app.log_scroll.turn_boundary_rows.contains(&phys)
+            });
         let runs = agent_tui_kit::state::tool_group::runs(&app.tools().state().blocks);
         regions
             .iter()
