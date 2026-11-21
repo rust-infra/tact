@@ -146,8 +146,9 @@ impl ActivityRegionCell {
         // A failure keeps its colour after folding: `⚠` plus the error hue is
         // what tells the reader one of these calls went wrong without making
         // them count the labels.
-        // No glyph in the text: the row's fold gutter paints it, so the
-        // summary text starts at [`FOLD_TEXT_OFFSET`] in both fold states.
+        // No glyph in the text: the row's fold gutter paints it, two columns
+        // left of the text (`FOLD_GUTTER_COLS`, via `fold_glyph_x`). The text
+        // itself never moves between the folded and open states.
         let color = self.summary_color;
         let mut spans = vec![Span::styled(
             summary.text,
@@ -221,6 +222,34 @@ impl Renderable for ActivityRegionCell {
         Paragraph::new(vec![line])
             .style(Style::default().fg(self.fg).bg(self.bg))
             .render(Rect::new(area.x, area.y, area.width, 1), buf);
+
+        // Filling the tail is a *second* pass on purpose: `Paragraph` styles
+        // the cells its text reaches, and the summary is usually shorter than
+        // the row. Painting first does not help — the paragraph's own cells
+        // overwrite it and the rest keeps the old frame's style. This is the
+        // same reason `render_live_stats_band` repaints its row's background.
+        // It runs from the gutter (where the fold glyph sits), not the text
+        // area, so the indent columns are covered too.
+        // `set_style` intersects with the buffer, so a row that ends at the
+        // panel edge (where `area.x + area.width` is one past the last column)
+        // cannot index out of bounds. Colouring cell by cell by hand did.
+        let painted = Rect::new(
+            crate::render::util::fold_glyph_x(area.x),
+            area.y,
+            area.width + self.indent,
+            1,
+        );
+        buf.set_style(painted, Style::default().fg(self.fg).bg(self.bg));
+        // The glyph and the summary text carry their own foreground; only the
+        // background is being asserted here, so re-apply it without touching
+        // any cell that already has ink of its own.
+        for x in painted.left()..painted.right().min(buf.area.right()) {
+            if x < buf.area.left() {
+                continue;
+            }
+            let cell = &mut buf[(x, painted.y)];
+            cell.bg = self.bg;
+        }
     }
 }
 
@@ -241,13 +270,17 @@ mod tests {
         out
     }
 
-    fn render_text(cell: &ActivityRegionCell) -> String {
+    fn render_terminal(cell: &ActivityRegionCell) -> Terminal<TestBackend> {
         let backend = TestBackend::new(80, cell.height(80));
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
             .draw(|frame| cell.render(frame.area(), frame.buffer_mut()))
             .expect("draw");
-        buffer_text(terminal.backend().buffer())
+        terminal
+    }
+
+    fn render_text(cell: &ActivityRegionCell) -> String {
+        buffer_text(render_terminal(cell).backend().buffer())
     }
 
     fn mixed(folded: bool) -> ActivityRegionCell {
@@ -283,6 +316,56 @@ mod tests {
         assert!(text.contains("2 tools"), "{text}");
         assert!(text.contains("Read ×2"), "{text}");
         assert!(text.contains("1.20s"), "{text}");
+    }
+
+    /// Render invariant (AGENTS.md): a TUI cell paints its **full** area.
+    ///
+    /// The folded row is one row wide and the summary is usually shorter than
+    /// the panel. `Paragraph` only styles the cells its text reaches, so the
+    /// row repaints its own background afterwards — without that step the
+    /// indent column and the column just past the last glyph keep the previous
+    /// frame's style, which reads as a band punched through the row.
+    ///
+    /// A wide glyph's **continuation** cell is skipped: `Buffer` writes its
+    /// style on the leading cell only, so the second column of `📖` reads back
+    /// `Reset` even on a fully painted row. Counting it would make this
+    /// assertion fail on correct code.
+    #[test]
+    fn a_folded_region_paints_its_whole_row_with_the_theme_background() {
+        let cell = mixed(true);
+        let theme = Theme::from(crate::theme::ThemeName::Dark);
+        let terminal = render_terminal(&cell);
+        let buffer = terminal.backend().buffer();
+
+        assert_eq!(buffer.area.height, 1, "a folded region is one row");
+
+        let holes: Vec<u16> = (0..buffer.area.width)
+            .filter(|&x| {
+                // Skip the trailing column of a double-width glyph.
+                let after_wide = x > 0
+                    && buffer[(x - 1, 0)]
+                        .symbol()
+                        .chars()
+                        .any(|c| unicode_width::UnicodeWidthChar::width(c) == Some(2));
+                !after_wide && buffer[(x, 0)].bg == ratatui::style::Color::Reset
+            })
+            .collect();
+        assert!(
+            holes.is_empty(),
+            "the folded row leaves holes at {holes:?}; its background must run \
+             from the fold gutter to the last column: {}",
+            buffer_text(buffer)
+        );
+
+        for x in 0..buffer.area.width {
+            if buffer[(x, 0)].bg != ratatui::style::Color::Reset {
+                assert_eq!(
+                    buffer[(x, 0)].bg,
+                    theme.bg,
+                    "folded row cell at x={x} must carry theme.bg"
+                );
+            }
+        }
     }
 
     #[test]

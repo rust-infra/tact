@@ -364,7 +364,9 @@ theme = "ink"     # ink | ink-light | claude | claude-dark | retro | brutal | no
 # folded. On (default) matches the desktop transcript; off restores the shape
 # where every "let me check that" line keeps its own rows.
 # Toggle at runtime with /fold-commentary.
-# fold_commentary = false
+#
+# The commented line shows the default, like every other switch in this file.
+# fold_commentary = true
 
 # ---------------------------------------------------------------------------
 # Voice input (macOS-first; independent of LLM providers)

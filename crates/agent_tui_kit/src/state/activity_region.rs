@@ -88,12 +88,6 @@ pub struct ActivityRegion {
 }
 
 impl ActivityRegion {
-    /// Rows this region saves when folded.
-    #[must_use]
-    pub fn saved_rows(&self) -> usize {
-        self.expanded_rows.saturating_sub(self.folded_rows)
-    }
-
     /// Whether `phys_idx` is one of the rows this region owns when expanded.
     #[must_use]
     pub fn contains(&self, phys_idx: usize) -> bool {
@@ -381,7 +375,7 @@ pub fn total_span(
     tools: &[ToolBlock],
     region: &ActivityRegion,
 ) -> Option<Duration> {
-    let mut spans: Vec<super::tool_state::ToolSpan> = region
+    let spans: Vec<super::tool_state::ToolSpan> = region
         .members
         .iter()
         .filter_map(|member| match member.kind {
@@ -392,26 +386,7 @@ pub fn total_span(
             RegionMemberKind::Commentary => None,
         })
         .collect();
-    if spans.is_empty() {
-        return None;
-    }
-    spans.sort_by_key(|span| span.started_at);
-
-    let mut total = Duration::ZERO;
-    let mut current_start = spans[0].started_at;
-    let mut current_end = spans[0].finished_at;
-    for span in &spans[1..] {
-        if span.started_at <= current_end {
-            // Overlaps (or touches) the interval being accumulated.
-            current_end = current_end.max(span.finished_at);
-        } else {
-            total += current_end.saturating_duration_since(current_start);
-            current_start = span.started_at;
-            current_end = span.finished_at;
-        }
-    }
-    total += current_end.saturating_duration_since(current_start);
-    Some(total)
+    super::tool_state::unioned_span(&spans)
 }
 
 /// Whether a region can be folded yet.

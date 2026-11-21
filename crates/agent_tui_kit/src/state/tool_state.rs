@@ -148,6 +148,38 @@ pub struct ToolSpan {
     pub finished_at: std::time::Instant,
 }
 
+/// Wall time covered by `spans`, counting overlapping intervals once.
+///
+/// A span per member, unioned — not summed — because a tool run's total and an
+/// activity region's total answer the same question ("how long did this take
+/// me"), and both are made of spans that can overlap (parallel calls, a
+/// thought running under a call). Two copies of this accumulation existed, one
+/// in each module, each with its own note saying it matched the other; this is
+/// the single one they now share.
+pub fn unioned_span(spans: &[ToolSpan]) -> Option<std::time::Duration> {
+    let mut spans = spans.to_vec(); // `ToolSpan: Copy`; sorting needs ownership
+    if spans.is_empty() {
+        return None;
+    }
+    spans.sort_by_key(|span| span.started_at);
+
+    let mut total = std::time::Duration::ZERO;
+    let mut current_start = spans[0].started_at;
+    let mut current_end = spans[0].finished_at;
+    for span in &spans[1..] {
+        if span.started_at <= current_end {
+            // Overlaps (or touches) the interval being accumulated.
+            current_end = current_end.max(span.finished_at);
+        } else {
+            total += current_end.saturating_duration_since(current_start);
+            current_start = span.started_at;
+            current_end = span.finished_at;
+        }
+    }
+    total += current_end.saturating_duration_since(current_start);
+    Some(total)
+}
+
 impl DiffPopup {
     pub fn copy_content(&self) -> Option<String> {
         self.cached_content

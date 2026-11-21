@@ -381,13 +381,6 @@ pub fn render_log_panel_pure(
         // thinking card owns that row; a tool-only run never starts at a card.
         if let Some(phys) = phys_idx
             && let Some(cell) = {
-                #[cfg(debug_assertions)]
-                if std::env::var_os("TACT_DEBUG_FOLD").is_some() {
-                    eprintln!(
-                        "region_fold_summary phys={phys} runs={}",
-                        ctx.commentary_runs.len()
-                    );
-                }
                 ctx.tools.region_fold_summary(
                     ctx.thinking,
                     ctx.commentary_runs,
@@ -752,8 +745,11 @@ pub fn render_log_panel_pure(
         // Push at this row's visual-line offset; LogColumnRenderer does a second
         // viewport clip and calls TextCell::render_partial for sub-line trimming.
         if let Some(_region_id) = narration_fold {
-            // An open region headed by prose: the glyph belongs to this row, and
-            // the row's text is shifted right so the two do not overlap.
+            // An open region headed by prose: the glyph belongs to this row.
+            // The text does **not** move — the glyph goes into the gutter
+            // `FOLD_GUTTER_COLS` left of the text's indent (`fold_glyph_x`),
+            // which is the column the folded summary's `⏵` occupies. That is
+            // what keeps the control under the pointer across a flip.
             let cell = FoldGutterCell {
                 inner: cell,
                 style: Style::default().fg(ctx.theme.accent).bg(ctx.theme.bg),
@@ -949,6 +945,42 @@ mod fold_gutter_tests {
                 );
             }
         }
+    }
+
+    /// Render invariant (AGENTS.md): the glyph is painted on the row's own
+    /// surface, not on a default-styled cell.
+    ///
+    /// This control hangs off a *narration* row, whose text is drawn by the
+    /// prose cell — so the gutter column is the one place in the row the fold
+    /// owns, and it must carry the theme background like every other painted
+    /// cell, or it shows up as a bright speck inside an otherwise themed row.
+    #[test]
+    fn the_gutter_glyph_carries_the_row_background() {
+        let theme = crate::theme::Theme::from(crate::theme::ThemeName::Dark);
+        let cell = FoldGutterCell {
+            inner: TwoRows,
+            style: Style::default().fg(theme.accent).bg(theme.bg),
+            indent: 3,
+        };
+        let area = Rect::new(0, 0, 20, 2);
+        let mut buf = Buffer::empty(area);
+
+        cell.render(area, &mut buf);
+
+        let glyph_x = (0..area.width)
+            .find(|&x| buf[(x, 0)].symbol() == "⏷")
+            .expect("the fold glyph must be drawn on the head row");
+        assert_eq!(
+            buf[(glyph_x, 0)].bg,
+            theme.bg,
+            "the gutter glyph must sit on the row's background"
+        );
+        assert_eq!(buf[(glyph_x, 0)].fg, theme.accent);
+        assert_eq!(
+            glyph_x,
+            crate::render::util::fold_glyph_x(3),
+            "the glyph goes FOLD_GUTTER_COLS left of the text indent"
+        );
     }
 
     #[test]

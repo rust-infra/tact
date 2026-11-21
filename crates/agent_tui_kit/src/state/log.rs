@@ -146,11 +146,6 @@ impl LogItemKind {
     pub fn is_user(self) -> bool {
         matches!(self, Self::User)
     }
-
-    /// Whether this row is assistant prose — the answer or its narration.
-    pub fn is_assistant_prose(self) -> bool {
-        matches!(self, Self::AssistantMarkdown | Self::AssistantCommentary)
-    }
 }
 
 /// One physical shared-log row.

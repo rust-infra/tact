@@ -1861,6 +1861,10 @@ fn a_scrolled_away_prompt_is_pinned_to_the_top() {
     for i in 0..40 {
         app.add_system_message(format!("noise line {i}"));
     }
+    // A header only claims "this is what you are working on" while a turn is in
+    // flight (`prompt_needs_pinning`); see
+    // `a_finished_turn_does_not_keep_its_prompt_pinned` for the other half.
+    app.task_start_time = Some(chrono::Local::now() - chrono::Duration::seconds(5));
     // Draw once so the caches exist, then scroll to the very top.
     let _ = render_log_panel_text(&mut app, 60, 14);
     app.log_scroll.follow = false;
@@ -1878,8 +1882,14 @@ fn a_scrolled_away_prompt_is_pinned_to_the_top() {
     );
 }
 
-/// A header costs a body row. A panel that can still afford it keeps the
-/// header; one that cannot keeps its body instead.
+/// A header costs a body row, on top of whatever the live stats row already
+/// took. A panel that can still afford both keeps the header; one that cannot
+/// keeps its body instead.
+///
+/// The combined budget is the point. A turn in flight publishes **two**
+/// turn-boundary affordances — the live stats row and the header — and both are
+/// deducted from the same panel height, so this case measures the header
+/// against what the stats row left behind.
 #[test]
 fn a_panel_that_cannot_afford_a_header_keeps_its_body() {
     let mut app = make_app();
@@ -1887,22 +1897,52 @@ fn a_panel_that_cannot_afford_a_header_keeps_its_body() {
     for i in 0..20 {
         app.add_system_message(format!("noise {i}"));
     }
+    // Required for a header at all (`prompt_needs_pinning`).
+    app.task_start_time = Some(chrono::Local::now());
 
-    // 5 rows: 2 for borders, leaving 3 — one header plus the 2-row floor.
-    let _ = render_log_panel_text(&mut app, 40, 5);
+    // 8 rows: 2 borders + 1 stats + 1 header + 4 body — everything fits.
+    let _ = render_log_panel_text(&mut app, 40, 8);
     app.log_scroll.follow = false;
     app.log_scroll.visual_top = 2;
-    let _ = render_log_panel_text(&mut app, 40, 5);
+    let _ = render_log_panel_text(&mut app, 40, 8);
     assert_eq!(
         app.log_scroll.pinned_top_inset, 1,
-        "3 body rows still leave the 2-row floor below a header"
+        "8 rows still fund the stats row, a header and the 2-row floor"
     );
 
-    // 4 rows: 2 for borders, leaving 2 — a header would starve the body.
-    let _ = render_log_panel_text(&mut app, 40, 4);
+    // 5 rows: 2 borders + 1 stats leaves 2 — a header would starve the body.
+    let _ = render_log_panel_text(&mut app, 40, 5);
     assert_eq!(
         app.log_scroll.pinned_top_inset, 0,
-        "2 rows cannot fund both a header and the body floor"
+        "2 rows after the stats row cannot fund both a header and the body floor"
+    );
+}
+
+/// A finished turn's prompt is history, not a header.
+///
+/// The header exists to answer "what am I working on"; after the turn ends it
+/// would answer with the wrong turn. `task_start_time` is the same field the
+/// live stats row reads, so the two turn-boundary affordances agree.
+#[test]
+fn a_finished_turn_does_not_keep_its_prompt_pinned() {
+    let mut app = make_app();
+    app.add_user_message("an old finished prompt".into());
+    for i in 0..40 {
+        app.add_system_message(format!("noise line {i}"));
+    }
+    app.task_start_time = None; // the turn is over
+    let _ = render_log_panel_text(&mut app, 60, 14);
+    app.log_scroll.follow = false;
+    app.log_scroll.visual_top = 4;
+    let text = render_log_panel_text(&mut app, 60, 14);
+
+    assert!(
+        !text.contains("> an old finished prompt"),
+        "a finished turn must not pin its prompt, got:\n{text}"
+    );
+    assert_eq!(
+        app.log_scroll.pinned_top_inset, 0,
+        "no row may be taken for a header that is not drawn"
     );
 }
 
@@ -1918,6 +1958,8 @@ fn a_long_multi_line_prompt_is_elided_to_one_row() {
     for i in 0..40 {
         app.add_system_message(format!("noise line {i}"));
     }
+    // Pinning requires a turn in flight (`prompt_needs_pinning`).
+    app.task_start_time = Some(chrono::Local::now());
     let _ = render_log_panel_text(&mut app, 50, 14);
     app.log_scroll.follow = false;
     app.log_scroll.visual_top = 4;
