@@ -16,6 +16,13 @@ tact_host = { version = "2.0.0", path = "../tact_host" }
 # model index; the crate itself already compiles with it through `tact`.
 tact_llm = { version = "2.0.0", path = "../tact_llm", default-features = false, features = ["model-discovery"] }
 tact_protocol = { version = "2.0.0", path = "../protocol" }
+# The in-process ACP backend runs the same agent the binary serves; taking the
+# library keeps one implementation of the protocol surface.
+tact-acp = { version = "2.0.0", path = "../tact-acp", optional = true }
+# The ACP bridge translates an ACP agent's `session/update` traffic back into
+# the `AgentUpdate` vocabulary the desktop transcript already reduces, so a
+# Tact agent running out of process renders exactly like one in process.
+agent-client-protocol = { version = "5.3", default-features = false, features = ["process", "unstable_protocol_v2"] }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
@@ -35,3 +42,7 @@ tempfile = { workspace = true }
 [features]
 # Representative runtime data for the desktop UI capture harness.
 ui-capture = []
+# Speak ACP to the agent instead of calling it directly. The transport is
+# either a subprocess (`acp_host`) or a loopback channel (`acp_inprocess`);
+# both run the same `tact_acp::serve` agent, so the traffic is identical.
+acp-host = ["dep:tact-acp"]

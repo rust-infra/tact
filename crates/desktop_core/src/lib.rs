@@ -1,5 +1,10 @@
 //! GPUI-free desktop domain model.
 
+pub mod acp_bridge;
+#[cfg(feature = "acp-host")]
+pub mod acp_host;
+#[cfg(feature = "acp-host")]
+pub mod acp_inprocess;
 mod command_router;
 mod commands;
 mod config;
@@ -52,11 +57,11 @@ pub fn thought_tiers(model: &str) -> Option<tact_host::ThoughtTiers> {
     tact::config::try_settings().map(|settings| tact_host::thought_tiers(&settings, model))
 }
 
-pub use tact_host::{DEFAULT_THINKING_BUDGETS, ThoughtKind, ThoughtTiers};
 pub use tact::store::ArchiveFilter;
 pub use tact::voice::{VoiceCommand, VoiceEvent};
 pub use tact_agent_api::MessagePhase;
 pub use tact_catalog::{CatalogLocale, CommandCatalog, CommandId, LocalizedText};
+pub use tact_host::{DEFAULT_THINKING_BUDGETS, ThoughtKind, ThoughtTiers};
 pub use tact_protocol::{
     BackgroundTaskStatusSnapshot, GoalCriterionStatusSnapshot, GoalPhaseSnapshot,
     GoalStatusSnapshot, HookItemSnapshot, HookSnapshot, McpServerStatusSnapshot,

@@ -67,6 +67,20 @@ pub async fn run() -> anyhow::Result<()> {
             .map(|error| format!("{error:#}"))
     });
 
+    serve(Stdio::new(), config_error).await
+}
+
+/// Serve ACP over any transport, in-process or stdio.
+///
+/// The protocol does not require a child process: `agent-client-protocol`'s
+/// `Channel` is a transport like `Stdio`, so an embedder can run this agent in
+/// its own process and see identical traffic. `config_error` is the
+/// argv/config failure to report through the session handlers; an embedder
+/// that already installed process config passes `None`.
+pub async fn serve(
+    transport: impl agent_client_protocol::ConnectTo<agent_client_protocol::Agent> + 'static,
+    config_error: Option<String>,
+) -> anyhow::Result<()> {
     let manager = SessionManager::new(config_error);
 
     let result = Agent
@@ -367,7 +381,7 @@ pub async fn run() -> anyhow::Result<()> {
             },
             agent_client_protocol::on_receive_notification!(),
         )
-        .connect_to(Stdio::new())
+        .connect_to(transport)
         .await;
 
     manager.shutdown_all().await;
