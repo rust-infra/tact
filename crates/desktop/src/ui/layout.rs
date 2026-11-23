@@ -19,14 +19,16 @@ pub const INSPECTOR_MAX_WIDTH: f32 = 520.0;
 /// the queue accessory's column. The prototype's `min(900px, …)`.
 pub const COMPOSER_WIDTH: f32 = 900.0;
 
-/// The width of a composer accessory: the queue, the gate banner, the sticky
-/// task card.
+/// The width of a composer accessory: the queue badge and its list.
 ///
 /// Deliberately narrower than [`COMPOSER_WIDTH`]: an accessory reads as
 /// something the composer owns, and a full-width one looks like a second input
 /// box. An accessory that centers itself instead of sharing the composer's
 /// column is narrower *and* offset from the frame it belongs to; `items_start`
 /// pins it to the frame's left gutter instead.
+///
+/// The gate banner and the sticky task card are *not* accessories: both fill
+/// the composer's column, like the prototype's `.sticky-host`.
 pub const ACCESSORY_WIDTH: f32 = 780.0;
 
 /// The horizontal padding of the composer area.

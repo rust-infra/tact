@@ -96,7 +96,8 @@ set `CFBundleIconFile`, and ship the PNG in the archives.
 - Sticky Tasks sits between the transcript and composer, defaults to the full
   task list, can collapse to the current task, and links to Goals, Agents and
   Background. Background opens a task-status popover with command, elapsed time
-  and output/stop actions.
+  and output/stop actions. The card fills the composer's 900px column, so the
+  two share both edges; the permission banner on top of it does the same.
 - `ask_user` single-select uses a radio group with explicit Confirm/Cancel;
   multi-select uses toggle rows, a selected count and a resolved summary.
 - After Confirm or Cancel, the question and option area auto-collapse, leaving

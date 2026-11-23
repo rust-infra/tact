@@ -7976,9 +7976,8 @@ impl DesktopRoot {
         h_flex()
             .debug_selector(|| "gate-banner".into())
             .w_full()
-            // Shares the accessory width with the task card below it, so the
-            // strip has one right edge instead of two.
-            .max_w(px(crate::ui::layout::ACCESSORY_WIDTH))
+            // Shares the card's width, so the strip has one right edge instead
+            // of two. Both fill the composer's column now.
             .min_w_0()
             .gap_2()
             .rounded_md()
@@ -8259,9 +8258,9 @@ impl DesktopRoot {
             .w_full()
             // The same gutter the composer area applies, so the strip's content
             // box is the composer's content box at every window width. The
-            // narrower card is then pinned to that gutter by `items_start`
-            // further in: centering it here would give the strip a second axis,
-            // which is what made it float away from the composer.
+            // column below then centers to the composer's own 900px, and the
+            // card fills it, so the strip is the composer's header rather than
+            // a narrower surface floating above it.
             .px(px(crate::ui::layout::COMPOSER_PADDING_X))
             .pt_2()
             .pb(px(crate::ui::layout::ACCESSORY_GAP))
@@ -8282,8 +8281,14 @@ impl DesktopRoot {
                             v_flex()
                                 .id("sticky-task-card")
                                 .debug_selector(|| "sticky-task-card".into())
+                                // The card fills the composer's own column
+                                // instead of being a narrower accessory
+                                // pinned to its left gutter: the prototype's
+                                // `.sticky-host` is the composer's 900px,
+                                // centred, and a card that stopped 120px
+                                // short of the frame above it read as a
+                                // separate surface rather than its header.
                                 .w_full()
-                                .max_w(px(crate::ui::layout::ACCESSORY_WIDTH))
                                 .flex_none()
                                 .min_w_0()
                                 .rounded_lg()
@@ -20418,10 +20423,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(data_dir);
     }
 
-    /// The sticky strip is the composer's accessory: its card shares the
-    /// composer's gutter, is narrower than it, and settles against it.
+    /// The sticky card is the composer's own column: it matches the frame's
+    /// width, shares its edges, and settles one tight gap above it.
     #[gpui::test]
-    fn the_sticky_card_is_a_narrow_accessory_above_the_composer(cx: &mut TestAppContext) {
+    fn the_sticky_card_matches_the_composer_column(cx: &mut TestAppContext) {
         let (root, window, shutdown, data_dir) = probe_root(cx);
         window.simulate_resize(size(px(1280.), px(840.)));
         window.update(|window, cx| {
@@ -20439,9 +20444,9 @@ mod tests {
         let composer = window
             .debug_bounds("composer-frame")
             .expect("composer frame");
-        assert!(
-            card.size.width < composer.size.width,
-            "the card is narrower than the composer it belongs to: card={card:?}, composer={composer:?}"
+        assert_eq!(
+            card.size.width, composer.size.width,
+            "the card is the composer's own column, not a narrower accessory: card={card:?}, composer={composer:?}"
         );
         assert_eq!(
             card.origin.x, composer.origin.x,

@@ -799,6 +799,7 @@
 <li class="toc-l2"><a href="#70-2026-11-17--acp-%E6%B8%85%E7%A9%BA%E7%9A%84%E5%BE%85%E5%8A%9E%E9%9D%A2%E6%9D%BF%E8%A6%81%E7%A7%BB%E9%99%A4%E5%AD%90%E4%BB%A3%E7%90%86%E5%8D%A1%E7%89%87%E4%B8%8D%E5%96%82%E7%BB%99-t3" title="70. 2026-11-17 — ACP：清空的待办面板要移除，子代理会话不喂给 T3"><span class="toc-label">70. 2026-11-17 — ACP：清空的待办面板要移除，子代理会话不喂给 T3</span></a></li>
 <li class="toc-l2"><a href="#71-2026-11-17--%E6%A1%8C%E9%9D%A2%E5%BE%AE%E5%8E%8B%E7%BC%A9%E5%BC%80%E5%85%B3%E6%98%BE%E7%A4%BA-on-%E5%8D%B4%E6%B0%B8%E4%B8%8D%E8%BF%90%E8%A1%8C" title="71. 2026-11-17 — 桌面微压缩开关显示 on，却永不运行"><span class="toc-label">71. 2026-11-17 — 桌面微压缩开关显示 on，却永不运行</span></a></li>
 <li class="toc-l2"><a href="#72-2026-11-17--acp-%E5%8E%8B%E7%BC%A9%E5%8D%A1%E7%89%87%E5%81%9C%E5%9C%A8-compacting-%E6%B0%B8%E4%B8%8D%E8%90%BD%E5%9C%B0" title="72. 2026-11-17 — ACP：压缩卡片停在 Compacting…，永不落地"><span class="toc-label">72. 2026-11-17 — ACP：压缩卡片停在 Compacting…，永不落地</span></a></li>
+<li class="toc-l2"><a href="#73-2026-11-23--%E6%A1%8C%E9%9D%A2sticky-%E4%BB%BB%E5%8A%A1%E5%8D%A1%E6%94%B9%E6%88%90%E4%B8%8E-composer-%E5%90%8C%E5%AE%BD%E5%B1%85%E4%B8%AD" title="73. 2026-11-23 — 桌面：Sticky 任务卡改成与 composer 同宽、居中"><span class="toc-label">73. 2026-11-23 — 桌面：Sticky 任务卡改成与 composer 同宽、居中</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -23384,10 +23385,10 @@ Desktop：队列、权限条与任务卡对齐到 composer 的轴</h2>
 仍限高 240px 内部滚动。
 粘性条同样改成 <code>sticky-strip</code>（22px gutter）+
 <code>sticky-column</code>（900px 居中、<code>items_start</code>），权限条与
-任务卡 ≤780、左沿与 composer 对齐，卡底与 composer 顶之间正是
+任务卡 ≤780、左沿与 composer 对齐（该宽度已由<a href="#73-2026-11-23--桌面sticky-任务卡改成与-composer-同宽居中">第 73 条</a>改成与 composer 同宽），卡底与 composer 顶之间正是
 <code>ACCESSORY_GAP</code>。窄窗口时三者都按 <code>max_w</code> 收敛在 composer
 列内，不再越界。</p>
-<p><strong>与原型的有意偏差：</strong> 原型里队列条与 sticky 宿主都是
+<p><strong>与原型的有意偏差（部分已被<a href="#73-2026-11-23--桌面sticky-任务卡改成与-composer-同宽居中">第 73 条</a>撤销）：</strong> 原型里队列条与 sticky 宿主都是
 <code>min(900px, …)</code>、与 composer 同宽；这里把附件收到 780px 并贴左。
 理由是附件属于输入框、不该读作第二个输入框，代价是右边缘比 composer 短
 120px。该偏差记在
@@ -24123,6 +24124,34 @@ host 是下次启动真正会传下去的旗标，重启前不能让开关视觉
 <code>crates/tact_host/src/driver.rs</code>（<code>UserCommand::Compact</code>）、
 <code>docs/compaction.md</code>（§ Lifecycle events）、
 <code>crates/tact-acp/README.md</code>（§ Compaction）。</p>
+<h2 id="73-2026-11-23--桌面sticky-任务卡改成与-composer-同宽居中">73. 2026-11-23 — 桌面：Sticky 任务卡改成与 composer 同宽、居中</h2>
+<p><strong>现象 / 动机：</strong>输入框上方那张 <code>TASKS 0/0 … Goals 0 · Subagents 2</code>
+任务卡比输入框窄一截——卡宽 780、composer 宽 900，两者左沿对齐，
+于是卡片右边缘在 composer 右边缘前 120px 处收住。第 65 条把三个附件统一到
+composer 的轴上之后，这个刻意收窄仍让它读起来像 composer 上方另起的一块
+表面，而不是输入框自己的表头。</p>
+<p><strong>决策：</strong>任务卡与它上方的权限条都填满 <code>sticky-column</code>
+的 900px，不再用 <code>max_w(ACCESSORY_WIDTH)</code> 收窄。居中交给已有的
+<code>sticky-column</code>（<code>max_w(COMPOSER_WIDTH)</code> +
+<code>mx_auto</code>），卡片本身只负责 <code>w_full</code>，因此两者左右沿都
+与 <code>composer-frame</code> 重合。这与原型一致：<code>.sticky-host</code>
+本来就是 <code>min(900px, calc(100% - 44px))</code> 加 <code>margin: 0 auto</code>。
+第 65 条那条「刻意收到 780px」的偏差只剩排队徽标——它确实属于输入框，
+一张整行宽的徽标会被读成第二个输入框。窄窗口的行为不变：三者仍按
+<code>max_w</code> 收敛在 composer 列内。</p>
+<p><strong>验证：</strong>
+<code>the_sticky_card_matches_the_composer_column</code> 断言卡的宽度与
+<code>composer-frame</code> 相等（原来是严格更窄）、左沿对齐、且卡底与
+composer 顶之间正好一个 <code>ACCESSORY_GAP</code>；
+<code>a_narrow_window_clamps_the_accessories_to_the_composer</code> 与
+<code>chrome_matches_prototype_metrics</code> 继续钉住窄窗收敛与 900px 居中。
+<code>scripts/check-rust.sh</code> 全绿（含 <code>cargo test --workspace</code>
+与 book 检查）。</p>
+<p><strong>Pointers：</strong><code>crates/desktop/src/root.rs</code>
+（<code>render_sticky</code> 的 <code>sticky-task-card</code>、
+<code>render_gate_banner</code>）、<code>crates/desktop/src/ui/layout.rs</code>
+（<code>ACCESSORY_WIDTH</code> 现在只描述排队徽标）、
+<code>docs/design/tact-desktop/visual-baseline.md</code>（deliberate deviations）。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>
