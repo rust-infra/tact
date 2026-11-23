@@ -21604,6 +21604,12 @@ mod tests {
             window.debug_bounds("prompt-bar-send-control").is_some(),
             "send control"
         );
+        // The control is a spinner, not a static block: a run that has not
+        // produced anything yet must still read as in progress.
+        assert!(
+            window.debug_bounds("prompt-bar-stop-spinner").is_some(),
+            "the stop control shows a spinner"
+        );
 
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);

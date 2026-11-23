@@ -801,6 +801,7 @@
 <li class="toc-l2"><a href="#72-2026-11-17--acp-%E5%8E%8B%E7%BC%A9%E5%8D%A1%E7%89%87%E5%81%9C%E5%9C%A8-compacting-%E6%B0%B8%E4%B8%8D%E8%90%BD%E5%9C%B0" title="72. 2026-11-17 — ACP：压缩卡片停在 Compacting…，永不落地"><span class="toc-label">72. 2026-11-17 — ACP：压缩卡片停在 Compacting…，永不落地</span></a></li>
 <li class="toc-l2"><a href="#73-2026-11-23--%E6%A1%8C%E9%9D%A2sticky-%E4%BB%BB%E5%8A%A1%E5%8D%A1%E6%94%B9%E6%88%90%E4%B8%8E-composer-%E5%90%8C%E5%AE%BD%E5%B1%85%E4%B8%AD" title="73. 2026-11-23 — 桌面：Sticky 任务卡改成与 composer 同宽、居中"><span class="toc-label">73. 2026-11-23 — 桌面：Sticky 任务卡改成与 composer 同宽、居中</span></a></li>
 <li class="toc-l2"><a href="#74-2026-11-23--%E6%A1%8C%E9%9D%A2%E5%A4%B1%E8%B4%A5%E8%A1%8C%E7%9A%84-retry-%E6%94%B9%E6%88%90%E7%BB%AD%E8%B7%91%E8%80%8C%E4%B8%8D%E6%98%AF%E9%87%8D%E5%90%AF%E4%BC%9A%E8%AF%9D" title="74. 2026-11-23 — 桌面：失败行的 Retry 改成续跑，而不是重启会话"><span class="toc-label">74. 2026-11-23 — 桌面：失败行的 Retry 改成续跑，而不是重启会话</span></a></li>
+<li class="toc-l2"><a href="#75-2026-11-23--%E6%A1%8C%E9%9D%A2%E7%9A%84%E5%81%9C%E6%AD%A2%E6%8C%89%E9%92%AE%E6%94%B9%E6%88%90%E8%BD%AC%E5%9C%88" title="75. 2026-11-23 — 桌面：运行中的停止按钮改成转圈"><span class="toc-label">75. 2026-11-23 — 桌面：运行中的停止按钮改成转圈</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -24183,6 +24184,27 @@ composer 顶之间正好一个 <code>ACCESSORY_GAP</code>；
 <code>crates/desktop/src/root.rs</code>（<code>RowBody::Error</code> 分支、
 <code>render_failure</code> 保持不动）、<code>crates/desktop/src/i18n.rs</code>
 （<code>TextKey::TryAgain</code>）。</p>
+<h2 id="75-2026-11-23--桌面的停止按钮改成转圈">75. 2026-11-23 — 桌面：运行中的停止按钮改成转圈</h2>
+<p><strong>现象 / 动机：</strong>发送一条 prompt 之后，composer 右下角那颗红色按钮立刻从「发送」
+切成一个静止的方块 <code>■</code>。方块是「已停止」的记号，而这一刻正好是这一轮最慢的时段——
+模型还没吐出第一个字节。读者看到的是一个看起来已经停住的控件，却被告知
+<code>Running · Esc interrupts</code>，两处说的不是一回事。</p>
+<p><strong>决策：</strong>那颗控件改成 <code>gpui_component</code> 的
+<code>Spinner</code>（<code>crates/desktop/src/ui/leaf.rs</code> 的工具 chip 已经在用同一个），
+红底与点击中断的行为都不变——它本来就是「可中断」的按钮，转圈只是把「正在跑」说出来。
+时序本身不需要改动：<code>submit_now</code> 在 <code>SendTask</code> 之前就同步把
+<code>session.phase</code> 置为 <code>Running</code> 并 <code>publish_rows</code>，所以
+composer 的 <code>running</code> 在提交那一刻即为真，不等 <code>RunStarted</code> 或首个
+<code>StreamChunk</code>。这次只是把这条时序钉进测试，防止以后有人把它挪到事件处理里。</p>
+<p><strong>验证：</strong>
+<code>a_submitted_turn_is_running_before_any_agent_update</code> 断言提交后、且没有任何
+<code>AgentUpdate</code> 的情况下 phase 已是 <code>Running</code>、<code>runtime.current_phase</code>
+是 <code>Waiting</code>；
+<code>composer_shows_stop_and_send_while_running</code> 追加断言停止控件里渲染的是
+<code>prompt-bar-stop-spinner</code>，而不是一个静态字形。</p>
+<p><strong>Pointers：</strong><code>crates/desktop/src/ui/prompt_bar.rs</code>
+（<code>stop</code> 控件的构建）、<code>crates/desktop_core/src/controller.rs</code>
+（<code>submit_now</code> 里的 phase 翻转）。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>

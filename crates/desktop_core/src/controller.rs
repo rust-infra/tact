@@ -5528,6 +5528,41 @@ mod tests {
         );
     }
 
+    /// A submitted turn is `Running` before the model says anything. The
+    /// composer's spinner is driven by that phase, so waiting for the first
+    /// `AgentUpdate` would leave the control looking idle for exactly the
+    /// stretch where the run is doing its slowest work.
+    #[tokio::test]
+    async fn a_submitted_turn_is_running_before_any_agent_update() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_project(tmp.path());
+        let factory = FakeFactory::new();
+        let (controller, _events) =
+            DesktopController::start_with_factory(config(tmp.path()), factory.clone()).unwrap();
+        wait_ready(&controller).await;
+        assert_eq!(controller.snapshot().session.phase, SessionPhase::Ready);
+
+        controller
+            .dispatch(DesktopIntent::Submit(Submission {
+                text: "start the run".into(),
+                attachments: Vec::new(),
+                model: None,
+                permission_mode: None,
+            }))
+            .unwrap();
+        controller.when_idle().await.unwrap();
+
+        // No `RunStarted`, no `StreamChunk`: the host has been told to run
+        // and nothing has come back yet.
+        let snapshot = controller.snapshot();
+        assert_eq!(
+            snapshot.session.phase,
+            SessionPhase::Running,
+            "the phase must flip on submit, not on the first streamed update"
+        );
+        assert_eq!(snapshot.runtime.current_phase, RunPhase::Waiting);
+    }
+
     #[tokio::test]
     async fn failed_run_stays_failed_after_run_failed() {
         let tmp = tempfile::tempdir().unwrap();
