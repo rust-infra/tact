@@ -2913,6 +2913,12 @@ impl DesktopRoot {
                     }));
                 }
                 prompt.update(cx, |prompt, cx| prompt.set_draft("", window, cx));
+                // The attachment strip belongs to the submission that just
+                // left: leaving the chips behind would attach the same image
+                // to the next prompt as well, and the user has no signal that
+                // it is still armed.
+                self.attachments.clear();
+                self.sync_prompt_attachments(cx);
                 self.history_cursor = None;
                 self.slash_overlay = None;
                 self.slash_dismissed_for = None;
@@ -20609,6 +20615,45 @@ mod tests {
             "executed {executed}, unavailable {} across two sessions",
             unavailable.len()
         );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// An attachment belongs to the prompt that carried it. Leaving the chip
+    /// behind would silently attach the same image to the next prompt too.
+    #[gpui::test]
+    fn submitting_a_prompt_clears_its_attachments(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        let image =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/app-icon.png");
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.attachments.push(image.clone());
+                this.sync_prompt_attachments(cx);
+                this.prompt.update(cx, |prompt, cx| {
+                    prompt.set_draft("describe this image", window, cx);
+                    prompt.focus(window, cx);
+                });
+            });
+            window.draw(cx).clear(cx);
+        });
+        assert!(
+            window.debug_bounds("prompt-bar-attachments").is_some(),
+            "the pasted image must show a chip before it is submitted"
+        );
+
+        window.simulate_keystrokes("enter");
+        window.update(|window, cx| window.draw(cx).clear(cx));
+
+        assert!(
+            window.update(|_, cx| root.read(cx).attachments.is_empty()),
+            "the submitted prompt owns the attachment; the composer must not keep it armed"
+        );
+        assert!(
+            window.debug_bounds("prompt-bar-attachments").is_none(),
+            "the chip must leave with the submission"
+        );
+
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
     }

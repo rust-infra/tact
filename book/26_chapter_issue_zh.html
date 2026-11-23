@@ -802,6 +802,7 @@
 <li class="toc-l2"><a href="#73-2026-11-23--%E6%A1%8C%E9%9D%A2sticky-%E4%BB%BB%E5%8A%A1%E5%8D%A1%E6%94%B9%E6%88%90%E4%B8%8E-composer-%E5%90%8C%E5%AE%BD%E5%B1%85%E4%B8%AD" title="73. 2026-11-23 — 桌面：Sticky 任务卡改成与 composer 同宽、居中"><span class="toc-label">73. 2026-11-23 — 桌面：Sticky 任务卡改成与 composer 同宽、居中</span></a></li>
 <li class="toc-l2"><a href="#74-2026-11-23--%E6%A1%8C%E9%9D%A2%E5%A4%B1%E8%B4%A5%E8%A1%8C%E7%9A%84-retry-%E6%94%B9%E6%88%90%E7%BB%AD%E8%B7%91%E8%80%8C%E4%B8%8D%E6%98%AF%E9%87%8D%E5%90%AF%E4%BC%9A%E8%AF%9D" title="74. 2026-11-23 — 桌面：失败行的 Retry 改成续跑，而不是重启会话"><span class="toc-label">74. 2026-11-23 — 桌面：失败行的 Retry 改成续跑，而不是重启会话</span></a></li>
 <li class="toc-l2"><a href="#75-2026-11-23--%E6%A1%8C%E9%9D%A2%E7%9A%84%E5%81%9C%E6%AD%A2%E6%8C%89%E9%92%AE%E6%94%B9%E6%88%90%E8%BD%AC%E5%9C%88" title="75. 2026-11-23 — 桌面：运行中的停止按钮改成转圈"><span class="toc-label">75. 2026-11-23 — 桌面：运行中的停止按钮改成转圈</span></a></li>
+<li class="toc-l2"><a href="#76-2026-11-23--%E6%A1%8C%E9%9D%A2%E7%9A%84%E5%9B%BE%E7%89%87%E9%99%84%E4%BB%B6%E9%9A%8F%E6%8F%90%E4%BA%A4%E4%B8%80%E8%B5%B7%E7%A6%BB%E5%BC%80%E8%BE%93%E5%85%A5%E6%A1%86" title="76. 2026-11-23 — 桌面：图片附件随提交一起离开输入框"><span class="toc-label">76. 2026-11-23 — 桌面：图片附件随提交一起离开输入框</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -24205,6 +24206,30 @@ composer 的 <code>running</code> 在提交那一刻即为真，不等 <code>Run
 <p><strong>Pointers：</strong><code>crates/desktop/src/ui/prompt_bar.rs</code>
 （<code>stop</code> 控件的构建）、<code>crates/desktop_core/src/controller.rs</code>
 （<code>submit_now</code> 里的 phase 翻转）。</p>
+<h2 id="76-2026-11-23--桌面的图片附件随提交一起离开输入框">76. 2026-11-23 — 桌面：图片附件随提交一起离开输入框</h2>
+<p><strong>现象 / 动机：</strong>粘贴或选中一张图之后，composer 里会出现一条缩略图
+chip；回车发送，文字清空了，chip 还在。于是同一张图会被顺手带进下一条 prompt——
+读者得不到任何提示它仍然「上膛」，而模型收到的是一个他并不打算再发一次的文件。</p>
+<p><strong>根因：</strong>附件在桌面端有两份状态：<code>DesktopRoot::attachments:
+Vec&lt;PathBuf&gt;</code> 是真实来源，<code>PromptBar</code> 里那份只用于渲染，
+由 <code>sync_prompt_attachments</code> 单向推下去。
+<code>PromptBarEvent::Submit</code> 的分支当时只做了 <code>set_draft("", …)</code>，
+两份附件状态都没有动。</p>
+<p><strong>决策：</strong>在同一个分支里清空 <code>self.attachments</code> 并重新
+<code>sync_prompt_attachments</code>。位置必须在
+<code>dispatch(DesktopIntent::Submit(…))</code> 之后——那一步用
+<code>self.attachments()</code> 把当前列表抄进 <code>Submission</code>，
+提前清空会把附件从这一条 prompt 里弄丢。斜杠命令分支同样经过这里，也一并清掉：
+<code>/compact</code> 之类的命令不该继承上一条消息的附件。</p>
+<p><strong>验证：</strong>
+<code>submitting_a_prompt_clears_its_attachments</code> 先挂上一张图并确认 chip 渲染，
+回车提交后断言 <code>attachments</code> 为空、<code>prompt-bar-attachments</code>
+不再渲染。这条测试先被确认过是红的：临时移除清空那两行后它立刻失败，所以它钉的是
+这个 bug，而不是空过。</p>
+<p><strong>Pointers：</strong><code>crates/desktop/src/root.rs</code>
+（<code>PromptBarEvent::Submit</code> 分支、<code>sync_prompt_attachments</code>）、
+<code>crates/desktop/src/ui/prompt_bar.rs</code>（附件 strip 的
+<code>prompt-bar-attachments</code> selector）。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>

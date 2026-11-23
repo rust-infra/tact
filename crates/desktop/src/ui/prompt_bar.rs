@@ -971,7 +971,10 @@ impl Render for PromptBar {
             .when(running, |row| row.child(stop))
             .when(!running, |row| row.child(div().size(px(28.))))
             .child(send);
-        let mut attachments = h_flex().flex_wrap().gap_1();
+        let mut attachments = h_flex()
+            .debug_selector(|| "prompt-bar-attachments".into())
+            .flex_wrap()
+            .gap_1();
         for attachment in &self.attachments {
             let id = attachment.id().clone();
             let image = attachment.image_source().cloned();
