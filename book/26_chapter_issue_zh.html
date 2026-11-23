@@ -800,6 +800,7 @@
 <li class="toc-l2"><a href="#71-2026-11-17--%E6%A1%8C%E9%9D%A2%E5%BE%AE%E5%8E%8B%E7%BC%A9%E5%BC%80%E5%85%B3%E6%98%BE%E7%A4%BA-on-%E5%8D%B4%E6%B0%B8%E4%B8%8D%E8%BF%90%E8%A1%8C" title="71. 2026-11-17 — 桌面微压缩开关显示 on，却永不运行"><span class="toc-label">71. 2026-11-17 — 桌面微压缩开关显示 on，却永不运行</span></a></li>
 <li class="toc-l2"><a href="#72-2026-11-17--acp-%E5%8E%8B%E7%BC%A9%E5%8D%A1%E7%89%87%E5%81%9C%E5%9C%A8-compacting-%E6%B0%B8%E4%B8%8D%E8%90%BD%E5%9C%B0" title="72. 2026-11-17 — ACP：压缩卡片停在 Compacting…，永不落地"><span class="toc-label">72. 2026-11-17 — ACP：压缩卡片停在 Compacting…，永不落地</span></a></li>
 <li class="toc-l2"><a href="#73-2026-11-23--%E6%A1%8C%E9%9D%A2sticky-%E4%BB%BB%E5%8A%A1%E5%8D%A1%E6%94%B9%E6%88%90%E4%B8%8E-composer-%E5%90%8C%E5%AE%BD%E5%B1%85%E4%B8%AD" title="73. 2026-11-23 — 桌面：Sticky 任务卡改成与 composer 同宽、居中"><span class="toc-label">73. 2026-11-23 — 桌面：Sticky 任务卡改成与 composer 同宽、居中</span></a></li>
+<li class="toc-l2"><a href="#74-2026-11-23--%E6%A1%8C%E9%9D%A2%E5%A4%B1%E8%B4%A5%E8%A1%8C%E7%9A%84-retry-%E6%94%B9%E6%88%90%E7%BB%AD%E8%B7%91%E8%80%8C%E4%B8%8D%E6%98%AF%E9%87%8D%E5%90%AF%E4%BC%9A%E8%AF%9D" title="74. 2026-11-23 — 桌面：失败行的 Retry 改成续跑，而不是重启会话"><span class="toc-label">74. 2026-11-23 — 桌面：失败行的 Retry 改成续跑，而不是重启会话</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -24152,6 +24153,36 @@ composer 顶之间正好一个 <code>ACCESSORY_GAP</code>；
 <code>render_gate_banner</code>）、<code>crates/desktop/src/ui/layout.rs</code>
 （<code>ACCESSORY_WIDTH</code> 现在只描述排队徽标）、
 <code>docs/design/tact-desktop/visual-baseline.md</code>（deliberate deviations）。</p>
+<h2 id="74-2026-11-23--桌面失败行的-retry-改成续跑而不是重启会话">74. 2026-11-23 — 桌面：失败行的 Retry 改成续跑，而不是重启会话</h2>
+<p><strong>现象 / 动机：</strong>一次被截断或失败的回合之后，转写本里那行错误卡片上的
+<code>Retry</code> 派发的是 <code>DesktopIntent::RetryProvider</code>——它关掉宿主、用同一个
+会话 ID 重新开会话。对「宿主起不来」那类故障这是对的，但对「回合跑了一半断了」是错的：
+重开会话把模型正需要拿来判断的上下文丢掉了，于是它既不知道刚才那条命令跑没跑完，也无从
+决定该不该重复。</p>
+<p><strong>决策：</strong>把两个 Retry 按语义分开。错误卡片上的动作用
+<code>DesktopIntent::Submit(Submission { text: TRY_AGAIN_PROMPT, .. })</code>，也就是一条
+普通的用户回合；文案改成 <code>Try again</code> / <code>继续</code>（新增
+<code>TextKey::TryAgain</code>），与横幅上仍叫 <code>Retry</code> 的重启区分开。顶部失败
+横幅保持 <code>RetryProvider</code> 不变：宿主没起来时没有「回合」可续。</p>
+<p>prompt 文本放在 <code>tact_protocol::TRY_AGAIN_PROMPT</code>，并且从
+<code>tact_desktop_core</code> 再导出：<code>tact-desktop</code> 只在
+<code>[dev-dependencies]</code> 里有 <code>tact_protocol</code>，生产代码不能直接引用它。
+一段固定文案要写成「拿证据说话」而不是打气——先确认动作没有生效、也没有还在跑，判断不了
+就说明判断不了。</p>
+<p><strong>验证：</strong>
+<code>retrying_a_failed_run_submits_the_continuation_prompt</code> 断言续跑 prompt 以
+<code>UserCommand::SubmitTask</code> 送达宿主，且 <code>session.id</code> 不变（续跑不换会话）；
+<code>a_failed_row_retry_continues_the_turn</code> 点击真实错误行上的按钮，断言文案是
+<code>Try again</code> 且确实派发了 intent；
+<code>read_only_subagent_rows_hide_suggestions_retry_and_gate_actions</code> 继续钉住只读
+转写本里不出现该按钮。这顺带修掉一处空断言：该按钮此前只有 <code>.id()</code>、没有
+<code>.debug_selector()</code>，所以 <code>debug_bounds("retry-error-11")</code> 永远返回
+<code>None</code>，那条「只读时不出现」的断言此前恒真。</p>
+<p><strong>Pointers：</strong><code>crates/protocol/src/prompt.rs</code>、
+<code>crates/desktop_core/src/lib.rs</code>（再导出）、
+<code>crates/desktop/src/root.rs</code>（<code>RowBody::Error</code> 分支、
+<code>render_failure</code> 保持不动）、<code>crates/desktop/src/i18n.rs</code>
+（<code>TextKey::TryAgain</code>）。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>

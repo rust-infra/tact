@@ -33,8 +33,8 @@ use tact_desktop_core::{
     DesktopEvent, DesktopIntent, DesktopSnapshot, DesktopTheme, ExtensionsTab, GateCard, GateKind,
     GateResponse, GateSelection, GateState, InspectorTab, PermissionModeView, ProjectId, ReaderRef,
     RowBody, RowId, RowStatus, SectionMask, SessionId, SessionPhase, SettingValue, Submission,
-    SurfaceSnapshot, ThoughtTiers, ToolGroupItem, ToolRow, TrajectoryRecordId, TrajectoryView,
-    TranscriptRow, TranscriptView, is_enabled,
+    SurfaceSnapshot, TRY_AGAIN_PROMPT, ThoughtTiers, ToolGroupItem, ToolRow, TrajectoryRecordId,
+    TrajectoryView, TranscriptRow, TranscriptView, is_enabled,
 };
 use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr as _};
 
@@ -15097,20 +15097,33 @@ fn transcript_row_element(
                 card.child(
                     div()
                         .id(SharedString::from(format!("retry-error-{id}")))
+                        .debug_selector(move || format!("retry-error-{id}"))
                         .role(Role::Button)
                         .focusable()
                         .tab_stop(true)
                         .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
-                        .aria_label(i18n::text(snapshot.language, TextKey::Retry))
+                        .aria_label(i18n::text(snapshot.language, TextKey::TryAgain))
                         .text_xs()
                         .text_color(gpui::blue())
                         .cursor_pointer()
-                        .child(i18n::text(snapshot.language, TextKey::Retry))
+                        .child(i18n::text(snapshot.language, TextKey::TryAgain))
                         .on_click({
                             let weak = weak.clone();
                             move |_, _, cx| {
                                 let _ = weak.update(cx, |this, _| {
-                                    this.dispatch(DesktopIntent::RetryProvider);
+                                    // A cut-short turn, not a dead host: the
+                                    // run may have left a command running or
+                                    // half-applied, so continue it with the
+                                    // protocol's evidence-first prompt instead
+                                    // of restarting the session, which would
+                                    // throw away the context that prompt is
+                                    // asking about.
+                                    this.dispatch(DesktopIntent::Submit(Submission {
+                                        text: TRY_AGAIN_PROMPT.to_string(),
+                                        attachments: Vec::new(),
+                                        model: None,
+                                        permission_mode: None,
+                                    }));
                                 });
                             }
                         }),
@@ -20456,6 +20469,56 @@ mod tests {
             composer.origin.y - card.bottom(),
             px(crate::ui::layout::ACCESSORY_GAP),
             "the card settles one tight gap above the composer: card={card:?}, composer={composer:?}"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// The retry offered on a failed row continues the turn; it does not
+    /// restart the session. The banner's own Retry keeps the restart, because a
+    /// host that failed to start has no turn to continue.
+    #[gpui::test]
+    fn a_failed_row_retry_continues_the_turn(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        // Tall enough that the virtualized transcript paints the retryable row
+        // rather than only measuring it.
+        window.simulate_resize(size(px(1280.), px(2600.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = tact_desktop_core::fixtures::demo_transcript();
+                snapshot.session.phase = SessionPhase::Running;
+                this.snapshot = Arc::new(snapshot);
+                this.pending_row_updates
+                    .extend(this.snapshot.transcript.iter().map(|row| row.id));
+                let count = this.snapshot.transcript.len();
+                this.scroller.update(cx, |state, cx| state.reset(count, cx));
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        let retry = window
+            .debug_bounds("retry-error-11")
+            .expect("the retryable error row offers a retry");
+        assert_eq!(
+            window.update(|_, cx| root.read(cx).text(TextKey::TryAgain)),
+            "Try again",
+            "the row's action reads as a continuation, not a restart"
+        );
+        let submitted_before = window.update(|_, cx| {
+            root.read(cx)
+                .dispatched_intents
+                .load(std::sync::atomic::Ordering::Relaxed)
+        });
+        window.simulate_click(retry.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            window.update(|_, cx| root
+                .read(cx)
+                .dispatched_intents
+                .load(std::sync::atomic::Ordering::Relaxed))
+                > submitted_before,
+            "clicking the row's retry must reach the controller"
         );
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);

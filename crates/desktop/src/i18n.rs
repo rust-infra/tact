@@ -138,6 +138,7 @@ pub enum TextKey {
     Error,
     Retry,
     RetryAvailable,
+    TryAgain,
     ApprovalInMainTranscript,
     AddMcpServer,
     RemoteUrl,
@@ -437,6 +438,7 @@ pub const ALL: &[TextKey] = &[
     TextKey::Error,
     TextKey::Retry,
     TextKey::RetryAvailable,
+    TextKey::TryAgain,
     TextKey::ApprovalInMainTranscript,
     TextKey::AddMcpServer,
     TextKey::RemoteUrl,
@@ -879,6 +881,8 @@ pub fn text(locale: CatalogLocale, key: TextKey) -> &'static str {
         (CatalogLocale::Zh, TextKey::Retry) => "重试",
         (CatalogLocale::En, TextKey::RetryAvailable) => "Retry available",
         (CatalogLocale::Zh, TextKey::RetryAvailable) => "可重试",
+        (CatalogLocale::En, TextKey::TryAgain) => "Try again",
+        (CatalogLocale::Zh, TextKey::TryAgain) => "继续",
         (CatalogLocale::En, TextKey::ApprovalInMainTranscript) => {
             "Approval is available from the main transcript."
         }

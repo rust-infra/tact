@@ -5487,6 +5487,47 @@ mod tests {
         ));
     }
 
+    /// The desktop's Retry on a failed run is a continuation, not a restart:
+    /// it submits the protocol's evidence-first prompt as a normal task and
+    /// leaves the session (and its context) in place. Restarting would tear
+    /// down the very transcript that prompt asks the model to reason about.
+    #[tokio::test]
+    async fn retrying_a_failed_run_submits_the_continuation_prompt() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_project(tmp.path());
+        let factory = FakeFactory::new();
+        let (controller, _events) =
+            DesktopController::start_with_factory(config(tmp.path()), factory.clone()).unwrap();
+        wait_ready(&controller).await;
+        let session_before = controller.snapshot().session.id.clone();
+        factory.commands.lock().unwrap().clear();
+
+        controller
+            .dispatch(DesktopIntent::Submit(Submission {
+                text: tact_protocol::TRY_AGAIN_PROMPT.to_string(),
+                attachments: Vec::new(),
+                model: None,
+                permission_mode: None,
+            }))
+            .unwrap();
+        controller.when_idle().await.unwrap();
+
+        let commands = factory.commands.lock().unwrap();
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                UserCommand::SubmitTask(text) if text == tact_protocol::TRY_AGAIN_PROMPT
+            )),
+            "the continuation prompt must reach the host as a task: {commands:?}"
+        );
+        drop(commands);
+        assert_eq!(
+            controller.snapshot().session.id,
+            session_before,
+            "a continuation keeps the session it is continuing"
+        );
+    }
+
     #[tokio::test]
     async fn failed_run_stays_failed_after_run_failed() {
         let tmp = tempfile::tempdir().unwrap();

@@ -65,7 +65,8 @@ pub use tact_host::{DEFAULT_THINKING_BUDGETS, ThoughtKind, ThoughtTiers};
 pub use tact_protocol::{
     BackgroundTaskStatusSnapshot, GoalCriterionStatusSnapshot, GoalPhaseSnapshot,
     GoalStatusSnapshot, HookItemSnapshot, HookSnapshot, McpServerStatusSnapshot,
-    SubagentStatusSnapshot, SurfaceSnapshot, TaskStatusSnapshot, UiRequestPurpose,
+    SubagentStatusSnapshot, SurfaceSnapshot, TRY_AGAIN_PROMPT, TaskStatusSnapshot,
+    UiRequestPurpose,
 };
 pub use trajectory::{
     TrajectoryKind, TrajectoryLane, TrajectoryRecord, TrajectoryRecordId, TrajectorySpan,
