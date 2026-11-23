@@ -33,8 +33,8 @@ use tact_desktop_core::{
     DesktopEvent, DesktopIntent, DesktopSnapshot, DesktopTheme, ExtensionsTab, GateCard, GateKind,
     GateResponse, GateSelection, GateState, InspectorTab, PermissionModeView, ProjectId, ReaderRef,
     RowBody, RowId, RowStatus, SectionMask, SessionId, SessionPhase, SettingValue, Submission,
-    SurfaceSnapshot, ToolGroupItem, ToolRow, TrajectoryRecordId, TrajectoryView, TranscriptRow,
-    TranscriptView, is_enabled,
+    SurfaceSnapshot, ThoughtTiers, ToolGroupItem, ToolRow, TrajectoryRecordId, TrajectoryView,
+    TranscriptRow, TranscriptView, is_enabled,
 };
 use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr as _};
 
@@ -3949,7 +3949,11 @@ impl DesktopRoot {
                 action: FormAction::Command(CommandId::Setting(id)),
                 field: None,
                 required: false,
-                choice: Some(setting_choices(id, self.snapshot.language)),
+                choice: Some(setting_choices(
+                    id,
+                    self.snapshot.language,
+                    Some(self.snapshot.composer.model.as_ref()),
+                )),
             },
             CommandForm::None => FormState {
                 title: label.into(),
@@ -8603,7 +8607,8 @@ impl DesktopRoot {
     fn render_effort_picker(&self, cx: &mut Context<Self>) -> AnyElement {
         let locale = self.snapshot.language;
         let selected = self.snapshot.composer.effort.as_deref().map(str::to_string);
-        let choices = setting_choices(SettingId::ReasoningEffort, locale);
+        let model = self.snapshot.composer.model.to_string();
+        let choices = setting_choices(SettingId::ReasoningEffort, locale, Some(&model));
         let current_label = selected.as_ref().and_then(|value| {
             choices
                 .iter()
@@ -16821,30 +16826,56 @@ fn choice_values(id: CommandId, snapshot: &DesktopSnapshot) -> Vec<(String, Stri
     }
 }
 
-fn setting_choices(id: SettingId, locale: tact_catalog::CatalogLocale) -> Vec<(String, String)> {
+/// The thought control's tiers for `model`, or `None` before config lands.
+///
+/// The ladder itself is `tact_host::thought`'s, so the desktop cannot offer a
+/// tier the model rejects, and an effort model and a budget model each get the
+/// control that actually applies to them.
+fn thought_tiers_for(model: &str) -> Option<ThoughtTiers> {
+    tact_desktop_core::thought_tiers(model)
+}
+
+/// Localized label for one thought tier.
+fn thought_tier_label(locale: tact_catalog::CatalogLocale, value: &str) -> String {
+    match value {
+        "none" => i18n::text(locale, TextKey::ReasoningNone).into(),
+        "minimal" => i18n::text(locale, TextKey::ReasoningMinimal).into(),
+        "low" => i18n::text(locale, TextKey::ReasoningLow).into(),
+        "medium" => i18n::text(locale, TextKey::ReasoningMedium).into(),
+        "high" => i18n::text(locale, TextKey::ReasoningHigh).into(),
+        "xhigh" => i18n::text(locale, TextKey::ReasoningExtraHigh).into(),
+        "max" => i18n::text(locale, TextKey::ReasoningMax).into(),
+        // A budget tier is a token count; `0` is "thinking off", which the
+        // number alone would not say.
+        "0" => i18n::text(locale, TextKey::ReasoningNone).into(),
+        other => other.to_string(),
+    }
+}
+
+fn setting_choices(
+    id: SettingId,
+    locale: tact_catalog::CatalogLocale,
+    model: Option<&str>,
+) -> Vec<(String, String)> {
     match id {
-        SettingId::ReasoningEffort => vec![
-            (
-                i18n::text(locale, TextKey::ReasoningLow).into(),
-                "low".into(),
-            ),
-            (
-                i18n::text(locale, TextKey::ReasoningMedium).into(),
-                "medium".into(),
-            ),
-            (
-                i18n::text(locale, TextKey::ReasoningHigh).into(),
-                "high".into(),
-            ),
-            (
-                i18n::text(locale, TextKey::ReasoningExtraHigh).into(),
-                "xhigh".into(),
-            ),
-            (
-                i18n::text(locale, TextKey::ReasoningMax).into(),
-                "max".into(),
-            ),
-        ],
+        // The tiers belong to the model, not to the desktop: an effort model
+        // takes a named tier and a budget model takes a token count. Listing
+        // the five effort names for every model offered a control a budget
+        // model ignores, and hid `minimal`/`none`, which the wire accepts.
+        SettingId::ReasoningEffort => {
+            let tiers = model.and_then(thought_tiers_for);
+            let values: Vec<String> = match tiers {
+                Some(tiers) => tiers.candidates,
+                None => tact_desktop_core::DEFAULT_THINKING_BUDGETS
+                    .iter()
+                    .map(|budget| budget.to_string())
+                    .collect(),
+            };
+            values
+                .into_iter()
+                .map(|value| (thought_tier_label(locale, &value), value))
+                .collect()
+        }
         SettingId::PermissionMode => vec![
             (
                 i18n::text(locale, TextKey::PermissionDefault).into(),
@@ -17208,7 +17239,11 @@ mod tests {
     #[test]
     fn chinese_permission_choices_keep_stable_values() {
         assert_eq!(
-            setting_choices(SettingId::PermissionMode, tact_catalog::CatalogLocale::Zh),
+            setting_choices(
+                SettingId::PermissionMode,
+                tact_catalog::CatalogLocale::Zh,
+                None
+            ),
             vec![
                 (
                     i18n::text(tact_catalog::CatalogLocale::Zh, TextKey::PermissionDefault).into(),
@@ -17227,9 +17262,41 @@ mod tests {
     }
 
     #[test]
+    fn effort_choices_come_from_the_shared_ladder() {
+        // The desktop must not keep its own copy of the tier ladder: whatever
+        // `tact_host::thought` offers for this model is what the control shows.
+        // A fixed five-name list here is exactly the bug this replaced — it
+        // dropped `minimal`/`none` and offered effort names to budget models.
+        let values: Vec<String> = setting_choices(
+            SettingId::ReasoningEffort,
+            tact_catalog::CatalogLocale::En,
+            Some("some-model"),
+        )
+        .into_iter()
+        .map(|(_, value)| value)
+        .collect();
+        let expected = match tact_desktop_core::thought_tiers("some-model") {
+            Some(tiers) => tiers.candidates,
+            // No installed config: the documented fallback ladder.
+            None => tact_desktop_core::DEFAULT_THINKING_BUDGETS
+                .iter()
+                .map(|budget| budget.to_string())
+                .collect(),
+        };
+        assert_eq!(
+            values, expected,
+            "the desktop control must mirror the shared ladder exactly"
+        );
+    }
+
+    #[test]
     fn theme_family_setting_offers_every_desktop_family() {
         assert_eq!(
-            setting_choices(SettingId::ThemeFamily, tact_catalog::CatalogLocale::En),
+            setting_choices(
+                SettingId::ThemeFamily,
+                tact_catalog::CatalogLocale::En,
+                None
+            ),
             vec![
                 ("Tact".to_string(), "tact".to_string()),
                 ("Claude".to_string(), "claude".to_string()),

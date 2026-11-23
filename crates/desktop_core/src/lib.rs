@@ -44,6 +44,15 @@ pub use snapshot::{
     StateCommit,
 };
 pub use state::DesktopState;
+/// The thought control's tiers for `model`, read from the installed config.
+///
+/// Re-exported here so the GPUI shell does not take a dependency on `tact`
+/// just to ask what a model's reasoning control offers.
+pub fn thought_tiers(model: &str) -> Option<tact_host::ThoughtTiers> {
+    tact::config::try_settings().map(|settings| tact_host::thought_tiers(&settings, model))
+}
+
+pub use tact_host::{DEFAULT_THINKING_BUDGETS, ThoughtKind, ThoughtTiers};
 pub use tact::store::ArchiveFilter;
 pub use tact::voice::{VoiceCommand, VoiceEvent};
 pub use tact_agent_api::MessagePhase;

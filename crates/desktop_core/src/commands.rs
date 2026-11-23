@@ -1,6 +1,6 @@
 use tact_catalog::{CliEntry, CommandArguments, CommandId, ComposerAction, SettingId};
 use tact_host::PluginAction;
-use tact_protocol::{PermissionMode, ReasoningEffort, SurfaceQuery, UserCommand};
+use tact_protocol::{PermissionMode, SurfaceQuery, UserCommand};
 
 use crate::{ReaderRef, SettingValue};
 
@@ -432,16 +432,17 @@ pub(crate) fn route_setting(id: SettingId, value: &SettingValue) -> CommandRoute
                 CommandRoute::User(UserCommand::SetThinkingBudget(budget))
             })
         }
+        // The wire vocabulary is seven tiers, and `none`/`minimal` are real
+        // choices for the providers that accept them. Enumerating five here
+        // turned a `minimal` pick into "not configured" (the command went out
+        // as `SetReasoningEffort(None)`, which the kernel reads as "omit the
+        // field"), and it disagreed with the tiers `tact_host::thought`
+        // advertises to the TUI and to ACP clients.
         (SettingId::ReasoningEffort, SettingValue::Choice(value)) => {
-            let effort = match value.as_str() {
-                "low" => Some(ReasoningEffort::Low),
-                "medium" => Some(ReasoningEffort::Medium),
-                "high" => Some(ReasoningEffort::High),
-                "xhigh" => Some(ReasoningEffort::Xhigh),
-                "max" => Some(ReasoningEffort::Max),
-                _ => None,
-            };
-            CommandRoute::User(UserCommand::SetReasoningEffort(effort))
+            match tact_host::parse_effort(value) {
+                Some(effort) => CommandRoute::User(UserCommand::SetReasoningEffort(Some(effort))),
+                None => CommandRoute::Error(format!("unknown reasoning effort `{value}`")),
+            }
         }
         (SettingId::PermissionMode, SettingValue::Choice(value)) => {
             let mode = match value.as_str() {

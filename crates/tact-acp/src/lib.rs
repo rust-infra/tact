@@ -30,7 +30,7 @@ use tact::ui_responder::PendingUiRequestKind;
 use tact_agent_api::{AgentContentBlock, AgentRole, MessageOrigin, ToolResultStatus};
 use tact_host::{
     HostEvent, HostSession, HostSessionConfig, SessionLockRegistry, SessionSelection, TactPath,
-    UserCommand,
+    ThoughtKind, UserCommand,
 };
 use tact_protocol::{
     AgentUpdate, BackgroundTaskSnapshot, BackgroundTaskStatusSnapshot, GoalSnapshot,
@@ -1132,20 +1132,9 @@ const COMMAND_SETTLE_TIMEOUT: Duration = Duration::from_millis(750);
 /// Give the client a moment to auto-answer a permission before announcing
 /// `requires_action`; otherwise every auto-approved tool leaves a stale row.
 const REQUIRES_ACTION_DELAY: Duration = Duration::from_millis(300);
-/// Thinking-budget tiers offered when the model has no profile of its own.
-const DEFAULT_THINKING_BUDGETS: [u32; 5] = [0, 8_000, 32_000, 64_000, 128_000];
-
-/// How the active model expresses "think harder".
-///
-/// An effort model takes a named tier; a budget model takes a token count.
-/// Which one applies is the provider's rule (`tact_llm::model_uses_effort`),
-/// the same one the TUI's `/model` second step uses, so the two frontends
-/// cannot offer different tier sets for one model.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ThoughtKind {
-    Effort,
-    Budget,
-}
+// The two shapes a thought control can take (effort tier vs token budget) and
+// the tier ladders each model offers live in `tact_host::thought`, so this
+// adapter, the TUI picker, and the desktop chip cannot disagree about a model.
 
 /// Every config option this adapter serves, in the order the client sees them.
 #[derive(Debug)]
@@ -1251,68 +1240,29 @@ impl SessionState {
 }
 
 /// Build the thought-level option for `model`.
+///
+/// The tiers themselves are `tact_host::thought`'s, so this adapter, the TUI
+/// picker, and the desktop chip cannot offer different values for one model.
+/// What is local here is only the ACP mapping: a `select` option in the
+/// `thought_level` category.
 fn thought_option(
     settings: &tact::config::ResolvedConfig,
     model: &str,
 ) -> (SelectOption, ThoughtKind) {
-    let profile = settings.llm.model_profiles.get(model);
-    let provider = settings.llm.provider_info();
-    if tact_llm::model_uses_effort(model, &provider) {
-        let candidates = profile
-            .filter(|profile| !profile.reasoning_efforts.is_empty())
-            .map(|profile| profile.reasoning_efforts.clone())
-            .unwrap_or_else(|| tact_llm::default_effort_tiers(&provider))
-            .into_iter()
-            .map(|effort| effort.as_str().to_string())
-            .collect::<Vec<_>>();
-        let applied = settings
-            .agent
-            .reasoning_effort
-            .map(|effort| effort.as_str().to_string())
-            .unwrap_or_else(|| "none".to_string());
-        (
-            SelectOption {
-                id: THOUGHT_LEVEL_CONFIG_ID,
-                name: "Reasoning effort",
-                description: Some("How much the model thinks before answering"),
-                category: Some(schema::SessionConfigOptionCategory::ThoughtLevel),
-                applied,
-                requested: None,
-                sent: None,
-                candidates,
-            },
-            ThoughtKind::Effort,
-        )
-    } else {
-        let candidates = profile
-            .filter(|profile| !profile.thinking_budgets.is_empty())
-            .map(|profile| {
-                profile
-                    .thinking_budgets
-                    .iter()
-                    .map(|budget| budget.to_string())
-                    .collect()
-            })
-            .unwrap_or_else(|| {
-                DEFAULT_THINKING_BUDGETS
-                    .iter()
-                    .map(|budget| budget.to_string())
-                    .collect()
-            });
-        (
-            SelectOption {
-                id: THOUGHT_LEVEL_CONFIG_ID,
-                name: "Thinking budget",
-                description: Some("Tokens the model may spend thinking"),
-                category: Some(schema::SessionConfigOptionCategory::ThoughtLevel),
-                applied: settings.agent.thinking_budget.to_string(),
-                requested: None,
-                sent: None,
-                candidates,
-            },
-            ThoughtKind::Budget,
-        )
-    }
+    let tiers = tact_host::thought_tiers(settings, model);
+    (
+        SelectOption {
+            id: THOUGHT_LEVEL_CONFIG_ID,
+            name: tiers.name,
+            description: Some(tiers.description),
+            category: Some(schema::SessionConfigOptionCategory::ThoughtLevel),
+            applied: tiers.applied,
+            requested: None,
+            sent: None,
+            candidates: tiers.candidates,
+        },
+        tiers.kind,
+    )
 }
 
 /// A current value that is guaranteed to be one of `candidates`.

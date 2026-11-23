@@ -21,6 +21,7 @@ pub mod sessions;
 mod surface;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
+pub mod thought;
 pub mod user_message;
 
 pub use anyhow::{self, Result};
@@ -49,6 +50,9 @@ pub use tact::{
 };
 pub use tact_protocol::{
     AccountUpdate, AgentUpdate, UpdateReceiver, UpdateSender, UserCommand, update_channel,
+};
+pub use thought::{
+    DEFAULT_THINKING_BUDGETS, ThoughtKind, ThoughtTiers, parse_effort, thought_tiers,
 };
 
 /// Create the command channel a frontend uses to drive one host session.
