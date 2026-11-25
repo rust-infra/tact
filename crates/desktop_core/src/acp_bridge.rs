@@ -12,22 +12,40 @@
 //!
 //! # What cannot round-trip
 //!
-//! ACP is a smaller vocabulary than Tact's. Three families have no faithful
+//! ACP is a smaller vocabulary than Tact's. Four families have no faithful
 //! reverse mapping, and this module is explicit about each rather than
 //! inventing structure:
 //!
 //! - **Hook context and hook status** — no ACP update kind exists.
 //! - **`SurfaceSnapshot`** — `/stats`, `/mcp list`, `/hooks list`, the system
 //!   prompt and history read-outs arrive as `notice` text, not structure.
+//!   Because the desktop cannot ask for one, the ACP transport answers such a
+//!   command with `HostSendError::Unsupported` instead of a silent success.
 //! - **`ToolTranscript`** structure — a child session's entries arrive as
 //!   ordinary agent/thought/tool updates under the child id; the parent's
 //!   structured popup is rebuilt by the reducer, not by this module.
+//! - **Per-model-call granularity** — ACP has one foreground level, not a
+//!   counter, so the kernel's per-call `TurnStats` is synthesized once per run
+//!   (see [`state_update`]).
+//!
+//! Two families *do* round-trip and must not be dropped: `agent_message` /
+//! `agent_thought` (whole-message upserts, which is how `session/resume` replays
+//! history) and `plan_removed` (which the shell needs to drop a finished
+//! checklist). `plan_removed` is why this crate enables the
+//! `unstable_plan_operations` feature — without it the update deserializes as
+//! an unknown `Other` variant and is silently ignored.
 
 use agent_client_protocol::v2::schema;
 use tact_protocol::{
     AgentErrorKind, AgentUpdate, StepResult, StepStatus, ToolPresentationInfo, ToolVisualKind,
 };
 use tact_protocol::{CompactionEvent, CompactionKind, CompactionState};
+
+/// The run id every mapped update carries.
+///
+/// ACP addresses one foreground activity per session, so one id is enough and
+/// a `RunStarted`/`RunFinished` pair always names the same run.
+pub const RUN_ID: &str = "acp";
 
 /// One ACP update, plus the state needed to interpret it.
 ///
@@ -63,6 +81,39 @@ pub fn to_agent_updates(
             .map(|text| AgentUpdate::ThinkingChunk(tact_protocol::ThinkingChunk::Delta(text)))
             .into_iter()
             .collect(),
+        // A whole message at once rather than a chunk. `session/resume` replays
+        // history this way, so dropping it lost every replayed answer — the
+        // transcript opened with the tool calls and no text between them.
+        //
+        // It is also a *replacement*: two updates for one `message_id` patch
+        // the same message. Starting the message fresh and then streaming its
+        // text is what a chunked message looks like to the reducer, so the
+        // replacement reuses that path instead of appending twice.
+        schema::SessionUpdate::AgentMessage(message) => {
+            let text = message_text(message);
+            let mut updates = vec![AgentUpdate::MessageStarted {
+                message_id: message.message_id.0.to_string(),
+            }];
+            if !text.is_empty() {
+                updates.push(AgentUpdate::StreamChunk(text));
+            }
+            updates.push(AgentUpdate::MessageFinished {
+                message_id: message.message_id.0.to_string(),
+                phase: None,
+            });
+            updates
+        }
+        schema::SessionUpdate::AgentThought(thought) => {
+            let text = message_text_of(&thought.content);
+            if text.is_empty() {
+                return Vec::new();
+            }
+            vec![
+                AgentUpdate::ThinkingChunk(tact_protocol::ThinkingChunk::Started),
+                AgentUpdate::ThinkingChunk(tact_protocol::ThinkingChunk::Delta(text)),
+                AgentUpdate::ThinkingChunk(tact_protocol::ThinkingChunk::Finished),
+            ]
+        }
         schema::SessionUpdate::UserMessageChunk(_) | schema::SessionUpdate::UserMessage(_) => {
             // The desktop already pushed the user's row when it submitted; an
             // echo would duplicate it.
@@ -117,10 +168,15 @@ pub fn to_agent_updates(
             }];
             updates
         }
-        // `PlanRemoved` exists only under ACP's `unstable_plan_operations`
-        // feature. Without it an emptied plan arrives as an `Items` list with
-        // no entries, which the branch above already turns into an empty
-        // `TasksChanged` — what the desktop hides the strip on.
+        // The agent's own "this plan is over" signal. It is *removal*, not an
+        // empty replacement, because a client that keeps drawing an empty list
+        // would show a finished checklist as still up. An emptied `Items` list
+        // in the branch above means the same thing, but only this variant tells
+        // the shell to drop the strip.
+        schema::SessionUpdate::PlanRemoved(_) => vec![AgentUpdate::TasksChanged {
+            tasks: Vec::new(),
+            reason: tact_protocol::TasksChangeReason::Updated,
+        }],
         schema::SessionUpdate::UsageUpdate(usage) => {
             vec![AgentUpdate::TokenUsage(tact_protocol::TokenUsageInfo {
                 prompt: usage.used.min(u64::from(u32::MAX)) as u32,
@@ -149,26 +205,64 @@ pub fn to_agent_updates(
 
 /// `running` / `idle` / `requires_action` → Tact's run boundaries.
 ///
-/// Tact reports a run start and a turn end as separate events. ACP reports one
-/// foreground state, so the transition is what matters: an idle after a
-/// running is the turn end, and a running from idle is the turn start.
+/// Tact reports a run start, one `TurnStats` per model call, and a terminal
+/// event. ACP reports one foreground state, so this function has to supply the
+/// two pieces ACP leaves implicit:
+///
+/// - **`TurnStats` after `RunStarted`.** The reducer only opens a visible run
+///   — and therefore only honours a later `RunFinished` — once `TurnStats`
+///   names an active run id. Without it every assistant row stayed `Running`
+///   and `RunFinished` was dropped as an unmatched activation, so the turn
+///   never settled: the transcript kept a spinner and the controller kept
+///   `RunPhase::Streaming`, which blocks the queue forever.
+/// - **the stop reason's terminal event.** ACP folds "the turn failed" into
+///   the idle's stop reason. `RunFinished` alone would close the turn as a
+///   success, so `Error` becomes `RunFailed` and `Cancelled` becomes
+///   `TaskCancelled`.
 fn state_update(state: &schema::StateUpdate, context: &UpdateContext<'_>) -> Vec<AgentUpdate> {
     let _ = context;
     match state {
-        schema::StateUpdate::Running(_) => vec![AgentUpdate::RunStarted {
-            run_id: "acp".to_string(),
-        }],
+        schema::StateUpdate::Running(_) => vec![
+            AgentUpdate::RunStarted {
+                run_id: RUN_ID.to_string(),
+            },
+            // ACP has no turn counter, and the desktop only needs the
+            // activation: one outer turn is what the reader is watching.
+            AgentUpdate::TurnStats {
+                run_id: Some(RUN_ID.to_string()),
+                turns_taken: 1,
+                max_turns: None,
+            },
+        ],
         schema::StateUpdate::Idle(idle) => {
-            let mut updates = vec![AgentUpdate::RunFinished {
-                run_id: "acp".to_string(),
-            }];
-            if matches!(
-                idle.stop_reason,
-                Some(schema::StopReason::Error(_)) | Some(schema::StopReason::Cancelled)
-            ) {
-                updates.push(AgentUpdate::TaskCancelled);
+            let run_id = RUN_ID.to_string();
+            match &idle.stop_reason {
+                Some(schema::StopReason::Error(error)) => {
+                    let message = error
+                        .error
+                        .as_ref()
+                        .map(|error| error.message.clone())
+                        .filter(|message| !message.trim().is_empty())
+                        .unwrap_or_else(|| "the ACP agent ended the turn with an error".into());
+                    vec![
+                        AgentUpdate::RunFailed {
+                            run_id,
+                            retryable: true,
+                            message: Some(message),
+                        },
+                        AgentUpdate::TaskCancelled,
+                    ]
+                }
+                Some(schema::StopReason::Cancelled) => {
+                    vec![
+                        AgentUpdate::RunFinished { run_id },
+                        AgentUpdate::TaskCancelled,
+                    ]
+                }
+                // `EndTurn`, a token/turn cap, a refusal, or no reason at all:
+                // the turn ended and the agent said nothing failed.
+                _ => vec![AgentUpdate::RunFinished { run_id }],
             }
-            updates
         }
         schema::StateUpdate::RequiresAction(_) => Vec::new(),
         _ => Vec::new(),
@@ -376,6 +470,27 @@ fn text_of(block: &schema::ContentBlock) -> Option<String> {
     }
 }
 
+/// The text of an `agent_message` upsert's content blocks.
+fn message_text(message: &schema::AgentMessage) -> String {
+    message_text_of(&message.content)
+}
+
+/// Join the text blocks of a patchable content list.
+///
+/// ACP leaves `content` undefined when the update only patches metadata, so an
+/// absent list is no text rather than an empty one.
+fn message_text_of(
+    content: &agent_client_protocol::schema::MaybeUndefined<Vec<schema::ContentBlock>>,
+) -> String {
+    content
+        .value()
+        .into_iter()
+        .flatten()
+        .filter_map(text_of)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// The phase a finished message carries.
 pub fn message_finished(message_id: &str) -> AgentUpdate {
     AgentUpdate::MessageFinished {
@@ -550,6 +665,81 @@ mod tests {
         ));
     }
 
+    /// The whole point of the desktop's ACP transport is that a real turn
+    /// reaches the same reducer the direct host feeds. A `running` + text +
+    /// `idle` sequence is what one ACP turn looks like, so this asserts the
+    /// outcome a reader sees: a settled assistant row, not a spinner.
+    ///
+    /// It is a regression test, not a mapping test — before `TurnStats` was
+    /// synthesized here the row stayed `Running` forever, because the reducer
+    /// only honours a terminal for a run that `TurnStats` activated.
+    #[test]
+    fn one_acp_turn_settles_the_transcript_row() {
+        use crate::transcript::{
+            ReduceContext, RowBody, RowStatus, SessionEpoch, TranscriptReducer,
+        };
+
+        let context = ReduceContext {
+            session_epoch: SessionEpoch(0),
+            show_hook_output: false,
+        };
+        let mut reducer = TranscriptReducer::new();
+        for update in [
+            schema::SessionUpdate::StateUpdate(schema::StateUpdate::Running(
+                schema::RunningStateUpdate::new(),
+            )),
+            schema::SessionUpdate::AgentMessageChunk(schema::ContentChunk::new(
+                schema::ContentBlock::Text(schema::TextContent::new("acp turn")),
+                "m1",
+            )),
+            schema::SessionUpdate::StateUpdate(schema::StateUpdate::Idle(
+                schema::IdleStateUpdate::new(),
+            )),
+        ] {
+            reducer.apply_batch(to_agent_updates(&update, &parent()), &context);
+        }
+
+        let statuses: Vec<RowStatus> = reducer
+            .view()
+            .iter()
+            .filter_map(|row| match &row.body {
+                RowBody::Assistant(assistant) => Some(assistant.status),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            statuses,
+            vec![RowStatus::Success],
+            "an ACP turn must settle its assistant row, not leave it running"
+        );
+    }
+
+    /// ACP folds "the turn failed" into the idle's stop reason, and the
+    /// reducer only settles a failed run on `RunFailed`. Reporting the idle as
+    /// a plain `RunFinished` would close a failed turn as a success.
+    #[test]
+    fn an_error_idle_fails_the_run_instead_of_finishing_it() {
+        let idle = schema::SessionUpdate::StateUpdate(schema::StateUpdate::Idle(
+            schema::IdleStateUpdate::new().stop_reason(Some(schema::StopReason::Error(
+                schema::ErrorStopReason::new(),
+            ))),
+        ));
+        let mapped = to_agent_updates(&idle, &parent());
+        assert!(
+            matches!(
+                &mapped[..],
+                [
+                    AgentUpdate::RunFailed {
+                        retryable: true,
+                        ..
+                    },
+                    AgentUpdate::TaskCancelled
+                ]
+            ),
+            "{mapped:?}"
+        );
+    }
+
     #[test]
     fn a_cancelled_idle_also_ends_the_turn() {
         let idle = schema::SessionUpdate::StateUpdate(schema::StateUpdate::Idle(
@@ -667,5 +857,57 @@ mod tests {
             &to_agent_updates(&plan, &parent())[..],
             [AgentUpdate::TasksChanged { tasks, .. }] if tasks.is_empty()
         ));
+    }
+
+    /// The agent's explicit "plan is over". A client that only handled an
+    /// empty `plan_update` would keep the finished checklist on screen, which
+    /// is the bug the agent-side `plan_removed` exists to avoid.
+    #[test]
+    fn a_removed_plan_empties_the_task_list() {
+        let removed = schema::SessionUpdate::PlanRemoved(schema::PlanRemoved::new("tasks"));
+        assert!(matches!(
+            &to_agent_updates(&removed, &parent())[..],
+            [AgentUpdate::TasksChanged { tasks, .. }] if tasks.is_empty()
+        ));
+    }
+
+    /// `session/resume` replays history as whole messages, not chunks, so an
+    /// unhandled `agent_message` opened a transcript with no answers in it.
+    #[test]
+    fn a_whole_agent_message_becomes_one_replayed_answer() {
+        let message = schema::SessionUpdate::AgentMessage(
+            schema::AgentMessage::new("replay-1").content(vec![schema::ContentBlock::Text(
+                schema::TextContent::new("earlier answer"),
+            )]),
+        );
+        assert!(matches!(
+            &to_agent_updates(&message, &parent())[..],
+            [
+                AgentUpdate::MessageStarted { message_id },
+                AgentUpdate::StreamChunk(text),
+                AgentUpdate::MessageFinished { .. }
+            ] if message_id == "replay-1" && text == "earlier answer"
+        ));
+    }
+
+    #[test]
+    fn a_whole_thought_message_becomes_one_thinking_region() {
+        let thought = schema::SessionUpdate::AgentThought(
+            schema::AgentThought::new("replay-1").content(vec![schema::ContentBlock::Text(
+                schema::TextContent::new("earlier reasoning"),
+            )]),
+        );
+        let mapped = to_agent_updates(&thought, &parent());
+        assert!(
+            matches!(
+                &mapped[..],
+                [
+                    AgentUpdate::ThinkingChunk(tact_protocol::ThinkingChunk::Started),
+                    AgentUpdate::ThinkingChunk(tact_protocol::ThinkingChunk::Delta(text)),
+                    AgentUpdate::ThinkingChunk(tact_protocol::ThinkingChunk::Finished)
+                ] if text == "earlier reasoning"
+            ),
+            "{mapped:?}"
+        );
     }
 }

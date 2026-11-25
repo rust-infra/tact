@@ -78,7 +78,12 @@ set `CFBundleIconFile`, and ship the PNG in the archives.
   lists longer than eight rows expose a search field inside the popup; mention
   results are already filtered by the typed `@` token.
 - Composer attachments render as removable `AttachmentStrip` chips; the queue
-  exposes send-now, remove and clear actions. The microphone appears only when
+  exposes send-now, remove and clear actions. Each queued row shows the files
+  its prompt carries as chips — an image with a thumbnail, anything else with a
+  file glyph — because a prompt that silently loses its picture on the way
+  through the queue is a prompt the reader cannot see is wrong. Editing a
+  queued prompt restores its attachments into the composer along with its text,
+  so the edit is not a quiet way to drop them. The microphone appears only when
   the voice provider is configured and inserts the transcript on stop.
 - Consecutive tools from one loop render as one compact ToolGroup; expand the
   group for the tool list, then expand one row for terminal output or diff.
@@ -105,7 +110,31 @@ set `CFBundleIconFile`, and ship the PNG in the archives.
 - Sessions from every registered project are loaded and grouped by project in
   the rail, with a scrollable list and a Manage entry. Project switching stays
   in the title-bar workspace switcher; the rail and composer do not repeat the
-  project directory, and New Run is not a standalone rail or composer entry.
+  project directory. Sessions are listed newest activity first, and project
+  groups follow the same rule — a group's position is where its most recent
+  session would fall. `updated_at` moves on every appended message, so it is
+  the activity order rather than a creation order; the rail sorts the rows it
+  is given instead of trusting the snapshot's order, so a future source cannot
+  hand it a different one.
+- A session can be pinned from its rail context menu, and unpinned from the
+  same entry, whose label flips with the row's state. Pinned sessions leave
+  their project group for a **Pinned** block above every project, ordered by
+  when they were pinned. They are not duplicated into the project group: the
+  point of pinning is that the row stops moving with its project. The block's
+  heading is Pinned rather than Sessions because the rail already carries a
+  SESSIONS heading above the list. It has no project identity, so it carries no
+  avatar, no remove-project action and no New Session action — each of those
+  names a project, and a pinned set spans projects. The pin itself is a
+  nullable `sessions.pinned_at` timestamp, so several pinned sessions keep a
+  stable order and re-pinning does not reshuffle them under the pointer.
+- The `+` beside the rail's session search field opens the New Session menu: one
+  row per registered project (the active one marked), then a divider and
+  **Open a project folder**, which raises the directory picker and starts a
+  session in a workspace that is not registered yet. It supersedes the earlier
+  rule that New Run was not a rail entry. Each project section header keeps its
+  own New Session action, and the menu is the rail-level path that does not
+  require finding the section first — a workspace that has never been opened
+  has no section at all.
   The full Session Manager supports the same grouping, project filtering, fuzzy
   search, Active/Archived/All filters and archive/restore. Rail groups,
   manager groups, and the manager's project directory share one project
@@ -114,6 +143,13 @@ set `CFBundleIconFile`, and ship the PNG in the archives.
   collapsible trees: the project node owns the disclosure arrow and count, and
   its session children indent under a shared left guide line. Collapse state is
   shared between the rail and the Session Manager.
+- Anything clickable in the title bar (the workspace switcher, the sidebar
+  toggle, the appearance toggle, Commands, the inspector toggle) claims its own
+  press with `on_mouse_down` + `stop_propagation`. `TitleBar` turns *any*
+  pointer movement while the button is held into `start_window_move`, and macOS
+  then owns the gesture: the mouse-up never reaches gpui and the click never
+  fires. A hand moves a pixel or two between press and release, so without the
+  claim the whole bar is effectively dead.
 - Project removal is available from both project-directory surfaces (the rail
   project node and the Session Manager project pane) and always opens a
   confirmation. Removal only unregisters the project from the desktop registry;
@@ -121,7 +157,27 @@ set `CFBundleIconFile`, and ship the PNG in the archives.
   project's parked hosts, while removing the active one switches to a remaining
   registered project or returns to the empty state. Session archive/restore and
   the Active/Archived/All filters remain in the Session Manager. Rail session
-  rows also expose Archive/Restore from a right-click context menu.
+  rows also expose Rename, Fork, Pin/Unpin and Archive/Restore from a
+  right-click context menu. Fork copies the transcript into a new top-level
+  session and opens it, so
+  a reader can try another path without losing the branch already taken. The
+  rename form is the same one the Session Manager opens, prefilled with the
+  row's current title, so fixing a title no longer requires the full-screen
+  overlay. The menu entries are *named* actions rather than one row-level
+  label: the archive entry's own text flips to Restore, so a label could not
+  identify the operation, and one entry could not carry two. A row locked by
+  another process keeps the same four actions — the lock belongs to the live
+  host, and Rename, Fork, Pin and Archive all write the store — while the row itself
+  stays a disabled navigation target. Fork matters most there: the branch is a
+  new row, so it is the one way into a session that is open elsewhere. A row
+  carries no New session of its own; creating a session belongs to the project
+  section header and the rail's `+`, where the project is what is being chosen. A finished final
+  answer also carries its own Fork, revealed only while the pointer is over
+  that row and reserving no space when hidden; it branches *at* that answer,
+  keeping the turn it belongs to and dropping everything after. Commentary and
+  running answers do not offer it — branching a half-written turn has no
+  meaning — and only a row seeded from history can, because it is the only kind
+  that knows which stored message it came from.
 - The first visible idle sessions are prefetched (up to eight per project, capped
   at thirty-two total). Current, parked, locked, and empty sessions are skipped;
   running sessions keep their live state instead of being re-read from disk.
@@ -185,7 +241,12 @@ set `CFBundleIconFile`, and ship the PNG in the archives.
   tables are selectable.
 - Transcript, composer, command search and popovers use Tact's reviewed desktop
   typography; macOS system type is reserved for the native shell.
-- `Esc` closes the topmost overlay.
+- `Esc` retires exactly one surface per press, innermost first: a pending
+  permission gate (denying it), then the topmost overlay, then an in-page panel
+  (the composer's queue list, or the selected record in the Trajectory ledger),
+  then a live run (interrupting it), then the side regions on a narrow window.
+  Panels that are only mounted on one page do not consume the press while the
+  other page is showing.
 - Inspector tabs slide and crossfade, the tab indicator tracks the active pane,
   tool bodies expand by measured height, permission cards settle into their
   decision, and Light/Dark use a root crossfade.

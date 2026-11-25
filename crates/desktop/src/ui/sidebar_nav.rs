@@ -14,6 +14,22 @@ use gpui_component::{
     v_flex,
 };
 
+/// What a row's extra context-menu action asks the shell to do.
+///
+/// Named rather than positional: the menu is rebuilt from the row whenever the
+/// snapshot changes. A label alone could not tell Rename from Archive, and the
+/// archive entry's own label flips to Restore, so the label is display text and
+/// this enum is the identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SidebarNavItemAction {
+    Rename,
+    Fork,
+    Pin,
+    Unpin,
+    Archive,
+    Restore,
+}
+
 /// One application-owned navigation row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SidebarNavItem {
@@ -24,7 +40,13 @@ pub struct SidebarNavItem {
     detail: Option<SharedString>,
     trailing: Option<SharedString>,
     context_action: Option<SharedString>,
-    new_session_action: Option<SharedString>,
+    /// Additional named context-menu actions, after `context_action`.
+    ///
+    /// A session row offers Rename and Archive, and the archive label flips to
+    /// Restore. One unnamed label could not carry that: the rail had to fold
+    /// every action into one menu entry whose meaning depended on the row.
+    /// Each entry names itself so the shell can dispatch the right intent.
+    item_actions: Vec<(SharedString, SidebarNavItemAction)>,
     disabled: bool,
     children: Vec<SidebarNavItem>,
 }
@@ -39,7 +61,7 @@ impl SidebarNavItem {
             detail: None,
             trailing: None,
             context_action: None,
-            new_session_action: None,
+            item_actions: Vec::new(),
             disabled: false,
             children: Vec::new(),
         }
@@ -70,8 +92,16 @@ impl SidebarNavItem {
         self
     }
 
-    pub fn new_session_action(mut self, label: impl Into<SharedString>) -> Self {
-        self.new_session_action = Some(label.into());
+    /// Add a named context-menu action, in menu order.
+    ///
+    /// `context_action` stays for the single-entry callers; this is what a row
+    /// needs when one menu offers more than one operation.
+    pub fn item_action(
+        mut self,
+        label: impl Into<SharedString>,
+        action: SidebarNavItemAction,
+    ) -> Self {
+        self.item_actions.push((label.into(), action));
         self
     }
 
@@ -214,14 +244,6 @@ impl Default for SidebarNavLabels {
     }
 }
 
-/// How the navigation is hosted.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SidebarNavPresentation {
-    Standalone,
-    #[default]
-    Embedded,
-}
-
 /// An interaction emitted by [`SidebarNav`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SidebarNavEvent {
@@ -253,9 +275,11 @@ pub enum SidebarNavEvent {
         id: SharedString,
         item_id: SharedString,
     },
-    ItemNewSessionRequested {
+    /// A named action from a row's context menu.
+    ItemNamedActionRequested {
         id: SharedString,
         item_id: SharedString,
+        action: SidebarNavItemAction,
     },
     CollapsedChanged {
         id: SharedString,
@@ -283,9 +307,7 @@ pub struct SidebarNav {
     labels: SidebarNavLabels,
     active_item: Option<SharedString>,
     query: SharedString,
-    chrome_visible: bool,
     compact_rows: bool,
-    presentation: SidebarNavPresentation,
     collapsed: bool,
     /// One scroll owner per capped section, keyed by section id. Kept on the
     /// view so scrolling a project's rows survives the re-render that a
@@ -301,17 +323,10 @@ impl SidebarNav {
             labels: SidebarNavLabels::default(),
             active_item: None,
             query: SharedString::default(),
-            chrome_visible: true,
             compact_rows: false,
-            presentation: SidebarNavPresentation::Embedded,
             collapsed: false,
             section_scrolls: HashMap::new(),
         }
-    }
-
-    pub fn with_presentation(mut self, presentation: SidebarNavPresentation) -> Self {
-        self.presentation = presentation;
-        self
     }
 
     pub fn with_compact_rows(mut self, compact: bool) -> Self {
@@ -357,13 +372,6 @@ impl SidebarNav {
         }
         self.labels = labels;
         cx.notify();
-    }
-
-    pub fn set_chrome_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
-        if self.chrome_visible != visible {
-            self.chrome_visible = visible;
-            cx.notify();
-        }
     }
 
     pub fn set_query(
@@ -505,29 +513,15 @@ impl SidebarNav {
         for child in &item.children {
             row = row.child(self.render_item(child, cx));
         }
-        let new_session_action = item.new_session_action.clone();
         let context_action = item.context_action.clone();
-        if new_session_action.is_some() || context_action.is_some() {
+        let item_actions = item.item_actions.clone();
+        if context_action.is_some() || !item_actions.is_empty() {
             let weak = cx.weak_entity();
             let nav_id = self.id.clone();
             let item_id = item.id.clone();
             return row
                 .context_menu(move |menu, _, _| {
                     let mut menu = menu;
-                    if let Some(action) = new_session_action.clone() {
-                        let weak = weak.clone();
-                        let nav_id = nav_id.clone();
-                        let item_id = item_id.clone();
-                        menu = menu.item(PopupMenuItem::new(action).on_click(move |_, _, cx| {
-                            let _ = weak.update(cx, |_, cx| {
-                                cx.emit(SidebarNavEvent::ItemNewSessionRequested {
-                                    id: nav_id.clone(),
-                                    item_id: item_id.clone(),
-                                });
-                                cx.notify();
-                            });
-                        }));
-                    }
                     if let Some(action) = context_action.clone() {
                         let weak = weak.clone();
                         let nav_id = nav_id.clone();
@@ -537,6 +531,25 @@ impl SidebarNav {
                                 cx.emit(SidebarNavEvent::ItemActionRequested {
                                     id: nav_id.clone(),
                                     item_id: item_id.clone(),
+                                });
+                                cx.notify();
+                            });
+                        }));
+                    }
+                    // Named actions come last, in the order the row declared
+                    // them: the row's own primary operation reads first, and a
+                    // destructive one (Archive) sits closest to the pointer's
+                    // resting place.
+                    for (label, action) in item_actions.clone() {
+                        let weak = weak.clone();
+                        let nav_id = nav_id.clone();
+                        let item_id = item_id.clone();
+                        menu = menu.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
+                            let _ = weak.update(cx, |_, cx| {
+                                cx.emit(SidebarNavEvent::ItemNamedActionRequested {
+                                    id: nav_id.clone(),
+                                    item_id: item_id.clone(),
+                                    action,
                                 });
                                 cx.notify();
                             });
@@ -847,7 +860,10 @@ impl Render for SidebarNav {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::Cell, rc::Rc};
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
 
     use gpui::{
         AppContext as _, MouseButton, MouseDownEvent, Render, TestAppContext, div, px, size,
@@ -986,6 +1002,116 @@ mod tests {
         );
     }
 
+    struct ContextNamedProbe {
+        nav: gpui::Entity<SidebarNav>,
+        actions: Rc<RefCell<Vec<SidebarNavItemAction>>>,
+        _subscription: gpui::Subscription,
+    }
+
+    impl Render for ContextNamedProbe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().w(px(320.)).h(px(400.)).child(self.nav.clone())
+        }
+    }
+
+    /// A session row offers more than one operation, and the archive entry
+    /// flips its own label with the row's state. The event carries the action,
+    /// so the shell can tell Rename from Archive without re-deriving it from a
+    /// label that changes.
+    #[gpui::test]
+    fn session_context_menu_emits_named_actions(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (probe, window) = cx.add_window_view(|window, cx| {
+            let nav = cx.new(|cx| SidebarNav::new("sidebar-named", window, cx));
+            nav.update(cx, |nav, cx| {
+                nav.set_sections(
+                    [
+                        SidebarSection::new("sessions", "Sessions").items([SidebarNavItem::new(
+                            "session-one",
+                            "Session one",
+                        )
+                        .item_action("Rename", SidebarNavItemAction::Rename)
+                        .item_action("Fork", SidebarNavItemAction::Fork)
+                        .item_action("Archive", SidebarNavItemAction::Archive)]),
+                    ],
+                    cx,
+                );
+            });
+            let actions = Rc::new(RefCell::new(Vec::new()));
+            let actions_for_event = actions.clone();
+            let subscription = cx.subscribe(&nav, move |_, _, event: &SidebarNavEvent, _| {
+                if let SidebarNavEvent::ItemNamedActionRequested { action, .. } = event {
+                    actions_for_event.borrow_mut().push(*action);
+                }
+            });
+            ContextNamedProbe {
+                nav,
+                actions,
+                _subscription: subscription,
+            }
+        });
+        window.simulate_resize(size(px(400.), px(500.)));
+        window.update(|window, cx| window.draw(cx).clear(cx));
+
+        let row = window
+            .debug_bounds("sidebar-nav-item-session-one")
+            .expect("session row");
+        window.simulate_event(MouseDownEvent {
+            button: MouseButton::Right,
+            position: row.center(),
+            modifiers: Default::default(),
+            click_count: 1,
+            first_mouse: false,
+        });
+        window.run_until_parked();
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        // The menu lists the named actions in the order the row declared them,
+        // so the first entry is Rename.
+        window.simulate_keystrokes("down enter");
+        window.run_until_parked();
+
+        let actions = window.update(|_, cx| probe.read(cx).actions.borrow().clone());
+        assert_eq!(
+            actions,
+            vec![SidebarNavItemAction::Rename],
+            "the first named action must reach the shell as itself, not as an unnamed \
+             row action"
+        );
+
+        // Fork is the second entry. Selecting it must report Fork, not Rename:
+        // the two sit side by side and only the action payload tells them apart.
+        window.update(|_, cx| {
+            let nav = probe.read(cx).nav.clone();
+            nav.update(cx, |nav, cx| {
+                let mut sections = nav.sections.clone();
+                sections[0].items[0].item_actions =
+                    vec![(SharedString::from("fork"), SidebarNavItemAction::Fork)];
+                nav.set_sections(sections, cx);
+            });
+        });
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        let row = window
+            .debug_bounds("sidebar-nav-item-session-one")
+            .expect("session row");
+        window.simulate_event(MouseDownEvent {
+            button: MouseButton::Right,
+            position: row.center(),
+            modifiers: Default::default(),
+            click_count: 1,
+            first_mouse: false,
+        });
+        window.run_until_parked();
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        window.simulate_keystrokes("down enter");
+        window.run_until_parked();
+        let actions = window.update(|_, cx| probe.read(cx).actions.borrow().clone());
+        assert_eq!(
+            actions.last(),
+            Some(&SidebarNavItemAction::Fork),
+            "selecting the Fork entry must report Fork: {actions:?}"
+        );
+    }
+
     #[gpui::test]
     fn session_context_menu_emits_archive_action(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
@@ -1089,8 +1215,17 @@ mod tests {
         );
     }
 
+    /// A session row offers no New session of its own.
+    ///
+    /// Starting a session in the row's project belongs to the project section
+    /// header and the rail's `+`, where the project is what is being chosen.
+    /// A row was the wrong place for it twice over: it named the project
+    /// implicitly, and on a locked row — the one row that offers nothing else —
+    /// it became the *only* menu entry, so right-clicking a session that is
+    /// open elsewhere produced a menu whose single item did not act on that
+    /// session at all.
     #[gpui::test]
-    fn session_context_menu_emits_new_session_action(cx: &mut TestAppContext) {
+    fn a_session_row_offers_no_new_session_entry(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
         let (probe, window) = cx.add_window_view(|window, cx| {
             let nav = cx.new(|cx| SidebarNav::new("sidebar-session-new", window, cx));
@@ -1101,8 +1236,8 @@ mod tests {
                             "session-one",
                             "Session one",
                         )
-                        .new_session_action("New session")
-                        .context_action("Archive")]),
+                        .item_action("Rename", SidebarNavItemAction::Rename)
+                        .item_action("Archive", SidebarNavItemAction::Archive)]),
                     ],
                     cx,
                 );
@@ -1110,7 +1245,7 @@ mod tests {
             let hits = Rc::new(Cell::new(0));
             let hits_for_event = hits.clone();
             let subscription = cx.subscribe(&nav, move |_, _, event: &SidebarNavEvent, _| {
-                if matches!(event, SidebarNavEvent::ItemNewSessionRequested { .. }) {
+                if matches!(event, SidebarNavEvent::ItemNamedActionRequested { .. }) {
                     hits_for_event.set(hits_for_event.get() + 1);
                 }
             });
@@ -1134,12 +1269,14 @@ mod tests {
         });
         window.run_until_parked();
         window.update(|window, cx| window.draw(cx).clear(cx));
+        // The first entry is the row's own first action, not a session-creating
+        // one that the row no longer attaches.
         window.simulate_keystrokes("down enter");
         window.run_until_parked();
         let hits = window.update(|_, cx| probe.read(cx).hits.get());
         assert_eq!(
             hits, 1,
-            "a session's new-session action must come before archive"
+            "a session row's first menu entry must be an action on that session"
         );
     }
 }

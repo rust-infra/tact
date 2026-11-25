@@ -19,6 +19,8 @@ pub struct SessionSummaryView {
     pub title: String,
     pub updated_at: DateTime<Utc>,
     pub archived_at: Option<DateTime<Utc>>,
+    /// When the reader pinned this session, `None` when it is not pinned.
+    pub pinned_at: Option<DateTime<Utc>>,
     pub locked: bool,
     pub message_count: i64,
     pub search_score: i32,
@@ -94,6 +96,7 @@ impl SessionCatalog {
                     title,
                     updated_at: summary.updated_at,
                     archived_at: summary.archived_at,
+                    pinned_at: summary.pinned_at,
                     locked: summary.locked,
                     message_count: summary.message_count,
                     search_score: score,
@@ -116,10 +119,39 @@ impl SessionCatalog {
             .await
     }
 
+    /// Branch a session into a new one, copying its transcript up to now.
+    ///
+    /// Returns the new session's id. The copy is one store transaction (see
+    /// `SessionStore::fork_session`), so the caller can start the fork
+    /// immediately without watching for a partial transcript.
+    pub async fn fork(&self, source_id: &str, upto: Option<i64>) -> Result<String> {
+        let new_id = uuid::Uuid::new_v4().to_string();
+        let root_dir = self.project.root.to_string_lossy().to_string();
+        let copied = self
+            .store()
+            .await?
+            .fork_session(source_id, &new_id, &root_dir, upto)
+            .await?;
+        if copied == 0 {
+            // A session with no transcript has nothing to branch. Creating the
+            // fork anyway would present an empty session as if the branch
+            // point carried content.
+            anyhow::bail!("session {source_id} has no stored transcript to fork");
+        }
+        Ok(new_id)
+    }
+
     pub async fn set_archived(&self, session_id: &str, archived: bool) -> Result<()> {
         self.store()
             .await?
             .set_session_archived(session_id, archived)
+            .await
+    }
+
+    pub async fn set_pinned(&self, session_id: &str, pinned: bool) -> Result<()> {
+        self.store()
+            .await?
+            .set_session_pinned(session_id, pinned)
             .await
     }
 

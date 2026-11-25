@@ -432,6 +432,14 @@ struct DesktopActor {
     queue: VecDeque<Submission>,
     request_id: u64,
     last_gate_reconcile: Instant,
+    /// When the project's branch and HEAD commit were last re-read from `.git`.
+    ///
+    /// The title bar shows the checked-out branch and its commit, and a
+    /// checkout or commit happens outside the app, so nothing else would ever
+    /// tell the shell to repaint them. Re-reading `.git/HEAD` and the branch
+    /// ref is a stat and a small read, but doing it on every 33 ms batch would
+    /// still be pointless: both are human gestures, not frame-rate events.
+    last_git_check: Instant,
     restore_failure: Option<FailureView>,
     /// Commands for the voice worker task, when voice is configured.
     voice: Option<mpsc::UnboundedSender<tact::voice::VoiceCommand>>,
@@ -472,7 +480,7 @@ impl ParkedSession {
         self.queue.is_empty()
             && self.ui.reducer.pending_gates().is_empty()
             && self.pending_host_event.is_none()
-            && self.ui.runtime.current_phase == RunPhase::Idle
+            && !self.ui.runtime.current_phase.is_live()
             && !matches!(
                 self.ui.session.phase,
                 SessionPhase::Running
@@ -548,6 +556,7 @@ impl DesktopActor {
             queue: VecDeque::new(),
             request_id: 1,
             last_gate_reconcile: Instant::now(),
+            last_git_check: Instant::now(),
             restore_failure: None,
             voice: None,
             parked: HashMap::new(),
@@ -678,7 +687,7 @@ impl DesktopActor {
                     self.pending_host_event = None;
                     self.mark_host_disconnected();
                 }
-                Wake::Tick => {}
+                Wake::Tick => self.refresh_git_state(),
             }
         }
         let _ = self.close_host().await;
@@ -734,6 +743,33 @@ impl DesktopActor {
                 closed
             }
         }
+    }
+
+    /// Branch a session and open the branch.
+    ///
+    /// `upto` cuts the copy at a stored message ordinal (inclusive); `None`
+    /// copies the whole transcript. Either way the branch is opened, because
+    /// forking is a request to work somewhere else: landing back on the source
+    /// would make the action look like it did nothing.
+    async fn fork_session(
+        &mut self,
+        session_id: SessionId,
+        upto: Option<i64>,
+    ) -> Result<(), String> {
+        if self.session_switch_in_flight() {
+            return Ok(());
+        }
+        let catalog = self
+            .catalog_for_session(&session_id.0)
+            .ok_or_else(|| "no project open".to_string())?;
+        let forked = catalog
+            .fork(&session_id.0, upto)
+            .await
+            .map_err(|error| error.to_string())?;
+        self.start_session(InitialSession::Resume(forked))
+            .await
+            .map_err(|error| format!("{error:?}"))?;
+        Ok(())
     }
 
     async fn handle_intent(&mut self, intent: DesktopIntent) -> Result<(), String> {
@@ -941,6 +977,15 @@ impl DesktopActor {
                     .map_err(|error| error.to_string())?;
                 self.refresh_sessions().await?;
             }
+            DesktopIntent::ForkSession { session_id } => {
+                self.fork_session(session_id, None).await?;
+            }
+            DesktopIntent::ForkSessionAt {
+                session_id,
+                upto_message,
+            } => {
+                self.fork_session(session_id, Some(upto_message)).await?;
+            }
             DesktopIntent::SetSessionFilter(filter) => {
                 self.state.set_filter(filter);
                 self.refresh_sessions().await?;
@@ -958,6 +1003,16 @@ impl DesktopActor {
                     .ok_or_else(|| "no project open".to_string())?;
                 catalog
                     .set_archived(&session_id.0, archived)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                self.refresh_sessions().await?;
+            }
+            DesktopIntent::SetSessionPinned { session_id, pinned } => {
+                let catalog = self
+                    .catalog_for_session(&session_id.0)
+                    .ok_or_else(|| "no project open".to_string())?;
+                catalog
+                    .set_pinned(&session_id.0, pinned)
                     .await
                     .map_err(|error| error.to_string())?;
                 self.refresh_sessions().await?;
@@ -1153,7 +1208,7 @@ impl DesktopActor {
         else {
             return Ok(());
         };
-        if self.state.runtime.current_phase == RunPhase::Idle
+        if !self.state.runtime.current_phase.is_live()
             && matches!(
                 self.state.session.phase,
                 SessionPhase::Ready | SessionPhase::Running
@@ -1626,6 +1681,7 @@ impl DesktopActor {
                     title: localized(self.state.language, "New session", "新会话").into(),
                     updated_at: Utc::now(),
                     archived_at: None,
+                    pinned_at: None,
                     locked: true,
                     message_count: 0,
                     search_score: i32::MAX,
@@ -1840,7 +1896,7 @@ impl DesktopActor {
         if !matches!(
             self.state.session.phase,
             SessionPhase::Ready | SessionPhase::Running
-        ) || self.state.runtime.current_phase != RunPhase::Idle
+        ) || self.state.runtime.current_phase.is_live()
         {
             self.queue.push_back(submission);
             self.sync_queue();
@@ -1907,9 +1963,16 @@ impl DesktopActor {
             .push_user(text.clone(), submission.attachments);
         self.state.runtime.current_phase = RunPhase::Waiting;
         self.state.session.phase = SessionPhase::Running;
+        // The banner describes the turn that ended badly. A new turn is the
+        // reader's answer to it, so leaving it up would keep claiming the
+        // session is broken while a prompt is in flight — and its Try-again
+        // button would submit the continuation a second time.
+        self.state.failure = None;
         self.publish_rows(
             vec![row],
-            SectionMask::TRANSCRIPT.union(SectionMask::SESSION),
+            SectionMask::TRANSCRIPT
+                .union(SectionMask::SESSION)
+                .union(SectionMask::FAILURE),
         );
         Ok(())
     }
@@ -2977,7 +3040,7 @@ impl DesktopActor {
 
     fn flush_queue(&mut self) {
         if self.host.is_none()
-            || self.state.runtime.current_phase != RunPhase::Idle
+            || self.state.runtime.current_phase.is_live()
             || self.state.runtime.queue_paused
             || !matches!(
                 self.state.session.phase,
@@ -3118,6 +3181,26 @@ impl DesktopActor {
         }
     }
 
+    /// Keep the title bar's branch and commit current.
+    ///
+    /// A `git checkout` or `git commit` happens in another window, so nothing
+    /// in this process is told about it. This re-reads `.git/HEAD` and the
+    /// branch ref on the same slow cadence as the gate reconcile: both are
+    /// human gestures, and the reads are cheap enough to share a rhythm, but
+    /// neither belongs on the 33 ms batch tick.
+    ///
+    /// Publishing only on a real change keeps the shell from repainting the
+    /// chrome several times a second for nothing.
+    fn refresh_git_state(&mut self) {
+        if self.last_git_check.elapsed() < self.config.gate_reconcile {
+            return;
+        }
+        self.last_git_check = Instant::now();
+        if self.state.reread_git_state() {
+            self.publish_rows(Vec::new(), SectionMask::SESSION);
+        }
+    }
+
     fn reconcile_gate_snapshot(&mut self) {
         self.reconcile_gate_snapshot_with(false);
     }
@@ -3255,6 +3338,74 @@ mod tests {
         assert!(chinese.markdown.contains("命令中心"));
     }
 
+    /// The title bar reads `.git` on a timer because a checkout or commit
+    /// happens outside the desktop process.
+    #[tokio::test]
+    async fn title_bar_git_state_refreshes_after_an_external_commit_and_checkout() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_project(tmp.path());
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(project.join(".git/refs/heads/feat")).unwrap();
+        std::fs::write(project.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(
+            project.join(".git/refs/heads/main"),
+            "1111111111111111111111111111111111111111\n",
+        )
+        .unwrap();
+
+        let factory = FakeFactory::new();
+        let mut config = config(tmp.path());
+        config.gate_reconcile = Duration::from_millis(20);
+        let (controller, events) = DesktopController::start_with_factory(config, factory).unwrap();
+        wait_ready(&controller).await;
+        let snapshot = controller.snapshot();
+        assert_eq!(snapshot.project.branch.as_deref(), Some("main"));
+        assert_eq!(snapshot.project.head.as_deref(), Some("1111111"));
+
+        std::fs::write(
+            project.join(".git/refs/heads/main"),
+            "2222222222222222222222222222222222222222\n",
+        )
+        .unwrap();
+        let committed = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let DesktopEvent::Committed(commit) = events.recv().await.unwrap()
+                    && commit.snapshot.project.head.as_deref() == Some("2222222")
+                {
+                    return commit;
+                }
+            }
+        })
+        .await
+        .expect("a commit made outside the desktop must reach the title bar");
+        assert_eq!(committed.snapshot.project.branch.as_deref(), Some("main"));
+
+        std::fs::write(
+            project.join(".git/refs/heads/feat/live"),
+            "3333333333333333333333333333333333333333\n",
+        )
+        .unwrap();
+        std::fs::write(project.join(".git/HEAD"), "ref: refs/heads/feat/live\n").unwrap();
+        let switched = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let DesktopEvent::Committed(commit) = events.recv().await.unwrap()
+                    && commit.snapshot.project.branch.as_deref() == Some("feat/live")
+                    && commit.snapshot.project.head.as_deref() == Some("3333333")
+                {
+                    return commit;
+                }
+            }
+        })
+        .await
+        .expect("a checkout made outside the desktop must reach the title bar");
+        assert_eq!(
+            switched.snapshot.project.branch.as_deref(),
+            Some("feat/live")
+        );
+        assert_eq!(switched.snapshot.project.head.as_deref(), Some("3333333"));
+        controller.shutdown().await.unwrap();
+    }
+
     #[test]
     fn prefetch_candidates_skip_live_locked_and_empty_sessions() {
         let session =
@@ -3265,6 +3416,7 @@ mod tests {
                 title: id.into(),
                 updated_at: Utc::now(),
                 archived_at: None,
+                pinned_at: None,
                 locked,
                 message_count,
                 search_score: 0,
@@ -3602,6 +3754,128 @@ mod tests {
             !log.iter().any(|entry| entry.starts_with("close:")),
             "a project switch must park the old idle host, not close it: {log:?}"
         );
+    }
+
+    /// Forking opens the branch: the point of the command is to continue
+    /// somewhere else, so landing back on the source would look like a no-op.
+    /// A prompt queued behind a running turn keeps its attachments.
+    ///
+    /// The queue is where an attachment is easiest to lose: the submission is
+    /// accepted immediately but sent much later, so anything the queue drops is
+    /// only discovered after the turn the image belonged to has already run.
+    #[tokio::test]
+    async fn a_queued_submission_keeps_its_attachments() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_project(tmp.path());
+        let factory = FakeFactory::new();
+        let (controller, _events) =
+            DesktopController::start_with_factory(config(tmp.path()), factory.clone()).unwrap();
+        wait_ready(&controller).await;
+
+        // Start a turn so the next submission has to wait.
+        controller
+            .dispatch(DesktopIntent::Submit(Submission {
+                text: "first".into(),
+                attachments: Vec::new(),
+                model: None,
+                permission_mode: None,
+            }))
+            .unwrap();
+        controller.when_idle().await.unwrap();
+
+        let image = tmp.path().join("queued.png");
+        std::fs::write(&image, [0x89, b'P', b'N', b'G']).unwrap();
+        controller
+            .dispatch(DesktopIntent::Submit(Submission {
+                text: "with an image".into(),
+                attachments: vec![image.clone()],
+                model: None,
+                permission_mode: None,
+            }))
+            .unwrap();
+        controller.when_idle().await.unwrap();
+
+        let queued = controller.snapshot().composer.queue.clone();
+        assert_eq!(queued.len(), 1, "the second prompt waits behind the run");
+        assert_eq!(
+            queued[0].attachments.iter().collect::<Vec<_>>(),
+            vec![&image],
+            "a queued prompt must keep the files it was submitted with"
+        );
+
+        // And sending it flushes the file into the task text the host receives,
+        // which is how an attachment reaches the model.
+        factory.emit(HostEvent::agent(AgentUpdate::TaskComplete(String::new())));
+        controller.when_idle().await.unwrap();
+        let flushed = factory
+            .commands
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|command| match command {
+                UserCommand::SubmitTask(text) => Some(text.clone()),
+                _ => None,
+            })
+            .any(|text| text.contains("queued.png"));
+        assert!(flushed, "the flushed prompt must still reference its image");
+        controller.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn forking_a_session_opens_the_new_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_project(tmp.path());
+        let root = std::fs::canonicalize(tmp.path().join("project")).unwrap();
+        seed_sessions(&root, &["source"]).await;
+
+        let factory = FakeFactory::new();
+        let (controller, _events) =
+            DesktopController::start_with_factory(config(tmp.path()), factory.clone()).unwrap();
+        wait_ready(&controller).await;
+
+        controller
+            .dispatch(DesktopIntent::ForkSession {
+                session_id: SessionId("source".into()),
+            })
+            .unwrap();
+        controller.when_idle().await.unwrap();
+        wait_ready(&controller).await;
+
+        let snapshot = controller.snapshot();
+        let selected = snapshot
+            .session
+            .id
+            .as_ref()
+            .expect("the fork must open a session");
+        assert_ne!(
+            selected.0, "source",
+            "the fork must be a new session, not the source it branched from"
+        );
+        assert!(
+            snapshot
+                .sessions
+                .items
+                .iter()
+                .any(|item| item.id == selected.0),
+            "the fork must be listed so it can be returned to: {:?}",
+            snapshot
+                .sessions
+                .items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>()
+        );
+        let branch = snapshot
+            .sessions
+            .items
+            .iter()
+            .find(|item| item.id == selected.0)
+            .expect("branch row");
+        assert_eq!(
+            branch.message_count, 1,
+            "the fork carries the source's transcript"
+        );
+        controller.shutdown().await.unwrap();
     }
 
     #[tokio::test]
@@ -3960,6 +4234,71 @@ mod tests {
                 .is_some_and(|session| session.archived_at.is_none()),
             "restore returns the session to the active catalog"
         );
+    }
+
+    #[tokio::test]
+    async fn pinning_a_session_marks_it_and_unpinning_clears_the_mark() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_project(tmp.path());
+        let root = std::fs::canonicalize(tmp.path().join("project")).unwrap();
+        seed_sessions(&root, &["s1", "s2"]).await;
+        let factory = FakeFactory::new();
+        let config = DesktopConfig::load(tmp.path().join("app-data"))
+            .unwrap()
+            .with_initial_project(root)
+            .with_initial_session(InitialSession::Resume("s1".into()));
+        let (controller, _events) = DesktopController::start_with_factory(config, factory).unwrap();
+        wait_ready(&controller).await;
+
+        let pinned_at = |controller: &DesktopController, id: &str| {
+            controller
+                .snapshot()
+                .sessions
+                .items
+                .iter()
+                .find(|session| session.id == id)
+                .and_then(|session| session.pinned_at)
+        };
+        assert!(
+            pinned_at(&controller, "s2").is_none(),
+            "a listed session starts unpinned"
+        );
+
+        // The intent must reach the store, not merely the in-memory view: a
+        // pin that only lived in the snapshot would vanish on the next
+        // refresh, which is what the rail does on every switch.
+        controller
+            .dispatch(DesktopIntent::SetSessionPinned {
+                session_id: SessionId("s2".into()),
+                pinned: true,
+            })
+            .unwrap();
+        controller.when_idle().await.unwrap();
+        let pinned = pinned_at(&controller, "s2").expect("the pin must survive the refresh");
+
+        // Pinning keeps the session in the list; only its group changes.
+        assert!(
+            controller
+                .snapshot()
+                .sessions
+                .items
+                .iter()
+                .any(|session| session.id == "s2"),
+            "a pinned session stays in the rail"
+        );
+
+        controller
+            .dispatch(DesktopIntent::SetSessionPinned {
+                session_id: SessionId("s2".into()),
+                pinned: false,
+            })
+            .unwrap();
+        controller.when_idle().await.unwrap();
+        assert!(
+            pinned_at(&controller, "s2").is_none(),
+            "unpinning must clear the stored moment"
+        );
+        let _ = pinned;
     }
 
     #[tokio::test]
@@ -5609,6 +5948,81 @@ mod tests {
             .expect("a failed run sets the banner");
         assert_eq!(failure.message.as_ref(), "provider failed");
         assert!(!failure.retryable);
+    }
+
+    /// A failed run must not wedge the composer: the very next prompt has to
+    /// reach the host.
+    ///
+    /// `RunPhase::Failed` is a terminal phase for the *run*, but both
+    /// `submit` and `flush_queue` gate on `RunPhase::Idle`, and the only
+    /// transition back to `Idle` is a host `Ready` (a session restart). So a
+    /// failure that leaves the phase at `Failed` queues the next prompt and
+    /// then refuses to drain that queue — the reader clicks Try again, sees
+    /// `QUEUED 1`, and nothing is ever sent.
+    #[tokio::test]
+    async fn a_prompt_after_a_failed_run_still_reaches_the_host() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_project(tmp.path());
+        let factory = FakeFactory::new();
+        let (controller, _events) =
+            DesktopController::start_with_factory(config(tmp.path()), factory.clone()).unwrap();
+        wait_ready(&controller).await;
+        for update in [
+            AgentUpdate::RunStarted {
+                run_id: "run-1".into(),
+            },
+            AgentUpdate::TurnStats {
+                run_id: Some("run-1".into()),
+                turns_taken: 1,
+                max_turns: None,
+            },
+            AgentUpdate::RunFailed {
+                run_id: "run-1".into(),
+                retryable: true,
+                message: Some("the provider dropped the stream".into()),
+            },
+            AgentUpdate::Error(AgentErrorKind::Other(
+                "the provider dropped the stream".into(),
+            )),
+        ] {
+            factory.emit(HostEvent::agent(update));
+        }
+        controller.when_idle().await.unwrap();
+        assert_eq!(
+            controller.snapshot().runtime.current_phase,
+            RunPhase::Failed
+        );
+
+        controller
+            .dispatch(DesktopIntent::Submit(Submission {
+                text: tact_protocol::TRY_AGAIN_PROMPT.to_string(),
+                attachments: Vec::new(),
+                model: None,
+                permission_mode: None,
+            }))
+            .unwrap();
+        controller.when_idle().await.unwrap();
+
+        let commands = factory.commands.lock().unwrap();
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                UserCommand::SubmitTask(text) if text == tact_protocol::TRY_AGAIN_PROMPT
+            )),
+            "a retry after a failed run must be sent, not queued forever: {commands:?}"
+        );
+        drop(commands);
+        assert!(
+            controller.snapshot().composer.queue.is_empty(),
+            "nothing should be left waiting behind the failed run"
+        );
+        // The banner names the turn that failed. Once a new turn is running,
+        // leaving it up says the session is still broken while a prompt is in
+        // flight, and its Try-again button would submit the continuation again.
+        assert!(
+            controller.snapshot().failure.is_none(),
+            "the failure banner must clear when the next turn starts"
+        );
     }
 
     /// The kernel branch: with no driver `Error` to override it, the banner

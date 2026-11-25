@@ -102,6 +102,15 @@ impl SqliteSessionStore {
         Self::add_nullable_column(&pool, "sessions", "archived_at", "TIMESTAMP")
             .await
             .context("failed to migrate sessions.archived_at")?;
+        // `pinned_at` records *when* a session was pinned, not merely whether
+        // it is: two pinned sessions still need an order, and the moment a
+        // reader pinned one is the only stable one available. A nullable
+        // timestamp also gives "not pinned" a natural representation (`NULL`)
+        // instead of a boolean that has to be kept in step with a second
+        // column for the ordering.
+        Self::add_nullable_column(&pool, "sessions", "pinned_at", "TIMESTAMP")
+            .await
+            .context("failed to migrate sessions.pinned_at")?;
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_sessions_root_archived_updated \
              ON sessions(root_dir, archived_at, updated_at DESC)",
@@ -1218,6 +1227,7 @@ impl super::SessionStore for SqliteSessionStore {
                 s.created_at,
                 s.updated_at,
                 s.archived_at,
+                s.pinned_at,
                 s.locked_by,
                 s.lock_epoch,
                 COUNT(m.id) as message_count
@@ -1254,6 +1264,7 @@ impl super::SessionStore for SqliteSessionStore {
                 continue;
             }
             let archived_at: Option<String> = row.try_get("archived_at")?;
+            let pinned_at: Option<String> = row.try_get("pinned_at")?;
             let locked_by: i64 = row.try_get("locked_by")?;
             let lock_epoch: String = row.try_get("lock_epoch")?;
             sessions.push(SessionSummary {
@@ -1272,6 +1283,9 @@ impl super::SessionStore for SqliteSessionStore {
                 )?,
                 archived_at: archived_at
                     .map(|value| parse_timestamp_value(&value, "failed to parse archived_at"))
+                    .transpose()?,
+                pinned_at: pinned_at
+                    .map(|value| parse_timestamp_value(&value, "failed to parse pinned_at"))
                     .transpose()?,
                 locked: is_active_lock_holder(u32::try_from(locked_by).unwrap_or(0), &lock_epoch),
                 message_count: row.try_get("message_count")?,
@@ -1303,6 +1317,100 @@ impl super::SessionStore for SqliteSessionStore {
         Ok(())
     }
 
+    async fn fork_session(
+        &self,
+        source_id: &str,
+        new_id: &str,
+        root_dir: &str,
+        upto: Option<i64>,
+    ) -> Result<i64> {
+        if source_id == new_id {
+            anyhow::bail!("a session cannot be forked onto itself");
+        }
+        let mut tx = self.pool.begin().await.context("failed to begin fork")?;
+
+        // The source row must exist; forking a session whose transcript the
+        // store never wrote would silently produce an empty session.
+        let source = sqlx::query("SELECT root_dir, title FROM sessions WHERE id = ?")
+            .bind(source_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .context("failed to read the session being forked")?;
+        let Some(source) = source else {
+            anyhow::bail!("unknown session {source_id}");
+        };
+        let source_root: String = source.try_get("root_dir")?;
+        let source_title: Option<String> = source.try_get("title")?;
+
+        let now = Self::now();
+        let root_dir = if root_dir.is_empty() {
+            source_root.as_str()
+        } else {
+            root_dir
+        };
+        // The title names the branch. A source with no title keeps none, so the
+        // first turn still names the fork the way it names any new session.
+        let title = source_title.map(|title| format!("{title} (fork)"));
+        // `ref_id` stays empty: it marks a *subagent* session, and the session
+        // list only shows rows with `ref_id = ''`. A fork is a top-level
+        // session in its own right — recording the source there would hide the
+        // branch from the rail, which is the opposite of opening it.
+        sqlx::query(
+            r#"
+            INSERT INTO sessions (id, created_at, updated_at, root_dir, title, ref_id)
+            VALUES (?, ?, ?, ?, ?, '')
+            "#,
+        )
+        .bind(new_id)
+        .bind(now)
+        .bind(now)
+        .bind(root_dir)
+        .bind(title)
+        .execute(&mut *tx)
+        .await
+        .context("failed to create the forked session")?;
+
+        // `ordinal` and the per-message fields are copied verbatim, so the fork
+        // renders exactly like the source did up to the fork point. `id` is
+        // left to the table: it is a row identity, not part of the transcript.
+        //
+        // `upto` is inclusive and compares the stored `ordinal`, which is the
+        // order the messages were appended in — so "fork at this answer" keeps
+        // that answer and everything before it, and drops the turns after.
+        let copied = match upto {
+            Some(upto) => sqlx::query(
+                r#"
+                INSERT INTO messages (session_id, role, content, origin, tool_statuses, ordinal, created_at)
+                SELECT ?, role, content, origin, tool_statuses, ordinal, created_at
+                FROM messages WHERE session_id = ? AND ordinal <= ?
+                "#,
+            )
+            .bind(new_id)
+            .bind(source_id)
+            .bind(upto)
+            .execute(&mut *tx),
+            None => sqlx::query(
+                r#"
+                INSERT INTO messages (session_id, role, content, origin, tool_statuses, ordinal, created_at)
+                SELECT ?, role, content, origin, tool_statuses, ordinal, created_at
+                FROM messages WHERE session_id = ?
+                "#,
+            )
+            .bind(new_id)
+            .bind(source_id)
+            .execute(&mut *tx),
+        }
+        .await
+        .context("failed to copy the session transcript")?
+        .rows_affected();
+
+        // Input history is the reader's own prompt recall, and a fork starts a
+        // new line of work: carrying the source's history over would offer
+        // prompts that belong to the branch that was already running.
+        tx.commit().await.context("failed to commit the fork")?;
+        Ok(copied as i64)
+    }
+
     async fn set_session_archived(&self, session_id: &str, archived: bool) -> Result<()> {
         let result = sqlx::query(
             "UPDATE sessions SET archived_at = CASE WHEN ? THEN COALESCE(archived_at, ?) ELSE NULL END \
@@ -1314,6 +1422,27 @@ impl super::SessionStore for SqliteSessionStore {
         .execute(&*self.pool)
         .await
         .context("failed to update session archive state")?;
+        if result.rows_affected() == 0 {
+            anyhow::bail!("unknown session {session_id}");
+        }
+        Ok(())
+    }
+
+    async fn set_session_pinned(&self, session_id: &str, pinned: bool) -> Result<()> {
+        // `COALESCE(pinned_at, ?)` keeps the moment a session was *first*
+        // pinned: pinning an already-pinned row is a no-op in the menu (the
+        // entry reads Unpin), but a double click or a retried intent must not
+        // reorder the pinned block under the reader's pointer.
+        let result = sqlx::query(
+            "UPDATE sessions SET pinned_at = CASE WHEN ? THEN COALESCE(pinned_at, ?) ELSE NULL END \
+             WHERE id = ?",
+        )
+        .bind(pinned)
+        .bind(Self::now())
+        .bind(session_id)
+        .execute(&*self.pool)
+        .await
+        .context("failed to update session pin state")?;
         if result.rows_affected() == 0 {
             anyhow::bail!("unknown session {session_id}");
         }
@@ -2087,6 +2216,130 @@ mod tests {
         assert_eq!(title, "Fix the parser");
     }
 
+    /// Forking copies the transcript so the branch continues from the same
+    /// place, and records the source as `ref_id` so it is a branch rather than
+    /// an unrelated session.
+    #[tokio::test]
+    async fn fork_copies_the_transcript_and_records_the_source() {
+        let (_tmp, store) = new_store_with_session("source").await;
+        store
+            .set_session_title("source", Some("Original"))
+            .await
+            .unwrap();
+        for (ordinal, text) in ["first", "second", "third"].iter().enumerate() {
+            store
+                .append_agent_message(
+                    "source",
+                    &AgentMessage::text(AgentRole::User, MessageOrigin::User, *text),
+                    ordinal as i64,
+                )
+                .await
+                .unwrap();
+        }
+
+        let copied = store
+            .fork_session("source", "branch", "/workspace", None)
+            .await
+            .unwrap();
+        assert_eq!(copied, 3, "every stored message must be copied");
+
+        let forked = store.load_agent_session("branch").await.unwrap();
+        let source = store.load_agent_session("source").await.unwrap();
+        assert_eq!(forked.len(), source.len());
+        assert_eq!(
+            forked
+                .iter()
+                .flat_map(|message| message.content.iter())
+                .filter_map(|block| match block {
+                    AgentContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            vec!["first", "second", "third"],
+            "the fork must carry the source's turns in order"
+        );
+
+        // The branch is named after what it branched from, so the rail does not
+        // show two identically named sessions with no way to tell them apart.
+        let summaries = store.list_sessions(None).await.unwrap();
+        let branch = summaries
+            .iter()
+            .find(|summary| summary.id == "branch")
+            .expect("the fork is listed");
+        assert_eq!(branch.title.as_deref(), Some("Original (fork)"));
+
+        // And the source still has its own messages: a fork is a copy, not a move.
+        assert_eq!(source.len(), 3);
+    }
+
+    /// `upto` is how "fork from this answer" keeps the branch point and drops
+    /// the turns after it. It is inclusive, so the answer the reader pointed at
+    /// survives into the fork.
+    #[tokio::test]
+    async fn fork_upto_cuts_the_transcript_at_the_branch_point() {
+        let (_tmp, store) = new_store_with_session("source").await;
+        for (ordinal, text) in ["first", "second", "third", "fourth"].iter().enumerate() {
+            store
+                .append_agent_message(
+                    "source",
+                    &AgentMessage::text(AgentRole::User, MessageOrigin::User, *text),
+                    ordinal as i64 + 1,
+                )
+                .await
+                .unwrap();
+        }
+
+        // The stored ordinal of "second" is 2, so the fork keeps two messages.
+        let copied = store
+            .fork_session("source", "branch", "/workspace", Some(2))
+            .await
+            .unwrap();
+        assert_eq!(copied, 2, "the cut is inclusive of the branch point");
+
+        let texts: Vec<String> = store
+            .load_agent_session("branch")
+            .await
+            .unwrap()
+            .iter()
+            .flat_map(|message| message.content.iter())
+            .filter_map(|block| match block {
+                AgentContentBlock::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, vec!["first", "second"]);
+
+        // The source keeps everything: a fork never truncates what it forked.
+        assert_eq!(
+            store.load_agent_session("source").await.unwrap().len(),
+            4,
+            "the source must keep the turns the fork dropped"
+        );
+    }
+
+    /// The source row has to exist. A fork of a session the store never wrote
+    /// would otherwise create an empty branch that looks like a successful one.
+    #[tokio::test]
+    async fn forking_an_unknown_session_fails_without_creating_anything() {
+        let (_tmp, store) = new_store_with_session("source").await;
+        assert!(
+            store
+                .fork_session("missing", "branch", "/workspace", None)
+                .await
+                .is_err(),
+            "forking an unknown session must fail"
+        );
+        assert!(
+            store
+                .list_sessions(None)
+                .await
+                .unwrap()
+                .iter()
+                .all(|summary| summary.id != "branch"),
+            "a failed fork must not leave a session row behind"
+        );
+    }
+
     #[tokio::test]
     async fn tool_result_does_not_derive_title() {
         let (_tmp, store) = new_store_with_session("session").await;
@@ -2222,6 +2475,50 @@ mod tests {
                 .len()
                 == 1
         );
+    }
+
+    #[tokio::test]
+    async fn pinning_records_the_moment_and_unpinning_clears_it() {
+        let (_tmp, store) = new_store_with_session("session").await;
+        let pinned_at = |sessions: Vec<super::SessionSummary>| {
+            sessions
+                .into_iter()
+                .find(|session| session.id == "session")
+                .and_then(|session| session.pinned_at)
+        };
+        let list = || async {
+            store
+                .list_sessions_filtered(SessionListQuery::default())
+                .await
+                .unwrap()
+        };
+
+        assert!(
+            pinned_at(list().await).is_none(),
+            "a new session must start unpinned"
+        );
+
+        store.set_session_pinned("session", true).await.unwrap();
+        let first = pinned_at(list().await).expect("a pinned session carries its pin moment");
+
+        // Re-pinning is a no-op on the moment: the pinned block must not
+        // reshuffle under the pointer because a click was retried.
+        store.set_session_pinned("session", true).await.unwrap();
+        assert_eq!(
+            pinned_at(list().await),
+            Some(first),
+            "re-pinning must keep the original moment"
+        );
+
+        store.set_session_pinned("session", false).await.unwrap();
+        assert!(
+            pinned_at(list().await).is_none(),
+            "unpinning must clear the pin moment"
+        );
+
+        // Unknown ids are an error, not a silent success: the caller is
+        // dispatching against a row that no longer exists.
+        assert!(store.set_session_pinned("missing", true).await.is_err());
     }
 
     #[tokio::test]

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, path::Path, sync::Arc};
 
 use chrono::Utc;
 use tact::store::ArchiveFilter;
@@ -250,29 +250,49 @@ impl DesktopState {
     }
 
     pub fn set_project(&mut self, project: Option<&ProjectRecord>) {
-        self.project = project.map_or_else(ProjectView::default, |project| ProjectView {
-            id: Some(project.id.clone()),
-            root: Some(project.root.clone()),
-            display_name: Arc::from(project.display_name.clone()),
-            branch: crate::project::repository_branch(&project.root).map(Arc::from),
-            repository: crate::project::repository_slug(&project.root).map(Arc::from),
-            available: project.available,
-        });
+        self.project = project.map_or_else(ProjectView::default, project_view);
         self.sessions.project = self.project.id.clone();
     }
 
     pub fn set_projects(&mut self, projects: &[ProjectRecord]) {
-        self.projects = projects
-            .iter()
-            .map(|project| ProjectView {
-                id: Some(project.id.clone()),
-                root: Some(project.root.clone()),
-                display_name: Arc::from(project.display_name.clone()),
-                branch: crate::project::repository_branch(&project.root).map(Arc::from),
-                repository: crate::project::repository_slug(&project.root).map(Arc::from),
-                available: project.available,
-            })
-            .collect();
+        self.projects = projects.iter().map(project_view).collect();
+    }
+
+    /// Re-read the checked-out branch and HEAD commit of every known project,
+    /// and report whether anything moved.
+    ///
+    /// A checkout or commit happens outside the app, so the title bar would
+    /// otherwise stay on whatever it read when the project was opened. Only
+    /// the git identity is re-read: the repository slug comes from
+    /// `.git/config`, which neither a checkout nor a commit rewrites.
+    pub fn reread_git_state(&mut self) -> bool {
+        let mut changed = false;
+        for view in self.projects.iter_mut() {
+            let Some(root) = view.root.clone() else {
+                continue;
+            };
+            let (branch, head) = repository_identity(&root);
+            if view.branch != branch {
+                view.branch = branch;
+                changed = true;
+            }
+            if view.head != head {
+                view.head = head;
+                changed = true;
+            }
+        }
+        if let Some(root) = self.project.root.clone() {
+            let (branch, head) = repository_identity(&root);
+            if self.project.branch != branch {
+                self.project.branch = branch;
+                changed = true;
+            }
+            if self.project.head != head {
+                self.project.head = head;
+                changed = true;
+            }
+        }
+        changed
     }
 
     pub fn begin_session_switch(&mut self) -> SessionEpoch {
@@ -718,6 +738,24 @@ impl DesktopState {
     }
 }
 
+fn project_view(project: &ProjectRecord) -> ProjectView {
+    let (branch, head) = repository_identity(&project.root);
+    ProjectView {
+        id: Some(project.id.clone()),
+        root: Some(project.root.clone()),
+        display_name: Arc::from(project.display_name.clone()),
+        branch,
+        head,
+        repository: crate::project::repository_slug(&project.root).map(Arc::from),
+        available: project.available,
+    }
+}
+
+fn repository_identity(root: &Path) -> (Option<Arc<str>>, Option<Arc<str>>) {
+    let state = crate::project::repository_state(root);
+    (state.branch.map(Arc::from), state.head.map(Arc::from))
+}
+
 fn task_view(task: &TaskSnapshot) -> TaskView {
     TaskView {
         id: task.id,
@@ -798,6 +836,69 @@ mod tests {
         (DesktopState::new(&config), tmp)
     }
 
+    /// A checkout or commit happens outside the app, so the only way the title
+    /// bar can learn about it is by re-reading `.git`.
+    #[test]
+    fn rereading_git_state_picks_up_a_checkout_and_a_commit() {
+        let (mut state, tmp) = state();
+        let root = tmp.path().join("repo");
+        std::fs::create_dir_all(root.join(".git/refs/heads")).unwrap();
+        std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(
+            root.join(".git/refs/heads/main"),
+            "1111111111111111111111111111111111111111\n",
+        )
+        .unwrap();
+
+        let record = crate::ProjectRecord {
+            id: crate::ProjectId("project".into()),
+            root: root.clone(),
+            display_name: "repo".into(),
+            last_opened_at: Utc::now(),
+            available: true,
+        };
+        state.set_projects(std::slice::from_ref(&record));
+        state.set_project(Some(&record));
+        assert_eq!(state.project.branch.as_deref(), Some("main"));
+        assert_eq!(state.project.head.as_deref(), Some("1111111"));
+
+        // A commit moves the branch the project is already on.
+        std::fs::write(
+            root.join(".git/refs/heads/main"),
+            "2222222222222222222222222222222222222222\n",
+        )
+        .unwrap();
+        assert!(
+            state.reread_git_state(),
+            "a commit must reach the title bar"
+        );
+        assert_eq!(state.project.branch.as_deref(), Some("main"));
+        assert_eq!(state.project.head.as_deref(), Some("2222222"));
+
+        // A checkout changes both halves of the identity.
+        std::fs::create_dir_all(root.join(".git/refs/heads/feat")).unwrap();
+        std::fs::write(
+            root.join(".git/refs/heads/feat/live"),
+            "3333333333333333333333333333333333333333\n",
+        )
+        .unwrap();
+        std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/feat/live\n").unwrap();
+        assert!(
+            state.reread_git_state(),
+            "a checkout must reach the title bar"
+        );
+        assert_eq!(state.project.branch.as_deref(), Some("feat/live"));
+        assert_eq!(state.project.head.as_deref(), Some("3333333"));
+        assert_eq!(state.projects[0].branch.as_deref(), Some("feat/live"));
+        assert_eq!(state.projects[0].head.as_deref(), Some("3333333"));
+
+        // Nothing moved, so the shell is not asked to repaint.
+        assert!(
+            !state.reread_git_state(),
+            "an unchanged git state reports no change"
+        );
+    }
+
     #[test]
     fn switching_sessions_keeps_the_rail_catalog() {
         let (mut state, _tmp) = state();
@@ -808,6 +909,7 @@ mod tests {
             title: "First session".into(),
             updated_at: Utc::now(),
             archived_at: None,
+            pinned_at: None,
             locked: false,
             message_count: 3,
             search_score: 0,

@@ -130,8 +130,11 @@ mapping in `tact-acp`: it turns `session/update` traffic back into `AgentUpdate`
 so the existing 2 400-line transcript reducer runs unchanged. Three families do
 not round-trip and are documented at the top of that module — hook context and
 hook status (no ACP update kind), `SurfaceSnapshot` readers such as `/stats` and
-`/mcp list` (they arrive as notice text), and a subagent's structured transcript
-(rebuilt by the reducer from the child's ordinary stream). Extension management
+`/mcp list` (they arrive as notice text, and the transport answers with
+`HostSendError::Unsupported` rather than a silent success), a subagent's
+structured transcript (rebuilt by the reducer from the child's ordinary
+stream), and per-model-call `TurnStats` (ACP has one foreground level, so the
+activation is synthesized once per run). Extension management
 is filesystem state rather than agent state, so `AcpHost` builds its own
 `HostExtensionService` instead of asking the agent.
 
@@ -139,6 +142,27 @@ Both implementations pass the same `HostEvent` / `UserCommand` contract, so the
 controller, reducer, snapshots, and GPUI shell are unaware of which one is live.
 A packaged build ships `tact-acp` beside `tact-desktop`; when the sidecar is
 missing the runtime flag selects nothing and the in-process host stays in charge.
+
+Two protocol facts decide whether the ACP path is usable at all, and both are
+the adapter's job rather than the controller's:
+
+- **`HostEvent::Ready` after the handshake.** The controller keys "this session
+  is usable" off that event: it re-applies the permission mode, syncs background
+  tasks, publishes the extensions snapshot, and leaves `SessionPhase::Starting`.
+  The ACP backends emit it once `initialize` answered and the session opened.
+- **`TurnStats` before the first terminal.** Tact's vocabulary is edge-shaped
+  (a run starts, then ends) while ACP reports a level (`running`, `idle`), so
+  `acp_bridge` synthesizes the activation `TurnStats` with the run start.
+  Without it the reducer drops the idle as an unmatched activation: assistant
+  rows stay `Running` and the controller stays in `RunPhase::Streaming`, which
+  blocks the prompt queue forever. An idle whose stop reason is `error` maps to
+  `RunFailed` rather than `RunFinished`, so a failed turn is not reported as a
+  success.
+
+A command with no ACP representation (`/compact` from the desktop's own
+composer, a Goal action, a reasoning-tier change) is answered with
+`HostSendError::Unsupported` instead of `Ok(())`. The desktop then reports the
+gap rather than claiming an operation it never sent.
 
 `tact-acp` is a third frontend over `tact_host`, not a mode of the TUI. Each
 ACP session owns one `HostSession`; a per-session actor turns `AgentUpdate`

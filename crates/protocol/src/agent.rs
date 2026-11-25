@@ -1089,6 +1089,49 @@ impl PlanStep {
     }
 }
 
+impl UserCommand {
+    /// The command's own name, for an error a user can act on.
+    ///
+    /// A transport that cannot carry a command reports this rather than
+    /// accepting it silently, so the name is what the user sees.
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::SubmitTask(_) => "submit",
+            Self::Cancel => "cancel",
+            Self::Compact => "compact",
+            Self::QueryBalance => "balance",
+            Self::QueryStats => "stats",
+            Self::QueryBackground(_) => "background",
+            Self::CreateGoal { .. } => "goal create",
+            Self::ListGoals { .. } => "goal list",
+            Self::ShowGoal { .. } => "goal show",
+            Self::SteerGoal { .. } => "goal steer",
+            Self::PauseGoal { .. } => "goal pause",
+            Self::ResumeGoal { .. } => "goal resume",
+            Self::CancelGoal { .. } => "goal cancel",
+            Self::AcceptGoal { .. } => "goal accept",
+            Self::SetGoalArchived { .. } => "goal archive",
+            Self::SetPermissionMode(_) => "permission",
+            Self::SetThinkingBudget(_) => "thinking budget",
+            Self::SetReasoningEffort(_) => "reasoning effort",
+            Self::SetModel(_) => "model",
+            Self::SubagentFinishedNotification { .. } => "subagent finished",
+            Self::CancelSubagent { .. } => "subagent cancel",
+            Self::McpAuth { .. } => "mcp auth",
+            Self::McpList => "mcp list",
+            Self::McpPrompts { .. } => "mcp prompts",
+            Self::RunMcpPrompt { .. } => "mcp prompt",
+            Self::HooksList => "hooks list",
+            Self::HooksTrust { .. } => "hooks trust",
+            Self::HooksForget => "hooks forget",
+            Self::UiResponse(_) => "ui response",
+            Self::QuerySurface { .. } => "surface query",
+            Self::SyncBackgroundTasks => "sync background tasks",
+            Self::CancelBackgroundTask { .. } => "background cancel",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

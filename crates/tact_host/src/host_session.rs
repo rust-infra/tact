@@ -144,11 +144,19 @@ fn host_start_error(error: anyhow::Error) -> HostStartError {
     }
 }
 
-/// Sending into a host whose supervisor has gone away.
+/// Sending into a host whose supervisor has gone away, or a command this
+/// transport cannot carry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostSendError {
     Closed,
     Disconnected,
+    /// The command has no representation on this transport.
+    ///
+    /// A frontend that reports success for a command it dropped leaves the UI
+    /// believing an operation was queued: `/compact`, a Goal action, or a
+    /// reasoning-tier change would silently do nothing. This is the error that
+    /// makes such a gap visible at the call site.
+    Unsupported(&'static str),
 }
 
 impl fmt::Display for HostSendError {
@@ -156,6 +164,9 @@ impl fmt::Display for HostSendError {
         match self {
             Self::Closed => formatter.write_str("host session is closed"),
             Self::Disconnected => formatter.write_str("host driver is disconnected"),
+            Self::Unsupported(command) => {
+                write!(formatter, "`{command}` is not available on this transport")
+            }
         }
     }
 }

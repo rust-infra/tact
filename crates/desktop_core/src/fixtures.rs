@@ -30,6 +30,7 @@ fn row(id: u64, body: RowBody) -> TranscriptRow {
         _ => None,
     };
     TranscriptRow {
+        message_ordinal: None,
         id: RowId(id),
         ordinal: id,
         loop_id: Some(LoopId(1)),

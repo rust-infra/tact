@@ -22,7 +22,13 @@ tact-acp = { version = "2.0.0", path = "../tact-acp", optional = true }
 # The ACP bridge translates an ACP agent's `session/update` traffic back into
 # the `AgentUpdate` vocabulary the desktop transcript already reduces, so a
 # Tact agent running out of process renders exactly like one in process.
-agent-client-protocol = { version = "5.3", default-features = false, features = ["process", "unstable_protocol_v2"] }
+#
+# `unstable_plan_operations` adds `plan_removed`. An agent that finishes its
+# todo list sends that instead of an empty `plan_update`, so without the feature
+# the update deserializes as an unknown `Other` variant and the desktop keeps
+# drawing the last checklist as still in progress. The agent side
+# (`tact-acp`) enables the same feature for the same reason.
+agent-client-protocol = { version = "5.3", default-features = false, features = ["process", "unstable_protocol_v2", "unstable_plan_operations"] }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }

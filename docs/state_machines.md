@@ -97,6 +97,16 @@ truncated answer read as done.
 phase from `DesktopSnapshot`; it does not infer host state from individual
 events.
 
+`Complete` and `Failed` describe how the last turn ended, not activity: the run
+is over and the next prompt may start at once. `RunPhase::is_live()` is the
+predicate for that question, and the three gates that ask it — `submit`,
+`flush_queue`, `send_queued_now`, plus `ParkedSession::is_idle` — use it rather
+than comparing against `Idle`. Nothing moves `Failed` back to `Idle` short of a
+host `Ready` (a session restart), so an `Idle` comparison queued the next prompt
+after a failure and then refused to flush that queue: the reader clicked Try
+again, saw `QUEUED 1`, and nothing was ever sent. Starting a turn also clears
+`failure`, because the banner describes the turn that ended.
+
 ## Desktop transcript rows
 
 `crates/desktop_core/src/transcript/row.rs` defines row identity and status.

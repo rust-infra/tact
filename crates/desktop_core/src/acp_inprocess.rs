@@ -115,6 +115,9 @@ impl InProcessAcpHost {
         let handler_elicitations = elicitations.clone();
         let handler_prompts = prompts.clone();
         let handler_events = event_tx.clone();
+        // The spawn below takes its own sender; this one stays here so the
+        // readiness event can be queued once the handshake answers.
+        let ready_events = event_tx.clone();
 
         tokio::spawn(async move {
             let result = Client
@@ -288,6 +291,14 @@ impl InProcessAcpHost {
                 .map_err(|error| HostStartError::Config(format!("skill registry: {error}")))?,
             tact_host::extensions::default_plugin_home(),
         );
+
+        // The handshake above *is* the readiness boundary: the agent answered
+        // `initialize` and opened the session. The controller treats a missing
+        // `Ready` as "still starting", so without this the session stayed in
+        // `SessionPhase::Starting` forever: the permission mode was never
+        // re-applied, background tasks were never synced, the extensions
+        // snapshot was never published, and the composer never took focus.
+        let _ = ready_events.send(HostEvent::Ready).await;
 
         let _ = config;
         Ok(Self {
@@ -495,9 +506,15 @@ impl HostBackend for InProcessAcpHost {
                 self.answer(response);
                 Ok(())
             }
+            // See the subprocess backend: reporting success for a command
+            // that was never sent makes the UI claim an operation happened.
             other => {
-                tracing::debug!(?other, "no ACP mapping for this command");
-                Ok(())
+                tracing::debug!(
+                    ?other,
+                    command = other.name(),
+                    "no ACP mapping for this command"
+                );
+                Err(HostSendError::Unsupported(other.name()))
             }
         }
     }
@@ -597,6 +614,7 @@ pub async fn transcript_after_prompt(
     };
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(45);
     let mut saw_idle = false;
+    let mut saw_ready = false;
     while !saw_idle {
         let Some(remaining) = deadline.checked_duration_since(tokio::time::Instant::now()) else {
             return Err("the turn did not reach an idle boundary".to_string());
@@ -604,11 +622,23 @@ pub async fn transcript_after_prompt(
         let Ok(Some(event)) = tokio::time::timeout(remaining, host.next_event()).await else {
             return Err("the turn did not reach an idle boundary".to_string());
         };
-        let HostEvent::Agent(update) = event else {
-            continue;
+        let update = match event {
+            // The controller keys "session is usable" off this event: without
+            // it the session never leaves `SessionPhase::Starting`.
+            HostEvent::Ready => {
+                saw_ready = true;
+                continue;
+            }
+            HostEvent::Agent(update) => update,
+            _ => continue,
         };
+        // A run that never activated cannot be finished, so the sequence this
+        // loop accepts is exactly the one the reducer honours.
         saw_idle = matches!(*update, AgentUpdate::RunFinished { .. });
         reducer.apply_batch([*update], &context);
+    }
+    if !saw_ready {
+        return Err("the in-process ACP host never reported Ready".to_string());
     }
 
     let view = reducer.view();

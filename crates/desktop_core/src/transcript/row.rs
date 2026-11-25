@@ -46,6 +46,15 @@ pub struct TranscriptRow {
     /// Persisted history carries no per-message time through `AgentMessage`,
     /// so seeded rows leave this empty rather than inventing the load time.
     pub time: Option<Arc<str>>,
+    /// The stored message this row was seeded from, when the row came from
+    /// persisted history.
+    ///
+    /// `ordinal` above is a *row* counter: it numbers what the transcript
+    /// draws, and one stored message can produce zero rows (injected context
+    /// that collapses) or several (a message carrying both text and tool use).
+    /// Forking "from this answer" needs the stored coordinate, which is the
+    /// only handle the store can cut on, so a seeded row remembers it.
+    pub message_ordinal: Option<i64>,
     pub body: RowBody,
 }
 
