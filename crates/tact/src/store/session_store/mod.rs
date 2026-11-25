@@ -219,6 +219,13 @@ pub trait SessionStore: Send + Sync {
 
     async fn delete_session(&self, session_id: &str) -> Result<()>;
 
+    /// Whether a session row exists.
+    ///
+    /// A caller that must not create a session it was told to resume needs
+    /// this before it opens a host: `ensure_session_row` inserts, so the open
+    /// path cannot tell "exists" from "was just created".
+    async fn session_exists(&self, session_id: &str) -> Result<bool>;
+
     async fn count_messages_by_session(&self, session_id: &str) -> Result<i64>;
 
     async fn count_messages_daily(&self) -> Result<Vec<MessageCountByPeriod>>;

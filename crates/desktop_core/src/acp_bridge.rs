@@ -31,10 +31,12 @@
 //! Two families *do* round-trip and must not be dropped: `agent_message` /
 //! `agent_thought` (whole-message upserts, which is how `session/resume` replays
 //! history) and `plan_removed` (which the shell needs to drop a finished
-//! checklist). `plan_removed` is why this crate enables the
-//! `unstable_plan_operations` feature — without it the update deserializes as
-//! an unknown `Other` variant and is silently ignored.
+//! checklist). `plan_removed` is stable from schema 1.20 on, so it needs no
+//! feature flag; before that it was behind `unstable_plan_operations`, and an
+//! update without the feature deserialized as an unknown `Other` variant and
+//! was silently ignored.
 
+use agent_client_protocol::schema::MaybeUndefined;
 use agent_client_protocol::v2::schema;
 use tact_protocol::{
     AgentErrorKind, AgentUpdate, StepResult, StepStatus, ToolPresentationInfo, ToolVisualKind,
@@ -424,7 +426,15 @@ fn compaction_updates(compaction: &schema::CompactionUpdate) -> Vec<AgentUpdate>
     // The kind is a display label here (the desktop card reads the state), so
     // a generic compaction is the honest choice — the adapter does not tell us
     // whether this was automatic, a `/compact`, or a recovery pass.
-    let state = match compaction.status {
+    // `status` is a patch field: omitted means "unchanged", and the client is
+    // expected to keep the status it already had. This bridge is stateless, so
+    // an omitted status carries no new lifecycle step and yields no update.
+    let status = match &compaction.status {
+        MaybeUndefined::Undefined => return Vec::new(),
+        MaybeUndefined::Null => schema::CompactionStatus::InProgress,
+        MaybeUndefined::Value(status) => status.clone(),
+    };
+    let state = match status {
         schema::CompactionStatus::InProgress => CompactionState::Started,
         schema::CompactionStatus::Completed => CompactionState::Completed {
             summary: compaction
@@ -822,10 +832,9 @@ mod tests {
 
     #[test]
     fn one_compaction_is_one_typed_event_per_status() {
-        let started = schema::SessionUpdate::CompactionUpdate(schema::CompactionUpdate::new(
-            "c1",
-            schema::CompactionStatus::InProgress,
-        ));
+        let started = schema::SessionUpdate::CompactionUpdate(
+            schema::CompactionUpdate::new("c1").status(schema::CompactionStatus::InProgress),
+        );
         assert!(matches!(
             &to_agent_updates(&started, &parent())[..],
             [AgentUpdate::Compaction(CompactionEvent {
@@ -835,9 +844,11 @@ mod tests {
         ));
 
         let done = schema::SessionUpdate::CompactionUpdate(
-            schema::CompactionUpdate::new("c1", schema::CompactionStatus::Completed).summary(vec![
-                schema::ContentBlock::Text(schema::TextContent::new("summary text")),
-            ]),
+            schema::CompactionUpdate::new("c1")
+                .status(schema::CompactionStatus::Completed)
+                .summary(vec![schema::ContentBlock::Text(schema::TextContent::new(
+                    "summary text",
+                ))]),
         );
         assert!(matches!(
             &to_agent_updates(&done, &parent())[..],

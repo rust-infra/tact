@@ -812,6 +812,7 @@
 <li class="toc-l2"><a href="#83-2026-11-24--%E5%A4%B1%E8%B4%A5%E4%B9%8B%E5%90%8E%E9%87%8D%E8%AF%95%E6%B0%B8%E8%BF%9C%E5%8F%91%E4%B8%8D%E5%87%BA%E5%8E%BB" title="83. 2026-11-24 — 失败之后重试永远发不出去"><span class="toc-label">83. 2026-11-24 — 失败之后重试永远发不出去</span></a></li>
 <li class="toc-l2"><a href="#84-2026-11-25--esc-%E5%9C%A8%E6%AF%8F%E4%B8%AA%E9%A1%B5%E9%9D%A2%E4%B8%8A%E5%85%B3%E6%8E%89%E7%9A%84%E9%83%BD%E4%B8%8D%E6%98%AF%E7%9C%BC%E5%89%8D%E9%82%A3%E4%B8%80%E5%B1%82" title="84. 2026-11-25 — Esc 在每个页面上关掉的都不是眼前那一层"><span class="toc-label">84. 2026-11-25 — Esc 在每个页面上关掉的都不是眼前那一层</span></a></li>
 <li class="toc-l2"><a href="#85-2026-11-25--%E7%A9%BA%E5%9B%9E%E5%90%88%E5%BA%94%E8%AF%A5%E8%87%AA%E5%8A%A8%E7%BB%AD%E8%B7%91%E8%80%8C%E4%B8%8D%E6%98%AF%E5%81%9C%E4%BD%8F" title="85. 2026-11-25 — 空回合应该自动续跑，而不是停住"><span class="toc-label">85. 2026-11-25 — 空回合应该自动续跑，而不是停住</span></a></li>
+<li class="toc-l2"><a href="#86-2026-11-26--acp-v2-%E5%8D%8F%E8%AE%AE%E8%A1%A5%E9%BD%90%E5%9B%9B%E6%9D%A1-must" title="86. 2026-11-26 — ACP v2 协议补齐四条 MUST"><span class="toc-label">86. 2026-11-26 — ACP v2 协议补齐四条 MUST</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -24636,6 +24637,85 @@ MaxTokens 的续跑预算同一个量级；循环由这个常量收口，一个�
 <p><strong>Pointers：</strong><code>crates/tact_host/src/driver.rs</code>
 （<code>SubmitTask</code> 回合循环的 <code>EmptyTurn</code> 分支）、
 <code>crates/protocol/src/prompt.rs</code>（<code>TRY_AGAIN_PROMPT</code>）。</p>
+<h2 id="86-2026-11-26--acp-v2-协议补齐四条-must">86. 2026-11-26 — ACP v2 协议补齐四条 MUST</h2>
+<p><strong>动机：</strong>逐条比对官网 v2 的 18 篇规范页后发现
+<code>tact-acp</code> 有四处 MUST 没做到。其中两处会在真实客户端上产生可见错误，
+另两处是「客户端能自愈，但服务端说了假话」。</p>
+<p><strong>第一处：<code>idempotencyKey</code> 完全不支持。</strong>
+规范要求「声明了 <code>capabilities.session</code> 的 Agent MUST 支持这个 key」。
+连接断在 <code>session/prompt</code> 响应之前时，客户端重发，adapter 会把同一条
+用户消息插入第二次。锁定的 <code>agent-client-protocol-schema</code> 1.18.0 里连
+字段都没有（1.19.0 起才加入），所以先升级：<code>agent-client-protocol</code>
+5.3 → 5.6.1，schema 1.18 → 1.22。</p>
+<p><strong>第二处：运行中 <code>session/close</code> 不发 idle。</strong>
+规范：「the Agent MUST send the final updates … and the idle
+<code>state_update</code> with <code>stopReason: "cancelled"</code> before
+responding」。原实现收到 <code>Close</code> 直接 <code>host.close()</code> 然后
+<code>break</code>，正在跑的工具没有终态，客户端也收不到 idle，界面停在
+running。新加的 <code>settle_for_close</code> 走
+<code>finish_turn(Cancelled)</code>——它是唯一的 turn 边界发射点——并且和
+<code>cancel_session</code> 一样先答 Tact 的挂起请求、再 drain
+<code>open_requests</code> 发 <code>$/cancel_request</code>，全部在 close 响应
+之前。</p>
+<p><strong>第三处：close 不撤销弹窗。</strong>同一条规范的
+「MUST cancel every pending permission request and elicitation scoped to that
+session with <code>$/cancel_request</code>」。原先只有 <code>cancel_session</code>
+会清 <code>open_requests</code>，close 路径把它们留在了客户端屏幕上。</p>
+<p><strong>第四处：<code>session/resume</code> 把不存在的会话凭空创建出来。</strong>
+规范：「resuming one it no longer has fails with <code>-32002</code>」。原实现直接进
+<code>start_host</code>，而 <code>ensure_session_row</code> 是
+<code>INSERT … ON CONFLICT DO NOTHING</code>，所以恢复一个被删除的 ID 会成功返回
+一个空会话。新增 <code>SessionStore::session_exists</code>，在开 host 之前查一次。
+只拒绝未知 id：transcript 为空但从未 prompt 过的会话仍然正常打开。</p>
+<p><strong>决策：</strong>把 key 的去重放在 actor 里而不是 request handler 里。
+<code>SessionCommand::Prompt</code> 改成带 <code>message_id</code>、
+<code>key</code> 和 reply 通道，actor 是 per-session 状态的唯一写者——和
+模型选择、turn phase 一样。去重命中时返回已插入的 id，handler 直接回
+<code>PromptResponse</code>，既不发 user-message echo 也不重发命令表：重发会让
+同一条 prompt 在 transcript 里出现两次。map 上限 256 条、按插入序淘汰，因为
+规范把 key 限在 255 字符且客户端每条提交生成一个。</p>
+<p><strong>升级带来的 API 变更（都是机械替换）：</strong>
+<code>CompactionUpdate::new(id)</code> 不再接第二个参数，
+<code>status</code> 变成 <code>MaybeUndefined</code> patch 字段；
+<code>ToolCallContent::Diff</code> 现在装 <code>Box&lt;Diff&gt;</code>；
+elicitation 的 content 从 <code>BTreeMap</code> 变成
+<code>IndexMap</code>（且 <code>remove</code> 要换 <code>shift_remove</code>）；
+<code>unstable_plan_operations</code>、<code>unstable_subagents</code> 在 schema 1.20
+转正，feature 名消失。<code>desktop_core</code> 的桥也读
+<code>compaction.status</code>，因此同样要处理
+<code>MaybeUndefined::Undefined</code>——无状态的桥遇到 patch 空值只能不发更新。</p>
+<p><strong>验证（每条都先红后绿，并做过变异）：</strong></p>
+<ul>
+<li><code>acp_session_end_to_end</code> 的第 10 步：同一 key 发两次，断言第二次
+返回同一个 <code>messageId</code>、且 500ms 内没有任何新 update。把去重条件加
+<code>&amp;&amp; false</code> 后立即变红（第二次拿到 <code>user-40</code> 而非
+<code>user-39</code>）。</li>
+<li>第 11 步：在一个卡在 elicitation 上的回合里 close，断言 close 之后能读到
+<code>stopReason: "cancelled"</code> 的 idle。删掉 <code>settle_for_close()</code>
+调用后变红——关闭后只剩 UserMessage / Running / AvailableCommandsUpdate，没有任何
+终态。</li>
+<li>第 12 步：<code>session/delete</code> 之后 resume，断言
+<code>RESOURCE_NOT_FOUND</code>。把 <code>if !known</code> 改成
+<code>if known &amp;&amp; false</code> 后变红，返回的是一个带着选项表的
+<code>ResumeSessionResponse</code>。</li>
+<li>升级本身：既有 48 个 <code>tact-acp</code> 单测、237 个
+<code>tact_desktop_core</code> 测试与完整 <code>cargo test --workspace</code>
+全部通过。</li>
+</ul>
+<p><strong>对 T3 的影响：</strong><code>idempotencyKey</code> 是零风险——拆开本机
+T3 0.1.9 的 <code>app.asar</code> 后确认它的 ACP 客户端从不发这个字段
+（仅出现在它自己的额度重置重试里）。close 的两处修复只让状态更准确。resume 的
+<code>-32002</code> 会让 T3 从「假装恢复成功、历史空白」降级为明确的
+<code>session/new</code>，这是改善。停止原因尚未细分为
+<code>max_tokens</code> / <code>refusal</code>，那是下一件事。</p>
+<p><strong>Pointers：</strong><code>crates/tact-acp/src/lib.rs</code>
+（<code>settle_for_close</code>、<code>insert_prompt</code>、
+<code>resume_session</code> 的存在性检查、<code>SessionCommand::Prompt</code>）、
+<code>crates/tact/src/store/session_store/{mod,sqlite}.rs</code>
+（<code>session_exists</code>）、
+<code>crates/tact-acp/tests/acp_session.rs</code>（第 10–12 步）、
+<code>crates/desktop_core/src/acp_bridge.rs</code>
+（<code>MaybeUndefined</code> 的 compaction status）。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>

@@ -1513,6 +1513,16 @@ impl super::SessionStore for SqliteSessionStore {
         Ok(row.try_get("cnt")?)
     }
 
+    async fn session_exists(&self, session_id: &str) -> Result<bool> {
+        let row = sqlx::query("SELECT COUNT(*) as cnt FROM sessions WHERE id = ?")
+            .bind(session_id)
+            .fetch_one(&*self.pool)
+            .await
+            .context("failed to check a session exists")?;
+        let count: i64 = row.try_get("cnt")?;
+        Ok(count > 0)
+    }
+
     async fn count_messages_daily(&self) -> Result<Vec<MessageCountByPeriod>> {
         let rows = sqlx::query(
             r#"

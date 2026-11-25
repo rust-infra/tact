@@ -5,7 +5,6 @@
 //! adapter is mocked: the assertions are the ACP traffic T3 would see.
 
 use std::{
-    collections::BTreeMap,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -262,7 +261,7 @@ async fn run_client(
 }
 
 fn accept_response(value: schema::ElicitationContentValue) -> schema::CreateElicitationResponse {
-    let mut content = BTreeMap::new();
+    let mut content = agent_client_protocol::schema::IndexMap::new();
     content.insert("selections".to_string(), value);
     schema::CreateElicitationResponse::new(schema::ElicitationAction::Accept(
         schema::ElicitationAcceptAction::new().content(content),
@@ -959,7 +958,10 @@ async fn run_scenario(
     let error = connection
         .resume_session_from(
             schema::ResumeSessionRequest::new(session_id.clone(), cwd.clone()).replay_from(
-                schema::ReplayFrom::Other(schema::OtherReplayFrom::new("_test", BTreeMap::new())),
+                schema::ReplayFrom::Other(schema::OtherReplayFrom::new(
+                    "_test",
+                    agent_client_protocol::schema::IndexMap::new(),
+                )),
             ),
         )
         .start_session()
@@ -1041,8 +1043,117 @@ async fn run_scenario(
     assert_eq!(idle.stop_reason, Some(schema::StopReason::EndTurn));
     assert_no_state_after_idle(&mut updates, &session_id).await;
 
-    // 10. Close succeeds; the client future returning proves the child exits.
+    // 10. A retried `idempotencyKey` must not insert a second user message.
+    //     `session/prompt` is ACP's one keyed method: a client that lost the
+    //     response retries with the same key, and answering with the original
+    //     message id (while inserting nothing) is what keeps one submission
+    //     from becoming two turns.
+    drain(&mut updates);
+    client_state.take_updates();
+    *client_state.behavior.lock().expect("behavior lock") =
+        ElicitationBehavior::AcceptOne("0".into());
+    let key = schema::IdempotencyKey::new("retry-me-once").expect("a valid key");
+    let first = resumed
+        .session
+        .send_prompt_blocks_with_key(
+            vec![schema::ContentBlock::from("please ACP_TEST_ANSWER")],
+            key.clone(),
+        )
+        .block_task()
+        .await?;
+    let (idle, _) = wait_for_idle(&mut updates, &session_id).await;
+    assert_eq!(idle.stop_reason, Some(schema::StopReason::EndTurn));
+    drain(&mut updates);
+    client_state.take_updates();
+
+    let retried = resumed
+        .session
+        .send_prompt_blocks_with_key(
+            vec![schema::ContentBlock::from("please ACP_TEST_ANSWER")],
+            key,
+        )
+        .block_task()
+        .await?;
+    assert_eq!(
+        retried.message_id, first.message_id,
+        "a retried key must answer with the id of the message it already inserted"
+    );
+    // Nothing was inserted: no user-message echo, no second turn.
+    let after_retry = tokio::time::timeout(Duration::from_millis(500), updates.recv()).await;
+    assert!(
+        after_retry.is_err(),
+        "a duplicate key must not produce a second turn, got {:?}",
+        after_retry
+            .ok()
+            .map(|notification| notification.map(|update| update.update))
+    );
+
+    // 11. Closing while a turn is running must settle that turn before the
+    //     close response: ACP requires the final updates and an idle with
+    //     `stopReason: "cancelled"` first, and a client that keeps drawing a
+    //     spinner after close has no way to learn the work ended.
+    drain(&mut updates);
+    client_state.take_updates();
+    *client_state.behavior.lock().expect("behavior lock") = ElicitationBehavior::Block;
+    resumed
+        .session
+        .send_prompt("please ACP_TEST_CLOSE_RUNNING")
+        .block_task()
+        .await?;
+    wait_until(
+        || {
+            client_state
+                .elicitations
+                .lock()
+                .expect("elicitations lock")
+                .iter()
+                .any(|record| record.message.contains("Blocking question"))
+        },
+        "the blocking question",
+    )
+    .await;
     resumed.session.close().block_task().await?;
+    let updates_after_close: Vec<schema::SessionUpdate> = std::iter::from_fn(|| {
+        updates
+            .try_recv()
+            .ok()
+            .map(|notification| notification.update)
+    })
+    .collect();
+    assert!(
+        updates_after_close.iter().any(|update| matches!(
+            update,
+            schema::SessionUpdate::StateUpdate(schema::StateUpdate::Idle(idle))
+                if idle.stop_reason == Some(schema::StopReason::Cancelled)
+        )),
+        "closing a running turn must settle it with a cancelled idle, got {updates_after_close:?}"
+    );
+
+    // 12. Delete removes the stored session, and resuming it afterwards must
+    //     fail instead of quietly creating an empty one. The host open path
+    //     inserts a row when it cannot find one, so without an existence check
+    //     the client would be told its deleted thread came back, with no
+    //     history in it.
+    connection
+        .send_request(schema::DeleteSessionRequest::new(session_id.clone()))
+        .block_task()
+        .await?;
+    let error = connection
+        .resume_session_from(schema::ResumeSessionRequest::new(
+            session_id.clone(),
+            cwd.clone(),
+        ))
+        .start_session()
+        .block_task()
+        .await
+        .expect_err("resuming a deleted session must fail");
+    assert_eq!(
+        error.code,
+        agent_client_protocol::ErrorCode::RESOURCE_NOT_FOUND,
+        "a deleted session must answer -32002 (resource not found), got {error:?}"
+    );
+
+    // 13. The client future returning proves the child exits.
     Ok(())
 }
 

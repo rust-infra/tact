@@ -28,7 +28,7 @@ tact-acp = { version = "2.0.0", path = "../tact-acp", optional = true }
 # the update deserializes as an unknown `Other` variant and the desktop keeps
 # drawing the last checklist as still in progress. The agent side
 # (`tact-acp`) enables the same feature for the same reason.
-agent-client-protocol = { version = "5.3", default-features = false, features = ["process", "unstable_protocol_v2", "unstable_plan_operations"] }
+agent-client-protocol = { version = "5.6", default-features = false, features = ["process", "unstable_protocol_v2"] }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
