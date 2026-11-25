@@ -29,7 +29,7 @@ use tact_llm::{Message, Role};
 use tact_protocol::{
     AccountUpdate, AgentErrorKind, AgentUpdate, GoalAcceptanceSnapshot, GoalCriterionSnapshot,
     GoalCriterionStatusSnapshot, GoalPhaseSnapshot, GoalRunBudgetSnapshot, GoalSnapshot,
-    GoalStatusSnapshot, TasksChangeReason, UpdateSink, UserCommand,
+    GoalStatusSnapshot, TRY_AGAIN_PROMPT, TasksChangeReason, UpdateSink, UserCommand,
 };
 use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
@@ -2128,20 +2128,44 @@ async fn handle_user_command_with_account(
             // next prompt). Bound the loop so a misbehaving hook cannot spin
             // the agent forever.
             const MAX_STOP_CONTINUATIONS: u32 = 4;
+            // A provider that ends a turn with nothing to read is usually a
+            // dropped stream, not an answer: the retry is automatic and costs
+            // the reader nothing. Bound it so a model that keeps stopping
+            // silently still surfaces as a failure instead of spinning.
+            const MAX_EMPTY_TURN_RETRIES: u32 = 2;
             let mut task_message = Some(task_message);
             let mut stop_continuations = 0u32;
+            let mut empty_turn_retries = 0u32;
             loop {
                 match agent.agent_loop_detailed(task_message.take()).await {
                     // A turn that produced nothing is not a finished task.
                     // `agent_loop` folds this into `Ok(())`, so the driver
                     // reported `TaskComplete("")` and both frontends froze the
                     // turn as done: a finished task with no answer and no error.
-                    Ok(outcome) if outcome.stop == AgentLoopStop::EmptyTurn => {
-                        agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(
-                            "the model ended the turn without writing an answer; \
-                             nothing was produced"
-                                .to_string(),
-                        )));
+                    //
+                    // The empty turn is retried as a continuation before it is
+                    // reported: it is the same failure a dropped stream leaves
+                    // behind, and asking the model to carry on from where it
+                    // stopped is what a reader would otherwise click
+                    // `Try again` to do. Only a model that keeps stopping
+                    // silently spends the budget and reaches the error.
+                    Ok(outcome)
+                        if outcome.stop == AgentLoopStop::EmptyTurn && !agent.is_cancelled() =>
+                    {
+                        if empty_turn_retries < MAX_EMPTY_TURN_RETRIES {
+                            empty_turn_retries += 1;
+                            agent.emit_update(AgentUpdate::Info(format!(
+                                "[Recovery] empty turn \
+                                 ({empty_turn_retries}/{MAX_EMPTY_TURN_RETRIES}): retrying with \
+                                 the continuation prompt"
+                            )));
+                            task_message = Some(Message::new_text(Role::User, TRY_AGAIN_PROMPT));
+                            continue;
+                        }
+                        agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(format!(
+                            "the model ended the turn without writing an answer; nothing was \
+                             produced, even after {MAX_EMPTY_TURN_RETRIES} automatic retries"
+                        ))));
                     }
                     Ok(outcome) if !agent.is_cancelled() => {
                         // A truncated turn must not pass for a finished one.
@@ -5064,6 +5088,103 @@ mod tests {
                 .iter()
                 .any(|update| matches!(update, AgentUpdate::Error(_))),
             "the reader has to be told the turn produced nothing: {updates:?}"
+        );
+    }
+
+    /// An empty turn is retried before it is reported.
+    ///
+    /// The provider can end a turn with nothing to read — a dropped stream, or
+    /// a reply that was all reasoning. Freezing there costs the reader a click
+    /// on `Try again` for a failure the driver can start over itself, so the
+    /// first empty turn sends the protocol's continuation prompt and only a
+    /// repeated one reaches the error row.
+    #[tokio::test]
+    async fn an_empty_turn_is_retried_before_it_is_reported() {
+        install_test_config();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mock = MockClient::new(vec![
+            (Vec::new(), Some(StopReason::EndTurn)),
+            (
+                vec![text_block("the answer after the retry")],
+                Some(StopReason::EndTurn),
+            ),
+        ]);
+        let (mut agent, work_dir) = build_test_agent(mock, Some(agent_tx));
+
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::SubmitTask("say something".to_string()),
+            &work_dir,
+        )
+        .await;
+
+        let updates: Vec<AgentUpdate> = std::iter::from_fn(|| agent_rx.try_recv().ok()).collect();
+        assert!(
+            !updates
+                .iter()
+                .any(|update| matches!(update, AgentUpdate::Error(_))),
+            "the retry answered, so nothing failed: {updates:?}"
+        );
+        assert!(
+            updates.iter().any(
+                |update| matches!(update, AgentUpdate::TaskComplete(text) if text == "the answer after the retry")
+            ),
+            "the retried turn's answer is the task's answer: {updates:?}"
+        );
+        assert!(
+            agent.context().iter().any(|message| matches!(
+                &message.content,
+                tact_llm::MessageContent::Text { content } if content == tact_protocol::TRY_AGAIN_PROMPT
+            )),
+            "the retry continues the task instead of restarting it: {:?}",
+            agent.context()
+        );
+    }
+
+    /// A model that keeps stopping silently is bounded, then reported.
+    ///
+    /// The retry is a recovery, not a licence to loop: an empty turn every time
+    /// would otherwise spin forever without telling the reader anything.
+    #[tokio::test]
+    async fn repeated_empty_turns_stop_after_the_retry_budget() {
+        install_test_config();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mock = MockClient::with_responder(|_request, _idx| {
+            Ok((Vec::new(), Some(StopReason::EndTurn), None))
+        });
+        let (mut agent, work_dir) = build_test_agent(mock, Some(agent_tx));
+
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::SubmitTask("say something".to_string()),
+            &work_dir,
+        )
+        .await;
+
+        let updates: Vec<AgentUpdate> = std::iter::from_fn(|| agent_rx.try_recv().ok()).collect();
+        let retries = updates
+            .iter()
+            .filter(
+                |update| matches!(update, AgentUpdate::Info(text) if text.contains("empty turn")),
+            )
+            .count();
+        assert_eq!(retries, 2, "the retry budget is spent once: {updates:?}");
+        let error = updates
+            .iter()
+            .find_map(|update| match update {
+                AgentUpdate::Error(AgentErrorKind::Other(message)) => Some(message.clone()),
+                _ => None,
+            })
+            .expect("an exhausted retry budget still reports a failure");
+        assert!(
+            error.contains("without writing an answer") && error.contains("automatic retries"),
+            "the error must say what happened after the retries, got {error:?}"
+        );
+        assert!(
+            !updates
+                .iter()
+                .any(|update| matches!(update, AgentUpdate::TaskComplete(_))),
+            "a silent model never completes the task: {updates:?}"
         );
     }
 

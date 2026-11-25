@@ -811,6 +811,7 @@
 <li class="toc-l2"><a href="#82-2026-11-24--rail-%E6%8C%89%E6%9C%80%E8%BF%91%E6%B4%BB%E5%8A%A8%E6%8E%92%E5%BA%8F%E5%B9%B6%E4%B8%94%E5%8F%AF%E4%BB%A5%E5%9B%BA%E5%AE%9A%E4%BC%9A%E8%AF%9D" title="82. 2026-11-24 — rail 按最近活动排序，并且可以固定会话"><span class="toc-label">82. 2026-11-24 — rail 按最近活动排序，并且可以固定会话</span></a></li>
 <li class="toc-l2"><a href="#83-2026-11-24--%E5%A4%B1%E8%B4%A5%E4%B9%8B%E5%90%8E%E9%87%8D%E8%AF%95%E6%B0%B8%E8%BF%9C%E5%8F%91%E4%B8%8D%E5%87%BA%E5%8E%BB" title="83. 2026-11-24 — 失败之后重试永远发不出去"><span class="toc-label">83. 2026-11-24 — 失败之后重试永远发不出去</span></a></li>
 <li class="toc-l2"><a href="#84-2026-11-25--esc-%E5%9C%A8%E6%AF%8F%E4%B8%AA%E9%A1%B5%E9%9D%A2%E4%B8%8A%E5%85%B3%E6%8E%89%E7%9A%84%E9%83%BD%E4%B8%8D%E6%98%AF%E7%9C%BC%E5%89%8D%E9%82%A3%E4%B8%80%E5%B1%82" title="84. 2026-11-25 — Esc 在每个页面上关掉的都不是眼前那一层"><span class="toc-label">84. 2026-11-25 — Esc 在每个页面上关掉的都不是眼前那一层</span></a></li>
+<li class="toc-l2"><a href="#85-2026-11-25--%E7%A9%BA%E5%9B%9E%E5%90%88%E5%BA%94%E8%AF%A5%E8%87%AA%E5%8A%A8%E7%BB%AD%E8%B7%91%E8%80%8C%E4%B8%8D%E6%98%AF%E5%81%9C%E4%BD%8F" title="85. 2026-11-25 — 空回合应该自动续跑，而不是停住"><span class="toc-label">85. 2026-11-25 — 空回合应该自动续跑，而不是停住</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -24602,6 +24603,39 @@ activation 和任何经 <code>send_command</code> 直接下发的 <code>/</code>
 （<code>dismiss_topmost</code>、<code>queue_expanded</code>、
 <code>trajectory_selected</code>）、
 <code>docs/design/tact-desktop/README.md</code>（Esc 的层级顺序）。</p>
+<h2 id="85-2026-11-25--空回合应该自动续跑而不是停住">85. 2026-11-25 — 空回合应该自动续跑，而不是停住</h2>
+<p><strong>现象：</strong>一个回合以
+<code>the model ended the turn without writing an answer; nothing was produced</code>
+结束后，整个回合就停在那里，红色横幅只有 <code>New session</code> 与
+<code>Manage sessions</code> 两个出口。模型只是这一次没写东西——流被掐断、或者
+只产出了 reasoning——读者却要自己判断「再点一次 Try again」才是对的。</p>
+<p><strong>根因：</strong>driver 把 <code>AgentLoopStop::EmptyTurn</code> 直接翻译成
+<code>AgentUpdate::Error</code>。这个翻译本身是对的（空回合不是完成，见第 8x 节的
+MaxTokens 同款决策），但它跳过了「空回合可恢复」这个事实：没有工具调用、没有
+半截命令要核对，重发一条 prompt 就能继续。于是唯一的重试路径落在读者手上，而
+横幅上恰好没有那颗按钮。</p>
+<p><strong>决策：</strong>在 driver 里自动续跑，用的就是
+<code>tact_protocol::TRY_AGAIN_PROMPT</code>——读者点 <code>Try again</code> 时发的
+同一条文本。这样两条路径不再分叉：自动重试和手动重试发出的证据一致，都要求模型先
+核对上一回合可能起过的动作。预算 <code>MAX_EMPTY_TURN_RETRIES = 2</code>，和
+MaxTokens 的续跑预算同一个量级；循环由这个常量收口，一个始终沉默的模型不会空转，
+而是带着「已经重试过 N 次」的句子落到错误行。</p>
+<p><strong>一处刻意的顺序：</strong>取消判断放在重试条件里
+（<code>!agent.is_cancelled()</code>）。读者按了停止，就不该再替他发一条 prompt；
+此时空回合走下面的 <code>TaskCancelled</code> 分支，和取消一条正常回合相同。</p>
+<p><strong>验证：</strong>
+<code>an_empty_turn_is_retried_before_it_is_reported</code> 让第一次调用返回空、
+第二次返回正文，断言没有 <code>Error</code>、<code>TaskComplete</code> 拿到的是
+第二次的正文本，且 context 里确实多了一条 <code>TRY_AGAIN_PROMPT</code>
+（证明是续跑而不是重启）；
+<code>repeated_empty_turns_stop_after_the_retry_budget</code> 让每次调用都返回空，
+断言恰好两条 <code>[Recovery] empty turn</code>、随后一条带
+<code>automatic retries</code> 的 <code>Error</code>、且没有
+<code>TaskComplete</code>。把预算临时改成 0 跑一遍，两条测试同时变红；改回才绿，
+所以它们钉住的是重试行为本身。既有 135 个 <code>tact_host</code> 测试保持通过。</p>
+<p><strong>Pointers：</strong><code>crates/tact_host/src/driver.rs</code>
+（<code>SubmitTask</code> 回合循环的 <code>EmptyTurn</code> 分支）、
+<code>crates/protocol/src/prompt.rs</code>（<code>TRY_AGAIN_PROMPT</code>）。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>

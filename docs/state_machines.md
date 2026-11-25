@@ -93,6 +93,14 @@ to `AgentUpdate::Error`, so a half-produced reply is never reported as a
 completed task. `RunPhase` collapsing those two into `Complete` is what let a
 truncated answer read as done.
 
+`AgentLoopStop::EmptyTurn` — a turn that left no text, tool call or image — is
+retried by the driver before it is reported, with the protocol's
+`TRY_AGAIN_PROMPT` (the text the reader's `Try again` sends). The budget is
+`MAX_EMPTY_TURN_RETRIES` (2) in the `SubmitTask` loop of
+`crates/tact_host/src/driver.rs`; only when it is spent does the empty turn reach
+`AgentUpdate::Error` and `Failed`. A cancellation ends the retries, so a stop the
+reader asked for is never followed by a prompt they did not.
+
 `crates/desktop_core/src/controller.rs` owns the transitions. The UI reads the
 phase from `DesktopSnapshot`; it does not infer host state from individual
 events.
