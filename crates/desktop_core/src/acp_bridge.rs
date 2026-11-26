@@ -280,11 +280,15 @@ fn state_update(state: &schema::StateUpdate, context: &UpdateContext<'_>) -> Vec
                         schema::StopReason::MaxTokens => AgentErrorKind::Truncated(message.clone()),
                         _ => AgentErrorKind::Refused(message.clone()),
                     };
+                    // `message: None` on purpose: `RunFailed` is the boundary
+                    // that fails the active rows, and `Error` below carries the
+                    // sentence. Both arms push an `ErrorRow` when they have
+                    // text, so filling both here would show the failure twice.
                     vec![
                         AgentUpdate::RunFailed {
                             run_id,
                             retryable: false,
-                            message: Some(message),
+                            message: None,
                         },
                         AgentUpdate::Error(kind),
                         AgentUpdate::TaskCancelled,
@@ -750,6 +754,53 @@ mod tests {
             statuses,
             vec![RowStatus::Success],
             "an ACP turn must settle its assistant row, not leave it running"
+        );
+    }
+
+    /// A truncated turn reaches the transcript as **one** error row.
+    ///
+    /// The idle's stop reason is reported as `RunFailed` (the boundary the
+    /// reducer needs to fail the active rows) *and* as a typed `Error` (the
+    /// class the reader is told about). Both arms can push an `ErrorRow`, and
+    /// when both carried the text the transcript showed the same failure twice.
+    /// One sentence is enough: `RunFailed` fails the rows, `Error` carries the
+    /// message.
+    #[test]
+    fn a_truncated_idle_writes_one_error_row() {
+        use crate::transcript::{ReduceContext, RowBody, SessionEpoch, TranscriptReducer};
+
+        let context = ReduceContext {
+            session_epoch: SessionEpoch(0),
+            show_hook_output: false,
+        };
+        let mut reducer = TranscriptReducer::new();
+        for update in [
+            schema::SessionUpdate::StateUpdate(schema::StateUpdate::Running(
+                schema::RunningStateUpdate::new(),
+            )),
+            schema::SessionUpdate::AgentMessageChunk(schema::ContentChunk::new(
+                schema::ContentBlock::Text(schema::TextContent::new("half an ans")),
+                "m1",
+            )),
+            schema::SessionUpdate::StateUpdate(schema::StateUpdate::Idle(
+                schema::IdleStateUpdate::new().stop_reason(Some(schema::StopReason::MaxTokens)),
+            )),
+        ] {
+            reducer.apply_batch(to_agent_updates(&update, &parent()), &context);
+        }
+
+        let errors: Vec<String> = reducer
+            .view()
+            .iter()
+            .filter_map(|row| match &row.body {
+                RowBody::Error(error) => Some(error.message.to_string()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "one failed turn is one error row, got {errors:?}"
         );
     }
 
