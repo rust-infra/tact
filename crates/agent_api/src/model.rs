@@ -413,17 +413,18 @@ impl ModelError {
     /// A short class label, for hosts that render the kind themselves.
     ///
     /// Lives on `ModelError` rather than on the enum so adding a kind does not
-    /// force a new arm into this method's callers: unknown kinds fall back to
-    /// `"permanent"` through the `_` arm below.
+    /// force a new arm into this method's callers. Every kind is named: the
+    /// enum is `#[non_exhaustive]`, so a downstream crate still needs a
+    /// fallback, but this crate cannot silently mislabel a kind it defines.
     pub fn class_label(&self) -> &'static str {
         match self.kind {
             ModelErrorKind::ContextOverflow => "context_overflow",
             ModelErrorKind::Transient => "transient",
+            ModelErrorKind::Permanent => "permanent",
             ModelErrorKind::Cancelled => "cancelled",
             ModelErrorKind::Unsupported => "unsupported",
             ModelErrorKind::Authentication => "authentication",
             ModelErrorKind::Refused => "refused",
-            _ => "permanent",
         }
     }
 }
