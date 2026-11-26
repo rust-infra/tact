@@ -186,7 +186,7 @@ mod tests {
         let (token, guard) = control.begin_activation();
         let waker = Waker::from(Arc::new(ReentrantWake(control.clone())));
         let mut context = Context::from_waker(&waker);
-        let mut cancelled = Box::pin(token.cancelled());
+        let mut cancelled = std::pin::pin!(token.cancelled());
 
         assert_eq!(cancelled.as_mut().poll(&mut context), Poll::Pending);
         control.cancel();

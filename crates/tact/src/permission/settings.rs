@@ -1039,7 +1039,7 @@ impl PermissionSettings {
         match std::fs::rename(&tmp_path, &self.project_path) {
             Ok(()) => {
                 self.project_doc = candidate;
-                if !self.allow_rules.contains(&rule.to_string()) {
+                if !self.allow_rules.iter().any(|existing| existing == rule) {
                     self.allow_rules.push(rule.to_string());
                 }
                 self.rebuild_cache();
@@ -1255,11 +1255,17 @@ mod tests {
 
         // Both layers merged
         assert_eq!(settings.allow_rules().len(), 2);
-        assert!(settings.allow_rules().contains(&"read_file".to_string()));
         assert!(
             settings
                 .allow_rules()
-                .contains(&"edit_file(path:src/*)".to_string())
+                .iter()
+                .any(|rule| rule == "read_file")
+        );
+        assert!(
+            settings
+                .allow_rules()
+                .iter()
+                .any(|rule| rule == "edit_file(path:src/*)")
         );
     }
 
@@ -1279,7 +1285,7 @@ mod tests {
             PermissionSettings::load_from(&project_dir.join(".tact/settings.json"), None);
 
         assert_eq!(settings.allow_rules().len(), 1);
-        assert!(settings.allow_rules().contains(&"bash".to_string()));
+        assert!(settings.allow_rules().iter().any(|rule| rule == "bash"));
     }
 
     // ——— Unknown-field preservation ——————————————————
@@ -1842,8 +1848,8 @@ mod tests {
         );
 
         // Effective policy includes both global allow and project deny.
-        assert!(settings.allow_rules().contains(&"bash".to_string()));
-        assert!(settings.deny_rules().contains(&"bash".to_string()));
+        assert!(settings.allow_rules().iter().any(|rule| rule == "bash"));
+        assert!(settings.deny_rules().iter().any(|rule| rule == "bash"));
 
         // At match time, deny wins over allow.
         let effective = EffectiveRules::from_lists(
@@ -2110,7 +2116,10 @@ mod tests {
 
         // The valid global rule should still apply despite the malformed project file.
         assert!(
-            settings.allow_rules().contains(&"read_file".to_string()),
+            settings
+                .allow_rules()
+                .iter()
+                .any(|rule| rule == "read_file"),
             "Global allow rule should be present even when project file is malformed"
         );
 
@@ -2300,7 +2309,12 @@ mod tests {
         settings.persist_project_allow("read_file").unwrap();
 
         // The in-memory allow_rules should also be updated
-        assert!(settings.allow_rules().contains(&"read_file".to_string()));
+        assert!(
+            settings
+                .allow_rules()
+                .iter()
+                .any(|rule| rule == "read_file")
+        );
     }
 
     // --- Regression: failure does not mutate in-memory state, retry works ---
@@ -2345,7 +2359,10 @@ mod tests {
 
         // The in-memory allow_rules must NOT contain the rule.
         assert!(
-            !settings.allow_rules().contains(&"retry_rule".to_string()),
+            !settings
+                .allow_rules()
+                .iter()
+                .any(|rule| rule == "retry_rule"),
             "allow_rules should not contain the rule after failed persist"
         );
 
@@ -2362,7 +2379,10 @@ mod tests {
 
         // Verify the in-memory state reflects the rule.
         assert!(
-            settings.allow_rules().contains(&"retry_rule".to_string()),
+            settings
+                .allow_rules()
+                .iter()
+                .any(|rule| rule == "retry_rule"),
             "allow_rules should contain the rule after successful retry"
         );
 
@@ -2464,7 +2484,10 @@ mod tests {
 
         // Global rules are present in the effective merged policy.
         assert!(
-            settings.allow_rules().contains(&"read_file".to_string()),
+            settings
+                .allow_rules()
+                .iter()
+                .any(|rule| rule == "read_file"),
             "Global allow rule should be in effective rules"
         );
 

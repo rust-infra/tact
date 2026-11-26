@@ -485,7 +485,7 @@ mod tests {
             .collect();
 
         for tool in ["bash", "read_file", "write_file", "edit_file", "sleep"] {
-            assert!(names.contains(&tool.to_string()), "missing {tool}");
+            assert!(names.iter().any(|name| name == tool), "missing {tool}");
         }
     }
 

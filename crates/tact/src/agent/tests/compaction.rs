@@ -132,7 +132,7 @@ async fn a_server_that_grows_its_tool_list_reaches_the_next_request() {
             .map(|spec| spec.name)
             .collect()
     };
-    assert!(!names(&agent).contains(&"mcp__bm__recall".to_string()));
+    assert!(!names(&agent).iter().any(|n| n == "mcp__bm__recall"));
 
     // The server grows and says so.
     service.set_tools(vec![tool("search"), tool("recall")]);
@@ -141,14 +141,14 @@ async fn a_server_that_grows_its_tool_list_reaches_the_next_request() {
     agent.refresh_mcp_tools().await;
 
     assert!(
-        names(&agent).contains(&"mcp__bm__recall".to_string()),
+        names(&agent).iter().any(|n| n == "mcp__bm__recall"),
         "{:?}",
         names(&agent)
     );
 
     // A second pass with nothing announced must not disturb it.
     agent.refresh_mcp_tools().await;
-    assert!(names(&agent).contains(&"mcp__bm__recall".to_string()));
+    assert!(names(&agent).iter().any(|n| n == "mcp__bm__recall"));
 }
 
 #[tokio::test]
@@ -269,18 +269,12 @@ fn the_resource_tools_are_offered_only_with_a_connected_server() {
         .into_iter()
         .map(|spec| spec.name)
         .collect();
-    assert!(
-        names.contains(&"list_mcp_resources".to_string()),
-        "{names:?}"
-    );
-    assert!(
-        names.contains(&"read_mcp_resource".to_string()),
-        "{names:?}"
-    );
+    assert!(names.iter().any(|n| n == "list_mcp_resources"), "{names:?}");
+    assert!(names.iter().any(|n| n == "read_mcp_resource"), "{names:?}");
     // The templates listing is what makes a template-addressed server
     // discoverable at all, so it must be advertised alongside the others.
     assert!(
-        names.contains(&"list_mcp_resource_templates".to_string()),
+        names.iter().any(|n| n == "list_mcp_resource_templates"),
         "{names:?}"
     );
 
@@ -294,13 +288,10 @@ fn the_resource_tools_are_offered_only_with_a_connected_server() {
         .map(|spec| spec.name)
         .collect();
     assert!(
-        !names.contains(&"list_mcp_resources".to_string()),
+        !names.iter().any(|n| n == "list_mcp_resources"),
         "{names:?}"
     );
-    assert!(
-        !names.contains(&"read_mcp_resource".to_string()),
-        "{names:?}"
-    );
+    assert!(!names.iter().any(|n| n == "read_mcp_resource"), "{names:?}");
 }
 
 #[test]

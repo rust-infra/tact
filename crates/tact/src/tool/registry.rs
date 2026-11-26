@@ -227,16 +227,16 @@ mod tests {
     #[test]
     fn memory_is_on_in_the_default_toolset() {
         let names = names(toolset());
-        assert!(names.contains(&"save_memory".to_string()), "{names:?}");
+        assert!(names.iter().any(|n| n == "save_memory"), "{names:?}");
         // Both halves ship together: the prompt injects only the index, so a
         // session without `load_memory` could see a memory it cannot read.
-        assert!(names.contains(&"load_memory".to_string()), "{names:?}");
+        assert!(names.iter().any(|n| n == "load_memory"), "{names:?}");
     }
 
     #[test]
     fn disabled_memory_removes_save_memory() {
         let names = names(toolset_with_memory(false));
-        assert!(!names.contains(&"save_memory".to_string()), "{names:?}");
-        assert!(!names.contains(&"load_memory".to_string()), "{names:?}");
+        assert!(!names.iter().any(|n| n == "save_memory"), "{names:?}");
+        assert!(!names.iter().any(|n| n == "load_memory"), "{names:?}");
     }
 }
