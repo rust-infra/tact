@@ -4,8 +4,8 @@ use ratatui::{
     widgets::ScrollbarState,
 };
 use tact_protocol::{
-    AgentErrorKind, AgentUpdate, PlanStep, StepResult, TaskSnapshot, TasksChangeReason,
-    ThinkingChunk, UiResponse, UserCommand,
+    AgentUpdate, PlanStep, StepResult, TaskSnapshot, TasksChangeReason, ThinkingChunk, UiResponse,
+    UserCommand,
 };
 
 use agent_tui_kit::{Ctx, PendingQueue, components::tool::ToolEvent, state::StreamEvent};
@@ -423,12 +423,14 @@ impl App {
                 self.freeze_last_prompt_cost();
                 self.task_done_time = None;
             }
-            // Error handling
-            AgentUpdate::Error(AgentErrorKind::Other(msg)) => {
+            // Error handling. A truncated reply or a refusal is still a failed
+            // turn for this log — the difference is which sentence it carries,
+            // and `message()` is that sentence for every class.
+            AgentUpdate::Error(kind) => {
                 // Fatal error: flush leftover streaming lines
                 self.flush_stream_pending();
                 let msgs = self.msgs();
-                self.add_system_message(msgs.error_tmpl.replace("{}", &msg));
+                self.add_system_message(msgs.error_tmpl.replace("{}", kind.message()));
                 self.status = Status::Idle;
                 self.freeze_last_prompt_cost();
             }

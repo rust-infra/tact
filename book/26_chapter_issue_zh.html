@@ -813,6 +813,7 @@
 <li class="toc-l2"><a href="#84-2026-11-25--esc-%E5%9C%A8%E6%AF%8F%E4%B8%AA%E9%A1%B5%E9%9D%A2%E4%B8%8A%E5%85%B3%E6%8E%89%E7%9A%84%E9%83%BD%E4%B8%8D%E6%98%AF%E7%9C%BC%E5%89%8D%E9%82%A3%E4%B8%80%E5%B1%82" title="84. 2026-11-25 — Esc 在每个页面上关掉的都不是眼前那一层"><span class="toc-label">84. 2026-11-25 — Esc 在每个页面上关掉的都不是眼前那一层</span></a></li>
 <li class="toc-l2"><a href="#85-2026-11-25--%E7%A9%BA%E5%9B%9E%E5%90%88%E5%BA%94%E8%AF%A5%E8%87%AA%E5%8A%A8%E7%BB%AD%E8%B7%91%E8%80%8C%E4%B8%8D%E6%98%AF%E5%81%9C%E4%BD%8F" title="85. 2026-11-25 — 空回合应该自动续跑，而不是停住"><span class="toc-label">85. 2026-11-25 — 空回合应该自动续跑，而不是停住</span></a></li>
 <li class="toc-l2"><a href="#86-2026-11-26--acp-v2-%E5%8D%8F%E8%AE%AE%E8%A1%A5%E9%BD%90%E5%9B%9B%E6%9D%A1-must" title="86. 2026-11-26 — ACP v2 协议补齐四条 MUST"><span class="toc-label">86. 2026-11-26 — ACP v2 协议补齐四条 MUST</span></a></li>
+<li class="toc-l2"><a href="#87-2026-11-26--%E5%81%9C%E6%AD%A2%E5%8E%9F%E5%9B%A0%E7%BB%88%E4%BA%8E%E5%88%86%E5%87%BA%E4%BA%86-max_tokens-%E4%B8%8E-refusal" title="87. 2026-11-26 — 停止原因终于分出了 max_tokens 与 refusal"><span class="toc-label">87. 2026-11-26 — 停止原因终于分出了 max_tokens 与 refusal</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -24716,6 +24717,74 @@ T3 0.1.9 的 <code>app.asar</code> 后确认它的 ACP 客户端从不发这个�
 <code>crates/tact-acp/tests/acp_session.rs</code>（第 10–12 步）、
 <code>crates/desktop_core/src/acp_bridge.rs</code>
 （<code>MaybeUndefined</code> 的 compaction status）。</p>
+<h2 id="87-2026-11-26--停止原因终于分出了-max_tokens-与-refusal">87. 2026-11-26 — 停止原因终于分出了 max_tokens 与 refusal</h2>
+<p><strong>动机：</strong>上一章末尾留了一句「停止原因尚未细分」。这不是细节：ACP 明确
+要求 Agent 用 <code>max_tokens</code> 表示输出被截断、<code>refusal</code> 表示 provider
+的安全分类器拒绝了内容，两者各自带一句用户可读的说明。把它们都压成
+<code>error</code>，客户端只会显示一条裸的失败，读者看不出是「答案没写完」还是
+「这条请求被拒了」，也就不知道该重发、该改措辞、还是该换模型。</p>
+<p><strong>根因是一条信息在两次类型擦除里丢掉的。</strong>内核其实知道区别：输出上限
+走 <code>AgentLoopStop::MaxTokens</code>，拒答走
+<code>StopReason::Refusal</code>。但前者在 driver 里被包成
+<code>AgentErrorKind::Other(文案)</code>，后者被内核包成
+<code>ModelErrorKind::Permanent</code>，于是到 ACP 那一层只剩「失败了」这一件事。</p>
+<p><strong>决策：让两个枚举各自长出有意义的变体，而不是让下游去匹配字符串。</strong></p>
+<ul>
+<li><code>ModelErrorKind::Refused</code>：内核的 refusal 分支不再报
+<code>Permanent</code>。它仍不可重试（重发同样的内容会被再拒一次），但
+<code>recovery</code> 的 advice 现在能说「改措辞或换模型」，而不是通用的
+「检查 model 名和凭据」。</li>
+<li><code>AgentErrorKind</code>：新增 <code>Truncated</code> 与
+<code>Refused</code>，与既有的 <code>Other</code> 并列，并提供
+<code>message()</code> 让所有只关心文案的调用方一行读完。driver 在
+<code>MaxTokens</code> 与 <code>ModelErrorKind::Refused</code> 两处产出它们。</li>
+<li><code>tact-acp</code> 的 <code>error_stop_reason</code> 把这三类映成
+<code>max_tokens</code> / <code>refusal</code> / <code>error</code>。</li>
+<li>反向的 <code>desktop_core</code> 桥原本把 <code>max_tokens</code> 和
+<code>refusal</code> 都落进 <code>_ =&gt; RunFinished</code>，也就是把截断当成正常
+结束——这正是这一章要修的错误在另一个方向上的复现。现在它把两者映回
+<code>RunFailed</code> + 对应类别的 <code>Error</code> + <code>TaskCancelled</code>。</li>
+</ul>
+<p><strong>为什么不是给 <code>Truncated</code> 也做个
+<code>ModelErrorKind</code>：</strong>截断不是模型调用的失败，那个调用成功了，
+只是答案没写完。把它塞进错误分类会让重试策略误判它可重试——内核已经用自己的
+续跑预算处理了这件事。</p>
+<p><strong>验证（每条都先红后绿，并做过变异）：</strong></p>
+<ul>
+<li><code>error_classes_map_to_their_acp_stop_reasons</code>（单元）：三类各自映到
+<code>MaxTokens</code> / <code>Refusal</code> / <code>Error</code>。把映射改成
+<code>_ =&gt; Error</code> 后变红。</li>
+<li><code>acp_session_end_to_end</code> 第 12 步（端到端）：假 provider 用
+<code>finish_reason: "length"</code> 持续截断，断言 turn 最终以
+<code>stopReason: "max_tokens"</code> 结束。把映射改回 <code>error</code> 后，
+断言读到的是 <code>Some(Error(ErrorStopReason { error: None }))</code>——正是
+用户看到的那条裸失败。</li>
+<li><code>a_refused_turn_reports_the_refusal_class</code>（driver）：
+<code>StopReason::Refusal</code> 必须产出 <code>Refused</code> 而不是
+<code>Other</code>，且不得出现 <code>TaskComplete</code>。把 driver 的判据换回
+<code>Other</code> 后变红。</li>
+<li><code>max_tokens_and_refusal_are_failures_not_finishes</code>（桥）：两个停止
+原因都必须产出 <code>RunFailed</code> + <code>Error</code> +
+<code>TaskCancelled</code>。给该分支加 <code>if false</code> 后变红，读到的是
+<code>[RunFinished]</code>。</li>
+<li>既有的截断测试一并收紧：它原本断言 <code>Other</code> 里含有 "truncated"，
+现在直接断言类别是 <code>Truncated</code>。</li>
+</ul>
+<p><strong>一处测试上的发现：</strong>写端到端用例时先只让第一次调用返回
+<code>length</code>，结果拿到 <code>end_turn</code>——因为内核会自动续跑截断的回合，
+第二次调用成功了。假 provider 因此改成整段会话都截断，让续跑预算真正耗尽。这不是
+实现的 bug，而是「截断会被自动重试」这个既有行为的证据。</p>
+<p><strong>对 T3 的影响：</strong>纯改善。T3 的 <code>acpUnfinishedStopMessage</code>
+对这两个值各有一句话，此前永远拿不到，现在能拿到。三条修复都不改变正常回合的
+行为。</p>
+<p><strong>Pointers：</strong><code>crates/agent_api/src/model.rs</code>
+（<code>ModelErrorKind::Refused</code>、<code>class_label</code>）、
+<code>crates/protocol/src/agent.rs</code>（<code>AgentErrorKind</code> 的三个变体与
+<code>message()</code>）、<code>crates/tact_host/src/driver.rs</code>
+（<code>turn_failure_kind</code>、<code>MaxTokens</code> 分支）、
+<code>crates/tact-acp/src/lib.rs</code>（<code>error_stop_reason</code>）、
+<code>crates/desktop_core/src/acp_bridge.rs</code>（idle 的停止原因映射）、
+<code>crates/tact/src/recovery.rs</code>（<code>Refused</code> 的建议文案）。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>

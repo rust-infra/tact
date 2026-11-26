@@ -1129,7 +1129,50 @@ async fn run_scenario(
         "closing a running turn must settle it with a cancelled idle, got {updates_after_close:?}"
     );
 
-    // 12. Delete removes the stored session, and resuming it afterwards must
+    // 12. A reply the provider cut off must report `max_tokens`, not `end_turn`
+    //     and not a generic `error`. ACP names this stop, and T3 keys its "the
+    //     reply reached the output token limit" sentence on it: reporting
+    //     `error` loses that sentence, and reporting `end_turn` would tell the
+    //     reader a half-produced answer was finished.
+    drain(&mut updates);
+    client_state.take_updates();
+    let truncated = connection
+        .resume_session_from(schema::ResumeSessionRequest::new(
+            session_id.clone(),
+            cwd.clone(),
+        ))
+        .start_session()
+        .block_task()
+        .await
+        .expect("the session must still open for the truncation case");
+    // A resume settles with its own `idle(None)`; the turn's idle is the one
+    // after it.
+    drain(&mut updates);
+    truncated
+        .session
+        .send_prompt("please ACP_TEST_TRUNCATE")
+        .block_task()
+        .await?;
+    let idle = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if let schema::SessionUpdate::StateUpdate(schema::StateUpdate::Idle(idle)) =
+                next_update(&mut updates, &session_id).await
+            {
+                break idle;
+            }
+        }
+    })
+    .await
+    .expect("a truncated turn must settle");
+    assert_eq!(
+        idle.stop_reason,
+        Some(schema::StopReason::MaxTokens),
+        "a cut-off reply must report max_tokens, got {:?}",
+        idle.stop_reason
+    );
+    truncated.session.close().block_task().await?;
+
+    // 13. Delete removes the stored session, and resuming it afterwards must
     //     fail instead of quietly creating an empty one. The host open path
     //     inserts a row when it cannot find one, so without an existence check
     //     the client would be told its deleted thread came back, with no
@@ -1153,7 +1196,7 @@ async fn run_scenario(
         "a deleted session must answer -32002 (resource not found), got {error:?}"
     );
 
-    // 13. The client future returning proves the child exits.
+    // 14. The client future returning proves the child exits.
     Ok(())
 }
 
@@ -1553,6 +1596,21 @@ fn script_for(request: &Value) -> Script {
         .map(|message| message.to_string())
         .unwrap_or_default();
 
+    // A truncated turn is retried with a continuation prompt, which replaces
+    // the marker as the last user message. Looking through the whole
+    // conversation keeps the script truncating for every attempt, which is the
+    // only way the continuation budget runs out and the turn ends as
+    // `MaxTokens`.
+    let conversation = messages
+        .map(|messages| serde_json::Value::Array(messages.clone()).to_string())
+        .unwrap_or_default();
+    if conversation.contains("ACP_TEST_TRUNCATE") {
+        return Script {
+            body: truncated_sse("half an ans"),
+            gated: false,
+        };
+    }
+
     if user.contains("ACP_TEST_TASK") {
         tool_script("task_create", json!({"subject": "write the ACP test"}))
     } else if user.contains("ACP_TEST_MCP") {
@@ -1594,9 +1652,36 @@ fn script_for(request: &Value) -> Script {
             body: text_sse("Slow answer."),
             gated: true,
         }
+    } else if user.contains("ACP_TEST_TRUNCATE") {
+        // `finish_reason: "length"` is what an OpenAI-compatible provider sends
+        // when it hits the output limit; the transport maps it to
+        // `StopReason::MaxTokens`. The kernel then retries the turn, so this
+        // must keep truncating until that budget is spent — one `length` and
+        // then a normal `stop` would make the retry succeed and the turn end as
+        // `end_turn`, which is not the case being tested.
+        Script {
+            body: truncated_sse("half an ans"),
+            gated: false,
+        }
     } else {
         text_script("Hello from the fake model.")
     }
+}
+
+/// A reply the provider cut off at its output limit.
+fn truncated_sse(text: &str) -> String {
+    format!(
+        "data: {}\n\ndata: {}\n\ndata:",
+        json!({"choices": [{"delta": {"content": text}}]}),
+        json!({
+            "choices": [{"delta": {}, "finish_reason": "length"}],
+            "usage": {
+                "prompt_tokens": 1200,
+                "completion_tokens": 40,
+                "total_tokens": 1240
+            }
+        })
+    )
 }
 
 fn text_script(text: &str) -> Script {

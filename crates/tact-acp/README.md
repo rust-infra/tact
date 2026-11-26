@@ -68,6 +68,14 @@ so importing a session a live host still holds (a running T3 thread, `tact-ui`,
   one client) and keeps the last 256 keys, since ACP bounds the key at 255
   characters and clients mint one per submission. A prompt with no key is
   inserted with no duplicate detection, as the protocol says.
+- A failed turn reports the stop reason ACP names for it. `max_tokens` when the
+  reply was cut off by the output limit, `refusal` when the provider's safety
+  classifier declined the content, and `error` otherwise. T3 keys its
+  explanatory sentence on the first two (`acpUnfinishedStopMessage`), so
+  reporting them as `error` lost the only text that told the reader what
+  happened and what to do next. In the other direction, the desktop's ACP
+  bridge reads those two back as failed turns of the matching class rather than
+  a clean finish.
 - Three session config options (`type: "select"`) are returned by `session/new`
   and `session/resume`, and updated through `session/set_config_option`:
   - `model` (`category: "model"`) — values from the configured

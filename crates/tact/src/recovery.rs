@@ -189,9 +189,9 @@ pub fn classify_model_error(error: &tact_agent_api::ModelError) -> FailureKind {
         // user's own cancel as "context compaction failed", and the ACP card
         // closed red on Esc.
         tact_agent_api::ModelErrorKind::Cancelled => FailureKind::Cancelled,
-        tact_agent_api::ModelErrorKind::Permanent | tact_agent_api::ModelErrorKind::Unsupported => {
-            FailureKind::Permanent
-        }
+        tact_agent_api::ModelErrorKind::Permanent
+        | tact_agent_api::ModelErrorKind::Unsupported
+        | tact_agent_api::ModelErrorKind::Refused => FailureKind::Permanent,
         // `Authentication` is not retryable: the same key produces the same 401
         // no matter how many times it is sent. Everything unknown is treated
         // the same way — retrying something we cannot classify only spends the
@@ -285,6 +285,21 @@ pub fn model_failure_advice(
             action: Some(credentials_action(&provider, metadata.is_some())),
             retryable: false,
         },
+        // The provider answered, but refused the content. The request and the
+        // credential are fine, so the advice is about the prompt itself, and
+        // resending it unchanged refuses again.
+        ModelErrorKind::Refused => ModelFailureAdvice {
+            headline: format!(
+                "{provider} refused this request for {model}{at}; its safety filter declined to \
+                 answer"
+            ),
+            action: Some(
+                "rephrase the request, or switch to a model with different safety filters; \
+                 resending it unchanged will be refused again"
+                    .to_string(),
+            ),
+            retryable: false,
+        },
         // `Permanent` and any kind a newer adapter adds: the adapter's message
         // is already body-free and often names the concrete mismatch (a
         // rejected status, a model that does not match, a cursor from another
@@ -370,11 +385,6 @@ fn permanent_action(
     if message.contains("not valid json") || message.contains("stream was malformed") {
         return "check base_url for this provider: the endpoint did not return this protocol's \
                 JSON, which usually means a wrong path or a proxy error page"
-            .to_string();
-    }
-    if message.contains("safety classifier") || message.contains("refusal") {
-        return "rephrase the request, or switch to a model with different safety filters; \
-                resending it unchanged will be refused again"
             .to_string();
     }
     if message.contains("http 404") {

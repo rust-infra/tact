@@ -261,8 +261,37 @@ fn state_update(state: &schema::StateUpdate, context: &UpdateContext<'_>) -> Vec
                         AgentUpdate::TaskCancelled,
                     ]
                 }
-                // `EndTurn`, a token/turn cap, a refusal, or no reason at all:
-                // the turn ended and the agent said nothing failed.
+                // A reply cut off by the output limit, or one the provider
+                // refused: the turn ended, but not on the agent's own terms.
+                // Reporting these as a plain finish is what let a truncated
+                // answer read as done — the exact mistake this bridge fixes in
+                // the other direction when it reports them upward.
+                Some(stop @ (schema::StopReason::MaxTokens | schema::StopReason::Refusal)) => {
+                    let message = match stop {
+                        schema::StopReason::MaxTokens => {
+                            "the ACP agent stopped because its reply reached the output token limit"
+                                .to_string()
+                        }
+                        _ => "the ACP agent refused this request; its next turn will not include \
+                              this message"
+                            .to_string(),
+                    };
+                    let kind = match stop {
+                        schema::StopReason::MaxTokens => AgentErrorKind::Truncated(message.clone()),
+                        _ => AgentErrorKind::Refused(message.clone()),
+                    };
+                    vec![
+                        AgentUpdate::RunFailed {
+                            run_id,
+                            retryable: false,
+                            message: Some(message),
+                        },
+                        AgentUpdate::Error(kind),
+                        AgentUpdate::TaskCancelled,
+                    ]
+                }
+                // `EndTurn`, a turn cap, or no reason at all: the turn ended and
+                // the agent said nothing failed.
                 _ => vec![AgentUpdate::RunFinished { run_id }],
             }
         }
@@ -748,6 +777,58 @@ mod tests {
             ),
             "{mapped:?}"
         );
+    }
+
+    /// A truncated or refused reply is not a clean finish, in either direction.
+    ///
+    /// ACP names both stops, and the agent that reports them upward must read
+    /// them back the same way: as a failed turn with its own class. Treating
+    /// `max_tokens` as `EndTurn` is what let a cut-off answer settle as done in
+    /// the TUI, and it would make this bridge report success for a reply whose
+    /// tail was never produced.
+    #[test]
+    fn max_tokens_and_refusal_are_failures_not_finishes() {
+        for (stop, truncated) in [
+            (schema::StopReason::MaxTokens, true),
+            (schema::StopReason::Refusal, false),
+        ] {
+            let idle = schema::SessionUpdate::StateUpdate(schema::StateUpdate::Idle(
+                schema::IdleStateUpdate::new().stop_reason(Some(stop.clone())),
+            ));
+            let mapped = to_agent_updates(&idle, &parent());
+            assert!(
+                matches!(
+                    &mapped[..],
+                    [
+                        AgentUpdate::RunFailed {
+                            retryable: false,
+                            ..
+                        },
+                        AgentUpdate::Error(_),
+                        AgentUpdate::TaskCancelled
+                    ]
+                ),
+                "{stop:?} must fail the run, not finish it: {mapped:?}"
+            );
+            let kind = mapped
+                .iter()
+                .find_map(|update| match update {
+                    AgentUpdate::Error(kind) => Some(kind),
+                    _ => None,
+                })
+                .expect("the failure carries its class");
+            if truncated {
+                assert!(
+                    matches!(kind, AgentErrorKind::Truncated(_)),
+                    "max_tokens must stay a truncation, got {kind:?}"
+                );
+            } else {
+                assert!(
+                    matches!(kind, AgentErrorKind::Refused(_)),
+                    "refusal must stay a refusal, got {kind:?}"
+                );
+            }
+        }
     }
 
     #[test]

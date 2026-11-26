@@ -1365,22 +1365,30 @@ fn truncated_turn_message(outcome: AgentLoopOutcome) -> String {
     )
 }
 
-/// Turns a failed turn into the line the reader sees.
+/// Turns a failed turn into the classification the frontend renders.
 ///
 /// A bare `e.to_string()` here produced `Error: model call failed: model call
 /// failed: ...` chains that named no cause and no next step. When the failure
 /// is a typed model error, [`tact::recovery::model_failure_advice`] names the
 /// provider, the model, and what to change; everything else keeps its own
 /// message, since non-provider failures already say what went wrong.
-fn turn_failure_message(agent: &Agent, error: &anyhow::Error) -> String {
+///
+/// A refusal is the one class with a protocol name of its own: ACP calls it
+/// `refusal`, and the client is told that instead of a generic failure.
+fn turn_failure_kind(agent: &Agent, error: &anyhow::Error) -> AgentErrorKind {
     let Some(model_error) = tact::recovery::model_error_of(error) else {
-        return error.to_string();
+        return AgentErrorKind::Other(error.to_string());
     };
     let metadata = agent.provider_metadata();
     let advice = tact::recovery::model_failure_advice(model_error, metadata.as_ref());
-    match advice.action {
+    let message = match advice.action {
         Some(action) => format!("{}. {}", capitalize_first(&advice.headline), action),
         None => capitalize_first(&advice.headline),
+    };
+    if model_error.kind == tact_llm::ModelErrorKind::Refused {
+        AgentErrorKind::Refused(message)
+    } else {
+        AgentErrorKind::Other(message)
     }
 }
 
@@ -2176,7 +2184,7 @@ async fn handle_user_command_with_account(
                         // `Error` instead: nothing is claimed complete, and both
                         // frontends leave the busy state on it.
                         if outcome.stop == AgentLoopStop::MaxTokens {
-                            agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(
+                            agent.emit_update(AgentUpdate::Error(AgentErrorKind::Truncated(
                                 truncated_turn_message(outcome),
                             )));
                             break;
@@ -2221,8 +2229,8 @@ async fn handle_user_command_with_account(
                         agent.emit_update(AgentUpdate::TaskCancelled);
                     }
                     Err(e) => {
-                        let message = turn_failure_message(agent, &e);
-                        agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(message)));
+                        let kind = turn_failure_kind(agent, &e);
+                        agent.emit_update(AgentUpdate::Error(kind));
                     }
                 }
                 break;
@@ -2577,10 +2585,13 @@ mod tests {
         let error = updates
             .iter()
             .find_map(|update| match update {
-                AgentUpdate::Error(AgentErrorKind::Other(message)) => Some(message.clone()),
+                // The class is the point: a truncated turn must say it was
+                // truncated, not merely that something failed, so an ACP client
+                // can report `max_tokens` instead of a generic error.
+                AgentUpdate::Error(AgentErrorKind::Truncated(message)) => Some(message.clone()),
                 _ => None,
             })
-            .expect("a truncated turn must surface an error");
+            .expect("a truncated turn must surface a truncation");
         assert!(
             error.contains("truncated") && error.contains("output token limit"),
             "the error must name the cause, got {error:?}"
@@ -5185,6 +5196,50 @@ mod tests {
                 .iter()
                 .any(|update| matches!(update, AgentUpdate::TaskComplete(_))),
             "a silent model never completes the task: {updates:?}"
+        );
+    }
+
+    /// A provider refusal reaches the frontend as a refusal, not a plain error.
+    ///
+    /// The kernel turns `stop_reason=refusal` into a typed model error, and the
+    /// driver used to flatten every model error into `Other`. That lost the one
+    /// fact ACP needs: `refusal` is a protocol stop reason, and T3 renders it
+    /// with its own sentence ("the agent refused this request") instead of a
+    /// bare failure. The message must still say how to fix it.
+    #[tokio::test]
+    async fn a_refused_turn_reports_the_refusal_class() {
+        install_test_config();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mock = MockClient::new(vec![(
+            vec![text_block("I can't help with that.")],
+            Some(StopReason::Refusal),
+        )]);
+        let (mut agent, work_dir) = build_test_agent(mock, Some(agent_tx));
+
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::SubmitTask("say something refused".to_string()),
+            &work_dir,
+        )
+        .await;
+
+        let updates: Vec<AgentUpdate> = std::iter::from_fn(|| agent_rx.try_recv().ok()).collect();
+        let refused = updates
+            .iter()
+            .find_map(|update| match update {
+                AgentUpdate::Error(AgentErrorKind::Refused(message)) => Some(message.clone()),
+                _ => None,
+            })
+            .expect("a refusal must surface as a refusal class: {updates:?}");
+        assert!(
+            refused.contains("safety") || refused.contains("refused"),
+            "the refusal must say what happened, got {refused:?}"
+        );
+        assert!(
+            !updates
+                .iter()
+                .any(|update| matches!(update, AgentUpdate::TaskComplete(_))),
+            "a refused turn never completes the task: {updates:?}"
         );
     }
 

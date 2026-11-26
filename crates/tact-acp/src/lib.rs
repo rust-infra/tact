@@ -34,9 +34,10 @@ use tact_host::{
     ThoughtKind, UserCommand,
 };
 use tact_protocol::{
-    AgentUpdate, BackgroundTaskSnapshot, BackgroundTaskStatusSnapshot, GoalSnapshot,
-    GoalStatusSnapshot, PermissionMode, StepResult, StepStatus, TaskSnapshot, TaskStatusSnapshot,
-    ThinkingChunk, ToolPresentationInfo, ToolVisualKind, UiRequestPurpose, UiResponse,
+    AgentErrorKind, AgentUpdate, BackgroundTaskSnapshot, BackgroundTaskStatusSnapshot,
+    GoalSnapshot, GoalStatusSnapshot, PermissionMode, StepResult, StepStatus, TaskSnapshot,
+    TaskStatusSnapshot, ThinkingChunk, ToolPresentationInfo, ToolVisualKind, UiRequestPurpose,
+    UiResponse,
 };
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
@@ -1487,6 +1488,21 @@ fn closes_compaction_card(stop_reason: &schema::StopReason) -> bool {
     !matches!(stop_reason, schema::StopReason::EndTurn)
 }
 
+/// The ACP stop reason a failed turn reports.
+///
+/// Two failures have a protocol name of their own, and ACP asks an Agent to
+/// use them: `max_tokens` when output was cut off, `refusal` when the
+/// provider declined the content. Both used to arrive as `error`, which T3
+/// renders as a bare failure — losing the one sentence that explains it
+/// (`acpUnfinishedStopMessage` in T3 keys on exactly these two values).
+fn error_stop_reason(kind: &AgentErrorKind) -> schema::StopReason {
+    match kind {
+        AgentErrorKind::Truncated(_) => schema::StopReason::MaxTokens,
+        AgentErrorKind::Refused(_) => schema::StopReason::Refusal,
+        AgentErrorKind::Other(_) => schema::StopReason::Error(schema::ErrorStopReason::new()),
+    }
+}
+
 /// Whether one agent update answers a command turn, and how it closes it.
 ///
 /// `None` means the update is not an answer: progress logging, session
@@ -2204,10 +2220,7 @@ impl SessionActor {
                     self.state.model.sent = None;
                     self.send_options();
                 }
-                self.finish_turn(
-                    schema::StopReason::Error(schema::ErrorStopReason::new()),
-                    None,
-                );
+                self.finish_turn(error_stop_reason(&kind), None);
             }
             AgentUpdate::ModelInfo(params) => {
                 let model_changed = self.state.model.commit(params.model.clone());
@@ -5492,6 +5505,31 @@ mod tests {
     ///
     /// The safety net must survive the `EndTurn` exclusion, or a producer that
     /// died mid-compaction would leave the client's card spinning forever.
+    /// A failed turn's class decides the stop reason the client sees.
+    ///
+    /// ACP names `max_tokens` and `refusal` separately and asks an Agent to
+    /// use them. Reporting both as `error` is the bug this covers: T3 keys its
+    /// explanatory sentence on exactly those two values, so a truncated or
+    /// refused turn reached the reader as a bare failure.
+    #[test]
+    fn error_classes_map_to_their_acp_stop_reasons() {
+        assert_eq!(
+            error_stop_reason(&AgentErrorKind::Truncated("cut off".into())),
+            schema::StopReason::MaxTokens
+        );
+        assert_eq!(
+            error_stop_reason(&AgentErrorKind::Refused("declined".into())),
+            schema::StopReason::Refusal
+        );
+        assert!(
+            matches!(
+                error_stop_reason(&AgentErrorKind::Other("boom".into())),
+                schema::StopReason::Error(_)
+            ),
+            "an unclassified failure stays a generic error"
+        );
+    }
+
     #[test]
     fn only_an_abnormal_end_faults_an_open_card() {
         use tact_agent_api::{CompactionEvent, CompactionKind, CompactionState as S};

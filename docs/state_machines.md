@@ -93,6 +93,22 @@ to `AgentUpdate::Error`, so a half-produced reply is never reported as a
 completed task. `RunPhase` collapsing those two into `Complete` is what let a
 truncated answer read as done.
 
+`AgentErrorKind` carries *why* a failed turn failed, and two of its classes have
+their own downstream name:
+
+| Class | Raised by | ACP stop reason |
+|---|---|---|
+| `Truncated` | `AgentLoopStop::MaxTokens` after the continuation budget | `max_tokens` |
+| `Refused` | `ModelErrorKind::Refused` (provider safety classifier) | `refusal` |
+| `Other` | every other failure | `error` |
+
+The classes exist so a protocol that names these stops can report them: ACP asks
+an Agent to use `max_tokens` and `refusal` rather than a generic failure, and T3
+renders its explanatory sentence only for those two. `crates/tact-acp/src/lib.rs`
+maps them out (`error_stop_reason`), and
+`crates/desktop_core/src/acp_bridge.rs` maps them back in as failed turns of the
+same class.
+
 `AgentLoopStop::EmptyTurn` — a turn that left no text, tool call or image — is
 retried by the driver before it is reported, with the protocol's
 `TRY_AGAIN_PROMPT` (the text the reader's `Try again` sends). The budget is

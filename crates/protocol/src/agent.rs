@@ -168,19 +168,39 @@ pub struct ModelCallParams {
     pub extra_body: Option<String>,
 }
 
-/// Error classification — lets the TUI distinguish fatal errors (displayed as ❌ Error)
-/// from non-fatal situations (shown as Info).
-#[derive(Debug, Clone)]
+/// Error classification — lets the frontend decide how to render a failed
+/// turn, and lets an ACP client report the protocol's own stop reason.
+///
+/// The typed variants exist because a generic `Other` loses the one fact a
+/// client needs: whether the provider stopped for a reason of its own, and
+/// which. ACP names `max_tokens` and `refusal` separately, and without these a
+/// truncated or refused turn reached the client as a plain failure — with no
+/// sentence explaining it, and no way to offer the right next step.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentErrorKind {
-    /// Generic error (catch-all)
+    /// Generic error (catch-all).
     Other(String),
+    /// The reply was cut off by the output token limit.
+    ///
+    /// Carries the reader-facing sentence, which names the turn count and the
+    /// limit that was hit.
+    Truncated(String),
+    /// The provider's safety classifier declined to answer.
+    Refused(String),
+}
+
+impl AgentErrorKind {
+    /// The reader-facing sentence, whatever the class.
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Other(message) | Self::Truncated(message) | Self::Refused(message) => message,
+        }
+    }
 }
 
 impl fmt::Display for AgentErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            AgentErrorKind::Other(msg) => f.write_str(msg),
-        }
+        f.write_str(self.message())
     }
 }
 

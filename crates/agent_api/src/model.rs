@@ -366,6 +366,14 @@ pub enum ModelErrorKind {
     /// user has to supply a working key. Also never retryable: retrying burns
     /// quota against an endpoint that will keep answering 401/403.
     Authentication,
+    /// The provider's safety classifier refused to answer (HTTP 200 with a
+    /// refusal stop reason).
+    ///
+    /// Not retryable: resending the same request refuses again. Split out from
+    /// `Permanent` because the request is well formed and the credential is
+    /// fine — the content is what has to change, so an ACP client is told
+    /// `refusal` rather than a generic failure.
+    Refused,
 }
 
 /// Model adapter failure.
@@ -414,6 +422,7 @@ impl ModelError {
             ModelErrorKind::Cancelled => "cancelled",
             ModelErrorKind::Unsupported => "unsupported",
             ModelErrorKind::Authentication => "authentication",
+            ModelErrorKind::Refused => "refused",
             _ => "permanent",
         }
     }

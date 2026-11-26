@@ -177,6 +177,11 @@ impl KernelError {
                         .to_string()
                 }
                 tact_agent_api::ModelErrorKind::Cancelled => return None,
+                tact_agent_api::ModelErrorKind::Refused => {
+                    "the provider's safety filter refused this content; rephrase the request or \
+                     switch to a model with different filters"
+                        .to_string()
+                }
                 tact_agent_api::ModelErrorKind::Unsupported => {
                     "this provider does not implement the requested operation; switch provider or \
                      disable the feature"
