@@ -34,6 +34,7 @@ use std::{
 
 use agent_client_protocol::{
     AcpAgent, AcpAgentConfig, Client,
+    schema::IndexMap,
     v2::{ConnectionTo, Responder, schema},
 };
 use async_trait::async_trait;
@@ -607,12 +608,10 @@ impl AcpHost {
                     let response = match value {
                         Some(value) => schema::CreateElicitationResponse::new(
                             schema::ElicitationAction::Accept(
-                                schema::ElicitationAcceptAction::new().content(
-                                    std::collections::BTreeMap::from([(
-                                        request.field,
-                                        schema::ElicitationContentValue::String(value),
-                                    )]),
-                                ),
+                                schema::ElicitationAcceptAction::new().content(IndexMap::from([(
+                                    request.field,
+                                    schema::ElicitationContentValue::String(value),
+                                )])),
                             ),
                         ),
                         None => declined_elicitation(),
@@ -669,7 +668,7 @@ impl AcpHost {
                     };
                     schema::CreateElicitationResponse::new(schema::ElicitationAction::Accept(
                         schema::ElicitationAcceptAction::new()
-                            .content(std::collections::BTreeMap::from([(request.field, value)])),
+                            .content(IndexMap::from([(request.field, value)])),
                     ))
                 };
                 let _ = request.responder.respond(response);
