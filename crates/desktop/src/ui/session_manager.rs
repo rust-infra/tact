@@ -95,6 +95,7 @@ mod tests {
             title: title.into(),
             updated_at: Utc.with_ymd_and_hms(2026, 10, 30, 0, 0, 0).unwrap(),
             archived_at: archived.then(Utc::now),
+            pinned_at: None,
             locked: false,
             message_count: 1,
             search_score: 0,

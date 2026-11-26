@@ -1,6 +1,6 @@
 use tact_catalog::{CliEntry, CommandArguments, CommandId, ComposerAction, SettingId};
 use tact_host::PluginAction;
-use tact_protocol::{PermissionMode, ReasoningEffort, SurfaceQuery, UserCommand};
+use tact_protocol::{PermissionMode, SurfaceQuery, UserCommand};
 
 use crate::{ReaderRef, SettingValue};
 
@@ -432,17 +432,33 @@ pub(crate) fn route_setting(id: SettingId, value: &SettingValue) -> CommandRoute
                 CommandRoute::User(UserCommand::SetThinkingBudget(budget))
             })
         }
-        (SettingId::ReasoningEffort, SettingValue::Choice(value)) => {
-            let effort = match value.as_str() {
-                "low" => Some(ReasoningEffort::Low),
-                "medium" => Some(ReasoningEffort::Medium),
-                "high" => Some(ReasoningEffort::High),
-                "xhigh" => Some(ReasoningEffort::Xhigh),
-                "max" => Some(ReasoningEffort::Max),
-                _ => None,
-            };
-            CommandRoute::User(UserCommand::SetReasoningEffort(effort))
-        }
+        // The value decides which of Tact's two thought controls it belongs to,
+        // because both arrive under this one setting id: a named tier
+        // (`low`, `xhigh`) is a reasoning effort, and a token count (`0`,
+        // `32000`) is a thinking budget for a model that takes one.
+        //
+        // Enumerating five effort names here used to drop `minimal`/`none` (a
+        // `minimal` pick went out as `SetReasoningEffort(None)`, which the
+        // kernel reads as "omit the field"). Treating every value as an effort
+        // is the opposite bug: a budget model's tiers are numbers, so
+        // `parse_effort("32000")` fails and every pick reported "unknown
+        // reasoning effort". The desktop offers a budget model's tiers from
+        // `thought_tiers`, so those numbers are exactly what arrives here.
+        (SettingId::ReasoningEffort, SettingValue::Choice(value)) => match value.as_str() {
+            // A budget tier is a token count; `0` is "thinking off".
+            digits if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) => {
+                match digits.parse() {
+                    Ok(budget) => CommandRoute::User(UserCommand::SetThinkingBudget(budget)),
+                    Err(_) => {
+                        CommandRoute::Error(format!("thinking budget `{digits}` is out of range"))
+                    }
+                }
+            }
+            tier => match tact_host::parse_effort(tier) {
+                Some(effort) => CommandRoute::User(UserCommand::SetReasoningEffort(Some(effort))),
+                None => CommandRoute::Error(format!("unknown reasoning effort `{tier}`")),
+            },
+        },
         (SettingId::PermissionMode, SettingValue::Choice(value)) => {
             let mode = match value.as_str() {
                 "plan" => PermissionMode::Plan,
@@ -630,5 +646,57 @@ mod tests {
                     "Linux and macOS".to_string()
                 ]
         ));
+    }
+
+    /// One setting id carries both thought controls: a named tier is a
+    /// reasoning effort, a token count is a thinking budget. Reading a budget
+    /// tier as an effort made every pick on a budget model report "unknown
+    /// reasoning effort", and its tiers are numbers.
+    #[test]
+    fn a_numeric_thought_tier_sets_the_budget_not_the_effort() {
+        let budget = route_setting(
+            SettingId::ReasoningEffort,
+            &SettingValue::Choice("32000".into()),
+        );
+        assert!(
+            matches!(
+                budget,
+                CommandRoute::User(UserCommand::SetThinkingBudget(32_000))
+            ),
+            "{budget:?}"
+        );
+
+        // `0` is the documented "thinking off" tier, so it must survive as a
+        // budget rather than be read as a missing value.
+        let off = route_setting(
+            SettingId::ReasoningEffort,
+            &SettingValue::Choice("0".into()),
+        );
+        assert!(
+            matches!(off, CommandRoute::User(UserCommand::SetThinkingBudget(0))),
+            "{off:?}"
+        );
+    }
+
+    #[test]
+    fn a_named_thought_tier_sets_the_effort() {
+        for tier in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
+            let route = route_setting(
+                SettingId::ReasoningEffort,
+                &SettingValue::Choice(tier.into()),
+            );
+            assert!(
+                matches!(
+                    route,
+                    CommandRoute::User(UserCommand::SetReasoningEffort(Some(_)))
+                ),
+                "`{tier}` must be a reasoning effort, got {route:?}"
+            );
+        }
+        let unknown = route_setting(
+            SettingId::ReasoningEffort,
+            &SettingValue::Choice("ludicrous".into()),
+        );
+        assert!(matches!(unknown, CommandRoute::Error(_)), "{unknown:?}");
     }
 }

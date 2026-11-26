@@ -249,10 +249,12 @@ unfinished work:
 - The permission card and the sticky warning banner can both be visible while
   the card is on screen; the reviewed design requires the banner to persist
   until the decision.
-- Composer accessories are 780px and pinned to the composer's left gutter. The
-  prototype draws the queue strip and the sticky host at the composer's own
-  900px, but a full-width accessory above the input reads as a second input box;
-  the narrower card shares the frame's left edge and settles against its top.
+- The queue badge is 780px and pinned to the composer's left gutter. The
+  prototype draws the queue strip at the composer's own 900px, but a
+  full-width accessory above the input reads as a second input box; the
+  narrower badge shares the frame's left edge and settles against its top.
+  The sticky task card and the gate banner are not accessories: both fill the
+  composer's 900px column, as the prototype's `.sticky-host` does.
 - Windows taskbar badges are an overlay icon, not a number: the platform has
   no numeric badge API, so the gate banner and notification carry the count.
 

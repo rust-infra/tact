@@ -26,6 +26,12 @@ path = "examples/skill_review.rs"
 required-features = ["ui-capture"]
 
 [features]
+# Drive sessions through an out-of-process ACP agent when
+# `TACT_DESKTOP_ACP=1` is set. On by default so a packaged build ships the
+# compatible transport; the in-process host stays the default at runtime
+# because it has no vocabulary gap.
+acp-host = ["tact_desktop_core/acp-host"]
+
 # Offscreen render harness used to verify the real shell's pixels without
 # Screen Recording permission.
 ui-capture = [

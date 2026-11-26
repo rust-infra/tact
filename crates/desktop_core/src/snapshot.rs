@@ -26,6 +26,9 @@ pub struct ProjectView {
     /// Checked-out branch (or the short commit when detached), when the
     /// project is a git repository.
     pub branch: Option<Arc<str>>,
+    /// Short hash of the commit HEAD points at, when the project is a git
+    /// repository.
+    pub head: Option<Arc<str>>,
     /// `owner/repo` from the origin remote, when the project is a clone.
     pub repository: Option<Arc<str>>,
     pub available: bool,
@@ -159,6 +162,22 @@ pub enum RunPhase {
     Cancelling,
     Complete,
     Failed,
+}
+
+impl RunPhase {
+    /// Whether a turn currently occupies the session.
+    ///
+    /// `Complete` and `Failed` are how the *last* turn ended, not activity: the
+    /// run is over and the next prompt may start at once. Callers that gate on
+    /// "can a prompt be sent now" must ask this instead of comparing against
+    /// `Idle`. A failed run leaves the phase at `Failed`, and no event moves it
+    /// back to `Idle` short of a host `Ready` (a session restart), so an `Idle`
+    /// comparison queues the next prompt after every failure and then refuses
+    /// to flush that queue: the reader clicks Try again, sees `QUEUED 1`, and
+    /// nothing is ever sent.
+    pub fn is_live(self) -> bool {
+        !matches!(self, Self::Idle | Self::Complete | Self::Failed)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

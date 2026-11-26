@@ -656,9 +656,11 @@ impl AgentKernel {
                     // The provider's safety classifier answered 200 with a
                     // refusal. That is a content problem, not a transport or
                     // config one, so the user-facing text says so: retrying
-                    // verbatim will refuse again.
+                    // verbatim will refuse again. `Refused` (not `Permanent`)
+                    // is what lets an ACP client report `refusal` instead of a
+                    // generic failure.
                     return Err(KernelError::Model(ModelError::new(
-                        ModelErrorKind::Permanent,
+                        ModelErrorKind::Refused,
                         "the model's safety classifier refused this request \
                          (stop_reason=refusal); rephrase the prompt or switch to a model with \
                          different filters",

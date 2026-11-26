@@ -290,11 +290,21 @@ jobs:
             libxkbcommon-x11-dev pkg-config
       - name: Check desktop crates
         run: cargo check -p tact_catalog -p tact_desktop_core -p tact-desktop
+      # The ACP transport is behind a feature, so neither the default check nor
+      # the default test run compiles it. Without this step a broken
+      # `acp_bridge`/`acp_host` mapping reaches a release build unnoticed, since
+      # the packaging workflow only builds it at tag time.
+      - name: Check the ACP transport
+        run: cargo clippy -p tact_desktop_core -p tact-desktop --features acp-host --all-targets -- -D warnings
       - name: Check desktop dependency boundaries
         shell: bash
         run: scripts/check-desktop-deps.sh
       - name: Run desktop core tests
         run: cargo test -p tact_desktop_core --lib
+      - name: Run desktop core ACP tests
+        run: cargo test -p tact_desktop_core --features acp-host --lib
+      - name: Run desktop ACP end-to-end tests
+        run: cargo test -p tact_desktop_core --features acp-host --test acp_host --test acp_turn
       - name: Run desktop smoke tests
         run: cargo test -p tact-desktop --lib
       - name: Run desktop parity tests

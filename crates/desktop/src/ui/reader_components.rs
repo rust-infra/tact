@@ -3,12 +3,12 @@
 //! These are presentation components over Tact's existing ANSI, diff and
 //! Markdown helpers; the application still owns the data and the decisions.
 
-use std::rc::Rc;
+use std::{path::PathBuf, rc::Rc};
 
 use gpui::{
-    AnyElement, App, ClickEvent, ElementId, InteractiveElement as _, IntoElement,
+    AnyElement, App, ClickEvent, ElementId, InteractiveElement as _, IntoElement, ObjectFit,
     ParentElement as _, RenderOnce, Role, SharedString, StatefulInteractiveElement as _, Styled,
-    Window, div, prelude::FluentBuilder as _, px,
+    StyledImage as _, Window, div, img, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex,
@@ -662,6 +662,14 @@ pub struct QueuedMessage {
     id: SharedString,
     text: SharedString,
     note: Option<SharedString>,
+    /// The files this queued prompt carries.
+    ///
+    /// A queued prompt is a submitted prompt that has not been sent yet, so it
+    /// carries exactly what the composer had: dropping the attachments here
+    /// would silently send a prompt without the image the reader attached.
+    attachments: Vec<PathBuf>,
+    /// The label the attachment chips fall back to when a file has no name.
+    attachment_label: SharedString,
 }
 
 impl QueuedMessage {
@@ -670,11 +678,23 @@ impl QueuedMessage {
             id: id.into(),
             text: text.into(),
             note: None,
+            attachments: Vec::new(),
+            attachment_label: "Attachment".into(),
         }
     }
 
     pub fn note(mut self, note: impl Into<SharedString>) -> Self {
         self.note = Some(note.into());
+        self
+    }
+
+    pub fn attachments(
+        mut self,
+        attachments: impl IntoIterator<Item = PathBuf>,
+        label: impl Into<SharedString>,
+    ) -> Self {
+        self.attachments = attachments.into_iter().collect();
+        self.attachment_label = label.into();
         self
     }
 }
@@ -862,6 +882,67 @@ impl RenderOnce for MessageQueue {
                             .text_color(cx.theme().muted_foreground)
                             .child(note),
                     )
+                })
+                // The queue row is one line, so the attachments are chips
+                // rather than a strip: a queued image must stay visible (it is
+                // the thing most easily lost on the way through the queue)
+                // without making every row as tall as the composer.
+                .when(!item.attachments.is_empty(), |row| {
+                    let chips = item
+                        .attachments
+                        .iter()
+                        .map(|path| {
+                            let label = path
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .map(SharedString::from)
+                                .unwrap_or_else(|| item.attachment_label.clone());
+                            let mut chip = div()
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .gap(px(3.))
+                                .rounded(px(4.))
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .px(px(4.))
+                                .py(px(1.))
+                                .text_size(px(10.))
+                                .text_color(cx.theme().muted_foreground)
+                                .when(crate::ui::leaf::is_image_path(path), |chip| {
+                                    // An image is recognised by its pixels, not
+                                    // by a generic file glyph: this is the one
+                                    // attachment a reader has to see to know
+                                    // the queued prompt still carries it.
+                                    chip.child(
+                                        div()
+                                            .flex_none()
+                                            .size(px(14.))
+                                            .rounded(px(2.))
+                                            .overflow_hidden()
+                                            .child(
+                                                img(path.clone())
+                                                    .size_full()
+                                                    .object_fit(ObjectFit::Cover),
+                                            ),
+                                    )
+                                })
+                                .when(!crate::ui::leaf::is_image_path(path), |chip| {
+                                    chip.child(Icon::new(IconName::File).size(px(10.)))
+                                })
+                                .child(div().max_w(px(90.)).truncate().child(label));
+                            chip = chip.debug_selector({
+                                let name = path
+                                    .file_name()
+                                    .and_then(|name| name.to_str())
+                                    .unwrap_or_default()
+                                    .to_string();
+                                move || format!("queue-attachment-{name}")
+                            });
+                            chip
+                        })
+                        .collect::<Vec<_>>();
+                    row.child(h_flex().flex_none().gap_1().children(chips))
                 });
             if self.editable {
                 row = row

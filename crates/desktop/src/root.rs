@@ -31,10 +31,10 @@ use tact_catalog::{
 use tact_desktop_core::{
     Appearance, ArchiveFilter, CommandAvailability, CommandForm, DesktopController, DesktopEffect,
     DesktopEvent, DesktopIntent, DesktopSnapshot, DesktopTheme, ExtensionsTab, GateCard, GateKind,
-    GateResponse, GateSelection, GateState, InspectorTab, PermissionModeView, ProjectId, ReaderRef,
-    RowBody, RowId, RowStatus, SectionMask, SessionId, SessionPhase, SettingValue, Submission,
-    SurfaceSnapshot, ToolGroupItem, ToolRow, TrajectoryRecordId, TrajectoryView, TranscriptRow,
-    TranscriptView, is_enabled,
+    GateResponse, GateSelection, GateState, InspectorTab, MessagePhase, PermissionModeView,
+    ProjectId, ReaderRef, RowBody, RowId, RowStatus, SectionMask, SessionId, SessionPhase,
+    SettingValue, Submission, SurfaceSnapshot, TRY_AGAIN_PROMPT, ThoughtTiers, ToolGroupItem,
+    ToolRow, TrajectoryRecordId, TrajectoryView, TranscriptRow, TranscriptView, is_enabled,
 };
 use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr as _};
 
@@ -74,7 +74,7 @@ use crate::ui::row_scroll::RowScroll;
 use crate::ui::selection_actions::{SelectionAction, SelectionActions, SelectionActionsEvent};
 use crate::ui::shell::{RunTab, TrajectoryDetailTab};
 use crate::ui::sidebar_nav::{
-    SidebarNav, SidebarNavEvent, SidebarNavItem, SidebarNavLabels, SidebarNavPresentation,
+    SidebarNav, SidebarNavEvent, SidebarNavItem, SidebarNavItemAction, SidebarNavLabels,
     SidebarSection, SidebarSectionCap,
 };
 use crate::ui::status::{
@@ -261,6 +261,11 @@ struct TranscriptRowView {
     /// The first action of a pending gate tracks this handle, so Review can
     /// move focus onto the primary allow option without selecting it.
     gate_focus: gpui::FocusHandle,
+    /// The pointer is over this row, which reveals the actions a finished
+    /// answer offers (Fork). Kept on the row so the button reserves no space
+    /// until it is wanted: the transcript reads as prose until the reader
+    /// points at one answer.
+    hovered: bool,
 }
 
 /// One assistant row's selectable prose.
@@ -275,9 +280,26 @@ struct AssistantSelection {
     appearance: Appearance,
 }
 
+impl TranscriptRowView {
+    /// Whether this row shows the hover-revealed Fork action.
+    ///
+    /// A finished final answer is the only place a branch makes sense: forking
+    /// mid-answer would cut a half-written turn, and a commentary answer is
+    /// narration for work that has not settled yet. A row seeded from history
+    /// must also know its stored coordinate, which is what the store cuts on.
+    fn offers_fork(&self) -> bool {
+        let RowBody::Assistant(assistant) = &self.row.body else {
+            return false;
+        };
+        matches!(assistant.phase, Some(MessagePhase::FinalAnswer))
+            && matches!(assistant.status, RowStatus::Success)
+            && self.row.message_ordinal.is_some()
+    }
+}
+
 impl Render for TranscriptRowView {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        transcript_row_element(
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let element = transcript_row_element(
             &self.row,
             &self.snapshot,
             self.root.clone(),
@@ -287,8 +309,33 @@ impl Render for TranscriptRowView {
                 gate_focus: Some(&self.gate_focus),
                 thinking_open: self.thinking_open,
                 plan_yields: self.plan_yields,
+                hovered: self.hovered,
             },
-        )
+        );
+        // Hover is tracked by the row itself rather than by the shell: the row
+        // is the entity that repaints, and asking the shell would re-render the
+        // whole transcript every time the pointer crossed a line.
+        //
+        // Only an answer that can offer Fork tracks hover at all: a row with
+        // nothing to reveal would notify on every pointer move for no pixel.
+        if self.offers_fork() {
+            let entity = cx.entity();
+            let hover_id = SharedString::from(format!("row-hover-{:?}", self.row.id));
+            return div()
+                .id(hover_id)
+                .on_hover(move |over, _window, cx| {
+                    let over = *over;
+                    entity.update(cx, |this, cx| {
+                        if this.hovered != over {
+                            this.hovered = over;
+                            cx.notify();
+                        }
+                    });
+                })
+                .child(element)
+                .into_any_element();
+        }
+        element
     }
 }
 
@@ -1024,6 +1071,14 @@ pub(crate) struct DesktopRoot {
     slash_dismissed_for: Option<String>,
     permission_picker_open: bool,
     effort_picker_open: bool,
+    /// The rail's New Session menu: the registered projects plus a folder
+    /// picker, opened from the `+` beside the rail search field.
+    new_session_menu_open: bool,
+    /// The rail's New Session menu asked for the folder picker. The menu's own
+    /// content closure cannot raise a window-level prompt, so it records the
+    /// request and the rail's next render, which has the shell's context,
+    /// opens it.
+    new_session_browse_pending: bool,
     model_picker_cursor: usize,
     /// Quick filter for the model pickers. A provider's index can hold dozens
     /// of ids, so the list is searchable and navigable rather than scrolled
@@ -1069,6 +1124,10 @@ pub(crate) struct DesktopRoot {
     history_cursor: Option<usize>,
     session_project_filter: Option<ProjectId>,
     collapsed_session_projects: HashSet<ProjectId>,
+    /// Whether the rail's pinned block is collapsed. Its own flag rather than
+    /// an entry in `collapsed_session_projects`: that set is keyed by
+    /// `ProjectId`, and the pinned block deliberately has no project.
+    pinned_sessions_collapsed: bool,
     reset_session_search_on_open: bool,
     reset_extension_search_on_open: bool,
     toast: Option<Toast>,
@@ -1197,7 +1256,6 @@ impl DesktopRoot {
         });
         let sidebar_nav = cx.new(|cx| {
             SidebarNav::new("tact-session-nav", window, cx)
-                .with_presentation(SidebarNavPresentation::Embedded)
                 // The rail is chrome, not component content: the design's
                 // rows are 12px over 10px with a monospace time, not the
                 // component library's 14px over 12px.
@@ -1294,6 +1352,9 @@ impl DesktopRoot {
                             this.collapsed_session_projects.remove(&project_id);
                         }
                         cx.notify();
+                    } else if section_id.as_ref() == "sessions-pinned" {
+                        this.pinned_sessions_collapsed = *collapsed;
+                        cx.notify();
                     }
                 }
                 SidebarNavEvent::SectionActionRequested { section_id, .. } => {
@@ -1323,16 +1384,41 @@ impl DesktopRoot {
                         });
                     }
                 }
-                SidebarNavEvent::ItemNewSessionRequested { item_id, .. } => {
-                    let project_id = this
-                        .snapshot
-                        .sessions
-                        .items
-                        .iter()
-                        .find(|session| session.id == item_id.as_ref())
-                        .map(|session| session.project_id.clone());
-                    if let Some(project_id) = project_id {
-                        this.dispatch(DesktopIntent::NewSessionInProject { project_id });
+                SidebarNavEvent::ItemNamedActionRequested {
+                    item_id, action, ..
+                } => {
+                    let session_id = SessionId(item_id.to_string());
+                    match action {
+                        SidebarNavItemAction::Rename => {
+                            this.open_rename_session(session_id, window, cx);
+                        }
+                        SidebarNavItemAction::Fork => {
+                            this.dispatch(DesktopIntent::ForkSession { session_id });
+                        }
+                        SidebarNavItemAction::Pin => {
+                            this.dispatch(DesktopIntent::SetSessionPinned {
+                                session_id,
+                                pinned: true,
+                            });
+                        }
+                        SidebarNavItemAction::Unpin => {
+                            this.dispatch(DesktopIntent::SetSessionPinned {
+                                session_id,
+                                pinned: false,
+                            });
+                        }
+                        SidebarNavItemAction::Archive => {
+                            this.dispatch(DesktopIntent::SetSessionArchived {
+                                session_id,
+                                archived: true,
+                            });
+                        }
+                        SidebarNavItemAction::Restore => {
+                            this.dispatch(DesktopIntent::SetSessionArchived {
+                                session_id,
+                                archived: false,
+                            });
+                        }
                     }
                 }
                 SidebarNavEvent::CollapsedChanged { .. } => {}
@@ -1532,6 +1618,8 @@ impl DesktopRoot {
             slash_dismissed_for: None,
             permission_picker_open: false,
             effort_picker_open: false,
+            new_session_menu_open: false,
+            new_session_browse_pending: false,
             model_picker_cursor: 0,
             model_search,
             model_picker_query: String::new(),
@@ -1554,6 +1642,7 @@ impl DesktopRoot {
             history_cursor: None,
             session_project_filter: None,
             collapsed_session_projects: HashSet::new(),
+            pinned_sessions_collapsed: false,
             reset_session_search_on_open: false,
             reset_extension_search_on_open: false,
             toast: None,
@@ -1785,7 +1874,28 @@ impl DesktopRoot {
         let selected = self.snapshot.sessions.selected.as_ref();
         let active_id = selected.or(self.snapshot.session.id.as_ref());
         let new_session_label = self.text(TextKey::NewSession).to_string();
-        for session in &self.snapshot.sessions.items {
+        let rename_label = self.text(TextKey::Rename).to_string();
+        let fork_label = self.text(TextKey::Fork).to_string();
+        let pin_label = self.text(TextKey::Pin).to_string();
+        let unpin_label = self.text(TextKey::Unpin).to_string();
+        // Newest activity first, everywhere. The store already returns rows in
+        // this order, but the rail does not own that query — a future source
+        // (a cached catalog, a merged list) must not silently hand the rail
+        // an order of its own, so the sort happens here too. `updated_at`
+        // moves on every appended message, so it *is* "most recent activity".
+        let mut ordered: Vec<&tact_desktop_core::SessionSummaryView> =
+            self.snapshot.sessions.items.iter().collect();
+        ordered.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                // Two sessions touched in the same instant still need a
+                // stable order: falling back to the id keeps the rail from
+                // reshuffling between frames.
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        let mut pinned_items: Vec<SidebarNavItem> = Vec::new();
+        for session in ordered {
             let title = self.session_title(session);
             let locked = session.locked && active_id != Some(&SessionId(session.id.clone()));
             let detail = crate::ui::session_rail::session_detail(
@@ -1820,21 +1930,63 @@ impl DesktopRoot {
             let item = SidebarNavItem::new(session.id.clone(), title)
                 .detail(detail)
                 .trailing(trailing);
-            let item = if locked {
-                item.disabled(true)
-                    .badge(self.text(TextKey::Locked).to_string())
-                    .new_session_action(new_session_label.clone())
-            } else {
-                item.context_action(
-                    self.text(if session.archived_at.is_some() {
+            // A locked row keeps every action the session itself supports.
+            // Rename, Fork and Archive all write the store, not the live host,
+            // so the lock held by another process is no obstacle: renaming a
+            // session that is open elsewhere is exactly the tidy-up a reader
+            // reaches for after the fact, and Fork is the way *into* a session
+            // that is locked, since the branch is a new one to open. The row
+            // stays disabled as a *navigation* target — it cannot be resumed —
+            // which is a different thing from having no menu.
+            let archived = session.archived_at.is_some();
+            let pinned = session.pinned_at.is_some();
+            let item = item
+                .item_action(rename_label.clone(), SidebarNavItemAction::Rename)
+                // Fork branches the transcript at this moment, so it sits
+                // next to Rename among the non-destructive operations.
+                .item_action(fork_label.clone(), SidebarNavItemAction::Fork)
+                // Pin sits above Archive: it is the non-destructive one of the
+                // remaining pair, and the destructive entry stays closest to
+                // the pointer's resting place.
+                .item_action(
+                    if pinned {
+                        unpin_label.clone()
+                    } else {
+                        pin_label.clone()
+                    },
+                    if pinned {
+                        SidebarNavItemAction::Unpin
+                    } else {
+                        SidebarNavItemAction::Pin
+                    },
+                )
+                .item_action(
+                    self.text(if archived {
                         TextKey::Restore
                     } else {
                         TextKey::Archive
                     })
                     .to_string(),
-                )
-                .new_session_action(new_session_label.clone())
+                    if archived {
+                        SidebarNavItemAction::Restore
+                    } else {
+                        SidebarNavItemAction::Archive
+                    },
+                );
+            let item = if locked {
+                item.disabled(true)
+                    .badge(self.text(TextKey::Locked).to_string())
+            } else {
+                item
             };
+            // A pinned session leaves its project group for the pinned block
+            // at the top. Keeping it in both places would draw the same
+            // session twice, and the second copy would be the one the pointer
+            // is least likely to reach.
+            if pinned {
+                pinned_items.push(item);
+                continue;
+            }
             let group_id = format!("sessions-project-{}", session.project_id.0);
             if let Some((_, _, _, items)) = groups
                 .iter_mut()
@@ -1871,6 +2023,27 @@ impl DesktopRoot {
                     .cap(SidebarSectionCap::rows(RAIL_SECTION_ROW_CAP))
             })
             .collect();
+        // The pinned block leads the rail, above every project group. It is
+        // its own section rather than a flag on the rows because the whole
+        // point of pinning is that the row stops belonging to a project's
+        // recency order. Its heading says Pinned, not Sessions: the rail
+        // already carries a SESSIONS heading above the list, and two headings
+        // with the same word would read as a bug.
+        //
+        // The block has no project identity, so it carries no avatar, no
+        // remove-project action and no New session action — each of those
+        // means "this project", and a pinned set spans projects.
+        if !pinned_items.is_empty() {
+            let pinned_count = pinned_items.len();
+            sections.insert(
+                0,
+                SidebarSection::new("sessions-pinned", self.text(TextKey::Pinned))
+                    .meta(pinned_count.to_string())
+                    .collapsed(self.pinned_sessions_collapsed)
+                    .items(pinned_items)
+                    .cap(SidebarSectionCap::rows(RAIL_SECTION_ROW_CAP)),
+            );
+        }
         if sections.is_empty() {
             sections.push(
                 SidebarSection::new("sessions", self.text(TextKey::Sessions)).items(Vec::new()),
@@ -1878,7 +2051,6 @@ impl DesktopRoot {
         }
         self.sidebar_nav.update(cx, |nav, cx| {
             nav.set_labels(labels, window, cx);
-            nav.set_chrome_visible(false, cx);
             nav.set_sections(sections, cx);
             if let Some(active) = active {
                 nav.set_active_item(active, cx);
@@ -2913,6 +3085,12 @@ impl DesktopRoot {
                     }));
                 }
                 prompt.update(cx, |prompt, cx| prompt.set_draft("", window, cx));
+                // The attachment strip belongs to the submission that just
+                // left: leaving the chips behind would attach the same image
+                // to the next prompt as well, and the user has no signal that
+                // it is still armed.
+                self.attachments.clear();
+                self.sync_prompt_attachments(cx);
                 self.history_cursor = None;
                 self.slash_overlay = None;
                 self.slash_dismissed_for = None;
@@ -3949,7 +4127,11 @@ impl DesktopRoot {
                 action: FormAction::Command(CommandId::Setting(id)),
                 field: None,
                 required: false,
-                choice: Some(setting_choices(id, self.snapshot.language)),
+                choice: Some(setting_choices(
+                    id,
+                    self.snapshot.language,
+                    Some(self.snapshot.composer.model.as_ref()),
+                )),
             },
             CommandForm::None => FormState {
                 title: label.into(),
@@ -4552,6 +4734,26 @@ impl DesktopRoot {
             cx.notify();
             return;
         }
+        // In-page panels are surfaces the reader opened deliberately, and
+        // closing one is undo, not damage. They come before the run interrupt
+        // for the same reason: a run that is still going must not have to be
+        // killed to put a panel away. Both are mounted per page — the queue
+        // belongs to the composer, the detail panel to the ledger — so a panel
+        // left open on the other page is not on screen and must not eat the
+        // press.
+        if self.run_tab == RunTab::Chat && self.queue_expanded {
+            self.queue_expanded = false;
+            self.prompt
+                .update(cx, |prompt, cx| prompt.focus(window, cx));
+            cx.notify();
+            return;
+        }
+        if self.run_tab == RunTab::Trajectory && self.trajectory_selected.is_some() {
+            self.trajectory_selected = None;
+            self.trajectory_selected_index = None;
+            cx.notify();
+            return;
+        }
         // Esc interrupts a live run before it hides navigation chrome.
         if matches!(
             self.snapshot.session.phase,
@@ -4629,7 +4831,45 @@ impl DesktopRoot {
         }
     }
 
+    /// Open the rename form for one session, prefilled with its current title.
+    ///
+    /// Shared by the rail's context menu and the Session Manager's row button,
+    /// so the two surfaces cannot drift on the form's shape or its prefill.
+    fn open_rename_session(
+        &mut self,
+        session_id: SessionId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let title = self
+            .snapshot
+            .sessions
+            .items
+            .iter()
+            .find(|session| session.id == session_id.0)
+            .map(|session| self.session_title(session))
+            .unwrap_or_default();
+        let rename_label = self.text(TextKey::Rename);
+        let title_label = argument_label("title", self.snapshot.language);
+        self.remember_focus(window, cx);
+        self.form_input.update(cx, |input, cx| {
+            input.set_value(title, window, cx);
+            input.focus(window, cx);
+        });
+        self.open_overlay(Overlay::Form(FormState {
+            title: rename_label.into(),
+            action: FormAction::RenameSession(session_id),
+            field: Some(title_label.into()),
+            required: true,
+            choice: None,
+        }));
+        cx.notify();
+    }
+
     fn open_project_picker(&mut self, cx: &mut Context<Self>) {
+        #[cfg(test)]
+        self.platform_prompts
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: false,
             directories: true,
@@ -4704,6 +4944,15 @@ impl DesktopRoot {
             Appearance::Light => IconName::Moon,
             Appearance::Dark => IconName::Sun,
         };
+        let branch = self.snapshot.project.branch.clone();
+        // A detached HEAD is already shown as the branch's short commit, so
+        // repeating it as the commit would print the same hash twice.
+        let commit = self
+            .snapshot
+            .project
+            .head
+            .clone()
+            .filter(|head| branch.as_deref() != Some(head.as_ref()));
         let geometry = crate::ui::shell::geometry(self.snapshot.appearance);
         TitleBar::new()
             .h(px(f32::from(geometry.titlebar_height)))
@@ -4742,6 +4991,11 @@ impl DesktopRoot {
                                     .size(px(16.))
                                     .text_color(cx.theme().muted_foreground),
                             )
+                            // The title bar turns any pointer movement into a window drag
+                            // (`start_window_move`), and macOS then owns the gesture: the
+                            // mouse-up never reaches gpui and this click never fires. Claiming
+                            // the press stops the bar's handler from seeing it.
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.left_visible = !this.left_visible;
                                 cx.notify();
@@ -4818,7 +5072,7 @@ impl DesktopRoot {
                                     .font_semibold()
                                     .child(project.to_string()),
                             )
-                            .when_some(self.snapshot.project.branch.clone(), |switcher, branch| {
+                            .when_some(branch, |switcher, branch| {
                                 switcher
                                     .child(div().h(px(12.)).w(px(1.)).bg(cx.theme().border))
                                     .child(
@@ -4829,12 +5083,25 @@ impl DesktopRoot {
                                     )
                                     .child(
                                         div()
+                                            .debug_selector(|| "title-bar-branch".into())
                                             .max_w(px(150.))
                                             .truncate()
                                             .text_xs()
                                             .font_family("Lilex")
                                             .text_color(cx.theme().muted_foreground)
                                             .child(branch.to_string()),
+                                    )
+                            })
+                            .when_some(commit, |switcher, commit| {
+                                switcher
+                                    .child(div().h(px(12.)).w(px(1.)).bg(cx.theme().border))
+                                    .child(
+                                        div()
+                                            .debug_selector(|| "title-bar-commit".into())
+                                            .font_family("Lilex")
+                                            .text_size(px(11.))
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(commit.to_string()),
                                     )
                             })
                             .child(div().h(px(12.)).w(px(1.)).bg(cx.theme().border))
@@ -4850,6 +5117,11 @@ impl DesktopRoot {
                                     .size(px(12.))
                                     .text_color(cx.theme().muted_foreground),
                             )
+                            // The title bar turns any pointer movement into a window drag
+                            // (`start_window_move`), and macOS then owns the gesture: the
+                            // mouse-up never reaches gpui and this click never fires. Claiming
+                            // the press stops the bar's handler from seeing it.
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                 this.remember_focus(window, cx);
                                 this.open_project_picker(cx);
@@ -4882,6 +5154,11 @@ impl DesktopRoot {
                                     .text_color(cx.theme().muted_foreground)
                                     .child(appearance_label),
                             )
+                            // The title bar turns any pointer movement into a window drag
+                            // (`start_window_move`), and macOS then owns the gesture: the
+                            // mouse-up never reaches gpui and this click never fires. Claiming
+                            // the press stops the bar's handler from seeing it.
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_click(cx.listener(|this, _: &ClickEvent, _, _| {
                                 this.dispatch(DesktopIntent::InvokeCommand {
                                     id: CommandId::Builtin(BuiltinCommand::Theme),
@@ -4924,6 +5201,11 @@ impl DesktopRoot {
                                     .text_color(cx.theme().muted_foreground)
                                     .child(keymap::command_center_hint()),
                             )
+                            // The title bar turns any pointer movement into a window drag
+                            // (`start_window_move`), and macOS then owns the gesture: the
+                            // mouse-up never reaches gpui and this click never fires. Claiming
+                            // the press stops the bar's handler from seeing it.
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                 this.remember_focus(window, cx);
                                 this.open_command_center(window, cx);
@@ -4972,6 +5254,11 @@ impl DesktopRoot {
                                     .size(px(16.))
                                     .text_color(cx.theme().muted_foreground),
                             )
+                            // The title bar turns any pointer movement into a window drag
+                            // (`start_window_move`), and macOS then owns the gesture: the
+                            // mouse-up never reaches gpui and this click never fires. Claiming
+                            // the press stops the bar's handler from seeing it.
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                 if !this.right_visible {
                                     this.remember_focus(window, cx);
@@ -5038,7 +5325,7 @@ impl DesktopRoot {
     }
 
     fn render_session_rail(
-        &self,
+        &mut self,
         width: gpui::Pixels,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -5048,6 +5335,12 @@ impl DesktopRoot {
         // DURABLE block freed goes to the sessions. Their height is
         // `flex_none` chrome; the list's `min_h` keeps a short window usable.
         self.sync_sidebar_nav(window, cx);
+        // The New Session menu's folder picker is a window-level prompt, so it
+        // is raised here: the menu's own content closure has only the
+        // popover's context, not the shell's window.
+        if std::mem::take(&mut self.new_session_browse_pending) {
+            self.open_project_picker(cx);
+        }
 
         v_flex()
             .id("session-rail")
@@ -5069,29 +5362,37 @@ impl DesktopRoot {
                     .w_full()
                     .h(px(33.))
                     .mt(px(8.))
+                    .gap(px(6.))
                     .items_center()
                     .child(
-                        surface::quiet_search_input(&self.rail_search, window, cx)
-                            .w_full()
-                            .prefix(
-                                Icon::new(IconName::Search)
-                                    .size(px(13.))
-                                    .text_color(cx.theme().muted_foreground),
-                            )
-                            .suffix(
-                                div()
-                                    .flex_none()
-                                    .rounded(px(5.))
-                                    .bg(cx.theme().popover)
-                                    .px(px(5.))
-                                    .py(px(1.))
-                                    .text_size(px(10.))
-                                    .font_family("Lilex")
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("/"),
-                            )
-                            .aria_label(self.text(TextKey::SearchSessions)),
-                    ),
+                        // The field gives up room to the New Session button
+                        // instead of the pair overflowing: `flex_1` plus
+                        // `min_w_0` lets it shrink, and the button is
+                        // `flex_none` so it keeps its own size.
+                        div().flex_1().min_w_0().child(
+                            surface::quiet_search_input(&self.rail_search, window, cx)
+                                .w_full()
+                                .prefix(
+                                    Icon::new(IconName::Search)
+                                        .size(px(13.))
+                                        .text_color(cx.theme().muted_foreground),
+                                )
+                                .suffix(
+                                    div()
+                                        .flex_none()
+                                        .rounded(px(5.))
+                                        .bg(cx.theme().popover)
+                                        .px(px(5.))
+                                        .py(px(1.))
+                                        .text_size(px(10.))
+                                        .font_family("Lilex")
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child("/"),
+                                )
+                                .aria_label(self.text(TextKey::SearchSessions)),
+                        ),
+                    )
+                    .child(self.render_new_session_button(cx)),
             )
             .child(
                 h_flex()
@@ -5305,6 +5606,217 @@ impl DesktopRoot {
                         this.open_overlay(Overlay::Settings);
                     })),
             )
+    }
+
+    /// The `+` beside the rail search field: start a session in any registered
+    /// project, or in a directory that is not registered yet.
+    ///
+    /// The rail already offers a per-project New Session action on each
+    /// section header, but that requires finding the section first — and a
+    /// workspace that has never been opened has no section at all. This menu
+    /// is the rail-level entry point: every project in one list, plus the
+    /// folder picker for a brand-new workspace.
+    /// The `+` beside the rail search field: start a session in any registered
+    /// project, or in a directory that is not registered yet.
+    ///
+    /// The rail already offers a per-project New Session action on each section
+    /// header, but that requires finding the section first — and a workspace
+    /// that has never been opened has no section at all. This menu is the
+    /// rail-level entry point: every project in one list, plus the folder
+    /// picker for a brand-new workspace.
+    fn render_new_session_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        let label = self.text(TextKey::NewSession).to_string();
+        let browse_label = self.text(TextKey::OpenProjectFolder).to_string();
+        let projects_label = self.text(TextKey::Projects).to_uppercase();
+        let current_id = self.snapshot.project.id.clone();
+        // One row per registered project, plus the current one when the
+        // registry has not seen it yet: a first launch points the window at
+        // the process directory, which is not registered.
+        let mut rows: Vec<(ProjectId, String, bool, bool)> = self
+            .snapshot
+            .projects
+            .iter()
+            .filter_map(|project| {
+                let id = project.id.clone()?;
+                Some((
+                    id.clone(),
+                    project_identity_label(project),
+                    current_id.as_ref() == Some(&id),
+                    project.available,
+                ))
+            })
+            .collect();
+        if let Some(id) = current_id.clone()
+            && !rows.iter().any(|row| row.2)
+        {
+            rows.insert(
+                0,
+                (
+                    id,
+                    project_identity_label(&self.snapshot.project),
+                    true,
+                    self.snapshot.project.available,
+                ),
+            );
+        }
+        let menu_rows = rows;
+        let weak = cx.weak_entity();
+        let open_weak = weak.clone();
+        Popover::new("new-session-popover")
+            // The trigger sits on the rail's top edge; the menu drops below it
+            // so it never covers the search field it belongs to.
+            .anchor(Anchor::BottomLeft)
+            .open(self.new_session_menu_open)
+            .on_open_change(move |open, _, cx| {
+                let _ = open_weak.update(cx, |this, cx| {
+                    this.new_session_menu_open = *open;
+                    cx.notify();
+                });
+            })
+            .trigger(
+                gpui_base::Button::new("new-session-trigger")
+                    .debug_selector(|| "new-session-trigger".into())
+                    .role(Role::Button)
+                    .tab_stop(true)
+                    .aria_label(label.clone())
+                    .selected(false)
+                    .cursor_pointer()
+                    .flex_none()
+                    .h(px(33.))
+                    .w(px(33.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .justify_center()
+                    .text_color(cx.theme().muted_foreground)
+                    .hover(|style| style.bg(cx.theme().muted))
+                    .child(Icon::new(IconName::Plus).size(px(14.))),
+            )
+            .content(move |_, _, cx| {
+                let weak = weak.clone();
+                let browse_weak = weak.clone();
+                let menu_rows = menu_rows.clone();
+                let current_id = current_id.clone();
+                v_flex()
+                    .id("new-session-menu")
+                    .debug_selector(|| "new-session-menu".into())
+                    .w(px(260.))
+                    .gap_1()
+                    .p_1()
+                    .child(
+                        div()
+                            .px_2()
+                            .pt_1()
+                            .pb(px(2.))
+                            .text_size(px(10.))
+                            .font_family("Lilex")
+                            .text_color(cx.theme().muted_foreground)
+                            .child(projects_label.clone()),
+                    )
+                    .children(menu_rows.into_iter().enumerate().map(
+                        |(index, (project_id, name, is_current, available))| {
+                            let weak = weak.clone();
+                            let row_selector = format!("new-session-project-{index}");
+                            let is_active = current_id.as_ref() == Some(&project_id);
+                            gpui_base::Button::new(SharedString::from(format!(
+                                "new-session-project-{index}"
+                            )))
+                            .debug_selector(move || row_selector.clone())
+                            .role(Role::Button)
+                            .tab_stop(true)
+                            .aria_label(name.clone())
+                            .disabled(!available)
+                            .cursor_pointer()
+                            .w_full()
+                            .rounded_md()
+                            .px_2()
+                            .h(px(26.))
+                            .text_xs()
+                            .when(is_active, |button| button.bg(gpui::rgba(0x007aff22)))
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .min_w_0()
+                                    .items_center()
+                                    .gap(px(6.))
+                                    .child(
+                                        Icon::new(IconName::Folder)
+                                            .size(px(12.))
+                                            .text_color(cx.theme().muted_foreground),
+                                    )
+                                    .child(div().flex_1().min_w_0().truncate().child(name.clone()))
+                                    .when(is_current, |row| {
+                                        row.child(
+                                            div()
+                                                .flex_none()
+                                                .text_size(px(9.))
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child("●"),
+                                        )
+                                    }),
+                            )
+                            .on_click(move |_, _, cx| {
+                                let project_id = project_id.clone();
+                                let _ = weak.update(cx, |this, cx| {
+                                    this.new_session_menu_open = false;
+                                    this.dispatch(DesktopIntent::NewSessionInProject {
+                                        project_id,
+                                    });
+                                    cx.notify();
+                                });
+                            })
+                        },
+                    ))
+                    .child(div().h(px(1.)).w_full().bg(cx.theme().border))
+                    .child(
+                        gpui_base::Button::new("new-session-browse")
+                            .debug_selector(|| "new-session-browse".into())
+                            .role(Role::Button)
+                            .tab_stop(true)
+                            .aria_label(browse_label.clone())
+                            .cursor_pointer()
+                            .w_full()
+                            .rounded_md()
+                            .px_2()
+                            .h(px(26.))
+                            .text_xs()
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .min_w_0()
+                                    .items_center()
+                                    .gap(px(6.))
+                                    .child(
+                                        Icon::new(IconName::Folder)
+                                            .size(px(12.))
+                                            .text_color(cx.theme().muted_foreground),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .child(browse_label.clone()),
+                                    ),
+                            )
+                            .on_click(move |_, _, cx| {
+                                let _ = browse_weak.update(cx, |this, cx| {
+                                    this.new_session_menu_open = false;
+                                    // A directory picker is a window-level
+                                    // prompt, and this menu's content closure
+                                    // only holds the popover's own context.
+                                    // Record the request; the rail's next
+                                    // render raises the picker, because it
+                                    // runs with the shell's window and its
+                                    // `Context<DesktopRoot>`.
+                                    this.new_session_browse_pending = true;
+                                    cx.notify();
+                                });
+                            }),
+                    )
+                    .into_any_element()
+            })
+            .into_any_element()
     }
 
     fn account_summary(&self) -> Option<(String, String, f32, Option<String>)> {
@@ -6611,6 +7123,7 @@ impl DesktopRoot {
                     thinking_open,
                     plan_yields,
                     gate_focus: cx.focus_handle(),
+                    hovered: false,
                 });
                 self.transcript_rows.insert(key, view.clone());
                 view
@@ -6619,6 +7132,28 @@ impl DesktopRoot {
         }
         self.pending_row_updates.clear();
         views
+    }
+
+    /// Whether the row at `row_id` currently shows its hover-revealed actions.
+    ///
+    /// Test-only: the shell has no reason to ask, but a test cannot see an
+    /// element's opacity through the frame, and asserting on the state the
+    /// opacity is derived from is what actually proves the reveal.
+    #[cfg(test)]
+    fn hover_reveals_row(&self, row_id: u64, cx: &mut Context<Self>) -> Option<bool> {
+        self.transcript_rows
+            .values()
+            .find(|view| view.read(cx).row.id.value() == row_id)
+            .map(|view| view.read(cx).hovered)
+    }
+
+    /// Whether the row at `row_id` offers the Fork action at all.
+    #[cfg(test)]
+    fn row_offers_fork(&self, row_id: u64, cx: &mut Context<Self>) -> Option<bool> {
+        self.transcript_rows
+            .values()
+            .find(|view| view.read(cx).row.id.value() == row_id)
+            .map(|view| view.read(cx).offers_fork())
     }
 
     fn render_inspector(
@@ -7972,9 +8507,8 @@ impl DesktopRoot {
         h_flex()
             .debug_selector(|| "gate-banner".into())
             .w_full()
-            // Shares the accessory width with the task card below it, so the
-            // strip has one right edge instead of two.
-            .max_w(px(crate::ui::layout::ACCESSORY_WIDTH))
+            // Shares the card's width, so the strip has one right edge instead
+            // of two. Both fill the composer's column now.
             .min_w_0()
             .gap_2()
             .rounded_md()
@@ -8255,9 +8789,9 @@ impl DesktopRoot {
             .w_full()
             // The same gutter the composer area applies, so the strip's content
             // box is the composer's content box at every window width. The
-            // narrower card is then pinned to that gutter by `items_start`
-            // further in: centering it here would give the strip a second axis,
-            // which is what made it float away from the composer.
+            // column below then centers to the composer's own 900px, and the
+            // card fills it, so the strip is the composer's header rather than
+            // a narrower surface floating above it.
             .px(px(crate::ui::layout::COMPOSER_PADDING_X))
             .pt_2()
             .pb(px(crate::ui::layout::ACCESSORY_GAP))
@@ -8278,8 +8812,14 @@ impl DesktopRoot {
                             v_flex()
                                 .id("sticky-task-card")
                                 .debug_selector(|| "sticky-task-card".into())
+                                // The card fills the composer's own column
+                                // instead of being a narrower accessory
+                                // pinned to its left gutter: the prototype's
+                                // `.sticky-host` is the composer's 900px,
+                                // centred, and a card that stopped 120px
+                                // short of the frame above it read as a
+                                // separate surface rather than its header.
                                 .w_full()
-                                .max_w(px(crate::ui::layout::ACCESSORY_WIDTH))
                                 .flex_none()
                                 .min_w_0()
                                 .rounded_lg()
@@ -8603,7 +9143,8 @@ impl DesktopRoot {
     fn render_effort_picker(&self, cx: &mut Context<Self>) -> AnyElement {
         let locale = self.snapshot.language;
         let selected = self.snapshot.composer.effort.as_deref().map(str::to_string);
-        let choices = setting_choices(SettingId::ReasoningEffort, locale);
+        let model = self.snapshot.composer.model.to_string();
+        let choices = setting_choices(SettingId::ReasoningEffort, locale, Some(&model));
         let current_label = selected.as_ref().and_then(|value| {
             choices
                 .iter()
@@ -9160,7 +9701,14 @@ impl DesktopRoot {
             .iter()
             .enumerate()
             .map(|(index, item)| {
-                let message = QueuedMessage::new(index.to_string(), item.text.to_string());
+                let message = QueuedMessage::new(index.to_string(), item.text.to_string())
+                    // The queue row must show what the prompt carries: an
+                    // image that disappears on its way through the queue is an
+                    // image the reader cannot see they are about to send.
+                    .attachments(
+                        item.attachments.iter().cloned(),
+                        i18n::text(self.snapshot.language, TextKey::Attachment),
+                    );
                 if index == self.queue_cursor {
                     message.note(
                         if self.snapshot.language == tact_catalog::CatalogLocale::Zh {
@@ -9203,6 +9751,12 @@ impl DesktopRoot {
                                     prompt.set_draft(item.text.to_string(), window, cx);
                                     prompt.focus(window, cx);
                                 });
+                                // Editing a queued prompt puts it back in the
+                                // composer, so the composer has to hold the
+                                // same files: dropping them here loses the
+                                // image on a path that looks like a plain edit.
+                                this.attachments = item.attachments.to_vec();
+                                this.sync_prompt_attachments(cx);
                                 this.dispatch(DesktopIntent::RemoveQueued { index });
                             }
                         });
@@ -10153,6 +10707,7 @@ impl DesktopRoot {
                                 gate_focus: None,
                                 thinking_open: false,
                                 plan_yields: yielded_plans.contains(&row.id),
+                                hovered: false,
                             },
                         )
                     })
@@ -11754,7 +12309,6 @@ impl DesktopRoot {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let rename_label = self.text(TextKey::Rename);
-        let title_label = argument_label("title", self.snapshot.language);
         let archive_label = self.text(TextKey::Archive);
         let restore_label = self.text(TextKey::Restore);
         // While the controller is moving between hosts, another switch has
@@ -12000,19 +12554,7 @@ impl DesktopRoot {
                 )
                 .on_click(cx.listener(
                     move |this, _: &ClickEvent, window, cx| {
-                        this.remember_focus(window, cx);
-                        this.form_input.update(cx, |input, cx| {
-                            input.set_value(rename_value.clone(), window, cx);
-                            input.focus(window, cx);
-                        });
-                        this.open_overlay(Overlay::Form(FormState {
-                            title: rename_label.into(),
-                            action: FormAction::RenameSession(rename_id.clone()),
-                            field: Some(title_label.into()),
-                            required: true,
-                            choice: None,
-                        }));
-                        cx.notify();
+                        this.open_rename_session(rename_id.clone(), window, cx);
                     },
                 ));
                 let archive_button = gpui_base::Button::new(SharedString::from(format!(
@@ -14308,6 +14850,8 @@ struct RowViewState<'a> {
     thinking_open: bool,
     /// This row is a plan card that yields to the run's tool group.
     plan_yields: bool,
+    /// The pointer is over the row, so its hover-revealed actions show.
+    hovered: bool,
 }
 
 fn transcript_row_element(
@@ -14322,6 +14866,7 @@ fn transcript_row_element(
         gate_focus,
         thinking_open,
         plan_yields,
+        hovered,
     } = state;
     let session_id = snapshot
         .session
@@ -14477,6 +15022,9 @@ fn transcript_row_element(
                 }
                 (_, Some(selection)) => selection.into_any_element(),
             };
+            let is_final_answer = matches!(assistant.phase, Some(MessagePhase::FinalAnswer));
+            let fork_label = i18n::text(snapshot.language, TextKey::Fork);
+            let fork_hint = i18n::text(snapshot.language, TextKey::ForkFromHere);
             h_flex()
                 .id(SharedString::from(format!("row-assistant-{id}")))
                 .debug_selector(move || format!("transcript-row-assistant-{id}"))
@@ -14535,6 +15083,72 @@ fn transcript_row_element(
                                             "· {}",
                                             i18n::text(snapshot.language, TextKey::Assistant)
                                         )),
+                                )
+                                // The answer's own actions. Hidden until the
+                                // pointer is over the row, and `flex_none` so
+                                // revealing them does not reflow the prose
+                                // beside them: the label line keeps its height
+                                // and the answer does not jump.
+                                .when(
+                                    !read_only
+                                        && is_final_answer
+                                        && matches!(assistant.status, RowStatus::Success),
+                                    |line| {
+                                        line.child(div().flex_1()).child(
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "fork-from-answer-{id}"
+                                                )))
+                                                .debug_selector(move || {
+                                                    format!("fork-from-answer-{id}")
+                                                })
+                                                .flex_none()
+                                                .role(Role::Button)
+                                                .focusable()
+                                                .tab_stop(true)
+                                                .aria_label(fork_hint)
+                                                .cursor_pointer()
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(4.))
+                                                .rounded(px(5.))
+                                                .px(px(5.))
+                                                .py(px(1.))
+                                                .text_size(px(10.))
+                                                .text_color(snapshot_row_muted(snapshot))
+                                                .hover(|style| {
+                                                    style.bg(snapshot_row_surface(snapshot))
+                                                })
+                                                .opacity(if hovered { 1.0 } else { 0.0 })
+                                                // `Copy` stands in for a
+                                                // branch mark: the icon set has
+                                                // no fork glyph.
+                                                .child(Icon::new(IconName::Copy).size(px(11.)))
+                                                .child(fork_label)
+                                                .when_some(row.message_ordinal, |button, upto| {
+                                                    let click_weak = weak.clone();
+                                                    let fork_session = session_id.clone();
+                                                    button.on_click(move |_, _, cx| {
+                                                        let _ =
+                                                            click_weak.update(cx, |this, cx| {
+                                                                // Fork at this answer:
+                                                                // the branch keeps
+                                                                // the turn up to and
+                                                                // including it, and
+                                                                // drops what followed.
+                                                                this.dispatch(
+                                                                    DesktopIntent::ForkSessionAt {
+                                                                        session_id: fork_session
+                                                                            .clone(),
+                                                                        upto_message: upto,
+                                                                    },
+                                                                );
+                                                                cx.notify();
+                                                            });
+                                                    })
+                                                }),
+                                        )
+                                    },
                                 ),
                         )
                         .child(body)
@@ -15087,20 +15701,33 @@ fn transcript_row_element(
                 card.child(
                     div()
                         .id(SharedString::from(format!("retry-error-{id}")))
+                        .debug_selector(move || format!("retry-error-{id}"))
                         .role(Role::Button)
                         .focusable()
                         .tab_stop(true)
                         .focus_visible(|style| style.bg(gpui::rgba(0x007aff22)))
-                        .aria_label(i18n::text(snapshot.language, TextKey::Retry))
+                        .aria_label(i18n::text(snapshot.language, TextKey::TryAgain))
                         .text_xs()
                         .text_color(gpui::blue())
                         .cursor_pointer()
-                        .child(i18n::text(snapshot.language, TextKey::Retry))
+                        .child(i18n::text(snapshot.language, TextKey::TryAgain))
                         .on_click({
                             let weak = weak.clone();
                             move |_, _, cx| {
                                 let _ = weak.update(cx, |this, _| {
-                                    this.dispatch(DesktopIntent::RetryProvider);
+                                    // A cut-short turn, not a dead host: the
+                                    // run may have left a command running or
+                                    // half-applied, so continue it with the
+                                    // protocol's evidence-first prompt instead
+                                    // of restarting the session, which would
+                                    // throw away the context that prompt is
+                                    // asking about.
+                                    this.dispatch(DesktopIntent::Submit(Submission {
+                                        text: TRY_AGAIN_PROMPT.to_string(),
+                                        attachments: Vec::new(),
+                                        model: None,
+                                        permission_mode: None,
+                                    }));
                                 });
                             }
                         }),
@@ -16821,30 +17448,56 @@ fn choice_values(id: CommandId, snapshot: &DesktopSnapshot) -> Vec<(String, Stri
     }
 }
 
-fn setting_choices(id: SettingId, locale: tact_catalog::CatalogLocale) -> Vec<(String, String)> {
+/// The thought control's tiers for `model`, or `None` before config lands.
+///
+/// The ladder itself is `tact_host::thought`'s, so the desktop cannot offer a
+/// tier the model rejects, and an effort model and a budget model each get the
+/// control that actually applies to them.
+fn thought_tiers_for(model: &str) -> Option<ThoughtTiers> {
+    tact_desktop_core::thought_tiers(model)
+}
+
+/// Localized label for one thought tier.
+fn thought_tier_label(locale: tact_catalog::CatalogLocale, value: &str) -> String {
+    match value {
+        "none" => i18n::text(locale, TextKey::ReasoningNone).into(),
+        "minimal" => i18n::text(locale, TextKey::ReasoningMinimal).into(),
+        "low" => i18n::text(locale, TextKey::ReasoningLow).into(),
+        "medium" => i18n::text(locale, TextKey::ReasoningMedium).into(),
+        "high" => i18n::text(locale, TextKey::ReasoningHigh).into(),
+        "xhigh" => i18n::text(locale, TextKey::ReasoningExtraHigh).into(),
+        "max" => i18n::text(locale, TextKey::ReasoningMax).into(),
+        // A budget tier is a token count; `0` is "thinking off", which the
+        // number alone would not say.
+        "0" => i18n::text(locale, TextKey::ReasoningNone).into(),
+        other => other.to_string(),
+    }
+}
+
+fn setting_choices(
+    id: SettingId,
+    locale: tact_catalog::CatalogLocale,
+    model: Option<&str>,
+) -> Vec<(String, String)> {
     match id {
-        SettingId::ReasoningEffort => vec![
-            (
-                i18n::text(locale, TextKey::ReasoningLow).into(),
-                "low".into(),
-            ),
-            (
-                i18n::text(locale, TextKey::ReasoningMedium).into(),
-                "medium".into(),
-            ),
-            (
-                i18n::text(locale, TextKey::ReasoningHigh).into(),
-                "high".into(),
-            ),
-            (
-                i18n::text(locale, TextKey::ReasoningExtraHigh).into(),
-                "xhigh".into(),
-            ),
-            (
-                i18n::text(locale, TextKey::ReasoningMax).into(),
-                "max".into(),
-            ),
-        ],
+        // The tiers belong to the model, not to the desktop: an effort model
+        // takes a named tier and a budget model takes a token count. Listing
+        // the five effort names for every model offered a control a budget
+        // model ignores, and hid `minimal`/`none`, which the wire accepts.
+        SettingId::ReasoningEffort => {
+            let tiers = model.and_then(thought_tiers_for);
+            let values: Vec<String> = match tiers {
+                Some(tiers) => tiers.candidates,
+                None => tact_desktop_core::DEFAULT_THINKING_BUDGETS
+                    .iter()
+                    .map(|budget| budget.to_string())
+                    .collect(),
+            };
+            values
+                .into_iter()
+                .map(|value| (thought_tier_label(locale, &value), value))
+                .collect()
+        }
         SettingId::PermissionMode => vec![
             (
                 i18n::text(locale, TextKey::PermissionDefault).into(),
@@ -16992,6 +17645,7 @@ mod tests {
             root: Some("/tmp/project-a".into()),
             display_name: "Project A".into(),
             branch: Some("main".into()),
+            head: Some("1111111".into()),
             repository: None,
             available: true,
         };
@@ -17002,6 +17656,7 @@ mod tests {
                 root: Some("/tmp/project-b".into()),
                 display_name: "Project B".into(),
                 branch: Some("feature".into()),
+                head: Some("2222222".into()),
                 repository: None,
                 available: true,
             },
@@ -17017,6 +17672,7 @@ mod tests {
                 title: format!("Session A{index}"),
                 updated_at: now - chrono::Duration::minutes(index as i64),
                 archived_at: None,
+                pinned_at: None,
                 locked: false,
                 message_count: 1,
                 search_score: 0,
@@ -17029,6 +17685,7 @@ mod tests {
             title: "Session B".into(),
             updated_at: now - chrono::Duration::hours(1),
             archived_at: None,
+            pinned_at: None,
             locked: false,
             message_count: 1,
             search_score: 0,
@@ -17048,6 +17705,7 @@ mod tests {
             root: Some("/tmp/project-a".into()),
             display_name: "Project A".into(),
             branch: Some("main".into()),
+            head: Some("1111111".into()),
             repository: None,
             available: true,
         };
@@ -17058,6 +17716,7 @@ mod tests {
                 root: Some("/tmp/project-b".into()),
                 display_name: "Project B".into(),
                 branch: Some("feature".into()),
+                head: Some("2222222".into()),
                 repository: None,
                 available: true,
             },
@@ -17072,6 +17731,7 @@ mod tests {
                 title: "Session A".into(),
                 updated_at: now,
                 archived_at: None,
+                pinned_at: None,
                 locked: false,
                 message_count: 1,
                 search_score: 0,
@@ -17083,6 +17743,7 @@ mod tests {
                 title: "Session B".into(),
                 updated_at: now - chrono::Duration::hours(1),
                 archived_at: None,
+                pinned_at: None,
                 locked: false,
                 message_count: 1,
                 search_score: 0,
@@ -17208,7 +17869,11 @@ mod tests {
     #[test]
     fn chinese_permission_choices_keep_stable_values() {
         assert_eq!(
-            setting_choices(SettingId::PermissionMode, tact_catalog::CatalogLocale::Zh),
+            setting_choices(
+                SettingId::PermissionMode,
+                tact_catalog::CatalogLocale::Zh,
+                None
+            ),
             vec![
                 (
                     i18n::text(tact_catalog::CatalogLocale::Zh, TextKey::PermissionDefault).into(),
@@ -17227,9 +17892,41 @@ mod tests {
     }
 
     #[test]
+    fn effort_choices_come_from_the_shared_ladder() {
+        // The desktop must not keep its own copy of the tier ladder: whatever
+        // `tact_host::thought` offers for this model is what the control shows.
+        // A fixed five-name list here is exactly the bug this replaced — it
+        // dropped `minimal`/`none` and offered effort names to budget models.
+        let values: Vec<String> = setting_choices(
+            SettingId::ReasoningEffort,
+            tact_catalog::CatalogLocale::En,
+            Some("some-model"),
+        )
+        .into_iter()
+        .map(|(_, value)| value)
+        .collect();
+        let expected = match tact_desktop_core::thought_tiers("some-model") {
+            Some(tiers) => tiers.candidates,
+            // No installed config: the documented fallback ladder.
+            None => tact_desktop_core::DEFAULT_THINKING_BUDGETS
+                .iter()
+                .map(|budget| budget.to_string())
+                .collect(),
+        };
+        assert_eq!(
+            values, expected,
+            "the desktop control must mirror the shared ladder exactly"
+        );
+    }
+
+    #[test]
     fn theme_family_setting_offers_every_desktop_family() {
         assert_eq!(
-            setting_choices(SettingId::ThemeFamily, tact_catalog::CatalogLocale::En),
+            setting_choices(
+                SettingId::ThemeFamily,
+                tact_catalog::CatalogLocale::En,
+                None
+            ),
             vec![
                 ("Tact".to_string(), "tact".to_string()),
                 ("Claude".to_string(), "claude".to_string()),
@@ -18088,6 +18785,7 @@ mod tests {
             .map(|index| {
                 Arc::new(tact_desktop_core::TranscriptRow {
                     id: RowId::new(index),
+                    message_ordinal: None,
                     ordinal: index,
                     loop_id: None,
                     time: None,
@@ -18850,6 +19548,7 @@ mod tests {
                     1,
                     Arc::new(TranscriptRow {
                         id: RowId::new(20),
+                        message_ordinal: None,
                         ordinal: 20,
                         loop_id: None,
                         time: None,
@@ -19042,6 +19741,7 @@ mod tests {
                 snapshot.transcript = tact_desktop_core::TranscriptView::from_rows(vec![Arc::new(
                     tact_desktop_core::TranscriptRow {
                         id: RowId::new(0),
+                        message_ordinal: None,
                         ordinal: 0,
                         loop_id: None,
                         time: None,
@@ -19086,6 +19786,7 @@ mod tests {
                 snapshot.transcript = tact_desktop_core::TranscriptView::from_rows(vec![Arc::new(
                     tact_desktop_core::TranscriptRow {
                         id: RowId::new(0),
+                        message_ordinal: None,
                         ordinal: 0,
                         loop_id: None,
                         time: Some(Arc::from("10:42")),
@@ -19919,6 +20620,7 @@ mod tests {
                             gate_focus: None,
                             thinking_open: false,
                             plan_yields: false,
+                            hovered: false,
                         },
                     )
                 }))
@@ -20064,6 +20766,7 @@ mod tests {
                 title: format!("Session {index}"),
                 updated_at: base - chrono::Duration::minutes(index),
                 archived_at: None,
+                pinned_at: None,
                 locked: false,
                 message_count: 10 + index,
                 search_score: 0,
@@ -20108,6 +20811,482 @@ mod tests {
         let _ = std::fs::remove_dir_all(data_dir);
     }
 
+    /// Renaming was only reachable from the Session Manager, so a reader
+    /// working in the rail had to open a full-screen overlay to fix a title.
+    /// The rail's own context menu now carries it, and the form it opens is
+    /// prefilled with the title the row currently shows.
+    #[gpui::test]
+    fn the_rail_session_row_offers_rename_and_prefills_the_title(cx: &mut TestAppContext) {
+        use tact_desktop_core::{ProjectId, SessionId, SessionSummaryView};
+
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        let session_id = "session-rename-me";
+        window.update(|_, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.sessions.items = vec![SessionSummaryView {
+                    id: session_id.into(),
+                    project_id: ProjectId("project".into()),
+                    root_dir: "/tmp/project".into(),
+                    title: "Original title".into(),
+                    updated_at: chrono::Utc::now(),
+                    archived_at: None,
+                    pinned_at: None,
+                    locked: false,
+                    message_count: 2,
+                    search_score: 0,
+                }];
+                this.snapshot = Arc::new(snapshot);
+                cx.notify();
+            });
+        });
+        window.simulate_resize(size(px(1280.), px(840.)));
+        window.update(|window, cx| window.draw(cx).clear(cx));
+
+        // The row itself is the entry point: a row that renders but carries no
+        // menu is the bug this guards against. `sidebar_nav`'s own
+        // `session_context_menu_emits_named_actions` proves the menu emits the
+        // action; this test proves the shell turns it into the rename form.
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.open_rename_session(SessionId(session_id.into()), window, cx);
+            });
+        });
+        window.update(|window, cx| window.draw(cx).clear(cx));
+
+        let form = window.update(|_, cx| root.read(cx).overlay.clone());
+        match form {
+            Some(Overlay::Form(state)) => {
+                assert!(
+                    matches!(&state.action, FormAction::RenameSession(id) if id.0 == session_id),
+                    "the form must rename the row it was opened from"
+                );
+                assert!(state.required, "a session must keep a title");
+            }
+            other => panic!("expected the rename form, got {}", other.is_some()),
+        }
+        // The prefill is what the reader edits rather than retypes.
+        let prefilled =
+            window.update(|_, cx| root.read(cx).form_input.read(cx).value().to_string());
+        assert_eq!(
+            prefilled, "Original title",
+            "the rename form must open with the row's current title"
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// A row locked by another process still offers the session's own actions.
+    ///
+    /// The lock says the live host belongs to someone else, so the row cannot
+    /// be resumed — it stays disabled as a navigation target. It says nothing
+    /// about the stored session, and Rename, Fork and Archive all write the
+    /// store. The regression this pins: a locked row used to fall through a
+    /// separate branch that attached only a session-*creating* entry, so
+    /// right-clicking such a row produced a menu whose single item did not act
+    /// on that session at all. Fork matters most there — it is the one way
+    /// into a session that is open elsewhere, because the branch is a new row.
+    #[gpui::test]
+    fn a_locked_row_offers_the_sessions_own_actions(cx: &mut TestAppContext) {
+        use tact_desktop_core::{ProjectId, SessionSummaryView};
+
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        let session_id = "session-locked";
+        window.update(|_, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.sessions.items = vec![SessionSummaryView {
+                    id: session_id.into(),
+                    project_id: ProjectId("project".into()),
+                    root_dir: "/tmp/project".into(),
+                    title: "Open elsewhere".into(),
+                    updated_at: chrono::Utc::now(),
+                    archived_at: None,
+                    pinned_at: None,
+                    locked: true,
+                    message_count: 12,
+                    search_score: 0,
+                }];
+                // The row must read as locked *and* not current: the shell
+                // treats the open session as owned, so a locked current row
+                // would exercise the wrong path.
+                snapshot.sessions.selected = None;
+                snapshot.session.id = None;
+                this.snapshot = Arc::new(snapshot);
+                cx.notify();
+            });
+        });
+        window.simulate_resize(size(px(1280.), px(840.)));
+        window.update(|window, cx| window.draw(cx).clear(cx));
+
+        // Right-click the row and confirm the first entry. With the bug, the
+        // only entry created a session in the row's project and left the
+        // overlay closed; now the first entry renames the row itself, so the
+        // rename form opens on this session.
+        let row = window
+            .debug_bounds("sidebar-nav-item-session-locked")
+            .expect("locked session row");
+        window.simulate_event(gpui::MouseDownEvent {
+            button: gpui::MouseButton::Right,
+            position: row.center(),
+            modifiers: Default::default(),
+            click_count: 1,
+            first_mouse: false,
+        });
+        window.run_until_parked();
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        window.simulate_keystrokes("down enter");
+        window.run_until_parked();
+
+        let overlay = window.update(|_, cx| root.read(cx).overlay.clone());
+        match overlay {
+            Some(Overlay::Form(state)) => assert!(
+                matches!(&state.action, FormAction::RenameSession(id) if id.0 == session_id),
+                "the locked row's first menu entry must act on that session"
+            ),
+            other => panic!(
+                "a locked row's context menu must offer Rename, Fork and Archive; \
+                 confirming the first entry left the overlay as {}",
+                other.is_some()
+            ),
+        }
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// A real click on the `+`, not a snapshot mutation. The first version of
+    /// this test set `new_session_menu_open` directly, which proved the menu
+    /// renders but not that the button opens it.
+    #[gpui::test]
+    fn clicking_the_rail_new_session_button_opens_the_menu(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(840.)));
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            window.debug_bounds("new-session-menu").is_none(),
+            "the menu must start collapsed"
+        );
+        let trigger = window
+            .debug_bounds("new-session-trigger")
+            .expect("new session trigger");
+        window.simulate_click(trigger.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        let menu = window.debug_bounds("new-session-menu");
+        let browse = window.debug_bounds("new-session-browse");
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+        assert!(
+            menu.is_some(),
+            "clicking the New Session button must open the project menu"
+        );
+        assert!(
+            browse.is_some(),
+            "the opened menu must offer the folder picker"
+        );
+        let _ = root;
+    }
+
+    /// The Fork action lives under a finished answer and only appears when the
+    /// pointer is over it: the transcript reads as prose until the reader points
+    /// at one answer, and the button reserves no width until then.
+    #[gpui::test]
+    fn a_final_answer_reveals_fork_on_hover(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        // The row must be tall enough to paint, and tall enough to point at.
+        window.simulate_resize(size(px(1280.), px(1200.)));
+        let view = tact_desktop_core::TranscriptView::from_rows(vec![std::sync::Arc::new(
+            tact_desktop_core::TranscriptRow {
+                id: tact_desktop_core::RowId::new(1),
+                ordinal: 0,
+                loop_id: None,
+                time: None,
+                // A seeded row knows which stored message it came from, which
+                // is what the fork cuts on.
+                message_ordinal: Some(2),
+                body: tact_desktop_core::RowBody::Assistant(
+                    tact_desktop_core::transcript::AssistantRow {
+                        markdown: "the answer".into(),
+                        status: tact_desktop_core::RowStatus::Success,
+                        suggestions: [].into(),
+                        phase: Some(MessagePhase::FinalAnswer),
+                    },
+                ),
+            },
+        )]);
+        window.update(|_, cx| {
+            root.update(cx, |this, cx| {
+                set_transcript_session(this, "fork-test", 1, &view, cx);
+            });
+        });
+        window.update(|window, cx| window.draw(cx).clear(cx));
+
+        let row = window
+            .debug_bounds("transcript-row-assistant-0")
+            .expect("the answer is painted");
+        let fork = window
+            .debug_bounds("fork-from-answer-0")
+            .expect("the answer carries a fork action");
+
+        // The row opted into hover at all, which is what decides whether the
+        // action is even built.
+        let offers = window.update(|_, cx| root.update(cx, |this, cx| this.row_offers_fork(1, cx)));
+        assert_eq!(offers, Some(true), "a finished answer offers Fork");
+
+        // Away from the row, the action is invisible.
+        let hidden =
+            window.update(|_, cx| root.update(cx, |this, cx| this.hover_reveals_row(1, cx)));
+        assert_eq!(hidden, Some(false), "the action starts hidden");
+
+        // Pointing at the row reveals it.
+        window.simulate_mouse_move(row.center(), None, gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        let revealed =
+            window.update(|_, cx| root.update(cx, |this, cx| this.hover_reveals_row(1, cx)));
+        assert_eq!(
+            revealed,
+            Some(true),
+            "hovering the answer must reveal its fork action"
+        );
+
+        // And it sits inside the row, so it follows the answer it belongs to.
+        assert!(
+            fork.origin.y >= row.origin.y && fork.origin.y <= row.origin.y + row.size.height,
+            "the action belongs to its row: action={fork:?}, row={row:?}"
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// The workspace switcher sits in the title bar and opens the folder
+    /// picker. It must be clickable: the title bar's own drag handling runs
+    /// `start_window_move` on any pointer movement, which steals the click.
+    #[gpui::test]
+    fn the_workspace_switcher_opens_the_folder_picker(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(840.)));
+        window.update(|window, cx| window.draw(cx).clear(cx));
+
+        let switcher = window
+            .debug_bounds("workspace-switcher")
+            .expect("the title bar shows the workspace switcher");
+        fn prompts(window: &mut VisualTestContext, root: &Entity<DesktopRoot>) -> usize {
+            window.update(|_, cx| {
+                root.read(cx)
+                    .platform_prompts
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            })
+        }
+        let before = prompts(window, &root);
+        window.simulate_click(switcher.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            prompts(window, &root) > before,
+            "clicking the workspace switcher must open the folder picker"
+        );
+
+        // The bar turns any pointer movement while the button is held into a
+        // window drag, and macOS then owns the gesture: the mouse-up never
+        // reaches gpui, so the click never fires. Mouse jitter between press
+        // and release is exactly what a hand does, so the press must be claimed
+        // before the bar's handler sees it.
+        let before = prompts(window, &root);
+        window.simulate_mouse_down(
+            switcher.center(),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        window.simulate_mouse_move(
+            switcher.center() + point(px(2.), px(0.)),
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::default(),
+        );
+        window.simulate_mouse_up(
+            switcher.center() + point(px(2.), px(0.)),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            prompts(window, &root) > before,
+            "a press with pointer jitter must still count as a click, not a window drag"
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// The `+` is the rail's New Session entry point: it sits beside the search
+    /// field, opens a menu of every registered project, and offers the folder
+    /// picker for a workspace that is not registered yet.
+    #[gpui::test]
+    fn the_rail_offers_new_session_beside_the_search_field(cx: &mut TestAppContext) {
+        use tact_desktop_core::{ProjectId, ProjectView};
+
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(840.)));
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        let search = window.debug_bounds("rail-search").expect("rail search row");
+        let trigger = window
+            .debug_bounds("new-session-trigger")
+            .expect("the rail must offer a New Session entry beside the search field");
+        assert_eq!(
+            trigger.origin.y, search.origin.y,
+            "the button shares the search field's row rather than stacking below it"
+        );
+        assert!(
+            trigger.origin.x > search.origin.x,
+            "the button belongs to the right of the search row: button={trigger:?}, row={search:?}"
+        );
+        assert!(
+            trigger.origin.x + trigger.size.width <= search.origin.x + search.size.width + px(1.),
+            "the button must stay inside the rail: button={trigger:?}, row={search:?}"
+        );
+
+        // The menu lists a registered project and the folder picker. A project
+        // the registry knows is the only way to start a session there, so its
+        // absence would leave the menu unable to do the job it exists for.
+        window.update(|_, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.projects = vec![ProjectView {
+                    id: Some(ProjectId("registered".into())),
+                    root: Some(std::path::PathBuf::from("/tmp/registered")),
+                    display_name: "registered".into(),
+                    branch: None,
+                    head: None,
+                    repository: None,
+                    available: true,
+                }]
+                .into();
+                this.snapshot = Arc::new(snapshot);
+                this.new_session_menu_open = true;
+                cx.notify();
+            });
+        });
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            window.debug_bounds("new-session-menu").is_some(),
+            "the New Session button must open its project menu"
+        );
+        assert!(
+            window.debug_bounds("new-session-project-0").is_some(),
+            "the menu must list the registered projects"
+        );
+        assert!(
+            window.debug_bounds("new-session-browse").is_some(),
+            "the menu must offer a directory that is not registered yet"
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// The rail lists sessions by most recent activity, and a pinned session
+    /// leaves its project group for a block above every project.
+    ///
+    /// Both halves are asserted on the rendered geometry rather than on the
+    /// section list, so the order the reader actually sees is what is pinned.
+    #[gpui::test]
+    fn pinned_sessions_lead_the_rail_and_the_rest_follow_recent_activity(cx: &mut TestAppContext) {
+        use chrono::{TimeZone as _, Utc};
+        use tact_desktop_core::{ProjectId, SessionSummaryView};
+
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        let base = Utc
+            .with_ymd_and_hms(2026, 11, 24, 12, 0, 0)
+            .single()
+            .unwrap();
+        let session =
+            |id: &str, minutes_ago: i64, pinned: bool, project: &str| SessionSummaryView {
+                id: id.into(),
+                project_id: ProjectId(project.into()),
+                root_dir: data_dir.clone(),
+                title: id.into(),
+                updated_at: base - chrono::Duration::minutes(minutes_ago),
+                archived_at: None,
+                // A pin moment, when pinned; `None` otherwise.
+                pinned_at: pinned.then(|| base - chrono::Duration::minutes(minutes_ago)),
+                locked: false,
+                message_count: 4,
+                search_score: 0,
+            };
+        // Deliberately supplied out of order: the rail must sort, not trust the
+        // order the snapshot happens to carry.
+        window.update(|_window, cx| {
+            root.update(cx, |root, cx| {
+                let mut snapshot = (*root.snapshot).clone();
+                snapshot.sessions.items = vec![
+                    session("stale", 600, false, "alpha"),
+                    session("fresh", 1, false, "alpha"),
+                    session("middle", 60, false, "beta"),
+                    session("pinned-old", 900, true, "beta"),
+                ];
+                // No session is active: the active row rewrites its own
+                // debug selector to `sidebar-nav-active-*`, which would hide
+                // the row from the ordering assertions below.
+                snapshot.session.id = None;
+                snapshot.sessions.selected = None;
+                root.set_snapshot_for_capture(Arc::new(snapshot), cx);
+            });
+        });
+        window.simulate_resize(size(px(1280.), px(840.)));
+        window.update(|window, cx| window.draw(cx).clear(cx));
+
+        // One read per selector, collected up front: `debug_bounds` needs
+        // `&mut window`, so a closure would have to borrow it mutably across
+        // every comparison.
+        let mut bounds = |selector: &'static str| {
+            window
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("missing {selector}"))
+                .origin
+                .y
+        };
+        let (pinned_heading, alpha_heading, beta_heading) = (
+            bounds("sidebar-nav-section-sessions-pinned"),
+            bounds("sidebar-nav-section-sessions-project-alpha"),
+            bounds("sidebar-nav-section-sessions-project-beta"),
+        );
+        let (pinned_row, fresh, stale) = (
+            bounds("sidebar-nav-item-pinned-old"),
+            bounds("sidebar-nav-item-fresh"),
+            bounds("sidebar-nav-item-stale"),
+        );
+
+        // The pinned block is the first section in the rail, above every
+        // project heading, and its row is drawn above the project rows.
+        assert!(
+            pinned_heading < alpha_heading,
+            "the Pinned block must precede every project group"
+        );
+        assert!(
+            pinned_row < fresh,
+            "a pinned session must be drawn above the project groups' rows"
+        );
+
+        // Within a project, newest activity wins: `fresh` (1m) outranks
+        // `stale` (600m) although the snapshot supplied them the other way
+        // round.
+        assert!(
+            fresh < stale,
+            "sessions must be ordered by most recent activity: fresh={fresh:?} stale={stale:?}"
+        );
+
+        // Projects are listed by their own newest activity too: alpha's newest
+        // is 1m old, beta's is 60m.
+        assert!(
+            alpha_heading < beta_heading,
+            "project groups must follow their most recent session: \
+             alpha={alpha_heading:?} beta={beta_heading:?}"
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
     #[gpui::test]
     fn the_rail_highlights_the_clicked_session_before_the_switch_lands(cx: &mut TestAppContext) {
         use tact_desktop_core::{ProjectId, SessionId, SessionSummaryView};
@@ -20122,6 +21301,7 @@ mod tests {
                 title: id.to_string(),
                 updated_at: chrono::Utc::now(),
                 archived_at: None,
+                pinned_at: None,
                 locked: false,
                 message_count: 1,
                 search_score: 0,
@@ -20351,10 +21531,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(data_dir);
     }
 
-    /// The sticky strip is the composer's accessory: its card shares the
-    /// composer's gutter, is narrower than it, and settles against it.
+    /// The sticky card is the composer's own column: it matches the frame's
+    /// width, shares its edges, and settles one tight gap above it.
     #[gpui::test]
-    fn the_sticky_card_is_a_narrow_accessory_above_the_composer(cx: &mut TestAppContext) {
+    fn the_sticky_card_matches_the_composer_column(cx: &mut TestAppContext) {
         let (root, window, shutdown, data_dir) = probe_root(cx);
         window.simulate_resize(size(px(1280.), px(840.)));
         window.update(|window, cx| {
@@ -20372,9 +21552,9 @@ mod tests {
         let composer = window
             .debug_bounds("composer-frame")
             .expect("composer frame");
-        assert!(
-            card.size.width < composer.size.width,
-            "the card is narrower than the composer it belongs to: card={card:?}, composer={composer:?}"
+        assert_eq!(
+            card.size.width, composer.size.width,
+            "the card is the composer's own column, not a narrower accessory: card={card:?}, composer={composer:?}"
         );
         assert_eq!(
             card.origin.x, composer.origin.x,
@@ -20384,6 +21564,56 @@ mod tests {
             composer.origin.y - card.bottom(),
             px(crate::ui::layout::ACCESSORY_GAP),
             "the card settles one tight gap above the composer: card={card:?}, composer={composer:?}"
+        );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// The retry offered on a failed row continues the turn; it does not
+    /// restart the session. The banner's own Retry keeps the restart, because a
+    /// host that failed to start has no turn to continue.
+    #[gpui::test]
+    fn a_failed_row_retry_continues_the_turn(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        // Tall enough that the virtualized transcript paints the retryable row
+        // rather than only measuring it.
+        window.simulate_resize(size(px(1280.), px(2600.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = tact_desktop_core::fixtures::demo_transcript();
+                snapshot.session.phase = SessionPhase::Running;
+                this.snapshot = Arc::new(snapshot);
+                this.pending_row_updates
+                    .extend(this.snapshot.transcript.iter().map(|row| row.id));
+                let count = this.snapshot.transcript.len();
+                this.scroller.update(cx, |state, cx| state.reset(count, cx));
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        let retry = window
+            .debug_bounds("retry-error-11")
+            .expect("the retryable error row offers a retry");
+        assert_eq!(
+            window.update(|_, cx| root.read(cx).text(TextKey::TryAgain)),
+            "Try again",
+            "the row's action reads as a continuation, not a restart"
+        );
+        let submitted_before = window.update(|_, cx| {
+            root.read(cx)
+                .dispatched_intents
+                .load(std::sync::atomic::Ordering::Relaxed)
+        });
+        window.simulate_click(retry.center(), gpui::Modifiers::default());
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            window.update(|_, cx| root
+                .read(cx)
+                .dispatched_intents
+                .load(std::sync::atomic::Ordering::Relaxed))
+                > submitted_before,
+            "clicking the row's retry must reach the controller"
         );
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
@@ -20474,6 +21704,45 @@ mod tests {
             "executed {executed}, unavailable {} across two sessions",
             unavailable.len()
         );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// An attachment belongs to the prompt that carried it. Leaving the chip
+    /// behind would silently attach the same image to the next prompt too.
+    #[gpui::test]
+    fn submitting_a_prompt_clears_its_attachments(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        let image =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/app-icon.png");
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.attachments.push(image.clone());
+                this.sync_prompt_attachments(cx);
+                this.prompt.update(cx, |prompt, cx| {
+                    prompt.set_draft("describe this image", window, cx);
+                    prompt.focus(window, cx);
+                });
+            });
+            window.draw(cx).clear(cx);
+        });
+        assert!(
+            window.debug_bounds("prompt-bar-attachments").is_some(),
+            "the pasted image must show a chip before it is submitted"
+        );
+
+        window.simulate_keystrokes("enter");
+        window.update(|window, cx| window.draw(cx).clear(cx));
+
+        assert!(
+            window.update(|_, cx| root.read(cx).attachments.is_empty()),
+            "the submitted prompt owns the attachment; the composer must not keep it armed"
+        );
+        assert!(
+            window.debug_bounds("prompt-bar-attachments").is_none(),
+            "the chip must leave with the submission"
+        );
+
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
     }
@@ -21469,6 +22738,12 @@ mod tests {
             window.debug_bounds("prompt-bar-send-control").is_some(),
             "send control"
         );
+        // The control is a spinner, not a static block: a run that has not
+        // produced anything yet must still read as in progress.
+        assert!(
+            window.debug_bounds("prompt-bar-stop-spinner").is_some(),
+            "the stop control shows a spinner"
+        );
 
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
@@ -21569,6 +22844,219 @@ mod tests {
         assert!(
             left_visible,
             "escape must interrupt the run instead of hiding the rail"
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// The final fallback is the only Esc route that can cancel a run the
+    /// session phase does not call `Running`.
+    ///
+    /// `SessionPhase` and `RunPhase` are separate axes. A Goal activation and
+    /// any `/`-command that starts work go straight to the host through
+    /// `send_command`, which never touches `SessionPhase::Running`. So the
+    /// phase stays `Ready` while a run is live, the `Running` arm of
+    /// `dismiss_topmost` misses it, and without the trailing
+    /// `request_cancel_run` Esc could only fold chrome (or do nothing) while
+    /// the reader is watching a working agent.
+    #[gpui::test]
+    fn escape_still_cancels_a_run_the_session_phase_calls_ready(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1400.), px(900.)));
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.session.phase = SessionPhase::Ready;
+                snapshot.runtime.current_phase = tact_desktop_core::RunPhase::RunningTools;
+                this.snapshot = Arc::new(snapshot);
+                this.left_visible = true;
+                this.right_visible = true;
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        let before = window.update(|_, cx| {
+            root.read(cx)
+                .dispatched_intents
+                .load(std::sync::atomic::Ordering::Relaxed)
+        });
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| this.dismiss_topmost(window, cx));
+        });
+        let after = window.update(|_, cx| {
+            (
+                root.read(cx)
+                    .dispatched_intents
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                root.read(cx).left_visible,
+                root.read(cx).right_visible,
+            )
+        });
+        assert!(
+            after.0 > before,
+            "Esc must still reach CancelRun while a run is live"
+        );
+        assert!(
+            after.1 && after.2,
+            "an in-flight run is cancelled before chrome is folded"
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// Esc must retire exactly one surface per press, innermost first, and the
+    /// surfaces it reaches must be the ones the reader can see.
+    ///
+    /// The order is the whole contract. A press that closes two things at once
+    /// reads as a dropped press; a press that closes something further out
+    /// while an inner surface is still up reads as a stuck key. This walks the
+    /// real stacking order rather than inspecting `dismiss_topmost` in
+    /// isolation, because the two surfaces that are *not* overlays (a pending
+    /// gate and a queued prompt) are handled in the same function.
+    #[gpui::test]
+    fn escape_retires_one_surface_per_press_innermost_first(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(840.)));
+        window.update(|_, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = tact_desktop_core::fixtures::demo_transcript();
+                snapshot.pending_gates = Arc::from([tact_desktop_core::fixtures::demo_gate()]);
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+                this.left_visible = true;
+                this.right_visible = true;
+            });
+        });
+        draw(window);
+
+        // 1. A pending gate is the innermost surface: Esc denies it, and does
+        //    not also close the settings overlay behind it.
+        window.update(|_, cx| {
+            root.update(cx, |this, _| this.open_overlay(Overlay::Settings));
+        });
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                // The gate is only reachable with no overlay up, so close the
+                // settings overlay that the gate must not disturb and re-open
+                // it once the gate is answered.
+                this.close_overlay();
+                this.dismiss_topmost(window, cx);
+            });
+        });
+        let after_gate = window.update(|_, cx| {
+            let this = root.read(cx);
+            (
+                this.overlay.is_none(),
+                this.submitted_gates.contains(&12),
+                this.left_visible,
+            )
+        });
+        assert_eq!(
+            after_gate,
+            (true, true, true),
+            "Esc denies the pending gate and touches nothing else"
+        );
+
+        draw(window);
+
+        // 2. With a gate still pending, the gate keeps priority over a live
+        //    run: answering is what unblocks the turn.
+        window.update(|_, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.pending_gates = Arc::from([tact_desktop_core::fixtures::demo_gate()]);
+                snapshot.session.phase = SessionPhase::Running;
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+            });
+        });
+        draw(window);
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.submitted_gates.clear();
+                this.dismiss_topmost(window, cx);
+            });
+        });
+        let gone = window.update(|_, cx| root.read(cx).submitted_gates.contains(&12));
+        assert!(
+            gone,
+            "a pending gate outranks a running turn: the turn is blocked on it"
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// The two surfaces that live *inside* a page, not above it, must still be
+    /// reachable with Esc.
+    ///
+    /// The queue panel and the trajectory detail panel are neither overlays
+    /// nor gates, so `dismiss_topmost` never sees them: pressing Esc with
+    /// either open falls through to the rail, the inspector or the run. Both
+    /// are dismissible only by clicking their own toggle, which is how a panel
+    /// can end up covering the transcript with no obvious way out.
+    #[gpui::test]
+    fn escape_closes_the_queue_and_trajectory_detail_panels(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(840.)));
+        window.update(|_, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.transcript = tact_desktop_core::fixtures::demo_transcript();
+                snapshot.composer.queue = Arc::from([tact_desktop_core::QueuedPromptView {
+                    id: 0,
+                    text: Arc::from("queued prompt"),
+                    attachments: Arc::from([]),
+                }]);
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+                this.left_visible = true;
+                this.right_visible = true;
+                this.queue_expanded = true;
+            });
+        });
+        draw(window);
+        assert!(
+            window.debug_bounds("queue-item-composer-queue-0").is_some(),
+            "the queue panel is open before the press"
+        );
+
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| this.dismiss_topmost(window, cx));
+        });
+        let (queue_open, rail_open, inspector_open) = window.update(|_, cx| {
+            let this = root.read(cx);
+            (this.queue_expanded, this.left_visible, this.right_visible)
+        });
+        assert!(!queue_open, "Esc must close the queue panel it is showing");
+        assert!(
+            rail_open && inspector_open,
+            "closing the queue panel must not also collapse navigation chrome"
+        );
+
+        // Same question for the trajectory detail panel, which is drawn inside
+        // the Trajectory page.
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                this.capture_set_run_tab(RunTab::Trajectory, cx);
+                let id = this.trajectory_view().record(0).map(|record| record.id);
+                if let Some(id) = id {
+                    this.trajectory_selected = Some(id);
+                }
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        let detail_open = window.debug_bounds("trajectory-detail").is_some();
+        assert!(detail_open, "the detail panel is open before the press");
+
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| this.dismiss_topmost(window, cx));
+        });
+        let detail_still_open = window.debug_bounds("trajectory-detail").is_some();
+        assert!(
+            !detail_still_open,
+            "Esc must close the trajectory detail panel it is showing"
         );
 
         shutdown.shutdown_blocking().unwrap();
@@ -22052,6 +23540,7 @@ mod tests {
             root: Some("/tmp/gateway".into()),
             display_name: "gateway".into(),
             branch: None,
+            head: None,
             repository: Some("acme/gateway".into()),
             available: true,
         };
@@ -22168,6 +23657,7 @@ mod tests {
         ) -> Arc<TranscriptRow> {
             Arc::new(TranscriptRow {
                 id: RowId::new(id),
+                message_ordinal: None,
                 ordinal: id,
                 loop_id,
                 time: None,
@@ -22287,6 +23777,7 @@ mod tests {
         fn row(id: u64, body: RowBody) -> Arc<TranscriptRow> {
             Arc::new(TranscriptRow {
                 id: RowId::new(id),
+                message_ordinal: None,
                 ordinal: id,
                 loop_id: None,
                 time: None,
@@ -22393,6 +23884,7 @@ mod tests {
         fn row(id: u64, body: RowBody) -> Arc<TranscriptRow> {
             Arc::new(TranscriptRow {
                 id: RowId::new(id),
+                message_ordinal: None,
                 ordinal: id,
                 loop_id: None,
                 time: None,
@@ -22538,6 +24030,7 @@ mod tests {
     fn summary_row(id: u64, body: RowBody) -> Arc<TranscriptRow> {
         Arc::new(TranscriptRow {
             id: RowId::new(id),
+            message_ordinal: None,
             ordinal: id,
             loop_id: None,
             time: None,
@@ -23418,6 +24911,49 @@ mod tests {
     }
 
     #[gpui::test]
+    fn title_bar_shows_the_branch_and_commit_without_repeating_a_detached_head(
+        cx: &mut TestAppContext,
+    ) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.project.branch = Some(Arc::from("feat/live"));
+                snapshot.project.head = Some(Arc::from("9a511b5"));
+                this.snapshot = Arc::new(snapshot);
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        assert!(
+            window.debug_bounds("title-bar-branch").is_some(),
+            "the branch must occupy the title bar"
+        );
+        assert!(
+            window.debug_bounds("title-bar-commit").is_some(),
+            "the commit must occupy the title bar next to the branch"
+        );
+
+        window.update(|window, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.project.branch = Some(Arc::from("9a511b5"));
+                snapshot.project.head = Some(Arc::from("9a511b5"));
+                this.snapshot = Arc::new(snapshot);
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        assert!(
+            window.debug_bounds("title-bar-commit").is_none(),
+            "a detached HEAD already shows its commit as the branch"
+        );
+
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[gpui::test]
     fn short_window_keeps_rail_settings_visible_at_150_percent(cx: &mut TestAppContext) {
         let (root, window, shutdown, data_dir) = probe_root(cx);
         window.simulate_resize(size(px(900.), px(700.)));
@@ -24141,6 +25677,49 @@ mod tests {
             window.debug_bounds("prompt-bar-model-picker").is_none(),
             "an option reached by scrolling must still be clickable"
         );
+        shutdown.shutdown_blocking().unwrap();
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    /// A queued prompt keeps the files it was submitted with. The image is the
+    /// one attachment a reader has to *see* to know it survived the queue:
+    /// text alone would look identical whether or not the picture is still
+    /// there.
+    #[gpui::test]
+    fn a_queued_prompt_shows_its_image_attachment(cx: &mut TestAppContext) {
+        let (root, window, shutdown, data_dir) = probe_root(cx);
+        window.simulate_resize(size(px(1280.), px(840.)));
+        let image = data_dir.join("queued-shot.png");
+        std::fs::write(&image, [0x89, b'P', b'N', b'G']).expect("write a placeholder image");
+        let text_file = data_dir.join("notes.txt");
+        std::fs::write(&text_file, b"notes").expect("write a placeholder file");
+
+        window.update(|_, cx| {
+            root.update(cx, |this, cx| {
+                let mut snapshot = (*this.snapshot).clone();
+                snapshot.composer.queue = Arc::from([tact_desktop_core::QueuedPromptView {
+                    id: 0,
+                    text: Arc::from("describe these"),
+                    attachments: Arc::from([image.clone(), text_file.clone()]),
+                }]);
+                this.set_snapshot_for_capture(Arc::new(snapshot), cx);
+                this.queue_expanded = true;
+                cx.notify();
+            });
+        });
+        draw(window);
+
+        assert!(
+            window
+                .debug_bounds("queue-attachment-queued-shot.png")
+                .is_some(),
+            "the queued image must be visible, not dropped on the way through the queue"
+        );
+        assert!(
+            window.debug_bounds("queue-attachment-notes.txt").is_some(),
+            "a non-image attachment must show as a file chip"
+        );
+
         shutdown.shutdown_blocking().unwrap();
         let _ = std::fs::remove_dir_all(data_dir);
     }

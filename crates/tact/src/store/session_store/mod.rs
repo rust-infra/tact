@@ -59,6 +59,12 @@ pub struct SessionSummary {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub archived_at: Option<DateTime<Utc>>,
+    /// When the reader pinned this session, `None` when it is not pinned.
+    ///
+    /// A timestamp rather than a flag: the pinned block still has to order
+    /// several pinned sessions against each other, and "when it was pinned" is
+    /// the order the reader created.
+    pub pinned_at: Option<DateTime<Utc>>,
     pub locked: bool,
     pub message_count: i64,
 }
@@ -170,9 +176,55 @@ pub trait SessionStore: Send + Sync {
 
     async fn set_session_title(&self, session_id: &str, title: Option<&str>) -> Result<()>;
 
+    /// Copy a session's transcript into a new session, atomically.
+    ///
+    /// The copy is one transaction so a half-forked session cannot be left
+    /// behind by a failure part-way through: either the new session exists with
+    /// the whole transcript, or it does not exist at all.
+    ///
+    /// The fork is a **top-level** session, not a child: `ref_id` marks a
+    /// subagent session, and the session list shows only rows with an empty
+    /// `ref_id`. Recording the source there would hide the branch from the
+    /// rail, which is the opposite of what a fork is for.
+    ///
+    /// The provider conversation state (`responses_states`) is deliberately
+    /// **not** copied. It is a cursor into one provider's server-side
+    /// conversation, and the fork's next turn may run against a different
+    /// model or provider; carrying the cursor over would point the new session
+    /// at a conversation whose contents the user did not fork. The transcript
+    /// is the durable truth, so the fork rebuilds its context from it.
+    ///
+    /// Returns the number of messages copied.
+    ///
+    /// `upto` is an inclusive upper bound on the source's stored message
+    /// `ordinal`; `None` copies the whole transcript. This is what lets a
+    /// frontend fork "from this answer", keeping the branch point and dropping
+    /// the turns that came after it.
+    async fn fork_session(
+        &self,
+        source_id: &str,
+        new_id: &str,
+        root_dir: &str,
+        upto: Option<i64>,
+    ) -> Result<i64>;
+
     async fn set_session_archived(&self, session_id: &str, archived: bool) -> Result<()>;
 
+    /// Pin a session to the top of the rail, or unpin it.
+    ///
+    /// Pinning records the moment it happened, so several pinned sessions keep
+    /// a stable order among themselves; re-pinning an already-pinned session
+    /// keeps the original moment rather than jumping it to the front.
+    async fn set_session_pinned(&self, session_id: &str, pinned: bool) -> Result<()>;
+
     async fn delete_session(&self, session_id: &str) -> Result<()>;
+
+    /// Whether a session row exists.
+    ///
+    /// A caller that must not create a session it was told to resume needs
+    /// this before it opens a host: `ensure_session_row` inserts, so the open
+    /// path cannot tell "exists" from "was just created".
+    async fn session_exists(&self, session_id: &str) -> Result<bool>;
 
     async fn count_messages_by_session(&self, session_id: &str) -> Result<i64>;
 

@@ -1267,7 +1267,15 @@ impl TranscriptReducer {
     ) -> RowDelta {
         let mut delta = RowDelta::default();
         let mut tools = HashMap::<String, RowId>::new();
-        for message in messages {
+        for (index, message) in messages.iter().enumerate() {
+            // The store numbers messages `1..=n` in the order it returns them
+            // (`store_adapter::append` uses `count + 1`, `replace_*` uses
+            // `index + 1`), so the slice position *is* the stored coordinate.
+            // `AgentMessage` carries no ordinal of its own, and threading one
+            // through `load_agent_session` would change the trait for every
+            // caller; deriving it here keeps the invariant in one place, next
+            // to the only code that needs it.
+            let message_ordinal = Some(index as i64 + 1);
             if message.origin.is_user_turn() {
                 // A real user message starts the next run: its tools must not
                 // append to the card the previous run left behind. Injected
@@ -1277,13 +1285,14 @@ impl TranscriptReducer {
             match &message.origin {
                 MessageOrigin::User => {
                     let text = message.text_content();
-                    let row = self.push_row_at(
+                    let row = self.push_row_from_message(
                         None,
                         RowBody::User(UserRow {
                             text: Arc::from(text),
                             attachments: Arc::from([]),
                         }),
                         None,
+                        message_ordinal,
                     );
                     delta.changed(row);
                 }
@@ -1332,7 +1341,7 @@ impl TranscriptReducer {
                         if let AgentContentBlock::Thinking { thinking, .. } = block
                             && !thinking.trim().is_empty()
                         {
-                            let row = self.push_row_at(
+                            let row = self.push_row_from_message(
                                 None,
                                 RowBody::Thinking(ThinkingRow {
                                     markdown: Arc::from(thinking.as_str()),
@@ -1340,6 +1349,7 @@ impl TranscriptReducer {
                                     duration_ms: None,
                                 }),
                                 None,
+                                message_ordinal,
                             );
                             self.active_group = None;
                             delta.changed(row);
@@ -1347,7 +1357,7 @@ impl TranscriptReducer {
                     }
                     let text = message.text_content();
                     if !text.trim().is_empty() {
-                        let row = self.push_row_at(
+                        let row = self.push_row_from_message(
                             None,
                             RowBody::Assistant(AssistantRow {
                                 markdown: Arc::from(text),
@@ -1356,6 +1366,7 @@ impl TranscriptReducer {
                                 phase: message.phase,
                             }),
                             None,
+                            message_ordinal,
                         );
                         self.active_group = None;
                         delta.changed(row);
@@ -1665,6 +1676,7 @@ impl TranscriptReducer {
                 }),
             };
             nested.rows.push_back(Arc::new(TranscriptRow {
+                message_ordinal: None,
                 id: next_row_id,
                 ordinal: next_ordinal,
                 loop_id: None,
@@ -1694,6 +1706,7 @@ impl TranscriptReducer {
                 assistant.status = RowStatus::Running;
             } else {
                 nested.rows.push_back(Arc::new(TranscriptRow {
+                    message_ordinal: None,
                     id: next_row_id,
                     ordinal: next_ordinal,
                     loop_id: None,
@@ -2268,8 +2281,24 @@ impl TranscriptReducer {
         body: RowBody,
         time: Option<Arc<str>>,
     ) -> RowId {
+        self.push_row_from_message(loop_id, body, time, None)
+    }
+
+    /// Push a row that stands for one stored message.
+    ///
+    /// Live rows pass `None`: they were never seeded from history, so they have
+    /// no stored coordinate to fork on until the session is reloaded. Seeded
+    /// rows pass their message's `ordinal`, which is what makes "fork from this
+    /// answer" addressable.
+    fn push_row_from_message(
+        &mut self,
+        loop_id: Option<LoopId>,
+        body: RowBody,
+        time: Option<Arc<str>>,
+        message_ordinal: Option<i64>,
+    ) -> RowId {
         let id = self.alloc_id();
-        self.push_existing_at(id, loop_id, body, time);
+        self.push_existing_at(id, loop_id, body, time, message_ordinal);
         id
     }
 
@@ -2349,7 +2378,7 @@ impl TranscriptReducer {
     }
 
     fn push_existing(&mut self, id: RowId, loop_id: Option<LoopId>, body: RowBody) {
-        self.push_existing_at(id, loop_id, body, Some(now_label()));
+        self.push_existing_at(id, loop_id, body, Some(now_label()), None);
     }
 
     fn push_existing_at(
@@ -2358,6 +2387,7 @@ impl TranscriptReducer {
         loop_id: Option<LoopId>,
         body: RowBody,
         time: Option<Arc<str>>,
+        message_ordinal: Option<i64>,
     ) {
         let ordinal = self.ordinal;
         self.ordinal += 1;
@@ -2366,6 +2396,7 @@ impl TranscriptReducer {
             ordinal,
             loop_id,
             time,
+            message_ordinal,
             body,
         }));
     }
@@ -4461,6 +4492,122 @@ mod tests {
             &groups[0].body,
             RowBody::ToolGroup(row) if row.items.len() == 2
         ));
+    }
+
+    /// A seeded row must remember which stored message produced it: that
+    /// coordinate is the only handle the store can cut a fork on, and the row
+    /// counter it also carries numbers drawings, not messages.
+    /// A turn can produce more than one answer row: the model writes a
+    /// paragraph, calls a tool, then writes the closing answer. Only the last
+    /// one is `active_assistant` when the turn ends, so settling just that one
+    /// leaves the earlier answers spinning a cursor forever.
+    #[test]
+    fn every_answer_row_settles_when_the_turn_completes() {
+        let mut reducer = TranscriptReducer::new();
+        let context = context(1);
+        reducer.apply_batch(
+            vec![
+                AgentUpdate::RunStarted {
+                    run_id: "run-1".into(),
+                },
+                AgentUpdate::TurnStats {
+                    run_id: Some("run-1".into()),
+                    turns_taken: 1,
+                    max_turns: None,
+                },
+                AgentUpdate::MessageStarted {
+                    message_id: "m1".into(),
+                },
+                AgentUpdate::StreamChunk("first answer".into()),
+                AgentUpdate::MessageFinished {
+                    message_id: "m1".into(),
+                    phase: None,
+                },
+                AgentUpdate::StepStarted {
+                    idx: 0,
+                    tool_id: "t1".into(),
+                    tool_name: "bash".into(),
+                    arg_summary: "ls".into(),
+                    arg_full: "{}".into(),
+                    presentation: ToolPresentationInfo::generic("bash"),
+                },
+                AgentUpdate::MessageStarted {
+                    message_id: "m2".into(),
+                },
+                AgentUpdate::StreamChunk("closing answer".into()),
+                AgentUpdate::TaskComplete("done".into()),
+            ],
+            &context,
+        );
+
+        let statuses: Vec<(String, RowStatus)> = reducer
+            .view()
+            .iter()
+            .filter_map(|row| match &row.body {
+                RowBody::Assistant(assistant) => {
+                    Some((assistant.markdown.to_string(), assistant.status))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            statuses.len(),
+            2,
+            "the turn wrote two answers: {statuses:?}"
+        );
+        assert!(
+            statuses
+                .iter()
+                .all(|(_, status)| *status == RowStatus::Success),
+            "every answer in a finished turn must settle, got {statuses:?}"
+        );
+    }
+
+    #[test]
+    fn seeded_rows_carry_the_stored_message_ordinal() {
+        let mut reducer = TranscriptReducer::new();
+        let messages = vec![
+            AgentMessage::text(AgentRole::User, MessageOrigin::User, "first"),
+            AgentMessage::text(AgentRole::Assistant, MessageOrigin::Assistant, "answer"),
+            AgentMessage::text(AgentRole::User, MessageOrigin::User, "third"),
+        ];
+        reducer.seed_persisted(&messages, &context(1));
+
+        let ordinals: Vec<Option<i64>> = reducer
+            .view()
+            .iter()
+            .map(|row| row.message_ordinal)
+            .collect();
+        assert_eq!(
+            ordinals,
+            vec![Some(1), Some(2), Some(3)],
+            "each seeded row must point at the message it came from"
+        );
+    }
+
+    /// A row the reducer invented (a live stream, a notice) was never read from
+    /// the store, so it has no coordinate to fork on. It must not claim one.
+    #[test]
+    fn live_rows_have_no_stored_ordinal() {
+        let mut reducer = TranscriptReducer::new();
+        reducer.apply_batch(
+            vec![
+                AgentUpdate::TurnStats {
+                    run_id: Some("run".into()),
+                    turns_taken: 1,
+                    max_turns: None,
+                },
+                AgentUpdate::StreamChunk("live".into()),
+            ],
+            &context(1),
+        );
+        assert!(
+            reducer
+                .view()
+                .iter()
+                .all(|row| row.message_ordinal.is_none()),
+            "a live row cannot offer a branch point the store does not know"
+        );
     }
 
     #[test]

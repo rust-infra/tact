@@ -12,6 +12,7 @@ use gpui_component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, h_flex,
     input::{InputEvent, InputState, Position, Textarea, TextareaState},
     popover::Popover,
+    spinner::Spinner,
     v_flex,
 };
 
@@ -918,6 +919,9 @@ impl Render for PromptBar {
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.emit_submit(cx);
             }));
+        // A run can spend a while waiting on the model's first bytes, so the
+        // control shows that work is happening rather than only offering the
+        // interrupt: a static block reads as "stopped" during that gap.
         let stop = h_flex()
             .id("prompt-bar-stop-control")
             .debug_selector(|| "prompt-bar-stop-control".into())
@@ -930,7 +934,11 @@ impl Render for PromptBar {
             .bg(cx.theme().danger)
             .text_color(cx.theme().primary_foreground)
             .cursor_pointer()
-            .child("■")
+            .child(
+                div()
+                    .debug_selector(|| "prompt-bar-stop-spinner".into())
+                    .child(Spinner::new().small().color(cx.theme().primary_foreground)),
+            )
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 cx.emit(PromptBarEvent::CancelRequested {
                     id: this.id.clone(),
@@ -963,7 +971,10 @@ impl Render for PromptBar {
             .when(running, |row| row.child(stop))
             .when(!running, |row| row.child(div().size(px(28.))))
             .child(send);
-        let mut attachments = h_flex().flex_wrap().gap_1();
+        let mut attachments = h_flex()
+            .debug_selector(|| "prompt-bar-attachments".into())
+            .flex_wrap()
+            .gap_1();
         for attachment in &self.attachments {
             let id = attachment.id().clone();
             let image = attachment.image_source().cloned();

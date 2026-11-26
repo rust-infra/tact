@@ -3,13 +3,12 @@
 //! These are local, presentation-only replacements for the gpui-ai transcript
 //! components. The shell still owns the state and the expansion decisions.
 
-use std::{path::PathBuf, rc::Rc, time::Duration};
+use std::{path::PathBuf, rc::Rc};
 
 use gpui::{
-    Animation, AnimationExt as _, AnyElement, App, ClickEvent, ElementId, InteractiveElement as _,
-    IntoElement, ObjectFit, ParentElement, RenderOnce, Role, SharedString,
-    StatefulInteractiveElement as _, Styled, StyledImage as _, Window, div, img,
-    prelude::FluentBuilder as _, px,
+    AnyElement, App, ClickEvent, ElementId, InteractiveElement as _, IntoElement, ObjectFit,
+    ParentElement, RenderOnce, Role, SharedString, StatefulInteractiveElement as _, Styled,
+    StyledImage as _, Window, div, img, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, text::TextView, v_flex,
@@ -120,7 +119,6 @@ impl StreamingText {
 
 impl RenderOnce for StreamingText {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let running = matches!(self.content.state(), StreamState::Running);
         let failure = match self.content.state() {
             StreamState::Failed(reason) => Some(reason.clone()),
             _ => None,
@@ -140,21 +138,6 @@ impl RenderOnce for StreamingText {
                 )
                 .selectable(true),
             )
-            .when(running, |column| {
-                let primary = cx.theme().primary;
-                column.child(
-                    div()
-                        .w(px(7.))
-                        .h(px(14.))
-                        .rounded(px(2.))
-                        .bg(primary)
-                        .with_animation(
-                            "streaming-cursor",
-                            Animation::new(Duration::from_millis(800)).repeat(),
-                            |cursor, delta| cursor.opacity(0.2 + 0.8 * delta),
-                        ),
-                )
-            })
             .when_some(failure, |column, reason| {
                 column.child(div().text_xs().text_color(cx.theme().danger).child(reason))
             })
@@ -969,6 +952,40 @@ mod tests {
             click_count: 1,
         });
         window.run_until_parked();
+    }
+
+    struct RunningProbe;
+
+    impl Render for RunningProbe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().child(StreamingText::new(
+                "running-probe",
+                &StreamedContent::running("still writing".into()),
+            ))
+        }
+    }
+
+    /// An answer that has not finished yet must not paint a typing cursor.
+    ///
+    /// The cursor was a blinking block appended under the prose, which read as
+    /// a stray caret in a finished-looking paragraph — the design already says
+    /// "this turn is running" in the run header and the sticky strip, so the
+    /// mark was both redundant and misleading.
+    #[gpui::test]
+    fn a_running_answer_paints_no_typing_cursor(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (_probe, window) = cx.add_window_view(|_, _| RunningProbe);
+        window.simulate_resize(size(px(800.), px(900.)));
+        window.update(|window, cx| window.draw(cx).clear(cx));
+
+        assert!(
+            window.debug_bounds("streaming-text-body").is_some(),
+            "the running answer must still render its prose"
+        );
+        assert!(
+            window.debug_bounds("streaming-cursor").is_none(),
+            "a running answer must not paint a blinking typing cursor"
+        );
     }
 
     #[gpui::test]

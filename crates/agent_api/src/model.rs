@@ -366,6 +366,14 @@ pub enum ModelErrorKind {
     /// user has to supply a working key. Also never retryable: retrying burns
     /// quota against an endpoint that will keep answering 401/403.
     Authentication,
+    /// The provider's safety classifier refused to answer (HTTP 200 with a
+    /// refusal stop reason).
+    ///
+    /// Not retryable: resending the same request refuses again. Split out from
+    /// `Permanent` because the request is well formed and the credential is
+    /// fine — the content is what has to change, so an ACP client is told
+    /// `refusal` rather than a generic failure.
+    Refused,
 }
 
 /// Model adapter failure.
@@ -405,16 +413,18 @@ impl ModelError {
     /// A short class label, for hosts that render the kind themselves.
     ///
     /// Lives on `ModelError` rather than on the enum so adding a kind does not
-    /// force a new arm into this method's callers: unknown kinds fall back to
-    /// `"permanent"` through the `_` arm below.
+    /// force a new arm into this method's callers. Every kind is named: the
+    /// enum is `#[non_exhaustive]`, so a downstream crate still needs a
+    /// fallback, but this crate cannot silently mislabel a kind it defines.
     pub fn class_label(&self) -> &'static str {
         match self.kind {
             ModelErrorKind::ContextOverflow => "context_overflow",
             ModelErrorKind::Transient => "transient",
+            ModelErrorKind::Permanent => "permanent",
             ModelErrorKind::Cancelled => "cancelled",
             ModelErrorKind::Unsupported => "unsupported",
             ModelErrorKind::Authentication => "authentication",
-            _ => "permanent",
+            ModelErrorKind::Refused => "refused",
         }
     }
 }

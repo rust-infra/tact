@@ -13,21 +13,21 @@ This project is a Cargo Workspace containing the following crates:
 | Directory                     | Package                | Version             | Responsibility                                                                                                                                                                                                                                          |
 | ----------------------------- | ---------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `crates/protocol`             | `tact_protocol`        | `2.0.0` | Host/TUI wire types: `AgentUpdate`, `UserCommand`, `PlanStep`, `StepResult`, `StepStatus`, `ModelCallParams`, `BalanceInfo`. Its `Agent` module is legacy and is not part of the runtime path.                                                          |
-| `crates/agent_api`            | `tact_agent_api`       | `2.0.7` (workspace) | Provider-neutral contracts for state, model streams, context, tools, gates, transcript/usage persistence, and events. No product or infrastructure implementation lives here.                                                                           |
-| `crates/agent_core`           | `tact_agent_core`      | `2.0.7` (workspace) | Bounded, provider-neutral agent kernel. `AgentKernel::run` owns one activation over injected `KernelDeps`; it has no SQLite, MCP transport, provider SDK, or TUI dependency.                                                                            |
-| `crates/agent_sdk`            | `tact_agent_sdk`       | `2.0.7` (workspace) | Ergonomic SDK facade over the neutral API and kernel: safe defaults, static tool composition, session state ownership, cancellation, and optional tracing telemetry. It has no product, provider HTTP, MCP, storage, or UI dependency.                  |
+| `crates/agent_api`            | `tact_agent_api`       | `2.0.8` (workspace) | Provider-neutral contracts for state, model streams, context, tools, gates, transcript/usage persistence, and events. No product or infrastructure implementation lives here.                                                                           |
+| `crates/agent_core`           | `tact_agent_core`      | `2.0.8` (workspace) | Bounded, provider-neutral agent kernel. `AgentKernel::run` owns one activation over injected `KernelDeps`; it has no SQLite, MCP transport, provider SDK, or TUI dependency.                                                                            |
+| `crates/agent_sdk`            | `tact_agent_sdk`       | `2.0.8` (workspace) | Ergonomic SDK facade over the neutral API and kernel: safe defaults, static tool composition, session state ownership, cancellation, and optional tracing telemetry. It has no product, provider HTTP, MCP, storage, or UI dependency.                  |
 | `crates/tui`                  | `tui`                  | `0.1.0` (local)     | Terminal UI built with `ratatui`.                                                                                                                                                                                                                       |
 | `crates/agent_tui_kit`        | `agent_tui_kit`        | `0.1.0` (local)     | Reusable host-protocol rendering kit for thinking/tool/log/popup widgets.                                                                                                                                                                               |
-| `crates/tact`                 | `tact`                 | `2.0.7` (workspace) | Product composition root and compatibility facade: tool router, MCP client, hooks, permissions, prompt/compaction policy, persistence adapters, and kernel wiring.                                                                                      |
-| `crates/tact_host`            | `tact_host`            | `2.0.7` (workspace) | UI-independent host services: session bootstrap/locking, command loop, Goal runner, account polling, permission mapping, and input normalization.                                                                                                       |
-| `crates/catalog`              | `tact_catalog`         | `2.0.7` (workspace) | Frontend-neutral slash/CLI/setting command catalog, localization, canonical action IDs, and fuzzy matching shared by the TUI and desktop.                                                                                                               |
-| `crates/desktop_core`         | `tact_desktop_core`    | `2.0.7` (workspace) | GPUI-free desktop controller, transcript reducer, typed snapshots, project/session catalog, desktop settings, and host-session orchestration.                                                                                                           |
-| `crates/desktop`              | `tact-desktop`         | `2.0.7` (workspace) | Native GPUI desktop shell for macOS, Windows, and Linux. Thin UI over `tact_desktop_core` and `tact_catalog`, with Tact-owned gpui-component surfaces.                                                                                                  |
-| `crates/tact-ui`              | `tact-ui`              | `2.0.7` (workspace) | TUI adapter and CLI: terminal rendering/input plus headless CLI, consuming `tact_host` for shared orchestration.                                                                                                                                        |
-| `crates/tact-acp`             | `tact-acp`             | `2.0.7` (workspace) | ACP v2 stdio frontend: one `HostSession` per ACP session, streaming Transcript/tool updates and forwarding permission requests. Used by T3 Code's `Local command` provider.                                                                             |
-| `crates/tact_llm`             | `tact_llm`             | `2.0.7` (workspace) | Stable provider SDK and `tact_agent_api::ModelPort` implementation. `core` exposes the facade, builder, endpoint/limit/auth types, and a lazy stream; protocol adapters are feature-isolated behind `anthropic`, `openai-chat`, and `openai-responses`. |
-| `crates/tool_refactor_macros` | `tool_refactor_macros` | `2.0.7` (workspace) | Proc-macro `#[tool]` that generates `Tool` trait implementations from async functions.                                                                                                                                                                  |
-| `crates/eval`                 | `tact_eval`            | `2.0.7` (workspace) | Evaluation harness: case suites, one in-process runner and one `tact-ui headless` runner, graders over the run's artifact, and baseline-report comparison that distinguishes regressions from inconclusive results. Depends on the product only through the default `agent-run` feature — `validate` and `compare` build without it; no product crate depends on it. |
+| `crates/tact`                 | `tact`                 | `2.0.8` (workspace) | Product composition root and compatibility facade: tool router, MCP client, hooks, permissions, prompt/compaction policy, persistence adapters, and kernel wiring.                                                                                      |
+| `crates/tact_host`            | `tact_host`            | `2.0.8` (workspace) | UI-independent host services: session bootstrap/locking, command loop, Goal runner, account polling, permission mapping, and input normalization.                                                                                                       |
+| `crates/catalog`              | `tact_catalog`         | `2.0.8` (workspace) | Frontend-neutral slash/CLI/setting command catalog, localization, canonical action IDs, and fuzzy matching shared by the TUI and desktop.                                                                                                               |
+| `crates/desktop_core`         | `tact_desktop_core`    | `2.0.8` (workspace) | GPUI-free desktop controller, transcript reducer, typed snapshots, project/session catalog, desktop settings, and host-session orchestration. Also holds the ACP bridge (`acp_bridge`: `session/update` → `AgentUpdate`) and the optional ACP-backed host (`acp_host`, feature `acp-host`). |
+| `crates/desktop`              | `tact-desktop`         | `2.0.8` (workspace) | Native GPUI desktop shell for macOS, Windows, and Linux. Thin UI over `tact_desktop_core` and `tact_catalog`, with Tact-owned gpui-component surfaces.                                                                                                  |
+| `crates/tact-ui`              | `tact-ui`              | `2.0.8` (workspace) | TUI adapter and CLI: terminal rendering/input plus headless CLI, consuming `tact_host` for shared orchestration.                                                                                                                                        |
+| `crates/tact-acp`             | `tact-acp`             | `2.0.8` (workspace) | ACP v2 stdio frontend: one `HostSession` per ACP session, streaming Transcript/tool updates and forwarding permission requests. Used by T3 Code's `Local command` provider.                                                                             |
+| `crates/tact_llm`             | `tact_llm`             | `2.0.8` (workspace) | Stable provider SDK and `tact_agent_api::ModelPort` implementation. `core` exposes the facade, builder, endpoint/limit/auth types, and a lazy stream; protocol adapters are feature-isolated behind `anthropic`, `openai-chat`, and `openai-responses`. |
+| `crates/tool_refactor_macros` | `tool_refactor_macros` | `2.0.8` (workspace) | Proc-macro `#[tool]` that generates `Tool` trait implementations from async functions.                                                                                                                                                                  |
+| `crates/eval`                 | `tact_eval`            | `2.0.8` (workspace) | Evaluation harness: case suites, one in-process runner and one `tact-ui headless` runner, graders over the run's artifact, and baseline-report comparison that distinguishes regressions from inconclusive results. Depends on the product only through the default `agent-run` feature — `validate` and `compare` build without it; no product crate depends on it. |
 
 Dependency graph:
 
@@ -103,6 +103,66 @@ Binaries:
 the terminal-specific `headless_session.rs` test harness and `sessions.rs`
 printer. Shared session, driver, Goal, account, permission, and input logic
 lives in `crates/tact_host`.
+
+### The desktop's ACP transport
+
+`tact-desktop` drives a session through the `HostBackend` trait, and that trait
+has three implementations, chosen at runtime by `TACT_DESKTOP_ACP`:
+
+| Value | Backend | Needs `tact-acp` binary |
+|---|---|---|
+| unset / `0` | In-process `HostSession` (default) | no |
+| `1` | ACP agent on a loopback `Channel` (`acp_inprocess`) | no |
+| `subprocess` | ACP agent in a child process (`acp_host`) | yes |
+
+ACP does not require a subprocess: `agent-client-protocol`'s `Channel` is a
+transport like `Stdio`, and `tact_acp::serve` takes any `ConnectTo` transport.
+The loopback backend therefore runs the identical agent in this process, which
+removes the packaging requirement and keeps crash exposure the same as the
+default backend. The subprocess backend is the only one that buys isolation,
+and the only one that can drive a non-Tact agent.
+
+The ACP path exists for compatibility, not for features: an agent crash cannot
+take the window with it, and the same code drives any ACP agent rather than
+only Tact. Its cost is a vocabulary gap, because ACP is smaller than Tact's own
+event set. `crates/desktop_core/src/acp_bridge.rs` is the inverse of the forward
+mapping in `tact-acp`: it turns `session/update` traffic back into `AgentUpdate`
+so the existing 2 400-line transcript reducer runs unchanged. Three families do
+not round-trip and are documented at the top of that module — hook context and
+hook status (no ACP update kind), `SurfaceSnapshot` readers such as `/stats` and
+`/mcp list` (they arrive as notice text, and the transport answers with
+`HostSendError::Unsupported` rather than a silent success), a subagent's
+structured transcript (rebuilt by the reducer from the child's ordinary
+stream), and per-model-call `TurnStats` (ACP has one foreground level, so the
+activation is synthesized once per run). Extension management
+is filesystem state rather than agent state, so `AcpHost` builds its own
+`HostExtensionService` instead of asking the agent.
+
+Both implementations pass the same `HostEvent` / `UserCommand` contract, so the
+controller, reducer, snapshots, and GPUI shell are unaware of which one is live.
+A packaged build ships `tact-acp` beside `tact-desktop`; when the sidecar is
+missing the runtime flag selects nothing and the in-process host stays in charge.
+
+Two protocol facts decide whether the ACP path is usable at all, and both are
+the adapter's job rather than the controller's:
+
+- **`HostEvent::Ready` after the handshake.** The controller keys "this session
+  is usable" off that event: it re-applies the permission mode, syncs background
+  tasks, publishes the extensions snapshot, and leaves `SessionPhase::Starting`.
+  The ACP backends emit it once `initialize` answered and the session opened.
+- **`TurnStats` before the first terminal.** Tact's vocabulary is edge-shaped
+  (a run starts, then ends) while ACP reports a level (`running`, `idle`), so
+  `acp_bridge` synthesizes the activation `TurnStats` with the run start.
+  Without it the reducer drops the idle as an unmatched activation: assistant
+  rows stay `Running` and the controller stays in `RunPhase::Streaming`, which
+  blocks the prompt queue forever. An idle whose stop reason is `error` maps to
+  `RunFailed` rather than `RunFinished`, so a failed turn is not reported as a
+  success.
+
+A command with no ACP representation (`/compact` from the desktop's own
+composer, a Goal action, a reasoning-tier change) is answered with
+`HostSendError::Unsupported` instead of `Ok(())`. The desktop then reports the
+gap rather than claiming an operation it never sent.
 
 `tact-acp` is a third frontend over `tact_host`, not a mode of the TUI. Each
 ACP session owns one `HostSession`; a per-session actor turns `AgentUpdate`

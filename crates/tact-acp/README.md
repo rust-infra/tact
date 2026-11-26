@@ -50,6 +50,32 @@ so importing a session a live host still holds (a running T3 thread, `tact-ui`,
   `session/delete`, `session/prompt`, `session/cancel`, and `session/update`.
   T3 surfaces `session/list` as Settings → Providers → Native sessions, with
   Import (`session/resume`) and Delete (`session/delete`) per row.
+- `session/resume` of a session this workspace no longer has answers `-32002`.
+  Opening a host inserts the session row when it is missing, so without the
+  check a deleted id would come back as an empty session — the client would be
+  told its thread survived and its history would be gone. T3 treats a failed
+  resume as "no such session" and starts a fresh one, which is what Import of a
+  deleted row should do.
+- `session/close` settles the session the way `session/cancel` does and only
+  then answers: pending Tact UI requests are answered, every ACP permission
+  request and elicitation is withdrawn with `$/cancel_request`, and a running
+  turn gets its final updates plus an idle with `stopReason: "cancelled"` —
+  all before the close response. A client that keeps drawing a spinner would
+  otherwise never learn the work ended.
+- `session/prompt` honours `idempotencyKey`. A retried key answers with the
+  message id it already inserted and inserts nothing: no second user message,
+  no second turn. The map is per session (a key identifies one submission, not
+  one client) and keeps the last 256 keys, since ACP bounds the key at 255
+  characters and clients mint one per submission. A prompt with no key is
+  inserted with no duplicate detection, as the protocol says.
+- A failed turn reports the stop reason ACP names for it. `max_tokens` when the
+  reply was cut off by the output limit, `refusal` when the provider's safety
+  classifier declined the content, and `error` otherwise. T3 keys its
+  explanatory sentence on the first two (`acpUnfinishedStopMessage`), so
+  reporting them as `error` lost the only text that told the reader what
+  happened and what to do next. In the other direction, the desktop's ACP
+  bridge reads those two back as failed turns of the matching class rather than
+  a clean finish.
 - Three session config options (`type: "select"`) are returned by `session/new`
   and `session/resume`, and updated through `session/set_config_option`:
   - `model` (`category: "model"`) — values from the configured
@@ -304,5 +330,5 @@ plan already owns the plan surface.
 - `cwd` from `session/new` / `session/resume` selects the Tact workspace and
   its `.tact/tact.db`; do not rely on the process launch directory.
 - stdout is reserved for JSON-RPC. Logs go to stderr and honour `RUST_LOG`.
-- `session/close` closes the host and releases its session lock; stdin EOF
-  closes every live host.
+- `session/close` settles the turn first (see above), then closes the host and
+  releases its session lock; stdin EOF closes every live host.

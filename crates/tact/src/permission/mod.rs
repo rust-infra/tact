@@ -1511,7 +1511,7 @@ mod tests {
         let restored = PermissionManager::from_snapshot(mgr.snapshot());
         assert_eq!(restored.mode(), PermissionMode::Auto);
         assert!(restored.settings.is_some(), "settings must be cloned");
-        assert!(restored.rules().contains(&"bash".to_string()));
+        assert!(restored.rules().iter().any(|rule| rule == "bash"));
     }
 
     #[test]

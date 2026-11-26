@@ -223,24 +223,111 @@ mod tests {
     }
 }
 
-/// Reads the checked-out branch (or short commit) without invoking git.
+/// The checked-out branch and the commit it points at, read without git.
+///
+/// `branch` keeps the old fallback: when HEAD is detached it carries the short
+/// commit, because a checkout with no branch still has an identity worth
+/// showing. `head` is always the commit, so the chrome can distinguish a branch
+/// that moved from a branch that was switched.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RepositoryState {
+    pub branch: Option<String>,
+    pub head: Option<String>,
+}
+
+/// Reads the repository state without invoking git.
 ///
 /// The desktop chrome shows the repository state next to the project name;
 /// spawning `git` for every snapshot would be wasteful and would fail on
 /// machines without a git install.
-pub fn repository_branch(root: &Path) -> Option<String> {
-    let git_dir = git_dir(root)?;
-    let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+pub fn repository_state(root: &Path) -> RepositoryState {
+    let Some(git_dir) = git_dir(root) else {
+        return RepositoryState::default();
+    };
+    let Ok(head) = std::fs::read_to_string(git_dir.join("HEAD")) else {
+        return RepositoryState::default();
+    };
     let head = head.trim();
     if let Some(reference) = head.strip_prefix("ref: ") {
-        Some(reference.trim_start_matches("refs/heads/").to_string())
-    } else if head.chars().count() >= 7 {
+        let reference = reference.trim();
+        RepositoryState {
+            branch: reference.strip_prefix("refs/heads/").map(str::to_string),
+            head: resolve_reference(&git_dir, reference).and_then(|value| short_hash(&value)),
+        }
+    } else {
         // HEAD is normally an ASCII object id, but never slice bytes: a
         // malformed HEAD should not panic the snapshot thread.
-        Some(head.chars().take(7).collect())
-    } else {
-        None
+        let short = short_hash(head);
+        RepositoryState {
+            branch: short.clone(),
+            head: short,
+        }
     }
+}
+
+fn resolve_reference(git_dir: &Path, reference: &str) -> Option<String> {
+    let common = common_git_dir(git_dir);
+    let mut name = reference.to_string();
+    // Symbolic refs are rare but legal; bound the walk so a cycle cannot hang
+    // the actor that refreshes the title bar.
+    for _ in 0..8 {
+        let value = read_ref(&common, &name)
+            .or_else(|| {
+                (common != git_dir)
+                    .then(|| read_ref(git_dir, &name))
+                    .flatten()
+            })
+            .or_else(|| packed_ref(&common, &name))
+            .or_else(|| {
+                (common != git_dir)
+                    .then(|| packed_ref(git_dir, &name))
+                    .flatten()
+            })?;
+        if let Some(next) = value.strip_prefix("ref: ") {
+            name = next.trim().to_string();
+            continue;
+        }
+        return Some(value);
+    }
+    None
+}
+
+/// A linked worktree keeps HEAD in its own gitdir but shares refs with the
+/// main repository through `commondir`.
+fn common_git_dir(git_dir: &Path) -> PathBuf {
+    std::fs::read_to_string(git_dir.join("commondir"))
+        .ok()
+        .map(|common| {
+            let common = Path::new(common.trim());
+            if common.is_absolute() {
+                common.to_path_buf()
+            } else {
+                git_dir.join(common)
+            }
+        })
+        .unwrap_or_else(|| git_dir.to_path_buf())
+}
+
+fn read_ref(dir: &Path, name: &str) -> Option<String> {
+    let contents = std::fs::read_to_string(dir.join(name)).ok()?;
+    let value = contents.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn packed_ref(dir: &Path, name: &str) -> Option<String> {
+    let contents = std::fs::read_to_string(dir.join("packed-refs")).ok()?;
+    contents.lines().find_map(|line| {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with('^') {
+            return None;
+        }
+        let (value, reference) = line.split_once(' ')?;
+        (reference.trim() == name).then(|| value.to_string())
+    })
+}
+
+fn short_hash(value: &str) -> Option<String> {
+    (value.chars().count() >= 7).then(|| value.chars().take(7).collect())
 }
 
 /// The `owner/repo` slug from the `origin` remote, when one is configured.
@@ -312,7 +399,9 @@ fn slug_from_remote(url: &str) -> Option<String> {
 
 #[cfg(test)]
 mod branch_tests {
-    use super::repository_branch;
+    use super::repository_state;
+
+    const COMMIT: &str = "63e6476a9849641da9530e344beae555a69807ec";
 
     #[test]
     fn reads_the_checked_out_branch() {
@@ -324,7 +413,7 @@ mod branch_tests {
         )
         .unwrap();
         assert_eq!(
-            repository_branch(dir.path()).as_deref(),
+            repository_state(dir.path()).branch.as_deref(),
             Some("feat/desktop")
         );
     }
@@ -333,12 +422,52 @@ mod branch_tests {
     fn reads_a_detached_head_as_a_short_commit() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        std::fs::write(dir.path().join(".git/HEAD"), format!("{COMMIT}\n")).unwrap();
+        let state = repository_state(dir.path());
+        assert_eq!(state.branch.as_deref(), Some("63e6476"));
+        assert_eq!(state.head.as_deref(), Some("63e6476"));
+    }
+
+    #[test]
+    fn reads_head_from_the_branch_ref() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".git/refs/heads/feat")).unwrap();
+        std::fs::write(dir.path().join(".git/HEAD"), "ref: refs/heads/feat/live\n").unwrap();
         std::fs::write(
-            dir.path().join(".git/HEAD"),
-            "63e6476a9849641da9530e344beae555a69807ec\n",
+            dir.path().join(".git/refs/heads/feat/live"),
+            format!("{COMMIT}\n"),
         )
         .unwrap();
-        assert_eq!(repository_branch(dir.path()).as_deref(), Some("63e6476"));
+        let state = repository_state(dir.path());
+        assert_eq!(state.branch.as_deref(), Some("feat/live"));
+        assert_eq!(
+            state.head.as_deref(),
+            Some("63e6476"),
+            "a branch switch must still report the commit it points at"
+        );
+    }
+
+    #[test]
+    fn reads_head_from_packed_refs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        std::fs::write(
+            dir.path().join(".git/HEAD"),
+            "ref: refs/heads/feat/packed\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(".git/packed-refs"),
+            format!(
+                "# pack-refs with: peeled fully-peeled sorted\n{COMMIT} refs/heads/feat/packed\n"
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            repository_state(dir.path()).head.as_deref(),
+            Some("63e6476"),
+            "a ref packed by git gc must still resolve"
+        );
     }
 
     #[test]
@@ -399,7 +528,7 @@ mod branch_tests {
         std::fs::create_dir_all(dir.path().join(".git")).unwrap();
         std::fs::write(dir.path().join(".git/HEAD"), "république\n").unwrap();
         assert_eq!(
-            repository_branch(dir.path()).as_deref(),
+            repository_state(dir.path()).branch.as_deref(),
             Some("républi"),
             "byte slicing would panic on this input"
         );
@@ -417,9 +546,16 @@ mod branch_tests {
     fn follows_a_worktree_gitdir_file() {
         let repo = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(repo.path().join("worktrees/feat")).unwrap();
+        std::fs::create_dir_all(repo.path().join("refs/heads/wt")).unwrap();
         std::fs::write(
             repo.path().join("worktrees/feat/HEAD"),
             "ref: refs/heads/wt/desktop\n",
+        )
+        .unwrap();
+        std::fs::write(repo.path().join("worktrees/feat/commondir"), "../..\n").unwrap();
+        std::fs::write(
+            repo.path().join("refs/heads/wt/desktop"),
+            format!("{COMMIT}\n"),
         )
         .unwrap();
         let checkout = tempfile::tempdir().unwrap();
@@ -429,8 +565,13 @@ mod branch_tests {
         )
         .unwrap();
         assert_eq!(
-            repository_branch(checkout.path()).as_deref(),
+            repository_state(checkout.path()).branch.as_deref(),
             Some("wt/desktop")
+        );
+        assert_eq!(
+            repository_state(checkout.path()).head.as_deref(),
+            Some("63e6476"),
+            "the worktree's ref lives in the common gitdir"
         );
     }
 }

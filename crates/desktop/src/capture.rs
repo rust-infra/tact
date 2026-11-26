@@ -186,6 +186,7 @@ impl Harness {
         snapshot.project.root = Some(project_dir.to_path_buf());
         snapshot.project.display_name = Arc::from("tact");
         snapshot.project.branch = Some(Arc::from("feat/desktop"));
+        snapshot.project.head = Some(Arc::from("9a511b5"));
         snapshot.project.repository = Some(Arc::from("rust-infra/tact"));
         snapshot.project.available = true;
         // The registry would otherwise carry the controller's project id,

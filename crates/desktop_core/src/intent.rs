@@ -59,11 +59,35 @@ pub enum DesktopIntent {
         session_id: SessionId,
         title: String,
     },
+    /// Branch a session into a new one and open it.
+    ///
+    /// The fork copies the source's transcript up to this moment, so the new
+    /// session continues from the same place without the original's later
+    /// turns. It is how a reader explores an alternative without losing the
+    /// branch already taken.
+    ForkSession {
+        session_id: SessionId,
+    },
+    /// Branch a session at one of its stored messages, keeping that message
+    /// and everything before it.
+    ///
+    /// `upto_message` is the source's stored `ordinal`, not a transcript row
+    /// id: rows are a drawing counter, and one stored message can produce zero
+    /// or several of them.
+    ForkSessionAt {
+        session_id: SessionId,
+        upto_message: i64,
+    },
     SetSessionFilter(ArchiveFilter),
     SetSessionQuery(String),
     SetSessionArchived {
         session_id: SessionId,
         archived: bool,
+    },
+    /// Pin a session above the project groups, or unpin it.
+    SetSessionPinned {
+        session_id: SessionId,
+        pinned: bool,
     },
     RefreshSessions,
     SetInspector(InspectorTab),

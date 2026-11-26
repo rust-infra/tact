@@ -1337,8 +1337,8 @@ mod tests {
             .map(|candidate| candidate.path)
             .collect();
         assert!(
-            candidates.contains(&"plugin list".to_string())
-                && candidates.contains(&"plugin marketplace".to_string()),
+            candidates.iter().any(|c| c == "plugin list")
+                && candidates.iter().any(|c| c == "plugin marketplace"),
             "expected the plugin subcommands, got {candidates:?}"
         );
         assert!(

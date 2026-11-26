@@ -75,6 +75,45 @@ impl RealHostFactory {
     }
 }
 
+/// Which implementation drives a session.
+///
+/// The ACP frontend exists for compatibility: every session goes through the
+/// same protocol an external ACP client would see, so the desktop renders what
+/// any ACP client would render. The direct host stays the default because ACP
+/// is a smaller vocabulary — hook rows, `SurfaceSnapshot` readers, and the
+/// extensibility surface reach the desktop only on the direct path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Backend {
+    /// In-process `HostSession`; the default and the widest surface.
+    Direct,
+    /// An ACP agent on a loopback channel. Same protocol, no subprocess.
+    #[cfg(feature = "acp-host")]
+    AcpInProcess,
+    /// An ACP agent in a child process: crash isolation, any ACP agent.
+    #[cfg(feature = "acp-host")]
+    AcpSubprocess,
+}
+
+/// Read the backend out of `TACT_DESKTOP_ACP`.
+///
+/// `1` or `inprocess` runs the agent in this process; `subprocess` (or `process`)
+/// spawns it. Anything else — including `0` and an unset variable — keeps the
+/// direct host. The subprocess value is the only one that needs a packaged
+/// `tact-acp` binary, which is why it is not the default.
+#[cfg(feature = "acp-host")]
+fn backend_from_env() -> Backend {
+    match std::env::var("TACT_DESKTOP_ACP").ok().as_deref() {
+        Some("subprocess" | "process") => Backend::AcpSubprocess,
+        Some(value) if value != "0" => Backend::AcpInProcess,
+        _ => Backend::Direct,
+    }
+}
+
+#[cfg(not(feature = "acp-host"))]
+const fn backend_from_env() -> Backend {
+    Backend::Direct
+}
+
 #[async_trait]
 impl HostFactory for RealHostFactory {
     async fn start(
@@ -82,6 +121,35 @@ impl HostFactory for RealHostFactory {
         project: &ProjectRecord,
         initial: &InitialSession,
     ) -> Result<Box<dyn HostBackend>, HostStartError> {
+        match backend_from_env() {
+            #[cfg(feature = "acp-host")]
+            Backend::AcpSubprocess => {
+                return Ok(Box::new(
+                    crate::acp_host::AcpHost::start(
+                        &self.config,
+                        project,
+                        initial,
+                        self.lock_registry.clone(),
+                    )
+                    .await?,
+                ));
+            }
+            #[cfg(feature = "acp-host")]
+            Backend::AcpInProcess => {
+                return Ok(Box::new(
+                    crate::acp_inprocess::InProcessAcpHost::start(
+                        &self.config,
+                        project,
+                        initial,
+                        self.lock_registry.clone(),
+                    )
+                    .await?,
+                ));
+            }
+            // Without the feature the two ACP arms above do not exist, so this
+            // is the only reachable one.
+            _ => {}
+        }
         let store = open_store(&project.root)
             .await
             .map_err(|error| HostStartError::Persistence(error.to_string()))?;
@@ -113,4 +181,53 @@ async fn open_store(root: &std::path::Path) -> anyhow::Result<DynSessionStore> {
         tokio::fs::create_dir_all(parent).await?;
     }
     open_sqlite_session_store(&path).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unset_override_keeps_the_direct_host() {
+        // SAFETY: this test owns the variable for its duration and nothing else
+        // in this crate reads it.
+        unsafe { std::env::remove_var("TACT_DESKTOP_ACP") };
+        assert_eq!(
+            backend_from_env(),
+            Backend::Direct,
+            "an unset variable must leave the direct host in charge"
+        );
+    }
+
+    #[cfg(feature = "acp-host")]
+    #[test]
+    fn the_acp_backend_is_chosen_by_name() {
+        // SAFETY: this test owns the variable for its duration and nothing else
+        // in this crate reads it.
+        unsafe { std::env::set_var("TACT_DESKTOP_ACP", "1") };
+        assert_eq!(
+            backend_from_env(),
+            Backend::AcpInProcess,
+            "opting in must not require a packaged binary"
+        );
+
+        // SAFETY: see above.
+        unsafe { std::env::set_var("TACT_DESKTOP_ACP", "subprocess") };
+        assert_eq!(
+            backend_from_env(),
+            Backend::AcpSubprocess,
+            "the subprocess transport must be requested by name"
+        );
+
+        // SAFETY: see above.
+        unsafe { std::env::set_var("TACT_DESKTOP_ACP", "0") };
+        assert_eq!(
+            backend_from_env(),
+            Backend::Direct,
+            "an explicit 0 must keep the direct host"
+        );
+
+        // SAFETY: see above.
+        unsafe { std::env::remove_var("TACT_DESKTOP_ACP") };
+    }
 }

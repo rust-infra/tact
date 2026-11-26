@@ -11,7 +11,7 @@
 //! handles and reaches state through actor commands.
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, OnceLock,
@@ -20,6 +20,7 @@ use std::{
     time::Duration,
 };
 
+use agent_client_protocol::schema::IndexMap;
 use agent_client_protocol::v2::{ConnectionTo, Responder, schema};
 use agent_client_protocol::{Agent, Client, Error, Result as AcpResult, Stdio};
 use base64::Engine as _;
@@ -30,12 +31,13 @@ use tact::ui_responder::PendingUiRequestKind;
 use tact_agent_api::{AgentContentBlock, AgentRole, MessageOrigin, ToolResultStatus};
 use tact_host::{
     HostEvent, HostSession, HostSessionConfig, SessionLockRegistry, SessionSelection, TactPath,
-    UserCommand,
+    ThoughtKind, UserCommand,
 };
 use tact_protocol::{
-    AgentUpdate, BackgroundTaskSnapshot, BackgroundTaskStatusSnapshot, GoalSnapshot,
-    GoalStatusSnapshot, PermissionMode, StepResult, StepStatus, TaskSnapshot, TaskStatusSnapshot,
-    ThinkingChunk, ToolPresentationInfo, ToolVisualKind, UiRequestPurpose, UiResponse,
+    AgentErrorKind, AgentUpdate, BackgroundTaskSnapshot, BackgroundTaskStatusSnapshot,
+    GoalSnapshot, GoalStatusSnapshot, PermissionMode, StepResult, StepStatus, TaskSnapshot,
+    TaskStatusSnapshot, ThinkingChunk, ToolPresentationInfo, ToolVisualKind, UiRequestPurpose,
+    UiResponse,
 };
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
@@ -67,6 +69,20 @@ pub async fn run() -> anyhow::Result<()> {
             .map(|error| format!("{error:#}"))
     });
 
+    serve(Stdio::new(), config_error).await
+}
+
+/// Serve ACP over any transport, in-process or stdio.
+///
+/// The protocol does not require a child process: `agent-client-protocol`'s
+/// `Channel` is a transport like `Stdio`, so an embedder can run this agent in
+/// its own process and see identical traffic. `config_error` is the
+/// argv/config failure to report through the session handlers; an embedder
+/// that already installed process config passes `None`.
+pub async fn serve(
+    transport: impl agent_client_protocol::ConnectTo<agent_client_protocol::Agent> + 'static,
+    config_error: Option<String>,
+) -> anyhow::Result<()> {
     let manager = SessionManager::new(config_error);
 
     let result = Agent
@@ -315,42 +331,75 @@ pub async fn run() -> anyhow::Result<()> {
                 async move |request: schema::PromptRequest,
                             responder: Responder<schema::PromptResponse>,
                             connection: ConnectionTo<Client>| {
-                    let message_id = manager.next_message_id("user");
                     let session_id = request.session_id.clone();
                     let cwd = match manager.handle(&session_id) {
                         Ok(handle) => handle.cwd,
                         Err(error) => return responder.respond_with_error(error),
                     };
+                    // ACP validates the key's shape in the schema. Taking it as
+                    // a string keeps the actor cache free of protocol types.
+                    let key = request
+                        .idempotency_key
+                        .as_ref()
+                        .map(|key| key.as_str().to_string());
+                    // Read the key before anything else for a keyed prompt: the
+                    // actor is the authority, but a retry must not write its
+                    // images into the workspace only to discard them. An
+                    // unkeyed prompt skips this round trip.
+                    if let Some(key) = key.as_deref()
+                        && let Some(existing) = manager.inserted_for_key(&session_id, key).await?
+                    {
+                        return responder.respond(schema::PromptResponse::new(existing));
+                    }
+                    let message_id = manager.next_message_id("user");
                     let image_stem = format!("{}-{}", session_id.0, message_id.0);
                     let text = match prompt_text(&request.prompt, &cwd, &image_stem) {
                         Ok(text) => text,
                         Err(error) => return responder.respond_with_error(error),
                     };
-                    if let Err(error) = manager.submit_prompt(&session_id, text) {
-                        return responder.respond_with_error(error);
-                    }
-                    // A v2 prompt response means "inserted", not "finished".
-                    responder.respond(schema::PromptResponse::new(message_id.clone()))?;
-                    let _ = send_update(
-                        &connection,
-                        &session_id,
-                        schema::SessionUpdate::UserMessage(
-                            schema::UserMessage::new(message_id).content(request.prompt.clone()),
-                        ),
-                    );
-                    // A client subscribes to session updates while handling the
-                    // session/new response, so the command list sent before that
-                    // response can be missed and its `/` menu stays empty. Send
-                    // it again once a prompt proves the subscription is live.
-                    let _ = send_update(
-                        &connection,
-                        &session_id,
-                        schema::SessionUpdate::AvailableCommandsUpdate(
-                            schema::AvailableCommandsUpdate::new(available_commands(
-                                &available_skills(&cwd),
-                            )),
-                        ),
-                    );
+                    let echoed = match manager
+                        .submit_prompt(&session_id, text, message_id.clone(), key)
+                        .await
+                    {
+                        Ok(echoed) => echoed,
+                        Err(error) => return responder.respond_with_error(error),
+                    };
+                    // A retried key was already inserted. ACP says the retry
+                    // must answer with that message's id and insert nothing, so
+                    // the user-message echo and the command list are skipped
+                    // too: re-sending them would show the prompt twice.
+                    let message_id = match echoed {
+                        Some(existing) => existing,
+                        None => {
+                            // A v2 prompt response means "inserted", not
+                            // "finished".
+                            responder.respond(schema::PromptResponse::new(message_id.clone()))?;
+                            let _ = send_update(
+                                &connection,
+                                &session_id,
+                                schema::SessionUpdate::UserMessage(
+                                    schema::UserMessage::new(message_id.clone())
+                                        .content(request.prompt.clone()),
+                                ),
+                            );
+                            // A client subscribes to session updates while
+                            // handling the session/new response, so the command
+                            // list sent before that response can be missed and
+                            // its `/` menu stays empty. Send it again once a
+                            // prompt proves the subscription is live.
+                            let _ = send_update(
+                                &connection,
+                                &session_id,
+                                schema::SessionUpdate::AvailableCommandsUpdate(
+                                    schema::AvailableCommandsUpdate::new(available_commands(
+                                        &available_skills(&cwd),
+                                    )),
+                                ),
+                            );
+                            return Ok(());
+                        }
+                    };
+                    responder.respond(schema::PromptResponse::new(message_id))?;
                     Ok(())
                 }
             },
@@ -367,7 +416,7 @@ pub async fn run() -> anyhow::Result<()> {
             },
             agent_client_protocol::on_receive_notification!(),
         )
-        .connect_to(Stdio::new())
+        .connect_to(transport)
         .await;
 
     manager.shutdown_all().await;
@@ -632,6 +681,23 @@ impl SessionManager {
         let state = self.initial_state()?;
         let options = state.config_options();
         let skill_cwd = cwd.clone();
+        // A resume of a session this workspace no longer has is `-32002`, not a
+        // fresh session. Opening a host inserts the row when it is missing
+        // (`ensure_session_row`), so the check has to happen before that: a
+        // client that deleted a thread and then resumed a stale id would
+        // otherwise be told the thread came back with an empty transcript.
+        //
+        // Only an unknown id is refused. A session whose transcript is empty
+        // because nothing was ever prompted is a live session the client is
+        // resuming, and it must open normally.
+        let store = open_session_store(&TactPath::new(cwd.clone())).await?;
+        let known = store
+            .session_exists(session_id.0.as_ref())
+            .await
+            .map_err(|error| internal(format!("failed to look up session: {error:#}")))?;
+        if !known {
+            return Err(session_not_found(&session_id));
+        }
         let actual = self
             .start_host(
                 cwd,
@@ -796,11 +862,57 @@ impl SessionManager {
 
     /// Hand a prompt to the actor. A slash command is a session action, not a
     /// model turn, so the actor decides which it is; the manager only routes.
-    fn submit_prompt(&self, session_id: &schema::SessionId, text: String) -> Result<(), Error> {
+    /// Hand a prompt to the actor. A slash command is a session action, not a
+    /// model turn, so the actor decides which it is; the manager only routes.
+    ///
+    /// The reply is what the request handler responds with: `Ok(Some(id))` when
+    /// an `idempotencyKey` was already inserted (nothing was submitted), and
+    /// `Ok(None)` when the prompt was inserted under `message_id`. The caller
+    /// must not invent an answer on its own, because the actor owns the key map.
+    async fn submit_prompt(
+        &self,
+        session_id: &schema::SessionId,
+        text: String,
+        message_id: schema::MessageId,
+        key: Option<String>,
+    ) -> Result<Option<schema::MessageId>, Error> {
+        let (reply, reply_rx) = oneshot::channel();
         self.handle(session_id)?
             .commands
-            .send(SessionCommand::Prompt(text))
-            .map_err(|_| internal("session driver is closed"))
+            .send(SessionCommand::Prompt {
+                text,
+                message_id,
+                key,
+                reply,
+            })
+            .map_err(|_| internal("session driver is closed"))?;
+        reply_rx
+            .await
+            .map_err(|_| internal("session actor stopped"))?
+            .map_err(internal)
+    }
+
+    /// The message an `idempotencyKey` already inserted, if any.
+    ///
+    /// A read, not the authority: `insert_prompt` re-checks under the actor so
+    /// two concurrent retries cannot both insert. This exists so a retried
+    /// keyed prompt can be answered before its images are written.
+    async fn inserted_for_key(
+        &self,
+        session_id: &schema::SessionId,
+        key: &str,
+    ) -> Result<Option<schema::MessageId>, Error> {
+        let (reply, reply_rx) = oneshot::channel();
+        self.handle(session_id)?
+            .commands
+            .send(SessionCommand::LookupPromptKey {
+                key: key.to_string(),
+                reply,
+            })
+            .map_err(|_| internal("session driver is closed"))?;
+        reply_rx
+            .await
+            .map_err(|_| internal("session actor stopped"))
     }
 
     fn set_config_option(
@@ -1132,20 +1244,9 @@ const COMMAND_SETTLE_TIMEOUT: Duration = Duration::from_millis(750);
 /// Give the client a moment to auto-answer a permission before announcing
 /// `requires_action`; otherwise every auto-approved tool leaves a stale row.
 const REQUIRES_ACTION_DELAY: Duration = Duration::from_millis(300);
-/// Thinking-budget tiers offered when the model has no profile of its own.
-const DEFAULT_THINKING_BUDGETS: [u32; 5] = [0, 8_000, 32_000, 64_000, 128_000];
-
-/// How the active model expresses "think harder".
-///
-/// An effort model takes a named tier; a budget model takes a token count.
-/// Which one applies is the provider's rule (`tact_llm::model_uses_effort`),
-/// the same one the TUI's `/model` second step uses, so the two frontends
-/// cannot offer different tier sets for one model.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ThoughtKind {
-    Effort,
-    Budget,
-}
+// The two shapes a thought control can take (effort tier vs token budget) and
+// the tier ladders each model offers live in `tact_host::thought`, so this
+// adapter, the TUI picker, and the desktop chip cannot disagree about a model.
 
 /// Every config option this adapter serves, in the order the client sees them.
 #[derive(Debug)]
@@ -1251,68 +1352,29 @@ impl SessionState {
 }
 
 /// Build the thought-level option for `model`.
+///
+/// The tiers themselves are `tact_host::thought`'s, so this adapter, the TUI
+/// picker, and the desktop chip cannot offer different values for one model.
+/// What is local here is only the ACP mapping: a `select` option in the
+/// `thought_level` category.
 fn thought_option(
     settings: &tact::config::ResolvedConfig,
     model: &str,
 ) -> (SelectOption, ThoughtKind) {
-    let profile = settings.llm.model_profiles.get(model);
-    let provider = settings.llm.provider_info();
-    if tact_llm::model_uses_effort(model, &provider) {
-        let candidates = profile
-            .filter(|profile| !profile.reasoning_efforts.is_empty())
-            .map(|profile| profile.reasoning_efforts.clone())
-            .unwrap_or_else(|| tact_llm::default_effort_tiers(&provider))
-            .into_iter()
-            .map(|effort| effort.as_str().to_string())
-            .collect::<Vec<_>>();
-        let applied = settings
-            .agent
-            .reasoning_effort
-            .map(|effort| effort.as_str().to_string())
-            .unwrap_or_else(|| "none".to_string());
-        (
-            SelectOption {
-                id: THOUGHT_LEVEL_CONFIG_ID,
-                name: "Reasoning effort",
-                description: Some("How much the model thinks before answering"),
-                category: Some(schema::SessionConfigOptionCategory::ThoughtLevel),
-                applied,
-                requested: None,
-                sent: None,
-                candidates,
-            },
-            ThoughtKind::Effort,
-        )
-    } else {
-        let candidates = profile
-            .filter(|profile| !profile.thinking_budgets.is_empty())
-            .map(|profile| {
-                profile
-                    .thinking_budgets
-                    .iter()
-                    .map(|budget| budget.to_string())
-                    .collect()
-            })
-            .unwrap_or_else(|| {
-                DEFAULT_THINKING_BUDGETS
-                    .iter()
-                    .map(|budget| budget.to_string())
-                    .collect()
-            });
-        (
-            SelectOption {
-                id: THOUGHT_LEVEL_CONFIG_ID,
-                name: "Thinking budget",
-                description: Some("Tokens the model may spend thinking"),
-                category: Some(schema::SessionConfigOptionCategory::ThoughtLevel),
-                applied: settings.agent.thinking_budget.to_string(),
-                requested: None,
-                sent: None,
-                candidates,
-            },
-            ThoughtKind::Budget,
-        )
-    }
+    let tiers = tact_host::thought_tiers(settings, model);
+    (
+        SelectOption {
+            id: THOUGHT_LEVEL_CONFIG_ID,
+            name: tiers.name,
+            description: Some(tiers.description),
+            category: Some(schema::SessionConfigOptionCategory::ThoughtLevel),
+            applied: tiers.applied,
+            requested: None,
+            sent: None,
+            candidates: tiers.candidates,
+        },
+        tiers.kind,
+    )
 }
 
 /// A current value that is guaranteed to be one of `candidates`.
@@ -1426,6 +1488,21 @@ fn closes_compaction_card(stop_reason: &schema::StopReason) -> bool {
     !matches!(stop_reason, schema::StopReason::EndTurn)
 }
 
+/// The ACP stop reason a failed turn reports.
+///
+/// Two failures have a protocol name of their own, and ACP asks an Agent to
+/// use them: `max_tokens` when output was cut off, `refusal` when the
+/// provider declined the content. Both used to arrive as `error`, which T3
+/// renders as a bare failure — losing the one sentence that explains it
+/// (`acpUnfinishedStopMessage` in T3 keys on exactly these two values).
+fn error_stop_reason(kind: &AgentErrorKind) -> schema::StopReason {
+    match kind {
+        AgentErrorKind::Truncated(_) => schema::StopReason::MaxTokens,
+        AgentErrorKind::Refused(_) => schema::StopReason::Refusal,
+        AgentErrorKind::Other(_) => schema::StopReason::Error(schema::ErrorStopReason::new()),
+    }
+}
+
 /// Whether one agent update answers a command turn, and how it closes it.
 ///
 /// `None` means the update is not an answer: progress logging, session
@@ -1468,8 +1545,21 @@ fn command_answer(
 
 enum SessionCommand {
     /// A prompt or slash command from `session/prompt`. The actor decides
-    /// whether it becomes a model turn or a session action.
-    Prompt(String),
+    /// whether it becomes a model turn or a session action, and answers with
+    /// the message id to echo — or with the id a retried `idempotencyKey`
+    /// already inserted, in which case nothing is submitted.
+    Prompt {
+        text: String,
+        message_id: schema::MessageId,
+        key: Option<String>,
+        reply: oneshot::Sender<Result<Option<schema::MessageId>, String>>,
+    },
+    /// Read-only lookup of a prompt key, so a retry can be answered before its
+    /// images are written. `insert_prompt` re-checks under the actor.
+    LookupPromptKey {
+        key: String,
+        reply: oneshot::Sender<Option<schema::MessageId>>,
+    },
     /// Forward a host command (`SubmitTask`, `UiResponse`, `Cancel`, ...).
     User(UserCommand),
     /// Validate and queue a config change. The actor answers from its own
@@ -1545,6 +1635,8 @@ fn spawn_actor(
             context_window: context_window(),
             last_plan: None,
             last_goals: Vec::new(),
+            prompt_keys: HashMap::new(),
+            prompt_key_order: VecDeque::new(),
         };
         actor.reconcile_pending_requests();
         loop {
@@ -1579,7 +1671,18 @@ fn spawn_actor(
                 command = command_rx.recv() => {
                     match command {
                         Some(SessionCommand::User(command)) => actor.forward_user(command),
-                        Some(SessionCommand::Prompt(text)) => actor.handle_prompt(text),
+                        Some(SessionCommand::LookupPromptKey { key, reply }) => {
+                            let _ = reply.send(actor.prompt_keys.get(&key).cloned());
+                        }
+                        Some(SessionCommand::Prompt {
+                            text,
+                            message_id,
+                            key,
+                            reply,
+                        }) => {
+                            let result = actor.insert_prompt(text, message_id, key);
+                            let _ = reply.send(result);
+                        }
                         Some(SessionCommand::SetConfig {
                             config_id,
                             value,
@@ -1601,6 +1704,14 @@ fn spawn_actor(
                             actor.settle_command_turn(CommandAnswer::Settled)
                         }
                         Some(SessionCommand::Close(reply)) => {
+                            // ACP requires the closed session's final updates
+                            // and a cancelled idle *before* the close response
+                            // (protocol/v2/session-setup § Closing active
+                            // sessions). `finish_turn` is the single emitter of
+                            // a turn boundary, so closing goes through it: a
+                            // client that keeps a spinner would otherwise never
+                            // learn its work ended.
+                            actor.settle_for_close();
                             let result = actor
                                 .host
                                 .close()
@@ -1694,16 +1805,16 @@ impl CompactionCard {
             CompactionState::Started => {
                 if let Some(orphan) = self.open.take() {
                     updates.push(
-                        schema::CompactionUpdate::new(orphan, schema::CompactionStatus::Failed)
+                        schema::CompactionUpdate::new(orphan)
+                            .status(schema::CompactionStatus::Failed)
                             .error("another compaction started before this one finished"),
                     );
                 }
                 let id = mint();
                 self.open = Some(id.clone());
-                updates.push(schema::CompactionUpdate::new(
-                    id,
-                    schema::CompactionStatus::InProgress,
-                ));
+                updates.push(
+                    schema::CompactionUpdate::new(id).status(schema::CompactionStatus::InProgress),
+                );
             }
             CompactionState::Completed { summary } => {
                 // A completion with no card open is a real possibility: the
@@ -1713,7 +1824,7 @@ impl CompactionCard {
                 // happened instead of silently dropping the news.
                 let id = self.open.take().unwrap_or_else(mint);
                 let mut update =
-                    schema::CompactionUpdate::new(id, schema::CompactionStatus::Completed);
+                    schema::CompactionUpdate::new(id).status(schema::CompactionStatus::Completed);
                 // A blank body is absent, not present: this mapping is the last
                 // place that can tell, and `Some("")` would render an empty
                 // card the user reads as "nothing happened". The product
@@ -1728,7 +1839,8 @@ impl CompactionCard {
             CompactionState::Failed { error } => {
                 let id = self.open.take().unwrap_or_else(mint);
                 updates.push(
-                    schema::CompactionUpdate::new(id, schema::CompactionStatus::Failed)
+                    schema::CompactionUpdate::new(id)
+                        .status(schema::CompactionStatus::Failed)
                         .error(error.clone()),
                 );
             }
@@ -1737,7 +1849,8 @@ impl CompactionCard {
                 // ACP has no `reason` field, and `error` is the only free-text
                 // slot on the entity; a cancelled compaction is not an error,
                 // so it is set only when there is something to say.
-                let update = schema::CompactionUpdate::new(id, schema::CompactionStatus::Cancelled);
+                let update =
+                    schema::CompactionUpdate::new(id).status(schema::CompactionStatus::Cancelled);
                 updates.push(if reason.trim().is_empty() {
                     update
                 } else {
@@ -1775,7 +1888,8 @@ impl CompactionCard {
     fn close_orphan(&mut self, error: &str) -> Option<schema::CompactionUpdate> {
         let id = self.open.take()?;
         Some(
-            schema::CompactionUpdate::new(id, schema::CompactionStatus::Failed)
+            schema::CompactionUpdate::new(id)
+                .status(schema::CompactionStatus::Failed)
                 .error(error.to_string()),
         )
     }
@@ -1853,6 +1967,17 @@ struct SessionActor {
     last_plan: Option<Vec<(String, schema::PlanEntryStatus)>>,
     /// The last Goal snapshot announced, so a reconcile tick is not a notice.
     last_goals: Vec<GoalSnapshot>,
+    /// Prompt keys already inserted, mapped to the message they inserted.
+    ///
+    /// `session/prompt` is ACP's one keyed method: a client that lost the
+    /// response (or reconnected) retries with the same key, and a second
+    /// insertion would duplicate the user's turn in the transcript. The map is
+    /// per session because a key identifies one submission, not one client.
+    /// ACP bounds the key at 255 characters, so a bounded map is enough.
+    prompt_keys: HashMap<String, schema::MessageId>,
+    /// Insertion order of `prompt_keys`, so the oldest key is the one evicted
+    /// when the map is full.
+    prompt_key_order: VecDeque<String>,
 }
 
 struct SubagentSession {
@@ -2095,10 +2220,7 @@ impl SessionActor {
                     self.state.model.sent = None;
                     self.send_options();
                 }
-                self.finish_turn(
-                    schema::StopReason::Error(schema::ErrorStopReason::new()),
-                    None,
-                );
+                self.finish_turn(error_stop_reason(&kind), None);
             }
             AgentUpdate::ModelInfo(params) => {
                 let model_changed = self.state.model.commit(params.model.clone());
@@ -2596,11 +2718,79 @@ impl SessionActor {
         }
     }
 
-    /// Turn one `session/prompt` into either a model turn or a session action.
+    /// Settle the session for `session/close`.
     ///
-    /// A client cannot know which `/…` names the adapter handles, so an
-    /// unrecognized one is forwarded as ordinary text: losing a typo silently
-    /// would be worse than letting the model see it.
+    /// Closing cancels foreground work exactly as `session/cancel` does, so the
+    /// dialogs are withdrawn the same way and the turn ends with
+    /// `stopReason: "cancelled"` — ACP names that reason for a close, not
+    /// `error`. All of it goes out before the close response; nothing is sent
+    /// for this session afterwards.
+    fn settle_for_close(&mut self) {
+        let responder = self.host.ui_responder();
+        for pending in self.host.pending_requests() {
+            let response = match pending.kind {
+                PendingUiRequestKind::Select => UiResponse::Select {
+                    request_id: pending.request_id,
+                    choice: None,
+                },
+                PendingUiRequestKind::MultiSelect => UiResponse::MultiSelect {
+                    request_id: pending.request_id,
+                    choices: None,
+                },
+            };
+            if !responder.respond(response) {
+                debug!(%self.session_id, request_id = pending.request_id, "pending request was already answered");
+            }
+        }
+        // Before the close response, per spec: every permission request and
+        // elicitation scoped to a closed session is withdrawn with
+        // `$/cancel_request`.
+        for (_, cancellation) in self.open_requests.drain() {
+            let _ = cancellation.cancel();
+        }
+        self.published_requests.clear();
+        self.finish_turn(schema::StopReason::Cancelled, None);
+    }
+
+    /// Turn one `session/prompt` into either a model turn or a session action.
+    /// Insert one prompt, honouring an `idempotencyKey`.
+    ///
+    /// Returns `Some(existing)` when the key was already recorded: ACP says a
+    /// retry must answer with that message's id and insert nothing, so the
+    /// prompt is dropped here rather than reaching Tact a second time. Returns
+    /// `None` when the prompt was submitted under `message_id`, which is then
+    /// recorded against the key.
+    fn insert_prompt(
+        &mut self,
+        text: String,
+        message_id: schema::MessageId,
+        key: Option<String>,
+    ) -> Result<Option<schema::MessageId>, String> {
+        if let Some(key) = key.as_deref()
+            && let Some(existing) = self.prompt_keys.get(key)
+        {
+            debug!(%self.session_id, %key, "duplicate idempotency key; nothing inserted");
+            return Ok(Some(existing.clone()));
+        }
+        self.handle_prompt(text);
+        if let Some(key) = key {
+            // ACP bounds the key at 255 characters and clients use one per
+            // submission, so an unbounded map would grow with the session. The
+            // oldest key is the one whose submission is least likely to be
+            // retried.
+            const MAX_PROMPT_KEYS: usize = 256;
+            if self.prompt_keys.insert(key.clone(), message_id).is_none() {
+                self.prompt_key_order.push_back(key);
+            }
+            while self.prompt_key_order.len() > MAX_PROMPT_KEYS {
+                if let Some(oldest) = self.prompt_key_order.pop_front() {
+                    self.prompt_keys.remove(&oldest);
+                }
+            }
+        }
+        Ok(None)
+    }
+
     fn handle_prompt(&mut self, text: String) {
         self.maybe_send_session_info(&text);
         let command = match t3_user_request(&text) {
@@ -3344,7 +3534,7 @@ impl SessionActor {
         if let Some(path) = tool_path(tool_name, arg_full, presentation, &self.cwd) {
             update = update.locations(vec![schema::ToolCallLocation::new(path.clone())]);
             if show_diff && let Some(diff) = tool_diff(&path, tool_name, arg_full) {
-                update = update.content(vec![schema::ToolCallContent::Diff(diff)]);
+                update = update.content(vec![schema::ToolCallContent::Diff(Box::new(diff))]);
             }
         }
         if let Some(content) = content {
@@ -3534,12 +3724,12 @@ fn elicitation_schema(options: &[String], multi: bool) -> schema::ElicitationSch
 /// Map accepted content back to Tact indices. Anything malformed or out of
 /// range is a declined answer rather than a bogus index.
 fn map_accept(
-    content: Option<BTreeMap<String, schema::ElicitationContentValue>>,
+    content: Option<IndexMap<String, schema::ElicitationContentValue>>,
     multi: bool,
     option_count: usize,
 ) -> Option<Vec<usize>> {
     let mut content = content?;
-    let raw = match content.remove(ELICITATION_FIELD)? {
+    let raw = match content.shift_remove(ELICITATION_FIELD)? {
         schema::ElicitationContentValue::String(id) => vec![id],
         schema::ElicitationContentValue::StringArray(ids) => ids,
         _ => return None,
@@ -4497,6 +4687,8 @@ async fn replay_history(
 
 #[cfg(test)]
 mod tests {
+    use agent_client_protocol::schema::MaybeUndefined;
+
     use super::*;
     use tact_protocol::GoalPhaseSnapshot;
 
@@ -4574,14 +4766,14 @@ mod tests {
 
     #[test]
     fn map_accept_reads_indices_and_rejects_bad_ones() {
-        let mut content = BTreeMap::new();
+        let mut content = IndexMap::new();
         content.insert(
             ELICITATION_FIELD.to_string(),
             schema::ElicitationContentValue::StringArray(vec!["0".into(), "2".into()]),
         );
         assert_eq!(map_accept(Some(content), true, 3), Some(vec![0, 2]));
 
-        let mut content = BTreeMap::new();
+        let mut content = IndexMap::new();
         content.insert(
             ELICITATION_FIELD.to_string(),
             schema::ElicitationContentValue::String("1".into()),
@@ -4589,14 +4781,14 @@ mod tests {
         assert_eq!(map_accept(Some(content.clone()), false, 3), Some(vec![1]));
         assert_eq!(map_accept(Some(content), false, 1), None);
 
-        let mut content = BTreeMap::new();
+        let mut content = IndexMap::new();
         content.insert(
             ELICITATION_FIELD.to_string(),
             schema::ElicitationContentValue::String("7".into()),
         );
         assert_eq!(map_accept(Some(content), false, 3), None);
 
-        let mut content = BTreeMap::new();
+        let mut content = IndexMap::new();
         content.insert(
             ELICITATION_FIELD.to_string(),
             schema::ElicitationContentValue::Boolean(true),
@@ -5102,7 +5294,11 @@ mod tests {
         // gets its id from the mint; the terminal states see no open card and
         // take the "attached mid-compaction" path. Reusing a `Started` id is
         // covered by `a_compaction_keeps_one_id_for_its_whole_lifecycle`.
-        updates[0].status.clone()
+        // `status` is a patch field: every state this walks sets it.
+        match updates[0].status.clone() {
+            MaybeUndefined::Value(status) => status,
+            other => panic!("every compaction state sets a status, got {other:?}"),
+        }
     }
 
     #[test]
@@ -5124,7 +5320,10 @@ mod tests {
             &mut mint,
         );
         assert_eq!(started.len(), 1);
-        assert_eq!(started[0].status, schema::CompactionStatus::InProgress);
+        assert_eq!(
+            started[0].status,
+            MaybeUndefined::Value(schema::CompactionStatus::InProgress)
+        );
 
         let completed = card.apply(
             &CompactionEvent {
@@ -5140,12 +5339,15 @@ mod tests {
             completed[0].compaction_id, started[0].compaction_id,
             "the completion must patch the card the start opened"
         );
-        assert_eq!(completed[0].status, schema::CompactionStatus::Completed);
+        assert_eq!(
+            completed[0].status,
+            MaybeUndefined::Value(schema::CompactionStatus::Completed)
+        );
         // The summary is not a decoration: the client shows it in place of the
         // history it never saw.
         assert!(matches!(
             &completed[0].summary,
-            agent_client_protocol::schema::MaybeUndefined::Value(blocks)
+            MaybeUndefined::Value(blocks)
                 if blocks.len() == 1
         ));
     }
@@ -5197,7 +5399,10 @@ mod tests {
             schema::CompactionId::new(format!("cmp-{next}"))
         };
         let started = card.apply(&started_compaction(), &mut mint);
-        assert_eq!(started[0].status, schema::CompactionStatus::InProgress);
+        assert_eq!(
+            started[0].status,
+            MaybeUndefined::Value(schema::CompactionStatus::InProgress)
+        );
 
         // The hook line arrives; it must not reach `close_orphan`.
         assert_eq!(
@@ -5222,7 +5427,10 @@ mod tests {
             completed[0].compaction_id, started[0].compaction_id,
             "the terminal must patch the card the start opened"
         );
-        assert_eq!(completed[0].status, schema::CompactionStatus::Completed);
+        assert_eq!(
+            completed[0].status,
+            MaybeUndefined::Value(schema::CompactionStatus::Completed)
+        );
     }
 
     /// The production sequence end to end: one card, no early idle.
@@ -5278,8 +5486,14 @@ mod tests {
         );
         // One card, opened in progress and completed — never failed.
         assert_eq!(updates.len(), 2, "{updates:?}");
-        assert_eq!(updates[0].status, schema::CompactionStatus::InProgress);
-        assert_eq!(updates[1].status, schema::CompactionStatus::Completed);
+        assert_eq!(
+            updates[0].status,
+            MaybeUndefined::Value(schema::CompactionStatus::InProgress)
+        );
+        assert_eq!(
+            updates[1].status,
+            MaybeUndefined::Value(schema::CompactionStatus::Completed)
+        );
         assert_eq!(
             updates[0].compaction_id, updates[1].compaction_id,
             "one compaction is one card"
@@ -5291,6 +5505,31 @@ mod tests {
     ///
     /// The safety net must survive the `EndTurn` exclusion, or a producer that
     /// died mid-compaction would leave the client's card spinning forever.
+    /// A failed turn's class decides the stop reason the client sees.
+    ///
+    /// ACP names `max_tokens` and `refusal` separately and asks an Agent to
+    /// use them. Reporting both as `error` is the bug this covers: T3 keys its
+    /// explanatory sentence on exactly those two values, so a truncated or
+    /// refused turn reached the reader as a bare failure.
+    #[test]
+    fn error_classes_map_to_their_acp_stop_reasons() {
+        assert_eq!(
+            error_stop_reason(&AgentErrorKind::Truncated("cut off".into())),
+            schema::StopReason::MaxTokens
+        );
+        assert_eq!(
+            error_stop_reason(&AgentErrorKind::Refused("declined".into())),
+            schema::StopReason::Refusal
+        );
+        assert!(
+            matches!(
+                error_stop_reason(&AgentErrorKind::Other("boom".into())),
+                schema::StopReason::Error(_)
+            ),
+            "an unclassified failure stays a generic error"
+        );
+    }
+
     #[test]
     fn only_an_abnormal_end_faults_an_open_card() {
         use tact_agent_api::{CompactionEvent, CompactionKind, CompactionState as S};
@@ -5312,7 +5551,10 @@ mod tests {
             let update = card
                 .close_orphan("compaction did not finish before the turn ended")
                 .expect("a torn-down producer must close its card");
-            assert_eq!(update.status, schema::CompactionStatus::Failed);
+            assert_eq!(
+                update.status,
+                MaybeUndefined::Value(schema::CompactionStatus::Failed)
+            );
             assert!(!card.is_open());
         }
 
@@ -5355,10 +5597,13 @@ mod tests {
             &mut mint,
         );
         assert_eq!(failed[0].compaction_id, started[0].compaction_id);
-        assert_eq!(failed[0].status, schema::CompactionStatus::Failed);
+        assert_eq!(
+            failed[0].status,
+            MaybeUndefined::Value(schema::CompactionStatus::Failed)
+        );
         assert!(matches!(
             &failed[0].error,
-            agent_client_protocol::schema::MaybeUndefined::Value(error)
+            MaybeUndefined::Value(error)
                 if error == "summarization failed"
         ));
         // Closed: no later terminal state may re-close it, and a new
@@ -5392,10 +5637,13 @@ mod tests {
             },
             &mut mint,
         );
-        assert_eq!(cancelled[0].status, schema::CompactionStatus::Cancelled);
+        assert_eq!(
+            cancelled[0].status,
+            MaybeUndefined::Value(schema::CompactionStatus::Cancelled)
+        );
         assert!(matches!(
             &cancelled[0].error,
-            agent_client_protocol::schema::MaybeUndefined::Value(reason)
+            MaybeUndefined::Value(reason)
                 if reason.contains("vetoed")
         ));
     }
@@ -5517,7 +5765,10 @@ mod tests {
             || schema::CompactionId::new("unused"),
         );
         assert_eq!(completed[0].compaction_id, started[0].compaction_id);
-        assert_eq!(completed[0].status, schema::CompactionStatus::Completed);
+        assert_eq!(
+            completed[0].status,
+            MaybeUndefined::Value(schema::CompactionStatus::Completed)
+        );
         assert!(matches!(
             &completed[0].summary,
             agent_client_protocol::schema::MaybeUndefined::Undefined
@@ -5547,7 +5798,10 @@ mod tests {
                 || schema::CompactionId::new("cmp-blank"),
             );
             assert_eq!(updates.len(), 1);
-            assert_eq!(updates[0].status, schema::CompactionStatus::Completed);
+            assert_eq!(
+                updates[0].status,
+                MaybeUndefined::Value(schema::CompactionStatus::Completed)
+            );
             assert!(
                 matches!(
                     &updates[0].summary,
@@ -5571,7 +5825,7 @@ mod tests {
         );
         assert!(matches!(
             &updates[0].summary,
-            agent_client_protocol::schema::MaybeUndefined::Value(blocks) if blocks.len() == 1
+            MaybeUndefined::Value(blocks) if blocks.len() == 1
         ));
     }
 
@@ -5619,7 +5873,10 @@ mod tests {
             || schema::CompactionId::new("cmp-late"),
         );
         assert_eq!(updates.len(), 1);
-        assert_eq!(updates[0].status, schema::CompactionStatus::Completed);
+        assert_eq!(
+            updates[0].status,
+            MaybeUndefined::Value(schema::CompactionStatus::Completed)
+        );
     }
 
     #[test]
@@ -5650,8 +5907,14 @@ mod tests {
             &mut mint,
         );
         assert_eq!(updates.len(), 2, "orphan closed, new card opened");
-        assert_eq!(updates[0].status, schema::CompactionStatus::Failed);
-        assert_eq!(updates[1].status, schema::CompactionStatus::InProgress);
+        assert_eq!(
+            updates[0].status,
+            MaybeUndefined::Value(schema::CompactionStatus::Failed)
+        );
+        assert_eq!(
+            updates[1].status,
+            MaybeUndefined::Value(schema::CompactionStatus::InProgress)
+        );
         assert_ne!(updates[0].compaction_id, updates[1].compaction_id);
     }
 

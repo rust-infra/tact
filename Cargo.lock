@@ -111,9 +111,9 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol"
-version = "5.3.0"
+version = "5.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "956559bd2dfddb5c8bc86792b1669bd2611fb4bd2c31865e4b8165ab6ea63109"
+checksum = "e2889673b9bc92e57857cb780f5431b684840c78a95a8edaa4afc00293d10dda"
 dependencies = [
  "agent-client-protocol-derive",
  "agent-client-protocol-schema",
@@ -135,9 +135,9 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-derive"
-version = "5.3.0"
+version = "5.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4956a27f160f7ff73b17822066d1cb57d415ef9f442d3bcebb8074d2c8f24ec3"
+checksum = "28022fad62329e9d350c3ddf818b6966b91196ef948e772d9a4d27f441f955f3"
 dependencies = [
  "quote",
  "syn 3.0.3",
@@ -145,16 +145,18 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-schema"
-version = "1.18.0"
+version = "1.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5128cd57704892e3978c85bfce0d532ef3162f585739f44726fa80d464c1782f"
+checksum = "650e76dae0c8d3e772acb35184e6dd4defa0e15e130c96bf4c4586597f1f2d91"
 dependencies = [
  "anyhow",
  "derive_more",
+ "indexmap 2.14.0",
  "serde",
  "serde_json",
  "serde_with",
  "strum 0.28.0",
+ "uuid",
 ]
 
 [[package]]
@@ -9233,7 +9235,7 @@ dependencies = [
 
 [[package]]
 name = "tact"
-version = "2.0.7"
+version = "2.0.8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9283,7 +9285,7 @@ dependencies = [
 
 [[package]]
 name = "tact-acp"
-version = "2.0.7"
+version = "2.0.8"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -9306,7 +9308,7 @@ dependencies = [
 
 [[package]]
 name = "tact-desktop"
-version = "2.0.7"
+version = "2.0.8"
 dependencies = [
  "anyhow",
  "chrono",
@@ -9331,7 +9333,7 @@ dependencies = [
 
 [[package]]
 name = "tact-ui"
-version = "2.0.7"
+version = "2.0.8"
 dependencies = [
  "anyhow",
  "chrono",
@@ -9351,7 +9353,7 @@ dependencies = [
 
 [[package]]
 name = "tact_agent_api"
-version = "2.0.7"
+version = "2.0.8"
 dependencies = [
  "async-trait",
  "futures-core",
@@ -9363,7 +9365,7 @@ dependencies = [
 
 [[package]]
 name = "tact_agent_core"
-version = "2.0.7"
+version = "2.0.8"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -9375,7 +9377,7 @@ dependencies = [
 
 [[package]]
 name = "tact_agent_sdk"
-version = "2.0.7"
+version = "2.0.8"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -9391,15 +9393,16 @@ dependencies = [
 
 [[package]]
 name = "tact_catalog"
-version = "2.0.7"
+version = "2.0.8"
 dependencies = [
  "strum 0.27.2",
 ]
 
 [[package]]
 name = "tact_desktop_core"
-version = "2.0.7"
+version = "2.0.8"
 dependencies = [
+ "agent-client-protocol",
  "anyhow",
  "async-trait",
  "chrono",
@@ -9408,6 +9411,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tact",
+ "tact-acp",
  "tact_agent_api",
  "tact_catalog",
  "tact_host",
@@ -9423,7 +9427,7 @@ dependencies = [
 
 [[package]]
 name = "tact_eval"
-version = "2.0.7"
+version = "2.0.8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9448,7 +9452,7 @@ dependencies = [
 
 [[package]]
 name = "tact_host"
-version = "2.0.7"
+version = "2.0.8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9466,7 +9470,7 @@ dependencies = [
 
 [[package]]
 name = "tact_llm"
-version = "2.0.7"
+version = "2.0.8"
 dependencies = [
  "anyhow",
  "async-openai 0.20.0",
@@ -10055,7 +10059,7 @@ dependencies = [
 
 [[package]]
 name = "tool_refactor_macros"
-version = "2.0.7"
+version = "2.0.8"
 dependencies = [
  "proc-macro2",
  "quote",

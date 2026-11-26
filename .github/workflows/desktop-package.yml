@@ -67,7 +67,9 @@ jobs:
             vulkan-tools
 
       - name: Build desktop release binary
-        run: cargo build --release -p tact-desktop -p tact-ui --target "${{ matrix.target }}"
+        run: |
+            cargo build --release -p tact-desktop --features tact-desktop/acp-host \
+              -p tact-ui -p tact-acp --target "${{ matrix.target }}"
         shell: bash
 
       - name: Collect third-party license texts
@@ -99,16 +101,17 @@ jobs:
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             cp "${bin}.exe" tact-desktop.exe
             cp "${cli_bin}.exe" tact-ui.exe
+            cp "target/${TARGET}/release/tact-acp.exe" tact-acp.exe
             cp LICENSE LICENSE.tact-ui
             cp crates/desktop/assets/fonts/IBM-Plex-LICENSE.txt .
             cp crates/desktop/assets/fonts/Lilex-LICENSE.txt .
             cp crates/desktop/assets/app-icon.png .
-            python3 scripts/normalize-mtime.py tact-desktop.exe tact-ui.exe LICENSE \
-              LICENSE.tact-ui IBM-Plex-LICENSE.txt Lilex-LICENSE.txt \
+            python3 scripts/normalize-mtime.py tact-desktop.exe tact-ui.exe tact-acp.exe \
+              LICENSE LICENSE.tact-ui IBM-Plex-LICENSE.txt Lilex-LICENSE.txt \
               THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt \
               THIRD-PARTY-LICENSES.txt Cargo.lock app-icon.png
             python3 scripts/package-zip.py --output "${asset}" tact-desktop.exe \
-              tact-ui.exe LICENSE LICENSE.tact-ui IBM-Plex-LICENSE.txt \
+              tact-ui.exe tact-acp.exe LICENSE LICENSE.tact-ui IBM-Plex-LICENSE.txt \
               Lilex-LICENSE.txt THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt \
               THIRD-PARTY-LICENSES.txt Cargo.lock app-icon.png
           elif [[ "${{ runner.os }}" == "macOS" ]]; then
@@ -116,6 +119,7 @@ jobs:
             mkdir -p "${app}/Contents/MacOS" "${app}/Contents/Resources"
             cp "${bin}" "${app}/Contents/MacOS/tact-desktop"
             cp "${cli_bin}" "${app}/Contents/MacOS/tact-ui"
+            cp "target/${TARGET}/release/tact-acp" "${app}/Contents/MacOS/tact-acp"
             cp LICENSE "${app}/Contents/Resources/LICENSE"
             cp crates/desktop/assets/fonts/IBM-Plex-LICENSE.txt "${app}/Contents/Resources/"
             cp crates/desktop/assets/fonts/Lilex-LICENSE.txt "${app}/Contents/Resources/"
@@ -145,6 +149,7 @@ jobs:
           else
             cp "${bin}" tact-desktop
             cp "${cli_bin}" tact-ui
+            cp "target/${TARGET}/release/tact-acp" tact-acp
             cp LICENSE LICENSE.tact-ui
             cp crates/desktop/assets/fonts/IBM-Plex-LICENSE.txt .
             cp crates/desktop/assets/fonts/Lilex-LICENSE.txt .
@@ -154,13 +159,14 @@ jobs:
             cp crates/desktop/assets/linux/tact-desktop.desktop share/applications/
             strip tact-desktop || true
             strip tact-ui || true
-            python3 scripts/normalize-mtime.py tact-desktop tact-ui LICENSE \
+            strip tact-acp || true
+            python3 scripts/normalize-mtime.py tact-desktop tact-ui tact-acp LICENSE \
               LICENSE.tact-ui IBM-Plex-LICENSE.txt Lilex-LICENSE.txt \
               THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt \
               THIRD-PARTY-LICENSES.txt Cargo.lock app-icon.png \
               share
             tar --sort=name --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 \
-              --numeric-owner -cf - tact-desktop tact-ui LICENSE LICENSE.tact-ui \
+              --numeric-owner -cf - tact-desktop tact-ui tact-acp LICENSE LICENSE.tact-ui \
               IBM-Plex-LICENSE.txt Lilex-LICENSE.txt THIRD-PARTY-NOTICES.md \
               THIRD-PARTY-APACHE-2.0.txt THIRD-PARTY-LICENSES.txt Cargo.lock \
               app-icon.png share | gzip -n > "${asset}"
@@ -190,16 +196,22 @@ jobs:
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             bin="$verify/extracted/tact-desktop.exe"
             test -f "$bin"
+            # The packaged desktop drives sessions through this sidecar when
+            # TACT_DESKTOP_ACP is set; without it the ACP transport silently
+            # falls back to in-process and the build is not what was tested.
+            test -f "$verify/extracted/tact-acp.exe"
             test -f "$verify/extracted/THIRD-PARTY-LICENSES.txt"
           elif [[ "${{ runner.os }}" == "macOS" ]]; then
             plutil -lint "$verify/extracted/Tact Desktop.app/Contents/Info.plist"
             bin="$verify/extracted/Tact Desktop.app/Contents/MacOS/tact-desktop"
             test -x "$bin"
+            test -x "$verify/extracted/Tact Desktop.app/Contents/MacOS/tact-acp"
             test -f "$verify/extracted/Tact Desktop.app/Contents/Resources/THIRD-PARTY-LICENSES.txt"
             test -f "$verify/extracted/Tact Desktop.app/Contents/Resources/Tact.icns"
           else
             bin="$verify/extracted/tact-desktop"
             test -x "$bin"
+            test -x "$verify/extracted/tact-acp"
             test -f "$verify/extracted/THIRD-PARTY-LICENSES.txt"
             test -f "$verify/extracted/share/applications/tact-desktop.desktop"
             test -f "$verify/extracted/share/icons/hicolor/256x256/apps/tact-desktop.png"

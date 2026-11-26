@@ -35,8 +35,8 @@ async fn parallel_read_files_both_succeed() {
 
     let ids = step_finished_ids(&updates);
     assert_eq!(ids.len(), 2, "expected two StepFinished, got: {updates:?}");
-    assert!(ids.contains(&"read_a".to_string()));
-    assert!(ids.contains(&"read_b".to_string()));
+    assert!(ids.iter().any(|id| id == "read_a"));
+    assert!(ids.iter().any(|id| id == "read_b"));
     assert!(
         updates.iter().all(|u| {
             if let AgentUpdate::StepFinished { result, .. } = u {
@@ -295,7 +295,7 @@ async fn read_then_write_chain() {
 
     let ids = step_finished_ids(&updates);
     assert!(
-        ids.contains(&"read1".to_string()) && ids.contains(&"write1".to_string()),
+        ids.iter().any(|id| id == "read1") && ids.iter().any(|id| id == "write1"),
         "expected read then write steps, got: {updates:?}"
     );
     assert_eq!(
