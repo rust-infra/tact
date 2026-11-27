@@ -140,6 +140,9 @@ impl SessionLockGuard {
 
 enum ExitSignal {
     Interrupt,
+    // Windows only waits for Ctrl-C here; there is no SIGTERM path to produce
+    // this variant, so keep it out of that build instead of dead code.
+    #[cfg(unix)]
     Terminate,
 }
 
@@ -166,6 +169,7 @@ async fn wait_for_exit_signal() -> ExitSignal {
 fn exit_after_signal(signal: ExitSignal) {
     let code = match signal {
         ExitSignal::Interrupt => 130,
+        #[cfg(unix)]
         ExitSignal::Terminate => 143,
     };
     std::process::exit(code);
