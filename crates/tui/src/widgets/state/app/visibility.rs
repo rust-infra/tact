@@ -1,5 +1,14 @@
 use ratatui::{text::Line, widgets::ScrollbarState};
 
+/// What `z` flips: a mixed activity region or a tool-only run.
+///
+/// The two live in different state modules (a region counts cards, a run counts
+/// calls), so the caller has to know which one it got before it can toggle.
+enum FoldTarget {
+    Region(agent_tui_kit::state::activity_region::ActivityRegion),
+    Run(String),
+}
+
 use crate::{
     render::{
         render_md::{format_table_lines, render_markdown_tui},
@@ -53,38 +62,225 @@ impl App {
             .log_indent()
     }
 
-    /// Fold or unfold the first tool run the reader can see.
+    /// Fold or unfold the first foldable run or activity region the reader can
+    /// see.
     ///
-    /// Not the run under the viewport's top row: in a real log that row is
-    /// usually prose or a blank separator, so a rule keyed on it finds no run at
-    /// all and `z` silently does nothing. Scanning the visible rows for the
-    /// first run makes the key work wherever the reader has scrolled to, and it
-    /// is what makes an expanded run foldable again — expanding moves the
-    /// summary row off the top, so the old rule lost the run the moment it was
-    /// unfolded.
+    /// Not the fold under the viewport's top row: in a real log that row is
+    /// usually prose or a blank separator, so a rule keyed on it finds nothing
+    /// at all and `z` silently does nothing. Scanning the visible rows makes the
+    /// key work wherever the reader has scrolled to, and it is what makes an
+    /// expanded fold foldable again — expanding moves the summary row off the
+    /// top, so a rule keyed on the top row loses the fold the moment it opens.
     ///
-    /// Returns true when a run was actually flipped, so a caller can tell "there
-    /// is no run in view" from "the reader just folded something".
+    /// A mixed activity region (cards + calls) wins over a tool run at the same
+    /// row: it is the larger unit, and folding it is what the reader expected
+    /// from a turn that thought and then ran commands.
+    ///
+    /// Returns true when something was actually flipped, so a caller can tell
+    /// "there is no fold in view" from "the reader just folded something".
     pub(crate) fn toggle_fold_in_view(&mut self) -> bool {
-        let Some(run_id) = self.first_run_in_view() else {
-            return false;
-        };
-        self.toggle_fold_by_run_id(&run_id)
+        match self.first_fold_in_view() {
+            Some(FoldTarget::Region(region)) => self.toggle_region(region),
+            Some(FoldTarget::Run(run_id)) => self.toggle_fold_by_run_id(&run_id),
+            None => false,
+        }
     }
 
-    /// The identity of the first run that has any row inside the viewport.
+    /// Fold every region and tool run that is open right now.
     ///
-    /// Run membership is exclusive and ordered, so the first match while
-    /// scanning down is both the topmost run and the only one to flip: `z` means
-    /// one run, and a key that folded two would be a different verb.
+    /// The bulk counterpart of [`Self::toggle_fold_in_view`], for the shape that
+    /// prompted it: a reader expands a few regions to read a turn, then has no
+    /// one place to press because the summaries they came from are gone. `z`
+    /// finds one fold in view; this finds all of them, which is what "put the
+    /// work away" means when several are open.
     ///
-    /// Falls back to the whole log when nothing has been drawn yet. A key can
-    /// arrive before the first frame, and then the caches say nothing rather
-    /// than saying the viewport is empty: `visual_start` is empty and `offset`
-    /// still holds its `u16::MAX` sentinel, so both are treated as unknown.
-    fn first_run_in_view(&self) -> Option<String> {
+    /// Only **folds**. A key that toggled each fold independently would need a
+    /// reading of mixed state ("some open, some shut") that says more about the
+    /// viewport than about what the reader wants; folding is the direction that
+    /// always reduces the log, and `z` still opens one at a time.
+    ///
+    /// Returns how many folds it closed, so the caller can stay silent when
+    /// there was nothing to do.
+    pub(crate) fn fold_all_activity(&mut self) -> usize {
+        let mut folded = 0;
+        let regions = self.activity_regions();
+        for region in &regions {
+            if !region.folds_here() {
+                continue;
+            }
+            // Closed by the same rules the renderer uses: a region that is
+            // already folded, or that cannot fold yet (a live call), is left
+            // alone.
+            if !agent_tui_kit::state::activity_region::is_foldable(&self.tools().blocks, region)
+                || agent_tui_kit::state::activity_region::is_folded(
+                    &self.tools().blocks,
+                    region,
+                    &self.tools().state().folded_regions,
+                    &self.tools().state().unfolded_regions,
+                )
+            {
+                continue;
+            }
+            // Recorded directly rather than through `toggle_region`, which flips
+            // and would therefore *open* the ones already folded.
+            let key = region.key.clone();
+            self.tools_mut().unfolded_regions.remove(&key);
+            self.tools_mut().folded_regions.insert(key);
+            folded += 1;
+        }
         let runs = agent_tui_kit::state::tool_group::runs(&self.tools().blocks);
-        if runs.is_empty() {
+        for run in &runs {
+            // A run inside a region is that region's member; folding it too
+            // would record a key nothing ever reads.
+            let inside_region = regions
+                .iter()
+                .any(|region| region.folds_here() && region.contains(run.phys_idx));
+            if inside_region {
+                continue;
+            }
+            if !agent_tui_kit::state::tool_group::is_foldable(&self.tools().blocks, run)
+                || agent_tui_kit::state::tool_group::is_folded(
+                    &self.tools().blocks,
+                    run,
+                    self.tools().state(),
+                )
+            {
+                continue;
+            }
+            if let Some(key) = agent_tui_kit::state::tool_group::run_key(&self.tools().blocks, run)
+            {
+                let key = key.to_string();
+                self.tools_mut().unfolded.remove(&key);
+                self.tools_mut().folded.insert(key);
+                folded += 1;
+            }
+        }
+        if folded > 0 {
+            // One generation bump for the whole sweep: the layout caches key on
+            // it, and per-fold bumps would only rebuild them repeatedly.
+            self.tools_mut().state_mut().fold_rev = self.tools().state().fold_rev.wrapping_add(1);
+            self.dirty = true;
+        }
+        folded
+    }
+
+    /// Whether a physical log row ends a turn.
+    ///
+    /// Two things end a turn on screen: the trailing separator `TaskComplete`
+    /// appends, and the blank row a user message opens with. Both occupy a row
+    /// of their own, so both already break adjacency — but `activity_region`
+    /// reads rows, not turns, and a turn end that left no row would let two
+    /// turns fuse into one summary. Handing the answer in keeps the rule honest
+    /// about what the guarantee rests on.
+    pub(crate) fn is_turn_boundary_row(&self, phys: usize) -> bool {
+        self.log_scroll.turn_boundary_rows.contains(&phys)
+    }
+
+    /// Runs of narration rows in the log, or empty when the switch is off.
+    ///
+    /// Derived from `log.items` on every call rather than cached: the fold is
+    /// asked for every row of every frame, but a scan over the log is what
+    /// `fold.hides` already does, and a cache keyed on the row count would be
+    /// stale between a `Commentary` relabel and the next append.
+    pub(crate) fn commentary_runs(
+        &self,
+    ) -> Vec<agent_tui_kit::state::activity_region::CommentaryRun> {
+        if !self.fold_commentary {
+            return Vec::new();
+        }
+        // Rows a card owns are blank too, and they are **not** narration:
+        // absorbing one would make a run overlap a tool block or a card and the
+        // region builder would drop the whole stretch.
+        let owned = self.card_owned_rows();
+
+        agent_tui_kit::state::activity_region::commentary_runs(&self.log.items, |phys| {
+            owned.contains(&phys)
+        })
+    }
+
+    /// The rows each card owns, as `(first_phys_row, rows)` pairs.
+    ///
+    /// A *card* is a tool block or a thinking card, live or finished. This is
+    /// the one place that knows how many rows each kind occupies: the fold's
+    /// narration scan needs the set (a card's blank rows are not narration) and
+    /// the renderer needs the pairs (to know which rows a card paints). They
+    /// must agree — two copies drifted once and a narration run swallowed a
+    /// card's rows, which made the region builder drop the whole stretch.
+    ///
+    /// Tool blocks first, then thinking cards, in log order within each group.
+    pub(crate) fn card_row_spans(&self) -> Vec<(usize, usize)> {
+        let mut spans = self.tool_row_spans();
+        spans.extend(self.thinking_row_spans());
+        spans
+    }
+
+    /// [`Self::card_row_spans`], tool blocks only.
+    pub(crate) fn tool_row_spans(&self) -> Vec<(usize, usize)> {
+        self.tools()
+            .blocks
+            .iter()
+            .map(|block| (block.phys_idx, block.output.visual_rows(false).max(1)))
+            .chain(
+                self.tools()
+                    .active
+                    .iter()
+                    .map(|active| (active.phys_idx, active.output.visual_rows(false).max(1))),
+            )
+            .collect()
+    }
+
+    /// [`Self::card_row_spans`], thinking cards only.
+    pub(crate) fn thinking_row_spans(&self) -> Vec<(usize, usize)> {
+        let mut spans: Vec<(usize, usize)> = self
+            .thinking()
+            .blocks
+            .iter()
+            .map(|block| {
+                (
+                    block.phys_idx,
+                    crate::render::cells::thinking::COMPLETED_THINKING_ROWS,
+                )
+            })
+            .collect();
+        if let Some(active) = &self.thinking().state().active {
+            spans.push((
+                active.phys_idx,
+                crate::render::cells::thinking::thinking_visual_rows(active.body_line_count()),
+            ));
+        }
+        spans
+    }
+
+    /// The rows a card owns, as a set — [`Self::card_row_spans`] expanded.
+    pub(crate) fn card_owned_rows(&self) -> std::collections::BTreeSet<usize> {
+        let mut owned = std::collections::BTreeSet::new();
+        for (phys, rows) in self.card_row_spans() {
+            owned.extend(phys..phys + rows);
+        }
+        owned
+    }
+
+    /// Every activity region of this log, with this log's turn boundaries.
+    pub(crate) fn activity_regions(
+        &self,
+    ) -> Vec<agent_tui_kit::state::activity_region::ActivityRegion> {
+        let commentary = self.commentary_runs();
+        self.tools()
+            .activity_regions(self.thinking().state(), &commentary, |phys| {
+                self.is_turn_boundary_row(phys)
+            })
+    }
+
+    /// The first foldable fold that has any row inside the viewport.
+    ///
+    /// Returns the whole region rather than its key: the caller needs the
+    /// member rows to compensate the scroll, and re-deriving the region after
+    /// the borrow ends would let a frame land in between.
+    fn first_fold_in_view(&self) -> Option<FoldTarget> {
+        let blocks = &self.tools().blocks;
+        let regions = self.activity_regions();
+        let runs = agent_tui_kit::state::tool_group::runs(blocks);
+        if regions.is_empty() && runs.is_empty() {
             return None;
         }
         let (top_logical, bottom_logical) = if self.log_scroll.visual_start.is_empty() {
@@ -99,11 +295,25 @@ impl App {
         };
         (top_logical..bottom_logical).find_map(|logical| {
             let phys = self.visible_message_index(logical)?;
+            if let Some(index) =
+                agent_tui_kit::state::activity_region::region_at_phys(&regions, phys)
+            {
+                let region = &regions[index];
+                // Only a region the fold rules actually fold belongs to `z`; a
+                // tool-only one is folded by the tool run below, whose summary
+                // names each call. `folds_here` is the same predicate the fold
+                // uses — `mixes_thinking_and_tools` misses a region headed by a
+                // narration run, and `z` would then flip the inner run while the
+                // region's summary stayed on screen.
+                if region.folds_here()
+                    && agent_tui_kit::state::activity_region::is_foldable(blocks, region)
+                {
+                    return Some(FoldTarget::Region(region.clone()));
+                }
+            }
             agent_tui_kit::state::tool_group::run_at_phys(&runs, phys)
-                .and_then(|index| {
-                    agent_tui_kit::state::tool_group::run_key(&self.tools().blocks, &runs[index])
-                })
-                .map(str::to_string)
+                .and_then(|index| agent_tui_kit::state::tool_group::run_key(blocks, &runs[index]))
+                .map(|key| FoldTarget::Run(key.to_string()))
         })
     }
 
@@ -153,6 +363,63 @@ impl App {
         // would ask for the repaint that shows it.
         self.dirty = true;
         true
+    }
+
+    /// Fold or unfold an activity region, keeping the reader's eye on the line
+    /// it was on.
+    ///
+    /// The region twin of [`Self::toggle_fold_by_run_id`]: same compensation,
+    /// same reason for it. A region's summary row takes over its first member's
+    /// row, so the lines that disappear are its span less that one.
+    ///
+    /// Takes the region by value because the caller already computed it while
+    /// it held the borrow of `thinking` and `tools` that produced it.
+    pub(crate) fn toggle_region(
+        &mut self,
+        region: agent_tui_kit::state::activity_region::ActivityRegion,
+    ) -> bool {
+        let viewport = self.log_viewport_top();
+        let (start, end) = (region.phys_idx, region.phys_idx + region.expanded_rows);
+        let folding = if agent_tui_kit::state::activity_region::is_folded(
+            &self.tools().blocks,
+            &region,
+            &self.tools().state().folded_regions,
+            &self.tools().state().unfolded_regions,
+        ) {
+            None
+        } else {
+            Some((
+                self.visual_line_of_phys(start),
+                self.visual_line_of_phys(end),
+            ))
+        };
+        if !self.tools_mut().toggle_region(&region) {
+            return false;
+        }
+        if let Some((Some(start), Some(end))) = folding
+            && end > start
+        {
+            let removed = end.saturating_sub(start).saturating_sub(1);
+            self.compensate_for_removed_rows(removed, end <= viewport);
+        }
+        self.dirty = true;
+        true
+    }
+
+    /// Fold or unfold the region whose stable identity is `region_id`.
+    pub(crate) fn toggle_region_by_id(&mut self, region_id: &str) -> bool {
+        // `self.activity_regions()`, not `activity_region::regions`: the latter
+        // derives the members *without* the log's narration runs, so the region
+        // the renderer drew a summary for would not exist here and the click
+        // would do nothing. One derivation, used by the fold, the renderer and
+        // this toggle alike.
+        let regions = self.activity_regions();
+        let Some(index) = agent_tui_kit::state::activity_region::region_by_key(&regions, region_id)
+        else {
+            return false;
+        };
+        let region = regions[index].clone();
+        self.toggle_region(region)
     }
 
     /// The visual line a physical log row starts on, from the last frame's
@@ -550,14 +817,21 @@ impl App {
         let new_rows = crate::render::cells::thinking::COMPLETED_THINKING_ROWS;
         self.resize_thinking_placeholder_rows(active.phys_idx, old_rows, new_rows);
         let elapsed = active.started_at.elapsed();
-        self.thinking_mut().blocks.push(ThinkingBlock::new(
-            active.block_id.clone(),
-            active.phys_idx,
-            active.content,
-            summary,
-            cached_markdown,
-            elapsed,
-        ));
+        let span = agent_tui_kit::state::ToolSpan {
+            started_at: active.started_at,
+            finished_at: active.started_at + elapsed,
+        };
+        self.thinking_mut().blocks.push(
+            ThinkingBlock::new(
+                active.block_id.clone(),
+                active.phys_idx,
+                active.content,
+                summary,
+                cached_markdown,
+                elapsed,
+            )
+            .with_span(span),
+        );
         // The ledger gets the same measurement: `ThinkingChunk::Finished` is a
         // bare marker, and this is the only place the wall clock still exists.
         self.trajectory.finish_thinking(elapsed);
@@ -609,13 +883,33 @@ impl App {
     }
 
     fn phys_idx_in_tool_block(&self, phys: usize) -> bool {
+        // An active card that the shell has not backfilled yet carries
+        // `phys_idx: 0` (see `ToolEvent::Started`). Treating that as "the card
+        // owns row 0 and everything below it" made `ensure_gap_before_tools`
+        // believe the row it was looking at was already inside a card, so it
+        // skipped the gap and the folded summary landed flush against the
+        // user's prompt. A card is only placed once the shell has told it
+        // where it goes.
+        let placed = |phys_idx: usize| self.placement_is_known(phys_idx);
         self.tools().active.iter().any(|active| {
-            phys >= active.phys_idx
+            placed(active.phys_idx)
+                && phys >= active.phys_idx
                 && phys <= active.phys_idx + active.output.message_placeholder_rows()
         }) || self.tools().blocks.iter().any(|block| {
             phys >= block.phys_idx
                 && phys <= block.phys_idx + block.output.message_placeholder_rows()
         })
+    }
+
+    /// Whether `phys_idx` was written by the shell rather than left at the
+    /// zero initialiser.
+    ///
+    /// `0` is both the unset marker and a legitimate row, so the two are told
+    /// apart by the log: the very first item is never a tool card (the log
+    /// opens with the session banner), so a card claiming row 0 while the log
+    /// has any item at all has not been placed.
+    fn placement_is_known(&self, phys_idx: usize) -> bool {
+        phys_idx != 0 || self.log.items.is_empty()
     }
 
     /// Whether `phys` is one of the rows a thinking card draws.
@@ -879,6 +1173,7 @@ impl App {
 
     pub(crate) fn push_tool_placeholder_rows(&mut self, rows: usize) -> usize {
         self.ensure_gap_before_tools();
+
         self.log
             .push_placeholder_rows(LogItemKind::SystemTool, rows)
     }

@@ -112,6 +112,17 @@ pub struct ThinkingBlock {
     pub summary: String,
     pub cached_markdown: Vec<ratatui::text::Line<'static>>,
     pub elapsed: Duration,
+    /// When the thought started and ended, on the same clock as
+    /// [`crate::state::ToolSpan`].
+    ///
+    /// [`Self::elapsed`] alone cannot answer "how long did this stretch of work
+    /// take": a region mixes thoughts with calls that ran **concurrently** or in
+    /// sequence, and the only correct total is the union of their wall clocks.
+    /// Summing `elapsed` would count a thought that overlapped a call twice.
+    ///
+    /// `None` for a card rebuilt from history, where no live clock existed — a
+    /// total that guessed at those would be a number the reader could not trust.
+    pub span: Option<crate::state::ToolSpan>,
 }
 
 impl ThinkingBlock {
@@ -131,7 +142,15 @@ impl ThinkingBlock {
             summary,
             cached_markdown,
             elapsed,
+            span: None,
         }
+    }
+
+    /// Attach the live wall clock, so a region can union it with its calls.
+    #[must_use]
+    pub fn with_span(mut self, span: crate::state::ToolSpan) -> Self {
+        self.span = Some(span);
+        self
     }
 }
 

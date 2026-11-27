@@ -4,6 +4,7 @@
 //! Each type is pure state + methods — no `App` dependency.
 
 pub mod account;
+pub mod activity_region;
 pub mod background_panel;
 pub mod filtered_list;
 pub mod goal_panel;
@@ -27,6 +28,7 @@ pub mod trajectory;
 pub mod ui_types;
 
 pub use account::AccountState;
+pub use activity_region::ActivityRegion;
 pub use background_panel::BackgroundPanelState;
 pub use filtered_list::{FilteredList, clamp_step, contains_ignore_case};
 pub use goal_panel::GoalPanelState;

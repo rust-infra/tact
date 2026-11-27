@@ -1851,3 +1851,215 @@ fn a_footer_on_a_clipped_card_is_clickable_in_both_directions() {
         );
     }
 }
+
+/// Scrolled away from the tail, the current turn's prompt is pinned on the
+/// panel's first content row so a long turn cannot bury it.
+#[test]
+fn a_scrolled_away_prompt_is_pinned_to_the_top() {
+    let mut app = make_app();
+    app.add_user_message("install mind-elixir please".into());
+    for i in 0..40 {
+        app.add_system_message(format!("noise line {i}"));
+    }
+    // A header only claims "this is what you are working on" while a turn is in
+    // flight (`prompt_needs_pinning`); see
+    // `a_finished_turn_does_not_keep_its_prompt_pinned` for the other half.
+    app.task_start_time = Some(chrono::Local::now() - chrono::Duration::seconds(5));
+    // Draw once so the caches exist, then scroll to the very top.
+    let _ = render_log_panel_text(&mut app, 60, 14);
+    app.log_scroll.follow = false;
+    app.log_scroll.visual_top = 4;
+    let text = render_log_panel_text(&mut app, 60, 14);
+
+    let first = text.lines().nth(1).unwrap_or_default();
+    assert!(
+        first.contains("> install mind-elixir please"),
+        "the pinned row must lead the panel: {text:?}"
+    );
+    assert_eq!(
+        app.log_scroll.pinned_top_inset, 1,
+        "the row it took is published for the pointer path"
+    );
+}
+
+/// A header costs a body row, on top of whatever the live stats row already
+/// took. A panel that can still afford both keeps the header; one that cannot
+/// keeps its body instead.
+///
+/// The combined budget is the point. A turn in flight publishes **two**
+/// turn-boundary affordances — the live stats row and the header — and both are
+/// deducted from the same panel height, so this case measures the header
+/// against what the stats row left behind.
+#[test]
+fn a_panel_that_cannot_afford_a_header_keeps_its_body() {
+    let mut app = make_app();
+    app.add_user_message("短提示".into());
+    for i in 0..20 {
+        app.add_system_message(format!("noise {i}"));
+    }
+    // Required for a header at all (`prompt_needs_pinning`).
+    app.task_start_time = Some(chrono::Local::now());
+
+    // 8 rows: 2 borders + 1 stats + 1 header + 4 body — everything fits.
+    let _ = render_log_panel_text(&mut app, 40, 8);
+    app.log_scroll.follow = false;
+    app.log_scroll.visual_top = 2;
+    let _ = render_log_panel_text(&mut app, 40, 8);
+    assert_eq!(
+        app.log_scroll.pinned_top_inset, 1,
+        "8 rows still fund the stats row, a header and the 2-row floor"
+    );
+
+    // 5 rows: 2 borders + 1 stats leaves 2 — a header would starve the body.
+    let _ = render_log_panel_text(&mut app, 40, 5);
+    assert_eq!(
+        app.log_scroll.pinned_top_inset, 0,
+        "2 rows after the stats row cannot fund both a header and the body floor"
+    );
+}
+
+/// A finished turn's prompt is history, not a header.
+///
+/// The header exists to answer "what am I working on"; after the turn ends it
+/// would answer with the wrong turn. `task_start_time` is the same field the
+/// live stats row reads, so the two turn-boundary affordances agree.
+#[test]
+fn a_finished_turn_does_not_keep_its_prompt_pinned() {
+    let mut app = make_app();
+    app.add_user_message("an old finished prompt".into());
+    for i in 0..40 {
+        app.add_system_message(format!("noise line {i}"));
+    }
+    app.task_start_time = None; // the turn is over
+    let _ = render_log_panel_text(&mut app, 60, 14);
+    app.log_scroll.follow = false;
+    app.log_scroll.visual_top = 4;
+    let text = render_log_panel_text(&mut app, 60, 14);
+
+    assert!(
+        !text.contains("> an old finished prompt"),
+        "a finished turn must not pin its prompt, got:\n{text}"
+    );
+    assert_eq!(
+        app.log_scroll.pinned_top_inset, 0,
+        "no row may be taken for a header that is not drawn"
+    );
+}
+
+/// A multi-line prompt is flattened to the one row it is given, and a long one
+/// is elided rather than wrapped over the body.
+#[test]
+fn a_long_multi_line_prompt_is_elided_to_one_row() {
+    let mut app = make_app();
+    app.add_user_message(format!(
+        "first line {}\nsecond line cannot be shown",
+        "x".repeat(200)
+    ));
+    for i in 0..40 {
+        app.add_system_message(format!("noise line {i}"));
+    }
+    // Pinning requires a turn in flight (`prompt_needs_pinning`).
+    app.task_start_time = Some(chrono::Local::now());
+    let _ = render_log_panel_text(&mut app, 50, 14);
+    app.log_scroll.follow = false;
+    app.log_scroll.visual_top = 4;
+    let text = render_log_panel_text(&mut app, 50, 14);
+
+    let pinned = text.lines().nth(1).unwrap_or_default();
+    // The row begins with the panel's left border, so look inside it.
+    assert!(pinned.contains("> first line x"), "{pinned:?}");
+    assert!(
+        pinned.contains('…'),
+        "an over-long prompt is elided: {pinned:?}"
+    );
+    assert!(
+        !pinned.contains("cannot be shown"),
+        "only the first line survives: {pinned:?}"
+    );
+}
+
+/// The header and the live stats line can be on screen together, and both come
+/// out of the same height. Neither may starve the other.
+#[test]
+fn the_pinned_header_and_the_live_stats_row_coexist() {
+    let mut app = make_app();
+    app.add_user_message("a prompt that will scroll away".into());
+    for i in 0..40 {
+        app.add_system_message(format!("noise line {i}"));
+    }
+    // A task in flight is what reserves the stats row.
+    app.task_start_time = Some(chrono::Local::now());
+    let _ = render_log_panel_text(&mut app, 60, 16);
+    app.log_scroll.follow = false;
+    app.log_scroll.visual_top = 4;
+    let _ = render_log_panel_text(&mut app, 60, 16);
+
+    assert_eq!(app.log_scroll.pinned_top_inset, 1, "header drawn");
+    // 16 rows: 2 borders + 1 stats row + 1 header => 12 body rows. Asserting
+    // the exact arithmetic is what proves both deductions happened; a `>= 2`
+    // would pass even if the reserve were silently zero.
+    assert_eq!(
+        app.log_scroll.height, 12,
+        "the stats row and the header both come out of the panel height"
+    );
+}
+
+/// The reported bug, asserted through the renderer: a failed tool used to
+/// clear `task_start_time`, so the live stats row vanished while the turn was
+/// still running. Real update sequence, then look at the panel.
+#[test]
+fn the_live_stats_row_survives_a_failed_tool() {
+    use crate::test_fixtures::StepCall;
+    use tact_protocol::AgentUpdate;
+
+    let mut app = make_app();
+    app.add_user_message("run the thing".into());
+    app.task_start_time = Some(chrono::Local::now() - chrono::Duration::seconds(65));
+    app.status = crate::widgets::state::Status::Executing {
+        current_step: 0,
+        total: 2,
+    };
+
+    app.handle_agent_update(
+        StepCall::new(0, "t1", "bash", "cargo test")
+            .presentation(tact_protocol::ToolPresentationInfo::generic("bash"))
+            .started(),
+    );
+    app.handle_agent_update(AgentUpdate::StepFailed {
+        idx: 0,
+        run_id: None,
+        tool_id: "t1".into(),
+        arg_summary: "cargo test".into(),
+        error: "exit 101".into(),
+    });
+
+    let text = render_log_panel_text(&mut app, 120, 12);
+    assert!(
+        text.contains("Task stats:"),
+        "the turn is still running, so the live stats row must still be there, got:\n{text}"
+    );
+}
+
+/// Deciding whether to pin must not depend on the height that pinning itself
+/// changes: the same scroll position must give the same answer on two
+/// consecutive frames.
+#[test]
+fn the_pin_decision_is_stable_across_frames() {
+    let mut app = make_app();
+    app.add_user_message("stable prompt".into());
+    for i in 0..40 {
+        app.add_system_message(format!("noise line {i}"));
+    }
+    let _ = render_log_panel_text(&mut app, 60, 14);
+    app.log_scroll.follow = false;
+    app.log_scroll.visual_top = 4;
+
+    let _ = render_log_panel_text(&mut app, 60, 14);
+    let first = app.log_scroll.pinned_top_inset;
+    let _ = render_log_panel_text(&mut app, 60, 14);
+    let second = app.log_scroll.pinned_top_inset;
+    assert_eq!(
+        first, second,
+        "a pin decision that feeds on its own height would flip between frames"
+    );
+}

@@ -5,6 +5,11 @@
 //! Rendering stays in `root`; these modules own the small, testable decisions
 //! that must stay consistent across the shell: layout, transcript identity,
 //! focus restoration, and command-surface metadata.
+//!
+//! `readers`, `subagent_model`, `system_prompt`, and `title_bar` are currently
+//! unreferenced by the shell. They hold real decisions and tests rather than
+//! re-export shims, so they are kept intentionally: the next reader or title-bar
+//! change should adopt them instead of inlining a fourth copy.
 
 pub mod ansi;
 pub mod background;
@@ -18,7 +23,6 @@ pub mod diff_table;
 pub mod extensions;
 pub mod file_links;
 pub mod filter_table;
-pub mod goals;
 pub mod inspector;
 pub mod layout;
 pub mod leaf;
@@ -41,7 +45,6 @@ pub mod slash_overlay;
 pub mod status;
 pub mod sticky;
 pub mod subagent_model;
-pub mod subagents;
 pub mod surface;
 pub mod system_prompt;
 pub mod task_dag;

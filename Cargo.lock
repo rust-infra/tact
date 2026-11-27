@@ -10239,6 +10239,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "crossterm 0.28.1",
+ "image",
  "ratatui",
  "regex",
  "serde",

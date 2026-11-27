@@ -61,6 +61,51 @@ impl<T: Renderable> Renderable for SelectedCell<T> {
     }
 }
 
+/// Paints `⏷` in a row's fold gutter, for a region whose head row is plain text.
+///
+/// A region headed by a narration row has no card to hang the control on, and
+/// the row itself is prose. Wrapping its cell keeps the glyph in the same
+/// column every other fold control uses — the columns the closed summary's `⏵`
+/// occupied — so the fold does not move under the pointer.
+struct FoldGutterCell<T> {
+    inner: T,
+    style: Style,
+    /// Columns the row's own text is indented by. The glyph goes
+    /// [`crate::render::util::FOLD_GUTTER_COLS`] columns left of that indent —
+    /// the same geometry a folded region summary uses, so the control occupies
+    /// one column in both states.
+    indent: u16,
+}
+
+impl<T: Renderable> Renderable for FoldGutterCell<T> {
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        self.render_partial(area, buf, 0);
+    }
+
+    fn height(&self, width: u16) -> u16 {
+        self.inner.height(width)
+    }
+
+    fn render_partial(&self, area: Rect, buf: &mut Buffer, skip_lines: usize) {
+        // Text untouched; the glyph goes in the gutter left of it, where a
+        // folded region summary draws its `⏵`.
+        self.inner.render_partial(area, buf, skip_lines);
+        let x = area.x + crate::render::util::fold_glyph_x(self.indent);
+        let glyph = Rect::new(
+            x,
+            area.y,
+            crate::render::util::FOLD_GUTTER_COLS.min(
+                area.width
+                    .saturating_sub(crate::render::util::fold_glyph_x(self.indent)),
+            ),
+            1,
+        );
+        if skip_lines == 0 && glyph.width > 0 && area.height > 0 {
+            buf.set_string(glyph.x, glyph.y, "⏷", self.style);
+        }
+    }
+}
+
 fn tool_id_for_phys(ctx: &RenderCtx, phys_idx: usize) -> Option<String> {
     ctx.tools
         .active
@@ -98,6 +143,11 @@ pub enum OpenTarget {
     ToolRun {
         run_id: String,
     },
+    /// A folded activity region's summary row (thinking cards + tool calls).
+    /// Activating it toggles that region instead of opening a popup.
+    ActivityRegion {
+        region_id: String,
+    },
 }
 
 impl OpenTarget {
@@ -126,6 +176,13 @@ impl OpenTarget {
     pub fn tool_run(run_id: impl Into<String>) -> Self {
         Self::ToolRun {
             run_id: run_id.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn activity_region(region_id: impl Into<String>) -> Self {
+        Self::ActivityRegion {
+            region_id: region_id.into(),
         }
     }
 }
@@ -199,11 +256,15 @@ pub fn render_log_panel_pure(
 
     // The rect the renderer will draw cells into, computed up front: a cell's
     // hit rects have to be measured against the same area it draws in.
+    // `log_top_inset` is what the host reserved above the first log row (a
+    // pinned prompt header). It is already out of `log_scroll.height`, so the
+    // viewport holds one fewer row; shifting `inner` down is what puts that
+    // row where the header was drawn instead of drawing over it.
     let inner = Rect::new(
         area.x + left,
-        area.y + top,
+        area.y + top + ctx.log_top_inset,
         area.width.saturating_sub(left + right),
-        area.height.saturating_sub(top + bottom),
+        area.height.saturating_sub(top + bottom + ctx.log_top_inset),
     );
 
     let mut renderer = LogColumnRenderer::new().with_viewport(visual_scroll, visible_height);
@@ -224,6 +285,44 @@ pub fn render_log_panel_pure(
         }
 
         let phys_idx = ctx.log_scroll.visible_indices.get(logical_i).copied();
+
+        // A region headed by a **narration** row has no card to hang a control
+        // on, and its head row is plain prose — so this is the one head that
+        // would otherwise leave the region open with no way back. Cards and tool
+        // blocks register the richer control inside their own branches below;
+        // registering there only would mean a narration-headed region could be
+        // opened and never closed.
+        let mut narration_fold: Option<String> = None;
+        let narration_head = phys_idx.is_some_and(|phys| {
+            ctx.log
+                .items
+                .get(phys)
+                .is_some_and(|item| item.kind == LogItemKind::AssistantCommentary)
+        });
+        if narration_head
+            && let Some(phys) = phys_idx
+            && let Some(region_id) = ctx.tools.expanded_region_head_at(
+                ctx.thinking,
+                ctx.commentary_runs,
+                |phys: usize| ctx.turn_boundary_rows.contains(&phys),
+                phys,
+            )
+        {
+            // `cell_slice` owns the viewport arithmetic: the visual start is a
+            // whole-log line, and this row's screen position is that line less
+            // the scroll offset.
+            if let Some((area, _skip)) = renderer.cell_slice(vs_cache[logical_i], 1, inner) {
+                // Same fold gutter as every other control: the glyph columns
+                // immediately left of the row's text.
+                let indent = phys_idx.map_or(0, |p| log_indent_at(ctx.log, p));
+                let x = area.x + crate::render::util::fold_glyph_x(indent);
+                open_actions.push(OpenAction::new(
+                    OpenTarget::activity_region(region_id.clone()),
+                    Rect::new(x, area.y, crate::render::util::FOLD_GUTTER_COLS, 1),
+                ));
+            }
+            narration_fold = Some(region_id);
+        }
 
         // Compute the byte-range selection for this logical row, if any.
         //
@@ -247,7 +346,7 @@ pub fn render_log_panel_pure(
             let kind = ctx.log.items[phys].kind;
             let category = match kind {
                 LogItemKind::User => "user",
-                LogItemKind::AssistantMarkdown => "assistant",
+                LogItemKind::AssistantMarkdown | LogItemKind::AssistantCommentary => "assistant",
                 LogItemKind::SystemPlain(_)
                 | LogItemKind::SystemMarkdown
                 | LogItemKind::SystemTool
@@ -276,11 +375,48 @@ pub fn render_log_panel_pure(
             prev_category = Some(category);
         }
 
+        // A folded activity region paints one summary row where its first
+        // member sat, and its other rows are not in `visible_indices` at all.
+        // Checked before the tool run because a region that starts with a
+        // thinking card owns that row; a tool-only run never starts at a card.
+        if let Some(phys) = phys_idx
+            && let Some(cell) = {
+                ctx.tools.region_fold_summary(
+                    ctx.thinking,
+                    ctx.commentary_runs,
+                    phys,
+                    |phys: usize| ctx.turn_boundary_rows.contains(&phys),
+                    ctx.theme,
+                    &ctx.messages,
+                )
+            }
+        {
+            let identity = cell.identity().to_string();
+            if let Some((cell_area, _skip)) = renderer.cell_slice(
+                vs_cache[logical_i],
+                cell.height(inner.width) as usize,
+                inner,
+            ) {
+                open_actions.push(OpenAction::new(
+                    OpenTarget::activity_region(identity),
+                    cell_area,
+                ));
+            }
+            renderer.push(vs_cache[logical_i], cell);
+            logical_i += 1;
+            continue;
+        }
+
         // A folded run paints one summary row where its first member sat. Its
         // other rows are not in `visible_indices` at all, so they never reach
         // this loop.
         if let Some(phys) = phys_idx
-            && let Some(cell) = ctx.tools.fold_summary(phys, ctx.theme, &ctx.messages)
+            && let Some(cell) = ctx.tools.fold_summary(
+                phys,
+                |run_phys| ctx.runs_covered_by_region.contains(&run_phys),
+                ctx.theme,
+                &ctx.messages,
+            )
         {
             let identity = cell.identity().to_string();
             if let Some((cell_area, _skip)) = renderer.cell_slice(
@@ -323,10 +459,39 @@ pub fn render_log_panel_pure(
                             .find(|block| block.phys_idx == thinking_phys)
                             .map(|block| ThinkingCell::completed(block, ctx.theme, msgs))
                     });
+                // The card is an open activity region's first member: its header
+                // row has to carry the `⏷` that folds the region back, or the
+                // region can only ever be opened. Asked here, where the cell is
+                // built, because only the log knows the region's extent.
+                let is_region_head = ctx
+                    .tools
+                    .expanded_region_head_at(
+                        ctx.thinking,
+                        ctx.commentary_runs,
+                        |phys: usize| ctx.turn_boundary_rows.contains(&phys),
+                        thinking_phys,
+                    )
+                    .is_some();
+                let cell = cell.map(|cell| cell.with_region_head(is_region_head));
                 if let Some(cell) = cell {
                     // Record the footer button's rect from the geometry the
                     // renderer is about to draw with: the card's text and blank
                     // rows are not a click target, these glyphs are.
+                    if let Some((cell_area, skip_lines)) =
+                        renderer.cell_slice(vis_start, cell.height(inner.width) as usize, inner)
+                        && let Some(region_id) = ctx.tools.expanded_region_head_at(
+                            ctx.thinking,
+                            ctx.commentary_runs,
+                            |phys: usize| ctx.turn_boundary_rows.contains(&phys),
+                            thinking_phys,
+                        )
+                        && let Some(rect) = cell.region_toggle_rect(cell_area, skip_lines)
+                    {
+                        open_actions.push(OpenAction::new(
+                            OpenTarget::activity_region(region_id),
+                            rect,
+                        ));
+                    }
                     if let Some((cell_area, skip_lines)) =
                         renderer.cell_slice(vis_start, cell.height(inner.width) as usize, inner)
                         && let Some(rect) = cell.open_button_rect(cell_area, skip_lines)
@@ -423,7 +588,18 @@ pub fn render_log_panel_pure(
                     msgs,
                 )
                 .with_subagent_cancel(cancel_child_id.is_some())
-                .with_run_expanded_head(ctx.tools.expanded_run_head_at(phys_idx).is_some());
+                .with_run_expanded_head(
+                    ctx.tools.expanded_run_head_at(phys_idx).is_some()
+                        || ctx
+                            .tools
+                            .expanded_region_head_at(
+                                ctx.thinking,
+                                ctx.commentary_runs,
+                                |phys: usize| ctx.turn_boundary_rows.contains(&phys),
+                                phys_idx,
+                            )
+                            .is_some(),
+                );
                 if let Some((cell_area, skip_lines)) =
                     renderer.cell_slice(vis_start, card_cell.height(inner.width) as usize, inner)
                 {
@@ -432,7 +608,22 @@ pub fn render_log_panel_pure(
                     // run was folded, so the same place on screen folds and
                     // unfolds. Registered only when the title row is actually
                     // drawn — a clipped head has no control to hit.
-                    if let Some(run_id) = ctx.tools.expanded_run_head_at(phys_idx)
+                    // An expanded fold's control is its first member's title
+                    // row: that is where the summary sat, so the same place on
+                    // screen folds and unfolds. A mixed region wins when both
+                    // start here, matching `first_fold_in_view`.
+                    if let Some(region_id) = ctx.tools.expanded_region_head_at(
+                        ctx.thinking,
+                        ctx.commentary_runs,
+                        |phys: usize| ctx.turn_boundary_rows.contains(&phys),
+                        phys_idx,
+                    ) && let Some(rect) = card_cell.run_toggle_rect(cell_area, skip_lines)
+                    {
+                        open_actions.push(OpenAction::new(
+                            OpenTarget::activity_region(region_id),
+                            rect,
+                        ));
+                    } else if let Some(run_id) = ctx.tools.expanded_run_head_at(phys_idx)
                         && let Some(rect) = card_cell.run_toggle_rect(cell_area, skip_lines)
                     {
                         open_actions.push(OpenAction::new(OpenTarget::tool_run(run_id), rect));
@@ -545,17 +736,33 @@ pub fn render_log_panel_pure(
             ctx.theme.bg,
         );
 
-        if let Some(phys) = phys_idx
-            && ctx
-                .mouse
+        let selected = phys_idx.is_some_and(|phys| {
+            ctx.mouse
                 .card_selection
                 .as_ref()
                 .is_some_and(|selection| selection.contains_phys(phys))
-        {
+        });
+        // Push at this row's visual-line offset; LogColumnRenderer does a second
+        // viewport clip and calls TextCell::render_partial for sub-line trimming.
+        if let Some(_region_id) = narration_fold {
+            // An open region headed by prose: the glyph belongs to this row.
+            // The text does **not** move — the glyph goes into the gutter
+            // `FOLD_GUTTER_COLS` left of the text's indent (`fold_glyph_x`),
+            // which is the column the folded summary's `⏵` occupies. That is
+            // what keeps the control under the pointer across a flip.
+            let cell = FoldGutterCell {
+                inner: cell,
+                style: Style::default().fg(ctx.theme.accent).bg(ctx.theme.bg),
+                indent: phys_idx.map_or(0, |p| log_indent_at(ctx.log, p)),
+            };
+            if selected {
+                renderer.push(vs_cache[logical_i], SelectedCell { inner: cell });
+            } else {
+                renderer.push(vs_cache[logical_i], cell);
+            }
+        } else if selected {
             renderer.push(vs_cache[logical_i], SelectedCell { inner: cell });
         } else {
-            // Push at this row's visual-line offset; LogColumnRenderer does a second
-            // viewport clip and calls TextCell::render_partial for sub-line trimming.
             renderer.push(vs_cache[logical_i], cell);
         }
         logical_i += 1;
@@ -707,5 +914,97 @@ fn render_loading_spinner(
     if spinner_area.bottom() <= area.bottom() {
         frame.render_widget(Clear, spinner_area);
         frame.render_widget(Paragraph::new(spinner_line), spinner_area);
+    }
+}
+
+#[cfg(test)]
+mod fold_gutter_tests {
+    use super::*;
+
+    struct TwoRows;
+
+    impl Renderable for TwoRows {
+        fn render(&self, area: Rect, buf: &mut Buffer) {
+            self.render_partial(area, buf, 0);
+        }
+
+        fn height(&self, _width: u16) -> u16 {
+            2
+        }
+
+        fn render_partial(&self, area: Rect, buf: &mut Buffer, skip_lines: usize) {
+            for row in skip_lines..2 {
+                if row - skip_lines >= area.height as usize {
+                    break;
+                }
+                buf.set_string(
+                    area.x,
+                    area.y + (row - skip_lines) as u16,
+                    format!("row{row}"),
+                    Style::default(),
+                );
+            }
+        }
+    }
+
+    /// Render invariant (AGENTS.md): the glyph is painted on the row's own
+    /// surface, not on a default-styled cell.
+    ///
+    /// This control hangs off a *narration* row, whose text is drawn by the
+    /// prose cell — so the gutter column is the one place in the row the fold
+    /// owns, and it must carry the theme background like every other painted
+    /// cell, or it shows up as a bright speck inside an otherwise themed row.
+    #[test]
+    fn the_gutter_glyph_carries_the_row_background() {
+        let theme = crate::theme::Theme::from(crate::theme::ThemeName::Dark);
+        let cell = FoldGutterCell {
+            inner: TwoRows,
+            style: Style::default().fg(theme.accent).bg(theme.bg),
+            indent: 3,
+        };
+        let area = Rect::new(0, 0, 20, 2);
+        let mut buf = Buffer::empty(area);
+
+        cell.render(area, &mut buf);
+
+        let glyph_x = (0..area.width)
+            .find(|&x| buf[(x, 0)].symbol() == "⏷")
+            .expect("the fold glyph must be drawn on the head row");
+        assert_eq!(
+            buf[(glyph_x, 0)].bg,
+            theme.bg,
+            "the gutter glyph must sit on the row's background"
+        );
+        assert_eq!(buf[(glyph_x, 0)].fg, theme.accent);
+        assert_eq!(
+            glyph_x,
+            crate::render::util::fold_glyph_x(3),
+            "the glyph goes FOLD_GUTTER_COLS left of the text indent"
+        );
+    }
+
+    #[test]
+    fn a_clipped_head_does_not_paint_the_glyph_on_a_continuation_line() {
+        let cell = FoldGutterCell {
+            inner: TwoRows,
+            style: Style::default(),
+            indent: 3,
+        };
+        let area = Rect::new(0, 0, 20, 1);
+        let mut buf = Buffer::empty(area);
+
+        cell.render_partial(area, &mut buf, 1);
+
+        let text: String = (0..area.width)
+            .map(|x| buf[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(
+            !text.contains('⏷'),
+            "the head's glyph must not move onto a continuation row: {text:?}"
+        );
+        assert!(
+            text.contains("row1"),
+            "the visible continuation row still draws: {text:?}"
+        );
     }
 }

@@ -210,6 +210,9 @@ const PROJECTS_DIR: &str = "projects";
 /// Sub-directory names used under `.tact/`.  Available through [`TactPath`] methods.
 const TRANSCRIPT_SUBDIR: &str = "transcripts";
 const TOOL_RESULTS_SUBDIR: &str = "tool-results";
+/// Where a pasted file from outside the workspace is copied so the `@`
+/// reference it becomes still resolves under [`crate::tool::safe_path`].
+const ATTACHMENTS_SUBDIR: &str = "attachments";
 
 /// Tact's native MCP server declaration file, read from `.tact/` at both
 /// project and user scope.
@@ -375,6 +378,19 @@ impl TactPath {
     /// `<workdir>/.tact/tool-results`
     pub fn tool_results_dir(&self) -> PathBuf {
         self.tact_dir().join(TOOL_RESULTS_SUBDIR)
+    }
+
+    /// `<workdir>/.tact/attachments` — files pasted from outside the workspace.
+    ///
+    /// A pasted clipboard file usually lives in `~/Downloads` or `/tmp`, which
+    /// is outside `workdir`; the `@` reference the paste inserts must survive
+    /// [`crate::tool::safe_path`], so the file is copied in here first.
+    ///
+    /// Under `.tact/` because that directory is already git-ignored and already
+    /// holds per-session state: an attachment is conversation debris, not
+    /// source.
+    pub fn attachments_dir(&self) -> PathBuf {
+        self.tact_dir().join(ATTACHMENTS_SUBDIR)
     }
 
     // ----------------------------------------------------------------

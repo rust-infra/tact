@@ -397,8 +397,6 @@ pub fn running_elapsed_us(started_at: Instant) -> u64 {
 /// Layout metadata for reserving placeholder rows in the log panel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolLayout {
-    /// Total visual rows for a full `ToolCell` (header + optional detail card).
-    pub visual_rows: usize,
     /// Number of content preview rows inside the card.
     pub preview_lines: usize,
     /// Whether a detail card should be shown.
@@ -967,7 +965,6 @@ impl ToolWidget {
     pub fn layout(&self) -> ToolLayout {
         let Some(detail) = self.display_detail() else {
             return ToolLayout {
-                visual_rows: tool_visual_rows(false, 0, 0, false),
                 preview_lines: 0,
                 has_detail_card: false,
                 detail_collapsed: false,
@@ -978,7 +975,6 @@ impl ToolWidget {
             .unwrap_or_else(|| detail.lines().count());
         if self.collapses_detail(detail_lines) {
             return ToolLayout {
-                visual_rows: tool_visual_rows(false, 0, 0, false),
                 preview_lines: 0,
                 has_detail_card: false,
                 detail_collapsed: true,
@@ -986,7 +982,6 @@ impl ToolWidget {
         }
         if !self.should_show_detail(detail) {
             return ToolLayout {
-                visual_rows: tool_visual_rows(false, 0, 0, false),
                 preview_lines: 0,
                 has_detail_card: false,
                 detail_collapsed: false,
@@ -1006,7 +1001,6 @@ impl ToolWidget {
             .as_ref()
             .map_or_else(|| total_lines.min(preview_cap), Vec::len);
         ToolLayout {
-            visual_rows: tool_visual_rows(true, preview_count, total_lines, false),
             preview_lines: preview_count,
             has_detail_card: true,
             detail_collapsed: false,
@@ -2403,7 +2397,7 @@ mod tests {
             .with_phase(ToolPhase::Success)
             .with_duration_us(7_000);
 
-        assert_eq!(widget.layout().visual_rows, TOOL_HEADER_ROWS);
+        assert_eq!(widget.build().visual_rows(false), TOOL_HEADER_ROWS);
     }
 
     #[test]

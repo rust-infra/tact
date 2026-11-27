@@ -531,3 +531,556 @@ fn folding_the_run_under_the_eye_leaves_the_eye_where_it_was() {
          above it\nbefore:\n{before}\nafter:\n{after}"
     );
 }
+
+// ── Activity regions: a thinking card and the calls beside it ──────────
+
+/// A finished thought followed by two reads, the shape every reasoning turn has.
+///
+/// The card and the calls are one region of work, so they fold into **one**
+/// row that counts both halves. Before, the turn cost the card's row plus the
+/// run's row — two summaries of one stretch of work.
+fn thought_then_reads(app: &mut App) {
+    app.add_user_message("Check the tree.".into());
+    app.handle_agent_update(AgentUpdate::StreamChunk("Looking.\n\n".into()));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Started,
+    ));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Delta("I should read both files.\n".into()),
+    ));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Finished,
+    ));
+    seed(app, 0, "r1", "read_file", "a.rs", StepStatus::Success);
+    seed(app, 1, "r2", "read_file", "b.rs", StepStatus::Success);
+    app.handle_agent_update(AgentUpdate::StreamChunk("Done.\n\n".into()));
+}
+
+#[test]
+fn a_thought_and_the_calls_after_it_fold_into_one_row() {
+    let mut app = make_app();
+    thought_then_reads(&mut app);
+
+    let text = render_log_panel_text(&mut app, 100, 24);
+
+    assert!(
+        text.contains("1 thought") && text.contains("2 tools"),
+        "one row must count both halves: {text}"
+    );
+    assert!(
+        !text.contains("Thought") && !text.contains("a.rs"),
+        "the card's status row and the calls are behind the summary: {text}"
+    );
+    assert_eq!(
+        text.matches("1 thought").count(),
+        1,
+        "the region is one summary, not one per member: {text}"
+    );
+}
+
+#[test]
+fn opening_a_region_shows_the_card_and_every_call_again() {
+    let mut app = make_app();
+    thought_then_reads(&mut app);
+    let _ = render_log_panel_text(&mut app, 100, 24);
+
+    let regions =
+        agent_tui_kit::state::activity_region::regions(&app.thinking().blocks, &app.tools().blocks);
+    let region = regions
+        .into_iter()
+        .find(|region| region.mixes_thinking_and_tools())
+        .expect("one mixed region");
+    assert!(app.toggle_region(region));
+
+    let text = render_log_panel_text(&mut app, 100, 24);
+    assert!(text.contains("Thought"), "the card draws again: {text}");
+    assert!(!text.contains("1 thought"), "{text}");
+    assert!(
+        !text.contains("1 thought · 2 tools"),
+        "the region summary is gone: {text}"
+    );
+    // The calls are inside the region, so they fold with it: opening the region
+    // must not leave a run summary lying across its own members. One stretch of
+    // work gets one summary — the region's — and opening it gives the members
+    // their rows back.
+    assert!(
+        text.contains("a.rs") && text.contains("b.rs"),
+        "the calls show their own rows: {text}"
+    );
+    assert!(
+        !text.contains("2 tools"),
+        "a run inside a region does not draw a second summary: {text}"
+    );
+}
+
+/// A tool wave that is followed by reasoning is the tool-headed shape: the
+/// region starts at the first call, and its run starts there too. Opening the
+/// region must still give every call its row back.
+fn reads_then_thought(app: &mut App) {
+    app.add_user_message("Check the tree.".into());
+    seed(app, 0, "r1", "read_file", "a.rs", StepStatus::Success);
+    seed(app, 1, "r2", "read_file", "b.rs", StepStatus::Success);
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Started,
+    ));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Delta("I should compare both files.\n".into()),
+    ));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Finished,
+    ));
+}
+
+#[test]
+fn opening_a_tool_headed_region_shows_every_call() {
+    let mut app = make_app();
+    reads_then_thought(&mut app);
+    let _ = render_log_panel_text(&mut app, 100, 24);
+
+    let regions =
+        agent_tui_kit::state::activity_region::regions(&app.thinking().blocks, &app.tools().blocks);
+    let region = regions
+        .into_iter()
+        .find(|region| region.mixes_thinking_and_tools())
+        .expect("the calls and the card are one region");
+    assert_eq!(region.tools(), 2, "the region starts at the tool wave");
+    assert!(app.toggle_region(region), "the region must open");
+
+    let text = render_log_panel_text(&mut app, 100, 24);
+    assert!(
+        text.contains("a.rs") && text.contains("b.rs"),
+        "opening the region must show both calls: {text}"
+    );
+    assert!(
+        !text.contains("2 tools"),
+        "the run inside the open region must not draw a second summary: {text}"
+    );
+}
+
+/// A region whose calls all succeeded has no failure to report; one with a
+/// failure keeps `⚠` and the count, so folding cannot make an error quieter.
+#[test]
+fn a_failed_call_inside_a_region_keeps_its_warning_in_the_summary() {
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StreamChunk("Looking.\n\n".into()));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Started,
+    ));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Delta("Try it.\n".into()),
+    ));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Finished,
+    ));
+    seed(&mut app, 0, "ok", "read_file", "a.rs", StepStatus::Success);
+    seed(&mut app, 1, "bad", "bash", "false", StepStatus::Failed);
+    app.handle_agent_update(AgentUpdate::StreamChunk("Done.\n\n".into()));
+
+    let text = render_log_panel_text(&mut app, 100, 24);
+
+    assert!(text.contains("1 thought"), "{text}");
+    assert!(text.contains("1 failed"), "{text}");
+    assert!(text.contains('⚠'), "a failure keeps its glyph: {text}");
+}
+
+/// The region is keyed on its first member, so a reader's choice survives the
+/// tool span growing or a later call landing.
+#[test]
+fn an_opened_region_stays_open_when_another_call_settles() {
+    let mut app = make_app();
+    thought_then_reads(&mut app);
+    let _ = render_log_panel_text(&mut app, 100, 24);
+
+    let regions =
+        agent_tui_kit::state::activity_region::regions(&app.thinking().blocks, &app.tools().blocks);
+    let region = regions
+        .into_iter()
+        .find(|region| region.mixes_thinking_and_tools())
+        .expect("one mixed region");
+    assert!(app.toggle_region(region));
+
+    // A later call, separated by prose so it is its own work.
+    app.handle_agent_update(AgentUpdate::StreamChunk("More.\n\n".into()));
+    seed(&mut app, 2, "x1", "bash", "ls", StepStatus::Success);
+
+    let text = render_log_panel_text(&mut app, 100, 24);
+    assert!(
+        text.contains("Thought"),
+        "the reader's open region must not snap shut: {text}"
+    );
+    assert!(
+        !text.contains("1 thought · 2 tools"),
+        "it stays a region of separate members, not one summary: {text}"
+    );
+}
+
+/// A turn ends with a separator + stats block, which must break the region: two
+/// turns never fold into one summary.
+///
+/// This pins the boundary the fold has no explicit turn id for — the log is the
+/// only evidence, so the separator rows are what keep turns apart.
+#[test]
+fn two_turns_never_fold_into_one_summary() {
+    let mut app = make_app();
+
+    // Turn 1: a thought and two calls, then the turn ends.
+    thought_then_reads(&mut app);
+    app.handle_agent_update(AgentUpdate::TaskComplete("first turn done".into()));
+
+    // Turn 2: another thought and two calls.
+    app.add_user_message("Again.".into());
+    app.handle_agent_update(AgentUpdate::StreamChunk("Looking.\n\n".into()));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Started,
+    ));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Delta("Read them again.\n".into()),
+    ));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Finished,
+    ));
+    seed(&mut app, 0, "s1", "read_file", "c.rs", StepStatus::Success);
+    seed(&mut app, 1, "s2", "read_file", "d.rs", StepStatus::Success);
+    app.handle_agent_update(AgentUpdate::StreamChunk("Done.\n\n".into()));
+
+    // One frame, so the prepare pass fills `turn_boundary_rows` — the same set
+    // the fold rules read in the real render loop.
+    let _ = render_log_panel_text(&mut app, 100, 40);
+    let regions = agent_tui_kit::state::activity_region::regions_bounded(
+        &app.thinking().blocks,
+        &app.tools().blocks,
+        |phys| app.log_scroll.turn_boundary_rows.contains(&phys),
+    );
+    assert_eq!(app.thinking().blocks.len(), 2, "two thoughts exist");
+    assert_eq!(app.tools().blocks.len(), 4, "four calls exist");
+    assert!(
+        !app.log_scroll.turn_boundary_rows.is_empty(),
+        "the prepare pass must fill the boundary set the fold rules read"
+    );
+    assert_eq!(
+        regions.len(),
+        2,
+        "the turn separator splits the log into two regions, not one: {:?}",
+        regions
+            .iter()
+            .map(|region| (region.phys_idx, region.thoughts(), region.tools()))
+            .collect::<Vec<_>>()
+    );
+    for region in &regions {
+        assert_eq!(region.thoughts(), 1, "one thought per turn");
+        assert_eq!(region.tools(), 2, "two calls per turn");
+    }
+}
+
+/// The turn boundary is row evidence, not a turn id: the separator's own row
+/// sits between the two turns' members, which is what breaks adjacency.
+#[test]
+fn the_turn_separator_row_sits_between_two_turns_activities() {
+    let mut app = make_app();
+    thought_then_reads(&mut app);
+    let last_call = app.tools().blocks.last().expect("a call").phys_idx;
+    let call_rows = app
+        .tools()
+        .blocks
+        .last()
+        .expect("a call")
+        .output
+        .visual_rows(false);
+    app.handle_agent_update(AgentUpdate::TaskComplete("first turn done".into()));
+
+    // Something in turn 2 must come after the separator rows.
+    app.add_user_message("Again.".into());
+    let separator_phys = app
+        .log
+        .items
+        .iter()
+        .position(|item| crate::render::cells::separator::is_task_end_separator(&item.raw))
+        .expect("the turn separator row");
+
+    assert!(
+        separator_phys > last_call + call_rows,
+        "the separator must sit after the turn's last call row \
+         (call at {last_call}, {call_rows} rows, separator at {separator_phys})"
+    );
+}
+
+/// Two turns whose activities happen to sit on adjacent rows are still two
+/// regions: the fold asks the log where a turn ended instead of inferring it
+/// from spacing.
+#[test]
+fn adjacency_alone_does_not_fuse_two_turns() {
+    use agent_tui_kit::widgets::tool_widget::{ToolLayout, ToolPhase as Phase, ToolRenderOutput};
+
+    let mk_tool = |id: &str, phys: usize| agent_tui_kit::state::ToolBlock {
+        phys_idx: phys,
+        tool_id: id.to_string(),
+        output: ToolRenderOutput {
+            title_raw: format!("$ Bash  {id}"),
+            phase: Phase::Success,
+            permission_label: None,
+            error_message: None,
+            duration_us: None,
+            size_bytes: None,
+            tool_name: "bash".to_string(),
+            use_diff_gutter: false,
+            arg_summary: id.to_string(),
+            arg_full: String::new(),
+            layout: ToolLayout {
+                preview_lines: 0,
+                has_detail_card: false,
+                detail_collapsed: true,
+            },
+            live_detail: false,
+            detail_preview: Vec::new(),
+            detail_total_lines: 0,
+            detail_full: None,
+            subagent_id: None,
+            subagent_model: None,
+            subagent_tokens: None,
+            subagent_context_window: None,
+            task_id: None,
+            visual_kind: tact_protocol::ToolVisualKind::Command,
+        },
+        span: None,
+    };
+    let mk_card = |id: &str, phys: usize| {
+        agent_tui_kit::state::ThinkingBlock::new(
+            id.to_string(),
+            phys,
+            "x".into(),
+            "x".into(),
+            Vec::new(),
+            std::time::Duration::from_millis(1),
+        )
+    };
+
+    // Turn 1 owns rows 1–2, turn 2 owns 4–5. Row 3 is the boundary probe: a
+    // turn end that left no member of its own.
+    let cards = vec![mk_card("turn1-thought", 1), mk_card("turn2-thought", 4)];
+    let tools = vec![mk_tool("turn1-call", 2), mk_tool("turn2-call", 5)];
+
+    let fused = agent_tui_kit::state::activity_region::regions(&cards, &tools);
+    assert_eq!(fused.len(), 1, "without a boundary, adjacency merges them");
+    assert_eq!(fused[0].thoughts(), 2);
+
+    let split =
+        agent_tui_kit::state::activity_region::regions_bounded(&cards, &tools, |phys| phys == 3);
+    assert_eq!(
+        split.len(),
+        2,
+        "the turn boundary keeps them apart: {:?}",
+        split
+            .iter()
+            .map(|r| (r.thoughts(), r.tools()))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// `/lang` rewrites the folded summary: the words come from `Messages`, the
+/// tool labels and the `×` glyph do not.
+#[test]
+fn a_folded_region_summary_follows_the_language() {
+    let mut app = make_app();
+    thought_then_reads(&mut app);
+    app.language = crate::i18n::Language::Chinese;
+
+    let text = render_log_panel_text(&mut app, 100, 24);
+
+    // The buffer holds one cell per column, so a wide character's second cell
+    // is blank: compare the glyphs, not the contiguous string.
+    let glyphs: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(
+        glyphs.contains("1段思考") && glyphs.contains("2个工具"),
+        "the counts are localized: {text}"
+    );
+    assert!(
+        glyphs.contains("📖Read×2"),
+        "the tool label and repeat glyph stay: {text}"
+    );
+    assert!(
+        !glyphs.contains("1thought"),
+        "no English wording survives the switch: {text}"
+    );
+}
+
+/// A tool-only run's summary is localized too — it composes through the same
+/// `Messages` half as a mixed region.
+#[test]
+fn a_folded_tool_run_summary_follows_the_language() {
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StreamChunk("Checking.\n\n".into()));
+    three_reads(&mut app);
+    app.handle_agent_update(AgentUpdate::StreamChunk("Done.\n\n".into()));
+    app.language = crate::i18n::Language::Chinese;
+
+    let text = render_log_panel_text(&mut app, 100, 24);
+
+    let glyphs: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(
+        glyphs.contains("3个工具"),
+        "the tool count is localized: {text}"
+    );
+    assert!(!glyphs.contains("3tools"), "{text}");
+}
+
+// ── Narration folding ([ui] fold_commentary) ─────────────────────────────
+
+/// A turn that narrates, calls a tool, then answers: the shape
+/// `fold_commentary` exists for.
+fn narration_then_tool_then_answer(app: &mut App) {
+    app.add_user_message("Check the tree.".into());
+    app.handle_agent_update(AgentUpdate::MessageStarted {
+        message_id: "m1".into(),
+    });
+    app.handle_agent_update(AgentUpdate::StreamChunk("Let me check that.\n\n".into()));
+    app.handle_agent_update(AgentUpdate::MessageFinished {
+        message_id: "m1".into(),
+        phase: Some(tact_protocol::MessagePhase::Commentary),
+    });
+    seed(app, 0, "r1", "read_file", "a.rs", StepStatus::Success);
+    app.handle_agent_update(AgentUpdate::MessageStarted {
+        message_id: "m2".into(),
+    });
+    app.handle_agent_update(AgentUpdate::StreamChunk("All clean.\n\n".into()));
+    app.handle_agent_update(AgentUpdate::MessageFinished {
+        message_id: "m2".into(),
+        phase: Some(tact_protocol::MessagePhase::FinalAnswer),
+    });
+}
+
+#[test]
+fn a_commentary_label_turns_the_rows_into_narration() {
+    use agent_tui_kit::state::LogItemKind;
+
+    let mut app = make_app();
+    narration_then_tool_then_answer(&mut app);
+
+    let narration: Vec<&str> = app
+        .log
+        .items
+        .iter()
+        .filter(|item| item.kind == LogItemKind::AssistantCommentary)
+        .map(|item| item.raw.as_str())
+        .collect();
+    assert!(
+        narration
+            .iter()
+            .any(|raw| raw.contains("Let me check that.")),
+        "the narrative text is marked: {narration:?}"
+    );
+    assert!(
+        app.log
+            .items
+            .iter()
+            .any(|item| item.kind == LogItemKind::AssistantMarkdown
+                && item.raw.contains("All clean.")),
+        "the final answer keeps its own kind"
+    );
+}
+
+#[test]
+fn narration_folds_with_the_call_and_the_answer_stays_visible() {
+    let mut app = make_app();
+    narration_then_tool_then_answer(&mut app);
+
+    let text = render_log_panel_text(&mut app, 100, 32);
+
+    assert!(
+        text.contains("All clean."),
+        "the answer is never folded: {text}"
+    );
+    assert!(
+        !text.contains("Let me check that."),
+        "narration is behind the summary: {text}"
+    );
+    assert!(
+        text.contains("note") || text.contains("tool"),
+        "the summary states what it hid: {text}"
+    );
+}
+
+#[test]
+fn the_switch_restores_narration_rows() {
+    let mut app = make_app();
+    narration_then_tool_then_answer(&mut app);
+    assert!(app.fold_commentary, "folded by default");
+
+    app.toggle_fold_commentary();
+    let text = render_log_panel_text(&mut app, 100, 32);
+
+    assert!(
+        text.contains("Let me check that."),
+        "off keeps every narration row: {text}"
+    );
+    assert!(text.contains("All clean."), "the answer too: {text}");
+}
+
+/// Text no provider labelled must not be folded on a guess.
+#[test]
+fn unlabelled_text_is_never_folded() {
+    let mut app = make_app();
+    app.add_user_message("Check the tree.".into());
+    app.handle_agent_update(AgentUpdate::MessageStarted {
+        message_id: "m1".into(),
+    });
+    app.handle_agent_update(AgentUpdate::StreamChunk("No phase here.\n\n".into()));
+    app.handle_agent_update(AgentUpdate::MessageFinished {
+        message_id: "m1".into(),
+        phase: None,
+    });
+    seed(&mut app, 0, "r1", "read_file", "a.rs", StepStatus::Success);
+
+    let text = render_log_panel_text(&mut app, 100, 32);
+    assert!(
+        text.contains("No phase here."),
+        "an unlabelled message keeps its rows: {text}"
+    );
+}
+
+/// A region's clock covers its thinking **and** its calls. Before, any region
+/// that held a tool dropped the card's time entirely — the summary reported the
+/// calls' union and the thought was invisible.
+#[test]
+fn a_folded_region_reporting_time_includes_the_thought() {
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StreamChunk("Looking.\n\n".into()));
+    // A thought that takes real time: the card's own clock.
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Started,
+    ));
+    std::thread::sleep(std::time::Duration::from_millis(40));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Delta("Consider the tree.\n".into()),
+    ));
+    app.handle_agent_update(AgentUpdate::ThinkingChunk(
+        tact_protocol::ThinkingChunk::Finished,
+    ));
+    seed(&mut app, 0, "r1", "read_file", "a.rs", StepStatus::Success);
+    seed(&mut app, 1, "r2", "read_file", "b.rs", StepStatus::Success);
+    app.handle_agent_update(AgentUpdate::StreamChunk("Done.\n\n".into()));
+
+    // The card carries a span now, so the region's total can see it.
+    let card_span = app.thinking().blocks[0]
+        .span
+        .expect("a live card keeps its clock");
+    assert!(
+        card_span.finished_at > card_span.started_at,
+        "the card's span is a real interval"
+    );
+
+    let _ = render_log_panel_text(&mut app, 100, 32);
+    let regions = app.activity_regions();
+    let region = &regions[0];
+    let total = agent_tui_kit::state::activity_region::total_span(
+        &app.thinking().blocks,
+        &app.tools().blocks,
+        region,
+    )
+    .expect("the region was timed");
+
+    let thought = card_span.finished_at.duration_since(card_span.started_at);
+    assert!(
+        total >= thought,
+        "the total must cover the thought's own span: total={total:?} thought={thought:?}"
+    );
+}

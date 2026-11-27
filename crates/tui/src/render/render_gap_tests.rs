@@ -623,6 +623,7 @@ fn thinking_popup_scroll_shows_later_lines() {
         summary: "reason-12".into(),
         cached_markdown: markdown,
         elapsed: Duration::from_millis(5),
+        span: None,
     });
     app.thinking_mut().popup = Some(ThinkingPopup {
         block_id: "test-thinking".into(),
@@ -1263,9 +1264,12 @@ fn assert_blank(rows: &[String], index: usize, why: &str) {
 /// A tool block and a thinking card are one region of work, not two blocks: the
 /// card's status row sits directly under the tool's meta row.
 ///
-/// A blank row here would break the tool run apart — `tool_group::runs` treats a
-/// gap as the end of a run — and would push a call away from the reasoning that
-/// explains it.
+/// A blank row here would break the region apart — both `tool_group::runs` and
+/// `activity_region::regions` treat a gap as the end of a region — and would
+/// push a call away from the reasoning that explains it.
+///
+/// The region folds by default, so the test opens it: the spacing rule is about
+/// the expanded arrangement, which is what the reader sees after one click.
 #[test]
 fn a_thinking_card_butts_against_the_tool_block_above_it() {
     let mut app = make_app();
@@ -1288,6 +1292,16 @@ fn a_thinking_card_butts_against_the_tool_block_above_it() {
         "Working tree clean.\n".into(),
     )));
     app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+
+    // One activity region, folded by default: open it so the members draw.
+    let _ = rendered_rows(&mut app, 100, 24);
+    let regions =
+        agent_tui_kit::state::activity_region::regions(&app.thinking().blocks, &app.tools().blocks);
+    let region = regions
+        .into_iter()
+        .find(|region| region.mixes_thinking_and_tools())
+        .expect("the card and the call are one region");
+    assert!(app.toggle_region(region), "the region must open");
 
     let rows = rendered_rows(&mut app, 100, 24);
 
@@ -1506,4 +1520,33 @@ fn a_system_message_after_a_card_keeps_one_blank_row() {
         rows.join("\n")
     );
     assert_blank(&rows, card + 1, "between the card and the system message");
+}
+/// The reported bug: a folded region sat flush against the user's prompt.
+///
+/// `ensure_gap_after_user_message` runs on the streaming path only, so a turn
+/// whose first act is a tool call — no preceding prose — let the region open
+/// directly under the prompt, with nothing between the reader's own words and
+/// the summary that answers them.
+#[test]
+fn a_tool_region_leaves_a_blank_row_under_the_prompt() {
+    let mut app = make_app();
+    app.add_user_message("run the tests".into());
+    seed_write_file_finished(&mut app, "a.txt", "hello");
+
+    let text = render_log_panel_text(&mut app, 100, 24);
+    let rows: Vec<&str> = text.lines().collect();
+    let prompt_row = rows
+        .iter()
+        .position(|row| row.contains("run the tests"))
+        .expect("the prompt is on screen");
+    let next = rows.get(prompt_row + 1).unwrap_or(&"");
+    // Strip the panel chrome: border columns, scrollbar, corners, rules.
+    let bare: String = next
+        .chars()
+        .filter(|c| !matches!(c, '│' | '┌' | '┐' | '└' | '┘' | '─' | '▐' | '▌' | '▲' | '▼'))
+        .collect();
+    assert!(
+        bare.trim().is_empty(),
+        "a blank row must separate the prompt from the folded region, got {next:?} in:\n{text}"
+    );
 }

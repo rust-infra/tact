@@ -39,6 +39,8 @@ pub enum BuiltinCommand {
     Hooks,
     #[strum(serialize = "hook-output")]
     HookOutput,
+    #[strum(serialize = "fold-commentary")]
+    FoldCommentary,
     #[strum(serialize = "balance")]
     Balance,
     #[strum(serialize = "lang")]
@@ -53,6 +55,8 @@ pub enum BuiltinCommand {
     Background,
     #[strum(serialize = "goal")]
     Goal,
+    #[strum(serialize = "try-again")]
+    TryAgain,
 }
 
 /// One declared subcommand, recursive to arbitrary depth.
@@ -154,6 +158,7 @@ impl BuiltinCommand {
         Self::Mcp,
         Self::Hooks,
         Self::HookOutput,
+        Self::FoldCommentary,
         Self::Balance,
         Self::Lang,
         Self::Stats,
@@ -161,6 +166,7 @@ impl BuiltinCommand {
         Self::Trajectory,
         Self::Background,
         Self::Goal,
+        Self::TryAgain,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -248,6 +254,10 @@ impl BuiltinCommand {
                 "Query account balance (DeepSeek/Kimi)",
                 "查询账户余额 (DeepSeek/Kimi)",
             ),
+            Self::FoldCommentary => LocalizedText::new(
+                "Fold mid-turn assistant narration into one row",
+                "把回合中的助手叙述折叠成一行",
+            ),
             Self::Lang => LocalizedText::new("Toggle language (EN/中文)", "切换语言 (EN/中文)"),
             Self::Stats => LocalizedText::new("Show session statistics", "显示会话统计"),
             Self::TasksDag => LocalizedText::new("Show task dependency DAG", "显示任务依赖 DAG"),
@@ -260,6 +270,10 @@ impl BuiltinCommand {
             Self::Goal => LocalizedText::new(
                 "Create, inspect, and control durable Goals",
                 "创建、查看和控制持久 Goal",
+            ),
+            Self::TryAgain => LocalizedText::new(
+                "Resume an interrupted turn without repeating what already ran",
+                "继续被中断的回合，不重复已执行的操作",
             ),
         }
     }
@@ -283,6 +297,7 @@ impl BuiltinCommand {
             Self::Mcp => "mcp",
             Self::Hooks => "hooks",
             Self::HookOutput => "hook-output",
+            Self::FoldCommentary => "fold-commentary",
             Self::Balance => "balance",
             Self::Lang => "lang",
             Self::Stats => "stats",
@@ -290,6 +305,7 @@ impl BuiltinCommand {
             Self::Trajectory => "trajectory",
             Self::Background => "background",
             Self::Goal => "goal",
+            Self::TryAgain => "try-again",
         }
     }
 }

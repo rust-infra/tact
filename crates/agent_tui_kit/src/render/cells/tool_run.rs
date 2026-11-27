@@ -43,12 +43,27 @@ pub struct ToolRunCell {
     elapsed: Option<std::time::Duration>,
     fg: ratatui::style::Color,
     bg: ratatui::style::Color,
-    accent: ratatui::style::Color,
     error: ratatui::style::Color,
     muted: ratatui::style::Color,
+    /// The summary's colour: the error hue when a member failed, the accent
+    /// otherwise. Stored rather than derived at paint time because the fold
+    /// gutter's `⏵` has to be the same colour as the text it introduces.
+    summary_color: ratatui::style::Color,
     /// The run's stable identity, so a click on the summary row can name what
     /// it is toggling.
     identity: String,
+    /// The locale the summary line is composed with.
+    ///
+    /// `Messages` is `Copy` (every field is `&'static str`), so the cell owns
+    /// its copy rather than borrowing the frame's — the cell outlives the
+    /// borrow that built it.
+    msgs: Messages,
+}
+
+/// Whether any member ended badly, mirrored from the summary's own count so the
+/// gutter colour and the text colour cannot disagree.
+fn members_have_failure(members: &[(crate::widgets::tool_widget::ToolPhase, String)]) -> bool {
+    members.iter().any(|(phase, _)| phase.is_failure())
 }
 
 impl ToolRunCell {
@@ -64,8 +79,13 @@ impl ToolRunCell {
         elapsed: Option<std::time::Duration>,
         folded: bool,
         theme: &Theme,
-        _msgs: &Messages,
+        msgs: &Messages,
     ) -> Self {
+        let summary_color = if members_have_failure(&members) {
+            theme.error
+        } else {
+            theme.accent
+        };
         Self {
             members,
             expanded_rows: run.expanded_rows,
@@ -74,10 +94,11 @@ impl ToolRunCell {
             elapsed,
             fg: theme.fg,
             bg: theme.bg,
-            accent: theme.accent,
             error: theme.error,
             muted: theme.muted,
+            summary_color,
             identity: String::new(),
+            msgs: *msgs,
         }
     }
 
@@ -103,24 +124,20 @@ impl ToolRunCell {
             .iter()
             .map(|(phase, title)| (*phase, title.as_str()))
             .collect();
-        let summary = tool_group::summarize(&members, self.elapsed);
+        let summary = tool_group::summarize(&members, self.elapsed, &self.msgs);
         // A failure keeps its color after folding: `⚠` plus the error hue is
         // what tells the reader that one of these calls went wrong, without
         // making them count the tool labels.
-        let (glyph, color) = if summary.failures > 0 {
-            ("⚠ ", self.error)
-        } else {
-            ("⏵ ", self.accent)
-        };
+        // No glyph in the text: the row's fold gutter paints it, two columns
+        // left of the text (`FOLD_GUTTER_COLS`, via `fold_glyph_x`). The text
+        // itself never moves between the folded and open states.
+        let color = self.summary_color;
         // The total comes last, after the tool labels: it answers "how long did
         // this cost me", which a reader asks after "what ran".
-        let mut spans = vec![
-            Span::styled(glyph, Style::default().fg(color)),
-            Span::styled(
-                summary.text,
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
-            ),
-        ];
+        let mut spans = vec![Span::styled(
+            summary.text,
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        )];
         if let Some(elapsed) = self.elapsed {
             spans.push(Span::styled(
                 format!(
@@ -160,7 +177,31 @@ impl Renderable for ToolRunCell {
         if skip_lines > 0 {
             return;
         }
-        Paragraph::new(vec![self.summary_line()])
+        let line = self.summary_line();
+        // The glyph goes in the gutter two columns left of the text, and the text
+        // itself does not move: that is exactly where an expanded head draws its
+        // `⏷`, so flipping the fold leaves the control under the pointer.
+        // `area` is already indented by `self.indent`, so stepping
+        // `FOLD_GUTTER_COLS` back lands in the gutter left of the text.
+        let x = area.x.saturating_sub(crate::render::util::FOLD_GUTTER_COLS);
+        let width = crate::render::util::FOLD_GUTTER_COLS.min(area.width);
+        if width > 0 {
+            // A failure keeps its `⚠`: the glyph is what tells the reader one of
+            // these calls went wrong without making them count the labels, and
+            // it has to survive the fold. The expander yields to it.
+            let glyph = if self.summary_color == self.error {
+                "⚠"
+            } else {
+                "⏵"
+            };
+            buf.set_string(
+                x,
+                area.y,
+                glyph,
+                Style::default().fg(self.summary_color).bg(self.bg),
+            );
+        }
+        Paragraph::new(vec![line])
             .style(Style::default().fg(self.fg).bg(self.bg))
             .render(Rect::new(area.x, area.y, area.width, 1), buf);
     }

@@ -154,6 +154,22 @@ Tests cover queued versus running state, concurrent calls, live output tails,
 failed and cancelled cards, collapsed Open targets, language changes, theme
 changes, subagent pairing, and mouse hit testing.
 
+## Fold units
+
+A finished call can disappear behind one of three summaries:
+
+| Unit | Rule | Summary |
+|---|---|---|
+| Card detail | the call collapsed its own detail (`ToolWidget::collapses_detail`) | `N lines · [Open]` on the meta row |
+| Tool run | adjacent finished calls (`tool_group::runs`) | `3 tools · Read ×2 · Bash · 1.2s` |
+| Activity region | adjacent finished calls **and** thinking cards (`activity_region::regions`) | `1 thought · 3 tools · Read ×2 · 1.2s` |
+
+The region is the larger unit and wins when a card sits beside the calls; a
+tool-only span keeps folding through the run, whose summary names each tool.
+Both fold by default, both count failures, and both key their fold state on the
+first member's `tool_id`/`block_id` rather than on a row index. See
+[`tui_rendering.md`](tui_rendering.md) §6.6.1.
+
 ## Related documents
 
 - [`tui_rendering.md`](tui_rendering.md)

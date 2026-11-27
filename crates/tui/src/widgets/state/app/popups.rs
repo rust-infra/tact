@@ -22,6 +22,12 @@ impl App {
             OpenTarget::ToolRun { run_id } => {
                 self.toggle_fold_by_run_id(&run_id);
             }
+            // A mixed activity region's summary is a control too: the row it
+            // stands for counts cards *and* calls, so activating it folds the
+            // whole stretch instead of opening one card's popup.
+            OpenTarget::ActivityRegion { region_id } => {
+                self.toggle_region_by_id(&region_id);
+            }
         }
     }
 

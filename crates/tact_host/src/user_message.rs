@@ -156,6 +156,28 @@ mod tests {
     }
 
     #[test]
+    fn test_a_bare_path_without_the_at_sign_is_not_a_reference() {
+        // Pinning the grammar boundary the TUI depends on: a path is only a
+        // reference when it carries the literal `@`. A bare path is prose, so a
+        // paste that left one in the input box would reach the model as a path
+        // string it was never told to open. The TUI therefore turns a pasted
+        // bare path into `@path` itself (`crates/tui/src/clipboard_paste.rs`,
+        // `file_in_plain_text`).
+        let dir = temp_dir();
+        std::fs::write(dir.join("shot.png"), b"not-read").unwrap();
+
+        let msg = rt().block_on(async { build_user_message("shot.png", &dir).await });
+
+        let blocks = text_blocks(&msg);
+        assert_eq!(blocks.len(), 1, "a bare path stays one text block");
+        assert_text_contains(blocks[0], "shot.png");
+        assert!(
+            text_blocks(&msg).len() == 1,
+            "nothing may invent an `@` the user did not paste"
+        );
+    }
+
+    #[test]
     fn test_at_image_file_deinlined_to_path() {
         let dir = temp_dir();
         std::fs::write(dir.join("pixel.png"), b"not-read").unwrap();

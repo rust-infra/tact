@@ -12,6 +12,17 @@
 
 pub mod settings;
 
+/// The live, shared permission authority for one agent.
+///
+/// Re-exported here because the command loop lives in `tact_host` and must
+/// change the mode while a turn owns the `&mut Agent`.
+///
+/// Two methods are callable from outside this crate: [`Self::set_mode`] and
+/// [`Self::mode`] — the second is what a frontend reads to *show* the current
+/// mode without asking the agent. Everything else stays `pub(crate)`, so a
+/// frontend cannot reach the decision path directly.
+pub use crate::runtime::permission_authority::PermissionAuthority;
+
 use anyhow::Result;
 use serde_json::Value;
 use strum_macros::Display;
