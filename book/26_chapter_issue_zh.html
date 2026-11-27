@@ -375,6 +375,7 @@
 </div>
 <div class="toc-group">
 <ol class="toc-list">
+<li class="toc-l2"><a href="#2026-11-27--windows-%E4%B8%8A%E6%97%A0%E6%B3%95%E8%AF%BB%E5%8F%96%E8%BF%9B%E7%A8%8B%E8%BA%AB%E4%BB%BD" title="2026-11-27 — Windows 上无法读取进程身份"><span class="toc-label">2026-11-27 — Windows 上无法读取进程身份</span></a></li>
 <li class="toc-l2"><a href="#2026-11-21--tui-%E5%9B%BA%E5%AE%9A%E5%9C%A8%E6%97%A5%E5%BF%97%E9%A1%B6%E9%83%A8%E7%9A%84%E7%94%A8%E6%88%B7-prompt" title="2026-11-21 — TUI：把当前回合的 prompt 固定在日志顶部"><span class="toc-label">2026-11-21 — TUI：把当前回合的 prompt 固定在日志顶部</span></a></li>
 <li class="toc-l2"><a href="#2026-11-21--try-again-%E7%BB%AD%E8%B7%91%E8%A2%AB%E4%B8%AD%E6%96%AD%E7%9A%84%E5%9B%9E%E5%90%88" title="2026-11-21 — /try-again：续跑被中断的回合"><span class="toc-label">2026-11-21 — /try-again：续跑被中断的回合</span></a></li>
 <li class="toc-l2"><a href="#2026-11-19--tui-thinking-%E4%B8%8E%E7%9B%B8%E9%82%BB-tool-%E5%90%88%E6%88%90%E4%B8%80%E4%B8%AA%E6%B4%BB%E5%8A%A8%E5%8C%BA%E6%8A%98%E5%8F%A0" title="2026-11-19 — TUI：thinking 与相邻 tool 合成一个活动区折叠"><span class="toc-label">2026-11-19 — TUI：thinking 与相邻 tool 合成一个活动区折叠</span></a></li>
@@ -836,6 +837,36 @@ bugfix日志</strong>，记录有用户可见或 API
 <a href="../ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> 和对应章节，
 更早的设计与实施记录保存在 Git 历史中。正文中出现的旧 spec / plan
 文件名只用于标识当时的修订，文件本身已删除。</p>
+<h2 id="2026-11-27--windows-上无法读取进程身份">2026-11-27 — Windows 上无法读取进程身份</h2>
+<p><strong>现象：</strong> Windows 桌面构建打开任何会话都在 ACP 的
+<code>session/new</code> 阶段失败，报
+<code>host persistence: failed to read process identity for pid …</code>。
+CI 的 <code>Desktop (windows-latest)</code> 在
+<code>an_in_process_acp_turn_reaches_the_desktop_transcript</code>
+稳定复现；Linux 与 macOS 全绿。</p>
+<p><strong>根因：</strong> <code>process_identity</code> 只实现了
+Linux（<code>/proc/&lt;pid&gt;/stat</code>）与 macOS（<code>proc_pidinfo</code>），
+Windows 落进「非 Linux、非 macOS」的 <code>ps -o lstart</code> 兜底。Windows
+没有 <code>ps</code>，身份恒为 <code>None</code>；session lock 的
+<code>try_lock_session</code> 把 <code>None</code>
+当硬错误，因此任何会话都开不起来。</p>
+<p><strong>决策：</strong> Windows 用
+<code>OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)</code> +
+<code>GetProcessTimes</code> 读创建时间，identity 前缀为
+<code>win:</code>，<code>ps</code> 兜底只留给其余 Unix。沿用
+<code>is_process_alive</code> 已有的 kernel32 裸 FFI
+风格，不新增 crate。创建时间与 Linux starttime
+一样是内核记录的进程起点，足以把「同一个 PID
+被复用」与「同一个进程」区分开；打开失败（进程不存在或权限不足）仍返回
+<code>None</code>，由 <code>holder_is_alive</code> 保守判活。</p>
+<p><strong>验证：</strong> Windows 专用 FFI 以
+<code>x86_64-pc-windows-msvc</code> 目标单独
+<code>cargo check</code> / <code>clippy -D warnings</code> 通过；Linux 侧
+<code>cargo test -p tact --lib store::process_identity</code> 与
+<code>scripts/check-rust.sh</code>
+全绿。真正的回归覆盖是 Windows 桌面任务里的 in-process ACP 端到端用例。</p>
+<p><strong>代码位置：</strong>
+<code>crates/tact/src/store/process_identity.rs</code>（<code>windows_starttime</code>、<code>local_prefix</code>、<code>process_identity</code>）。</p>
 <h2 id="2026-11-21--tui-固定在日志顶部的用户-prompt">2026-11-21 — TUI：把当前回合的 prompt 固定在日志顶部</h2>
 <p><strong>现象：</strong> 一轮跑久了，用户自己写的那句话被推出屏幕，日志里再也找不到「这一轮到底要做什么」。滚动回去看，又失去了正在进行的输出。桌面端一直有工作区标题可参照，终端侧没有任何等价物。</p>
 <p><strong>决策：</strong> 当日志离开尾部、且当前回合的 prompt 已滚出视口时，占用面板内容区的<strong>第一行</strong>把它固定显示。</p>

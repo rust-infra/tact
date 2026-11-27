@@ -700,7 +700,8 @@ session，并在退出信号时逐个释放，而不是只覆盖最后一个。<
 <code>process_identity(pid)</code>（<code>store/process_identity.rs</code>，2026-10-17
 从 <code>store/session_store/</code> 上移为共享模块）：Linux 读
 <code>/proc/&lt;pid&gt;/stat</code> 的 starttime，macOS 用
-<code>proc_pidinfo</code>，其他平台退回
+<code>proc_pidinfo</code>，Windows 用
+<code>GetProcessTimes</code> 的创建时间，其他平台退回
 <code>ps -o lstart</code>。它的作用是把「同一个 PID
 被复用」与「同一个进程」区分开——只记 pid
 会让一个新进程误判自己仍持有锁。同一模块还导出

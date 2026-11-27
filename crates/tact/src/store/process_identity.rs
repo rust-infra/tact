@@ -6,7 +6,7 @@
 //! pid cannot answer it (pids are reused); the start-time identity is what
 //! separates "the same process" from "a new process that inherited the pid".
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 use std::process::Command;
 
 /// Prefix marking identity strings produced by *this* platform.
@@ -19,7 +19,11 @@ fn local_prefix() -> &'static str {
     {
         "macos:"
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(target_os = "windows")]
+    {
+        "win:"
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         "ps:"
     }
@@ -32,9 +36,11 @@ fn local_prefix() -> &'static str {
 /// second case is any other uid's process (`proc_pidinfo` answers `EPERM`). On
 /// Linux `/proc/<pid>/stat` is world-readable, so an ordinary user *can* read a
 /// root process's start time; there the unreadable case needs `/proc` mounted
-/// with `hidepid`, which answers `EACCES`. Callers must pair `None` with
-/// [`is_process_alive`], which is the only thing here that can tell the two
-/// apart, and must never read `None` as "the holder is dead".
+/// with `hidepid`, which answers `EACCES`. On Windows `OpenProcess` is refused
+/// for a process owned by another user or raised to a higher integrity level.
+/// Callers must pair `None` with [`is_process_alive`], which is the only thing
+/// here that can tell the two apart, and must never read `None` as "the holder
+/// is dead".
 pub fn process_identity(pid: u32) -> Option<String> {
     if pid == 0 {
         return None;
@@ -47,7 +53,11 @@ pub fn process_identity(pid: u32) -> Option<String> {
     {
         macos_starttime(pid).map(|t| format!("macos:{t}"))
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(target_os = "windows")]
+    {
+        windows_starttime(pid).map(|t| format!("win:{t}"))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         ps_lstart(pid).map(|s| format!("ps:{s}"))
     }
@@ -275,9 +285,63 @@ fn macos_starttime(pid: u32) -> Option<String> {
     ))
 }
 
-// ── Fallback (non-Linux, non-macOS): ps command ─────────────────
+// ── Windows: process creation time via GetProcessTimes ─────────
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(windows)]
+fn windows_starttime(pid: u32) -> Option<u64> {
+    use std::ffi::c_void;
+
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+
+    /// `FILETIME`: 100-nanosecond intervals since 1601-01-01 (UTC), split into
+    /// the two 32-bit halves the Win32 API uses.
+    #[repr(C)]
+    struct FileTime {
+        low: u32,
+        high: u32,
+    }
+
+    // SAFETY: standard kernel32 FFI declarations. OpenProcess fails with a
+    // null handle (which we check), and CloseHandle accepts any value, so both
+    // are safe to call. GetProcessTimes writes through its pointer arguments,
+    // so it stays unsafe and is called only with live stack allocations.
+    unsafe extern "system" {
+        safe fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+        safe fn CloseHandle(handle: *mut c_void) -> i32;
+        fn GetProcessTimes(
+            process: *mut c_void,
+            creation: *mut FileTime,
+            exit: *mut FileTime,
+            kernel: *mut FileTime,
+            user: *mut FileTime,
+        ) -> i32;
+    }
+
+    let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+    if handle.is_null() {
+        // `None` covers both "no such process" and "exists, but not ours" (a
+        // process at a higher integrity level refuses the query). Callers must
+        // not read it as "gone" — see `process_identity` and `holder_is_alive`.
+        return None;
+    }
+    let mut creation = FileTime { low: 0, high: 0 };
+    let mut exit = FileTime { low: 0, high: 0 };
+    let mut kernel = FileTime { low: 0, high: 0 };
+    let mut user = FileTime { low: 0, high: 0 };
+    // SAFETY: the handle was opened with PROCESS_QUERY_LIMITED_INFORMATION, the
+    // access right GetProcessTimes requires, and the four FILETIMEs are valid
+    // stack allocations. The call only writes through those pointers.
+    let ok = unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) };
+    CloseHandle(handle);
+    if ok == 0 {
+        return None;
+    }
+    Some((u64::from(creation.high) << 32) | u64::from(creation.low))
+}
+
+// ── Fallback (other Unixes): ps command ─────────────────────────
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 fn ps_lstart(pid: u32) -> Option<String> {
     let pid_str = pid.to_string();
     let output = Command::new("ps")
