@@ -149,7 +149,7 @@ pub fn is_process_alive(pid: u32) -> bool {
     }
     #[cfg(windows)]
     {
-        use std::{ffi::c_void, ptr};
+        use std::ffi::c_void;
 
         const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
         // ERROR_INVALID_PARAMETER is "no such process"; ERROR_ACCESS_DENIED is
@@ -166,18 +166,16 @@ pub fn is_process_alive(pid: u32) -> bool {
             safe fn GetLastError() -> u32;
         }
 
-        // SAFETY: The PID argument comes from a valid u32. A null handle means
-        // the call failed; GetLastError then separates "no such process" from
-        // "access denied", and only the former is absence. CloseHandle releases
-        // the handle when one was returned.
-        unsafe {
-            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-            if handle.is_null() || handle == ptr::null_mut() {
-                return GetLastError() as i32 != ERROR_INVALID_PARAMETER;
-            }
-            CloseHandle(handle);
-            true
+        // The PID argument comes from a valid u32. A null handle means the call
+        // failed; GetLastError then separates "no such process" from "access
+        // denied", and only the former is absence. CloseHandle releases the
+        // handle when one was returned.
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return GetLastError() as i32 != ERROR_INVALID_PARAMETER;
         }
+        CloseHandle(handle);
+        true
     }
     #[cfg(not(any(unix, windows)))]
     {
